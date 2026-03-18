@@ -21,6 +21,15 @@ struct WorkflowEditorView: View {
     @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
     
+    // 确保OpenClaw agents被加载
+    private var openClawAgentList: [String] {
+        let agents = appState.openClawManager.agents
+        if agents.isEmpty {
+            return loadOpenClawAgents()
+        }
+        return agents
+    }
+    
     enum ConnectionType: String, CaseIterable {
         case unidirectional = "→"
         case bidirectional = "⇄"
@@ -659,7 +668,7 @@ struct ArchitectureView: View {
             AgentLibrarySidebar(
                 onAddAll: { self.addAllAgentsToCanvas() },
                 isOpenClawConnected: appState.openClawManager.isConnected,
-                openClawAgents: appState.openClawManager.agents
+                openClawAgents: openClawAgentList
             )
                 .frame(width: 200)
             
@@ -688,18 +697,30 @@ struct ArchitectureView: View {
                         .transition(.move(edge: .trailing))
                     }
                 }
-                .onDrop(of: [.text], isTargeted: nil) { providers, location in
-                    for provider in providers {
-                        provider.loadObject(ofClass: NSString.self) { item, error in
-                            if let agentName = item as? String {
-                                DispatchQueue.main.async {
-                                    self.addAgentNodeToCanvas(agentName: agentName, at: location)
-                                }
+            }
+            .onDrop(of: [.text], isTargeted: nil) { providers, location in
+                for provider in providers {
+                    provider.loadObject(ofClass: NSString.self) { item, error in
+                        if let agentName = item as? String {
+                            DispatchQueue.main.async {
+                                self.addAgentNodeToCanvas(agentName: agentName, at: location)
                             }
                         }
                     }
-                    return true
                 }
+                return true
+            }
+            .onDrop(of: [.text], isTargeted: nil) { providers, location in
+                for provider in providers {
+                    provider.loadObject(ofClass: NSString.self) { item, error in
+                        if let agentName = item as? String {
+                            DispatchQueue.main.async {
+                                self.addAgentNodeToCanvas(agentName: agentName, at: location)
+                            }
+                        }
+                    }
+                }
+                return true
             }
         }
     }
@@ -1089,10 +1110,10 @@ struct AgentLibrarySidebar: View {
                     .padding(.horizontal)
                 
                 HStack(spacing: 8) {
-                    NodeTypeButton(icon: "play.circle", label: "Start", type: .start)
-                    NodeTypeButton(icon: "circle", label: "Agent", type: .agent)
+                    NodeTypeButton(icon: "play.circle", label: LocalizedString.startNode, type: .start)
+                    NodeTypeButton(icon: "circle", label: LocalizedString.agentNode, type: .agent)
                     NodeTypeButton(icon: "arrow.triangle.branch", label: "Branch", type: .agent)
-                    NodeTypeButton(icon: "stop.circle", label: "End", type: .end)
+                    NodeTypeButton(icon: "stop.circle", label: LocalizedString.endNode, type: .end)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 8)
