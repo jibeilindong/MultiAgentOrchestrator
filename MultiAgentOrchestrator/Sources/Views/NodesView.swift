@@ -16,6 +16,8 @@ struct NodesView: View {
     let scale: CGFloat
     let offset: CGSize
     let geometry: GeometryProxy
+    var isConnectMode: Bool = false
+    var connectFromAgentID: UUID?
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onSubflowEdit: ((WorkflowNode) -> Void)?  // 新增：子流程编辑回调
     
@@ -30,6 +32,8 @@ struct NodesView: View {
                 agent: appState.getAgent(for: node),
                 taskStatus: getTaskStatus(for: node),
                 subflowName: getSubflowName(for: node),  // 新增
+                isConnectingMode: isConnectMode,
+                isConnectSource: connectFromAgentID == node.id,
                 onTap: { handleSingleTap(node) },
                 onDoubleTap: { handleDoubleTap(node) },
                 onLongPress: { handleLongPress(node) }

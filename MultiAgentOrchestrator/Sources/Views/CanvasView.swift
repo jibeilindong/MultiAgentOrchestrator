@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 struct CanvasView: View {
     @EnvironmentObject var appState: AppState
     @Binding var zoomScale: CGFloat
+    @Binding var isConnectMode: Bool
+    @Binding var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var connectFromAgentID: UUID?
     @State private var scale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
@@ -24,14 +27,21 @@ struct CanvasView: View {
     @State private var editingSubflowNode: WorkflowNode?
     @State private var currentWorkflowForSubflow: Workflow?
     
-    // Connection mode from parent
-    var isConnectMode: Bool = false
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
     
-    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil, onDropAgent: ((String, CGPoint) -> Void)? = nil) {
+    init(
+        zoomScale: Binding<CGFloat> = .constant(1.0),
+        isConnectMode: Binding<Bool> = .constant(false),
+        connectionType: Binding<WorkflowEditorView.ConnectionType> = .constant(.unidirectional),
+        connectFromAgentID: Binding<UUID?> = .constant(nil),
+        onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil,
+        onDropAgent: ((String, CGPoint) -> Void)? = nil
+    ) {
         self._zoomScale = zoomScale
-        self.isConnectMode = isConnectMode
+        self._isConnectMode = isConnectMode
+        self._connectionType = connectionType
+        self._connectFromAgentID = connectFromAgentID
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
         self.onDropAgent = onDropAgent
     }
@@ -44,6 +54,8 @@ struct CanvasView: View {
             selectedNodeID: $selectedNodeID,
             connectingFromNode: $connectingFromNode,
             tempConnectionEnd: $tempConnectionEnd,
+            isConnectMode: isConnectMode,
+            connectFromAgentID: connectFromAgentID,
             onNodeClick: onNodeClickInConnectMode,
             onSubflowEdit: handleSubflowEdit  // 新增
         )
@@ -78,6 +90,9 @@ struct CanvasView: View {
             offset: $offset,
             lastOffset: $lastOffset,
             selectedNodeID: $selectedNodeID,
+            isConnectMode: $isConnectMode,
+            connectionType: $connectionType,
+            connectFromAgentID: $connectFromAgentID,
             appState: appState
         ))
         // 子流程编辑器弹窗
@@ -96,6 +111,11 @@ struct CanvasView: View {
         }
         .onChange(of: zoomScale) { _, newValue in
             scale = newValue
+        }
+        .onChange(of: isConnectMode) { _, newValue in
+            if !newValue {
+                connectFromAgentID = nil
+            }
         }
     }
     
@@ -144,6 +164,7 @@ struct CanvasView: View {
                         selectedNodeID = nil
                         connectingFromNode = nil
                         tempConnectionEnd = nil
+                        connectFromAgentID = nil
                     }
             )
         )

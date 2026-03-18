@@ -21,15 +21,6 @@ struct WorkflowEditorView: View {
     @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
     
-    // 确保OpenClaw agents被加载
-    private var openClawAgentList: [String] {
-        let agents = appState.openClawManager.agents
-        if agents.isEmpty {
-            return loadOpenClawAgents()
-        }
-        return agents
-    }
-    
     enum ConnectionType: String, CaseIterable {
         case unidirectional = "→"
         case bidirectional = "⇄"
@@ -61,9 +52,6 @@ struct WorkflowEditorView: View {
             // 工具栏
             EditorToolbar(
                 viewMode: $viewMode,
-                isConnectMode: $isConnectMode,
-                connectFromAgentID: $connectFromAgentID,
-                connectionType: $connectionType,
                 onRunTest: runTest,
                 onStopTest: stopTest
             )
@@ -91,9 +79,9 @@ struct WorkflowEditorView: View {
                 case .architecture:
                     ArchitectureView(
                         zoomScale: $zoomScale,
-                        isConnectMode: isConnectMode,
+                        isConnectMode: $isConnectMode,
                         connectFromAgentID: $connectFromAgentID,
-                        connectionType: connectionType,
+                        connectionType: $connectionType,
                         onConnect: handleAgentConnection,
                         testExecution: testExecution
                     )
@@ -257,9 +245,6 @@ struct WorkflowEditorView: View {
 struct EditorToolbar: View {
     @EnvironmentObject var appState: AppState
     @Binding var viewMode: WorkflowEditorView.EditorViewMode
-    @Binding var isConnectMode: Bool
-    @Binding var connectFromAgentID: UUID?
-    @Binding var connectionType: WorkflowEditorView.ConnectionType
     var onRunTest: () -> Void
     var onStopTest: () -> Void
     
@@ -286,43 +271,6 @@ struct EditorToolbar: View {
             .padding(4)
             .background(Color(.controlBackgroundColor))
             .cornerRadius(8)
-            
-            Divider()
-                .frame(height: 20)
-            
-            // 连接类型选择器
-            HStack(spacing: 4) {
-                ForEach(WorkflowEditorView.ConnectionType.allCases, id: \.self) { type in
-                    Button(action: {
-                        isConnectMode = true
-                        connectionType = type
-                    }) {
-                        HStack(spacing: 2) {
-                            Text(type.rawValue)
-                                .font(.headline)
-                            Text(type.description)
-                                .font(.caption)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(isConnectMode && connectionType == type ? Color.blue.opacity(0.2) : Color.clear)
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(isConnectMode && connectionType == type ? .blue : .secondary)
-                }
-            }
-            .padding(4)
-            .background(Color(.controlBackgroundColor))
-            .cornerRadius(8)
-            .tint(isConnectMode ? .blue : nil)
-            
-            // 连接状态提示
-            if isConnectMode {
-                Text(LocalizedString.selectTargetAgent)
-                    .font(.caption)
-                    .foregroundColor(.blue)
-            }
             
             Divider()
                 .frame(height: 20)
@@ -653,9 +601,9 @@ struct AgentGridCard: View {
 struct ArchitectureView: View {
     @EnvironmentObject var appState: AppState
     @Binding var zoomScale: CGFloat
-    var isConnectMode: Bool
+    @Binding var isConnectMode: Bool
     @Binding var connectFromAgentID: UUID?
-    var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var connectionType: WorkflowEditorView.ConnectionType
     var onConnect: (UUID, UUID) -> Void
     var testExecution: WorkflowTestExecution?
     
@@ -668,18 +616,20 @@ struct ArchitectureView: View {
             AgentLibrarySidebar(
                 onAddAll: { self.addAllAgentsToCanvas() },
                 isOpenClawConnected: appState.openClawManager.isConnected,
-                openClawAgents: openClawAgentList
+                openClawAgents: appState.openClawManager.agents
             )
-                .frame(width: 200)
+            .frame(width: 200)
             
             Divider()
             
             // 画布区域
-            GeometryReader { geometry in
+            GeometryReader { _ in
                 ZStack {
                     CanvasView(
                         zoomScale: $zoomScale,
-                        isConnectMode: isConnectMode,
+                        isConnectMode: $isConnectMode,
+                        connectionType: $connectionType,
+                        connectFromAgentID: $connectFromAgentID,
                         onNodeClickInConnectMode: { node in
                             self.handleNodeClickInConnectMode(node: node)
                         },
@@ -687,7 +637,7 @@ struct ArchitectureView: View {
                             self.addAgentNodeToCanvas(agentName: agentName, at: location)
                         }
                     )
-                    
+
                     // 节点属性面板（从右侧滑入）
                     if showNodePropertyPanel, let node = selectedNodeForProperty {
                         NodePropertyPanel(
@@ -698,48 +648,10 @@ struct ArchitectureView: View {
                     }
                 }
             }
-            .onDrop(of: [.text], isTargeted: nil) { providers, location in
-                for provider in providers {
-                    provider.loadObject(ofClass: NSString.self) { item, error in
-                        if let agentName = item as? String {
-                            DispatchQueue.main.async {
-                                self.addAgentNodeToCanvas(agentName: agentName, at: location)
-                            }
-                        }
-                    }
-                }
-                return true
-            }
-            .onDrop(of: [.text], isTargeted: nil) { providers, location in
-                for provider in providers {
-                    provider.loadObject(ofClass: NSString.self) { item, error in
-                        if let agentName = item as? String {
-                            DispatchQueue.main.async {
-                                self.addAgentNodeToCanvas(agentName: agentName, at: location)
-                            }
-                        }
-                    }
-                }
-                return true
-            }
         }
     }
     
-    private func handleDrop(providers: [NSItemProvider], location: CGPoint) -> Bool {
-        // Handle dropped Agent from library
-        for provider in providers {
-            provider.loadObject(ofClass: NSString.self) { item, error in
-                if let agentName = item as? String {
-                    DispatchQueue.main.async {
-                        addAgentNodeToCanvas(agentName: agentName, at: location)
-                    }
-                }
-            }
-        }
-        return true
-    }
-    
-    private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
+    private func addAgentNodeToCanvas(agentName: String, at _: CGPoint) {
         
         guard var project = appState.currentProject else { 
             return 

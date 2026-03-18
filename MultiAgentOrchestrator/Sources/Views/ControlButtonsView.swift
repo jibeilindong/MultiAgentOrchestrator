@@ -12,58 +12,72 @@ struct ControlButtonsView: View {
     @Binding var offset: CGSize
     @Binding var lastOffset: CGSize
     @Binding var selectedNodeID: UUID?
+    @Binding var isConnectMode: Bool
+    @Binding var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var connectFromAgentID: UUID?
     let appState: AppState
-    
-    @State private var showingNodeMenu = false
-    
+
     var body: some View {
         VStack {
+            Spacer()
             HStack {
                 Spacer()
-                VStack(spacing: 8) {
-                    // 缩放控制
-                    Group {
-                        Button(action: zoomIn) {
-                            Image(systemName: "plus.magnifyingglass")
-                                .frame(width: 30, height: 30)
+                VStack(alignment: .trailing, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Button(action: toggleConnectMode) {
+                            Image(systemName: isConnectMode ? "link.circle.fill" : "link.circle")
+                                .frame(width: 28, height: 28)
                         }
-                        .keyboardShortcut("+")
-                        .help("放大")
-                        
+                        .buttonStyle(.borderedProminent)
+                        .tint(isConnectMode ? .blue : .accentColor)
+                        .help("连线模式")
+
+                        if isConnectMode {
+                            HStack(spacing: 4) {
+                                connectionTypeButton(type: .unidirectional)
+                                connectionTypeButton(type: .bidirectional)
+                            }
+                            .transition(.opacity.combined(with: .move(edge: .trailing)))
+                        }
+                    }
+
+                    HStack(spacing: 6) {
                         Button(action: zoomOut) {
                             Image(systemName: "minus.magnifyingglass")
-                                .frame(width: 30, height: 30)
+                                .frame(width: 28, height: 28)
                         }
                         .keyboardShortcut("-")
+                        .buttonStyle(.bordered)
                         .help("缩小")
-                        
+
+                        Text("\(Int(scale * 100))%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(width: 48)
+
+                        Button(action: zoomIn) {
+                            Image(systemName: "plus.magnifyingglass")
+                                .frame(width: 28, height: 28)
+                        }
+                        .keyboardShortcut("+")
+                        .buttonStyle(.bordered)
+                        .help("放大")
+
                         Button(action: resetView) {
                             Image(systemName: "arrow.counterclockwise")
-                                .frame(width: 30, height: 30)
+                                .frame(width: 28, height: 28)
                         }
                         .keyboardShortcut("0")
+                        .buttonStyle(.bordered)
                         .help("重置视图")
                     }
-                    .buttonStyle(.bordered)
-                    
-                    Divider()
-                        .frame(width: 30)
-                    
-                    // 节点工具
-                    Group {
+
+                    HStack(spacing: 6) {
                         Menu {
-                            Button("Start Node") {
-                                addNode(type: .start)
-                            }
-                            
-                            Button("End Node") {
-                                addNode(type: .end)
-                            }
-                            
-                            Button("Subflow Node") {  // 新增
-                                addNode(type: .subflow)
-                            }
-                            
+                            Button("Start Node") { addNode(type: .start) }
+                            Button("End Node") { addNode(type: .end) }
+                            Button("Subflow Node") { addNode(type: .subflow) }
+
                             if let agents = appState.currentProject?.agents, !agents.isEmpty {
                                 Divider()
                                 Menu("Agent Nodes") {
@@ -76,34 +90,56 @@ struct ControlButtonsView: View {
                             }
                         } label: {
                             Image(systemName: "plus.circle")
-                                .frame(width: 30, height: 30)
+                                .frame(width: 28, height: 28)
                         }
+                        .buttonStyle(.bordered)
                         .help("添加节点")
-                        
+
                         Button(action: deleteSelectedNode) {
                             Image(systemName: "trash")
-                                .frame(width: 30, height: 30)
+                                .frame(width: 28, height: 28)
                         }
+                        .buttonStyle(.bordered)
                         .keyboardShortcut(.delete, modifiers: [])
                         .disabled(selectedNodeID == nil)
                         .help("删除选中节点")
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    // 在 ControlButtonsView 的按钮组中添加
-                    Group {
+
                         Button(action: generateTasksFromWorkflow) {
                             Image(systemName: "list.bullet.clipboard")
-                                .frame(width: 30, height: 30)
+                                .frame(width: 28, height: 28)
                         }
+                        .buttonStyle(.bordered)
                         .help("Generate Tasks from Workflow")
                     }
-                    .buttonStyle(.bordered)
                 }
-                .padding()
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(.windowBackgroundColor).opacity(0.95))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
             }
-            Spacer()
+            .padding(12)
         }
+    }
+
+    @ViewBuilder
+    private func connectionTypeButton(type: WorkflowEditorView.ConnectionType) -> some View {
+        Button(action: {
+            connectionType = type
+            isConnectMode = true
+        }) {
+            Text(type.rawValue)
+                .font(.headline)
+                .frame(width: 34, height: 28)
+        }
+        .buttonStyle(.bordered)
+        .tint(connectionType == type ? .blue : nil)
+        .help(type.description)
     }
     
     private func generateTasksFromWorkflow() {
@@ -122,6 +158,15 @@ struct ControlButtonsView: View {
     private func zoomOut() {
         withAnimation(.easeInOut(duration: 0.2)) {
             scale = max(scale - 0.2, 0.1)
+        }
+    }
+
+    private func toggleConnectMode() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isConnectMode.toggle()
+            if !isConnectMode {
+                connectFromAgentID = nil
+            }
         }
     }
     

@@ -16,6 +16,8 @@ struct CanvasContentView: View {
     @Binding var selectedNodeID: UUID?
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
+    var isConnectMode: Bool = false
+    var connectFromAgentID: UUID?
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onSubflowEdit: ((WorkflowNode) -> Void)?
     
@@ -68,6 +70,8 @@ struct CanvasContentView: View {
                     scale: scale,
                     offset: offset,
                     geometry: geometry,
+                    isConnectMode: isConnectMode,
+                    connectFromAgentID: connectFromAgentID,
                     onNodeClick: onNodeClick,
                     onSubflowEdit: onSubflowEdit
                 )
