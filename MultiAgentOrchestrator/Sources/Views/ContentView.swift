@@ -2,51 +2,95 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedTab = 0
+    @Binding var selectedTab: Int
+    @Binding var zoomScale: CGFloat
     
     var body: some View {
-        // 使用简单的三栏布局，不需要 NavigationView
         HStack(spacing: 0) {
-            // 左侧边栏
             SidebarView()
                 .frame(width: 250)
             
             Divider()
             
-            // 主画布区域
             VStack(spacing: 0) {
-                // 标题栏
                 HStack {
-                    Text(appState.currentProject?.name ?? "MultiAgent Orchestrator")
+                    Text(appState.currentProject?.name ?? LocalizedString.appName)
                         .font(.headline)
                         .padding(.leading)
                     
                     Spacer()
                     
-                    // 标签选择器
                     Picker("", selection: $selectedTab) {
-                        Label("Workflow", systemImage: "square.grid.2x2").tag(0)
-                        Label("Tasks", systemImage: "square.stack.3d.up").tag(1)
-                        Label("Dashboard", systemImage: "chart.bar").tag(2)
-                        Label("Control", systemImage: "gearshape.2").tag(3)
-                        Label("Permissions", systemImage: "lock.shield").tag(4)
+                        Label(LocalizedString.workflow, systemImage: "square.grid.2x2").tag(0)
+                        Label(LocalizedString.tasks, systemImage: "square.stack.3d.up").tag(1)
+                        Label(LocalizedString.dashboard, systemImage: "chart.bar").tag(2)
+                        Label(LocalizedString.controlPanel, systemImage: "gearshape.2").tag(3)
+                        Label(LocalizedString.permissions, systemImage: "lock.shield").tag(4)
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 500)
                     
                     Spacer()
                     
-                    // 窗口控制按钮
-                    HStack(spacing: 8) {
-                        Button(action: { appState.createNewProject() }) {
-                            Label("New", systemImage: "plus")
+                    HStack(spacing: 12) {
+                        // 缩放控制
+                        HStack(spacing: 4) {
+                            Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
+                                Image(systemName: "minus.magnifyingglass")
+                            }
+                            .help(LocalizedString.zoomOut)
+                            
+                            Text("\(Int(zoomScale * 100))%")
+                                .font(.caption)
+                                .frame(width: 40)
+                            
+                            Button(action: { zoomScale = min(zoomScale * 1.25, 3.0) }) {
+                                Image(systemName: "plus.magnifyingglass")
+                            }
+                            .help(LocalizedString.zoomIn)
+                            
+                            Button(action: { zoomScale = 1.0 }) {
+                                Image(systemName: "1.magnifyingglass")
+                            }
+                            .help(LocalizedString.resetZoom)
                         }
-                        .help("Create new project")
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(.controlBackgroundColor))
+                        .cornerRadius(6)
+                        
+                        Menu {
+                            ForEach(AppLanguage.allCases) { language in
+                                Button(action: {
+                                    appState.localizationManager.setLanguage(language)
+                                }) {
+                                    HStack {
+                                        Text(language.displayName)
+                                        if appState.localizationManager.currentLanguage == language {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "globe")
+                                Text(appState.localizationManager.currentLanguage == .simplifiedChinese ? "简" : (appState.localizationManager.currentLanguage == .traditionalChinese ? "繁" : "EN"))
+                            }
+                        }
+                        .help(LocalizedString.switchLanguage)
+                        .menuStyle(.borderlessButton)
+                        .frame(width: 40)
+                        
+                        Button(action: { appState.createNewProject() }) {
+                            Label(LocalizedString.new, systemImage: "plus")
+                        }
+                        .help(LocalizedString.newProject)
                         
                         Button(action: { appState.saveProject() }) {
-                            Label("Save", systemImage: "square.and.arrow.down")
+                            Label(LocalizedString.save, systemImage: "square.and.arrow.down")
                         }
-                        .help("Save project")
+                        .help(LocalizedString.saveProject)
                     }
                     .padding(.trailing)
                 }
@@ -55,11 +99,10 @@ struct ContentView: View {
                 
                 Divider()
                 
-                // 根据选中的标签显示对应的视图
                 Group {
                     switch selectedTab {
                     case 0:
-                        CanvasView()
+                        WorkflowEditorView(zoomScale: $zoomScale)
                     case 1:
                         KanbanView()
                     case 2:
@@ -69,7 +112,7 @@ struct ContentView: View {
                     case 4:
                         PermissionsView()
                     default:
-                        CanvasView()
+                        WorkflowEditorView(zoomScale: $zoomScale)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -77,7 +120,6 @@ struct ContentView: View {
             
             Divider()
             
-            // 右侧属性面板
             PropertiesPanelView()
                 .frame(width: 250)
         }

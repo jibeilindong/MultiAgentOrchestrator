@@ -14,6 +14,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     @State private var selectedWorkflowID: UUID?
     @State private var isExecuting = false
     @State private var showResults = false
+    @State private var showLogs = false
     
     var workflows: [Workflow] {
         appState.currentProject?.workflows ?? []
@@ -30,14 +31,14 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
         VStack(spacing: 0) {
             // 控制面板
             HStack {
-                Text("Workflow Execution")
+                Text(LocalizedString.workflowEditor)
                     .font(.title2)
                 
                 Spacer()
                 
                 // 工作流选择器
                 Picker("Workflow", selection: $selectedWorkflowID) {
-                    Text("Select a workflow").tag(nil as UUID?)
+                    Text(LocalizedString.selectWorkflow).tag(nil as UUID?)
                     ForEach(workflows) { workflow in
                         Text(workflow.name).tag(workflow.id as UUID?)
                     }
@@ -52,8 +53,17 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 
                 Button("Clear Results") {
                     openClawService.clearResults()
+                    openClawService.clearLogs()
                 }
                 .disabled(openClawService.executionResults.isEmpty)
+                
+                Button(action: { showLogs.toggle() }) {
+                    HStack {
+                        Image(systemName: showLogs ? "doc.text.fill" : "doc.text")
+                        Text("Logs")
+                    }
+                }
+                .disabled(openClawService.executionLogs.isEmpty && !isExecuting)
             }
             .padding()
             
@@ -73,36 +83,122 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     }
     
     private var executionProgressView: some View {
-        VStack(spacing: 20) {
-            ProgressView(value: Double(openClawService.currentStep), total: Double(openClawService.totalSteps)) {
-                Text("Executing Workflow...")
-                    .font(.headline)
+        HStack(spacing: 0) {
+            // 左侧：进度信息
+            VStack(spacing: 20) {
+                ProgressView(value: Double(openClawService.currentStep), total: Double(openClawService.totalSteps)) {
+                    Text(LocalizedString.executing)
+                        .font(.headline)
+                }
+                .progressViewStyle(.linear)
+                .padding()
+                
+                Text("Step \(openClawService.currentStep) of \(openClawService.totalSteps)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                if let workflow = selectedWorkflow {
+                    let agentNodes = workflow.nodes.filter { $0.type == .agent }
+                    if openClawService.currentStep > 0 && openClawService.currentStep <= agentNodes.count {
+                        let currentNode = agentNodes[openClawService.currentStep - 1]
+                        if let agentID = currentNode.agentID,
+                           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
+                            VStack {
+                                Text("Executing: \(agent.name)")
+                                    .font(.headline)
+                                Text("Node at position (\(Int(currentNode.position.x)), \(Int(currentNode.position.y)))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                
+                // 连接状态指示
+                connectionStatusView
             }
-            .progressViewStyle(.linear)
-            .padding()
+            .frame(maxWidth: showLogs ? .infinity : .infinity)
             
-            Text("Step \(openClawService.currentStep) of \(openClawService.totalSteps)")
+            // 右侧：实时日志（工部任务：实时日志输出）
+            if showLogs {
+                Divider()
+                realTimeLogView
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    private var connectionStatusView: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(connectionStatusColor)
+                .frame(width: 8, height: 8)
+            Text(connectionStatusText)
                 .font(.caption)
                 .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(16)
+    }
+    
+    private var connectionStatusColor: Color {
+        switch openClawService.connectionStatus {
+        case .connected: return .green
+        case .connecting: return .yellow
+        case .disconnected: return .gray
+        case .error: return .red
+        }
+    }
+    
+    private var connectionStatusText: String {
+        switch openClawService.connectionStatus {
+        case .connected: return "Connected"
+        case .connecting: return "Connecting..."
+        case .disconnected: return "Disconnected"
+        case .error(let msg): return "Error: \(msg)"
+        }
+    }
+    
+    // 实时日志面板（工部任务）
+    private var realTimeLogView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Execution Logs")
+                    .font(.headline)
+                Spacer()
+                Button("Clear") {
+                    openClawService.clearLogs()
+                }
+                .font(.caption)
+            }
+            .padding()
+            .background(Color(.windowBackgroundColor))
             
-            if let workflow = selectedWorkflow {
-                let agentNodes = workflow.nodes.filter { $0.type == .agent }
-                if openClawService.currentStep > 0 && openClawService.currentStep <= agentNodes.count {
-                    let currentNode = agentNodes[openClawService.currentStep - 1]
-                    if let agentID = currentNode.agentID,
-                       let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
-                        VStack {
-                            Text("Executing: \(agent.name)")
-                                .font(.headline)
-                            Text("Node at position (\(Int(currentNode.position.x)), \(Int(currentNode.position.y)))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+            Divider()
+            
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(openClawService.executionLogs) { entry in
+                            LogEntryView(entry: entry)
+                                .id(entry.id)
+                        }
+                    }
+                    .padding()
+                }
+                .onChange(of: openClawService.executionLogs.count) { _, _ in
+                    if let lastLog = openClawService.executionLogs.last {
+                        withAnimation {
+                            proxy.scrollTo(lastLog.id, anchor: .bottom)
                         }
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.textBackgroundColor))
     }
     
     private var executionResultsView: some View {
@@ -130,7 +226,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     
     private var resultSummaryView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Execution Summary")
+            Text(LocalizedString.executionResults)
                 .font(.headline)
             
             let total = openClawService.executionResults.count
@@ -158,11 +254,11 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 .foregroundColor(.blue)
                 .opacity(0.5)
             
-            Text("Ready to Execute")
+            Text(LocalizedString.ok)
                 .font(.title)
                 .foregroundColor(.secondary)
             
-            Text("Select a workflow and click Execute to run it")
+            Text(LocalizedString.selectWorkflow)
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -195,6 +291,41 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
         openClawService.executeWorkflow(workflow, agents: agents) { results in
             isExecuting = false
             showResults = true
+        }
+    }
+}
+
+// 日志条目视图（工部任务）
+struct LogEntryView: View {
+    let entry: ExecutionLogEntry
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(entry.timestamp.formatted(date: .omitted, time: .shortened))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .frame(width: 60, alignment: .leading)
+            
+            Text(entry.level.rawValue)
+                .font(.caption2)
+                .fontWeight(.bold)
+                .foregroundColor(levelColor)
+                .frame(width: 50)
+            
+            Text(entry.message)
+                .font(.caption)
+                .foregroundColor(.primary)
+                .lineLimit(2)
+        }
+        .padding(.vertical, 2)
+    }
+    
+    private var levelColor: Color {
+        switch entry.level {
+        case .info: return .blue
+        case .warning: return .orange
+        case .error: return .red
+        case .success: return .green
         }
     }
 }

@@ -68,7 +68,7 @@ struct MonitoringView: View {
     
     private var systemStatusView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("System Status")
+            Text(LocalizedString.systemStatus)
                 .font(.headline)
             
             HStack(spacing: 16) {
@@ -112,7 +112,7 @@ struct MonitoringView: View {
     
     private var agentStatusView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Agent Status")
+            Text(LocalizedString.agentStatus)
                 .font(.headline)
             
             if let agents = appState.currentProject?.agents, !agents.isEmpty {
@@ -126,7 +126,7 @@ struct MonitoringView: View {
                     }
                 }
             } else {
-                Text("No agents available")
+                Text(LocalizedString.noAgentsAvailable)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 100)
                     .background(Color(.controlBackgroundColor))
@@ -140,7 +140,7 @@ struct MonitoringView: View {
     
     private var realtimeStatsView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Realtime Statistics")
+            Text(LocalizedString.realtimeStatistics)
                 .font(.headline)
             
             HStack(spacing: 20) {
@@ -285,7 +285,7 @@ struct AgentStatusCard: View {
             
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Tasks")
+                    Text(LocalizedString.tasks)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     Text("\(taskStats.active)/\(taskStats.total)")
@@ -295,7 +295,7 @@ struct AgentStatusCard: View {
                 Spacer()
                 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Messages")
+                    Text(LocalizedString.messages)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     Text("\(messageStats.sent)/\(messageStats.received)")

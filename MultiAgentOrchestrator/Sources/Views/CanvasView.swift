@@ -9,6 +9,7 @@ import SwiftUI
 
 struct CanvasView: View {
     @EnvironmentObject var appState: AppState
+    @Binding var zoomScale: CGFloat
     @State private var scale: CGFloat = 1.0
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
@@ -17,6 +18,21 @@ struct CanvasView: View {
     @State private var tempConnectionEnd: CGPoint?
     @State private var isDraggingCanvas: Bool = false
     
+    // 子流程编辑相关
+    @State private var showingSubflowEditor: Bool = false
+    @State private var editingSubflowNode: WorkflowNode?
+    @State private var currentWorkflowForSubflow: Workflow?
+    
+    // Connection mode from parent
+    var isConnectMode: Bool = false
+    var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
+    
+    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil) {
+        self._zoomScale = zoomScale
+        self.isConnectMode = isConnectMode
+        self.onNodeClickInConnectMode = onNodeClickInConnectMode
+    }
+    
     var body: some View {
         CanvasContentView(
             scale: $scale,
@@ -24,9 +40,24 @@ struct CanvasView: View {
             lastOffset: $lastOffset,
             selectedNodeID: $selectedNodeID,
             connectingFromNode: $connectingFromNode,
-            tempConnectionEnd: $tempConnectionEnd
+            tempConnectionEnd: $tempConnectionEnd,
+            onNodeClick: onNodeClickInConnectMode,
+            onSubflowEdit: handleSubflowEdit  // 新增
         )
         .gesture(createCanvasGesture())
+        .onAppear {
+            NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                if event.modifierFlags.contains(.command) {
+                    // Cmd + 滚轮 = 缩放
+                    let delta = event.scrollingDeltaY * 0.01
+                    let newScale = max(0.1, min(2.0, self.scale + delta))
+                    self.scale = newScale
+                    self.zoomScale = newScale
+                    return nil
+                }
+                return event
+            }
+        }
         .overlay(ControlButtonsView(
             scale: $scale,
             offset: $offset,
@@ -34,8 +65,31 @@ struct CanvasView: View {
             selectedNodeID: $selectedNodeID,
             appState: appState
         ))
+        // 子流程编辑器弹窗
+        .sheet(isPresented: $showingSubflowEditor) {
+            if let node = editingSubflowNode, let workflow = currentWorkflowForSubflow {
+                SubflowEditorView(
+                    parentNode: node,
+                    parentWorkflow: workflow,
+                    isPresented: $showingSubflowEditor
+                )
+                .environmentObject(appState)
+            }
+        }
         .onAppear {
             setupDefaultNodes()
+        }
+        .onChange(of: zoomScale) { _, newValue in
+            scale = newValue
+        }
+    }
+    
+    // 处理子流程编辑
+    private func handleSubflowEdit(_ node: WorkflowNode) {
+        if let workflow = appState.currentProject?.workflows.first {
+            editingSubflowNode = node
+            currentWorkflowForSubflow = workflow
+            showingSubflowEditor = true
         }
     }
     
@@ -44,10 +98,11 @@ struct CanvasView: View {
             MagnificationGesture()
                 .onChanged { value in
                     scale = lastOffset == .zero ? value.magnitude : scale
-                    scale = max(0.1, min(scale, 5.0))
+                    scale = max(0.1, min(scale, 2.0))
                 }
                 .onEnded { _ in
                     lastOffset = offset
+                    zoomScale = scale
                 },
             
             SimultaneousGesture(

@@ -14,7 +14,7 @@ struct PermissionsView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Agent Permissions Matrix")
+            Text(LocalizedString.agentPermissionsMatrix)
                 .font(.title2)
                 .padding(.horizontal)
             
@@ -25,7 +25,7 @@ struct PermissionsView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         // 表头
                         HStack(spacing: 0) {
-                            Text("From \\ To")
+                            Text(LocalizedString.fromTo)
                                 .frame(width: 150, alignment: .leading)
                                 .padding(.leading, 8)
                             
@@ -73,7 +73,7 @@ struct PermissionsView: View {
             
             // 权限说明
             VStack(alignment: .leading, spacing: 8) {
-                Text("Legend:")
+                Text(LocalizedString.legend)
                     .font(.headline)
                 
                 HStack(spacing: 16) {
@@ -81,21 +81,21 @@ struct PermissionsView: View {
                         Circle()
                             .fill(Color.green)
                             .frame(width: 12, height: 12)
-                        Text("Allowed")
+                        Text(LocalizedString.allowed)
                     }
                     
                     HStack(spacing: 4) {
                         Circle()
                             .fill(Color.red)
                             .frame(width: 12, height: 12)
-                        Text("Denied")
+                        Text(LocalizedString.denied)
                     }
                     
                     HStack(spacing: 4) {
                         RoundedRectangle(cornerRadius: 2)
                             .fill(Color.yellow)
                             .frame(width: 12, height: 12)
-                        Text("Self (N/A)")
+                        Text(LocalizedString.selfNA)
                     }
                 }
                 .font(.caption)

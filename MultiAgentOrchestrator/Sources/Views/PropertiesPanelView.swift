@@ -16,9 +16,9 @@ struct PropertiesPanelView: View {
         VStack(spacing: 0) {
             // 标签页选择器
             Picker("", selection: $selectedTab) {
-                Text("Node").tag(0)
-                Text("Agent").tag(1)
-                Text("Project").tag(2)
+                Text(LocalizedString.node).tag(0)
+                Text(LocalizedString.agent).tag(1)
+                Text(LocalizedString.project).tag(2)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
@@ -141,7 +141,7 @@ struct NodePropertiesView: View {
                             .font(.system(size: 60))
                             .foregroundColor(.gray)
                         
-                        Text("No Node Selected")
+                        Text(LocalizedString.selectNode)
                             .font(.headline)
                         
                         Text("Select a node on the canvas to view and edit its properties.")
@@ -163,6 +163,7 @@ struct NodePropertiesView: View {
         case .agent: return "person.circle.fill"
         case .start: return "play.circle.fill"
         case .end: return "stop.circle.fill"
+        case .subflow: return "square.stack.3d.up"
         }
     }
     
@@ -171,6 +172,7 @@ struct NodePropertiesView: View {
         case .agent: return .blue
         case .start: return .green
         case .end: return .red
+        case .subflow: return .purple
         }
     }
     
@@ -179,6 +181,7 @@ struct NodePropertiesView: View {
         case .agent: return "Agent Node"
         case .start: return "Start Node"
         case .end: return "End Node"
+        case .subflow: return "Subflow Node"
         }
     }
 }
@@ -228,7 +231,7 @@ struct AgentPropertiesView: View {
                     SectionView(title: "Agent Configuration") {
                         VStack(alignment: .leading, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Name")
+                                Text(LocalizedString.name)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 TextField("Agent Name", text: $agentName)
@@ -236,7 +239,7 @@ struct AgentPropertiesView: View {
                             }
                             
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Description")
+                                Text(LocalizedString.description)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 TextField("Agent Description", text: $agentDescription)

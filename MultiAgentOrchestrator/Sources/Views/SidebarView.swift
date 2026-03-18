@@ -13,7 +13,7 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             // 标题
-            Text("Navigation")
+            Text(LocalizedString.navigation)
                 .font(.headline)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)

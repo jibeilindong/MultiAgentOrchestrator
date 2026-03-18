@@ -16,8 +16,11 @@ struct NodesView: View {
     let scale: CGFloat
     let offset: CGSize
     let geometry: GeometryProxy
+    var onNodeClick: ((WorkflowNode) -> Void)?
+    var onSubflowEdit: ((WorkflowNode) -> Void)?  // 新增：子流程编辑回调
     
     @State private var draggingNode: WorkflowNode?
+    @State private var isDraggingNode: Bool = false
     
     var body: some View {
         ForEach(currentWorkflow?.nodes ?? []) { node in
@@ -25,11 +28,26 @@ struct NodesView: View {
                 node: node,
                 isSelected: node.id == selectedNodeID,
                 agent: appState.getAgent(for: node),
-                taskStatus: getTaskStatus(for: node)  // 新增
+                taskStatus: getTaskStatus(for: node),
+                subflowName: getSubflowName(for: node),  // 新增
+                onTap: { handleSingleTap(node) },
+                onDoubleTap: { handleDoubleTap(node) },
+                onLongPress: { handleLongPress(node) }
             )
             .position(adjustedPosition(node.position))
+            .zIndex(node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
             .gesture(createNodeGesture(for: node))
         }
+    }
+    
+    // 获取子流程名称
+    private func getSubflowName(for node: WorkflowNode) -> String? {
+        guard node.type == .subflow,
+              let subflowID = node.subflowID,
+              let subflow = appState.currentProject?.workflows.first(where: { $0.id == subflowID }) else {
+            return nil
+        }
+        return subflow.name
     }
     
     private func getTaskStatus(for node: WorkflowNode) -> TaskStatus? {
@@ -40,59 +58,49 @@ struct NodesView: View {
     }
     
     private func adjustedPosition(_ position: CGPoint) -> CGPoint {
+        let centerX = geometry.size.width / 2
+        let centerY = geometry.size.height / 2
         return CGPoint(
-            x: position.x * scale + offset.width + 200,
-            y: position.y * scale + offset.height + 200
+            x: position.x * scale + offset.width + centerX,
+            y: position.y * scale + offset.height + centerY
         )
     }
     
     private func createNodeGesture(for node: WorkflowNode) -> some Gesture {
-        SimultaneousGesture(
-            DragGesture()
-                .onChanged { value in
-                    if connectingFromNode == nil {
-                        updateNodePosition(node.id, value.location)
-                        draggingNode = node
-                    }
+        DragGesture()
+            .onChanged { value in
+                if connectingFromNode == nil {
+                    isDraggingNode = true
+                    updateNodePosition(node.id, value.location)
+                    draggingNode = node
                 }
-                .onEnded { _ in
-                    draggingNode = nil
-                },
-            
-            SimultaneousGesture(
-                TapGesture(count: 2)
-                    .onEnded {
-                        handleDoubleTap(node)
-                    },
-                
-                SimultaneousGesture(
-                    TapGesture(count: 1)
-                        .onEnded {
-                            handleSingleTap(node)
-                        },
-                    
-                    LongPressGesture(minimumDuration: 0.5)
-                        .onEnded { _ in
-                            handleLongPress(node)
-                        }
-                )
-            )
-        )
+            }
+            .onEnded { _ in
+                draggingNode = nil
+                isDraggingNode = false
+            }
     }
     
     private func updateNodePosition(_ nodeID: UUID, _ location: CGPoint) {
         guard var workflow = currentWorkflow,
               let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
         
-        let adjustedX = (location.x - offset.width - 200) / scale
-        let adjustedY = (location.y - offset.height - 200) / scale
+        let centerX = geometry.size.width / 2
+        let centerY = geometry.size.height / 2
+        
+        let adjustedX = (location.x - centerX - offset.width) / scale
+        let adjustedY = (location.y - centerY - offset.height) / scale
         
         workflow.nodes[index].position = CGPoint(x: adjustedX, y: adjustedY)
         updateWorkflow(workflow)
     }
     
+    // 双击处理：如果是子流程节点，打开子流程编辑器
     private func handleDoubleTap(_ node: WorkflowNode) {
-        if connectingFromNode == nil {
+        if node.type == .subflow {
+            // 打开子流程编辑器
+            onSubflowEdit?(node)
+        } else if connectingFromNode == nil {
             connectingFromNode = node
         } else if connectingFromNode?.id != node.id {
             createConnection(from: connectingFromNode!.id, to: node.id)
@@ -105,10 +113,19 @@ struct NodesView: View {
         selectedNodeID = node.id
         connectingFromNode = nil
         tempConnectionEnd = nil
+        
+        if let callback = onNodeClick {
+            callback(node)
+        }
     }
     
+    // 长按处理：如果是子流程节点，打开编辑菜单
     private func handleLongPress(_ node: WorkflowNode) {
-        deleteNode(node.id)
+        if node.type == .subflow {
+            onSubflowEdit?(node)
+        } else {
+            deleteNode(node.id)
+        }
     }
     
     private func createConnection(from: UUID, to: UUID) {

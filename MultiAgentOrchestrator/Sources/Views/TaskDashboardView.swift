@@ -91,7 +91,7 @@ struct TaskDashboardView: View {
     
     private var chartSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Task Status Distribution")
+            Text(LocalizedString.taskStatus)
                 .font(.headline)
             
             Chart {
@@ -120,7 +120,7 @@ struct TaskDashboardView: View {
     private var agentStatsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Agent Performance")
+                Text(LocalizedString.agent + " " + LocalizedString.performance)
                     .font(.headline)
                 Spacer()
                 Button("Show Details") {
@@ -140,7 +140,7 @@ struct TaskDashboardView: View {
                     }
                 }
             } else {
-                Text("No agents available")
+                Text(LocalizedString.noAgents)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 100)
                     .background(Color(.controlBackgroundColor))
@@ -157,7 +157,7 @@ struct TaskDashboardView: View {
     
     private var recentActivitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Activity")
+            Text(LocalizedString.actions)
                 .font(.headline)
             
             VStack(spacing: 8) {

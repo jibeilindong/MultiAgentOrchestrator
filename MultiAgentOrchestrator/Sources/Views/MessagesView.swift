@@ -37,7 +37,7 @@ struct MessagesView: View {
         VStack(spacing: 0) {
             // 工具栏
             HStack {
-                Text("Agent Messages")
+                Text(LocalizedString.messages)
                     .font(.title2)
                 
                 Spacer()
@@ -73,7 +73,7 @@ struct MessagesView: View {
                 HStack(spacing: 0) {
                     // Agent列表
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("Agents")
+                        Text(LocalizedString.agents)
                             .font(.headline)
                             .padding()
                         
@@ -212,7 +212,7 @@ struct MessageConversationView: View {
                                 Image(systemName: "bubble.left.and.bubble.right")
                                     .font(.largeTitle)
                                     .foregroundColor(.gray)
-                                Text("No messages yet")
+                                Text(LocalizedString.noMessages)
                                     .foregroundColor(.secondary)
                                 Text("Start a conversation with \(toAgent.name)")
                                     .font(.caption)
@@ -359,7 +359,7 @@ struct NewMessageView: View {
             Form {
                 Section("Recipient") {
                     Picker("To", selection: $selectedAgentID) {
-                        Text("Select an agent").tag(nil as UUID?)
+                        Text("Select").tag(nil as UUID?)
                         ForEach(agents) { agent in
                             Text(agent.name).tag(agent.id as UUID?)
                         }

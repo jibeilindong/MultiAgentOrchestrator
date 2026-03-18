@@ -219,7 +219,7 @@ struct TaskCardView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "person.slash")
                             .font(.caption2)
-                        Text("Unassigned")
+                        Text(LocalizedString.unassigned)
                             .font(.caption2)
                     }
                 }
@@ -314,7 +314,7 @@ struct EmptyColumnView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             
-            Text("Drag tasks here or create new ones")
+            Text(LocalizedString.tasks)
                 .font(.caption2)
                 .foregroundColor(.secondary.opacity(0.7))
         }

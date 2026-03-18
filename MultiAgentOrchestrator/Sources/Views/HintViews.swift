@@ -15,17 +15,17 @@ struct HintViews: View {
             HStack {
                 Spacer()
                 VStack(spacing: 8) {
-                    Text("Canvas Controls")
+                    Text(LocalizedString.canvasControls)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Text("• Drag to move canvas")
+                    Text(LocalizedString.dragToMoveCanvas)
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text("• Pinch to zoom")
+                    Text(LocalizedString.pinchToZoom)
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text("• Double-click to connect")
+                    Text(LocalizedString.doubleClickToConnect)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }

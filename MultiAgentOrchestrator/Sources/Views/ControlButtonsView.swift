@@ -60,11 +60,17 @@ struct ControlButtonsView: View {
                                 addNode(type: .end)
                             }
                             
+                            Button("Subflow Node") {  // 新增
+                                addNode(type: .subflow)
+                            }
+                            
                             if let agents = appState.currentProject?.agents, !agents.isEmpty {
                                 Divider()
-                                ForEach(agents) { agent in
-                                    Button(agent.name) {
-                                        addAgentNode(agent)
+                                Menu("Agent Nodes") {
+                                    ForEach(agents) { agent in
+                                        Button(agent.name) {
+                                            addAgentNode(agent)
+                                        }
                                     }
                                 }
                             }
