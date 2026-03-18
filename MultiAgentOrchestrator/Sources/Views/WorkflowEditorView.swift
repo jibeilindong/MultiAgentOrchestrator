@@ -94,6 +94,12 @@ struct WorkflowEditorView: View {
                 TestExecutionPanel(execution: execution)
             }
         }
+        .onChange(of: viewMode) { _, newValue in
+            if newValue != .architecture {
+                isConnectMode = false
+                connectFromAgentID = nil
+            }
+        }
     }
     
     private func handleAgentConnection(from: UUID, to: UUID) {
@@ -660,7 +666,7 @@ struct ArchitectureView: View {
         
         // 确保有workflow
         if project.workflows.isEmpty {
-            var newWorkflow = Workflow(name: "Main Workflow")
+            let newWorkflow = Workflow(name: "Main Workflow")
             project.workflows.append(newWorkflow)
         }
         
@@ -747,7 +753,6 @@ struct ArchitectureView: View {
         let tier2 = ["zhongshu", "中书省"]  // 处理任务
         let tier3 = ["shangshu", "尚书省"]  // 结果汇总
         let tier4 = ["menxia", "门下省"]  // 审核
-        let departments = ["libu", "吏部", "hubu", "户部", "bingbu", "兵部", "xingbu", "刑部", "gongbu", "工部", "libu_hr", "吏部HR", "zaochao", "早朝"]
         
         var tier1Agents: [Agent] = []
         var tier2Agents: [Agent] = []
@@ -1304,8 +1309,7 @@ struct NodePropertyPanel: View {
     private func saveChanges() {
         // Save changes to workflow node and agent
         guard var project = appState.currentProject,
-              var workflow = project.workflows.first,
-              let nodeIndex = workflow.nodes.firstIndex(where: { $0.id == node.id }) else { return }
+              project.workflows.first?.nodes.contains(where: { $0.id == node.id }) == true else { return }
         
         // Update node name if changed
         if let agentID = node.agentID,
@@ -1437,7 +1441,7 @@ struct AgentContextMenu: View {
     private func openAgent() {
         // Select the agent in the editor
         if let project = appState.currentProject,
-           let index = project.agents.firstIndex(where: { $0.id == agent.id }) {
+           project.agents.contains(where: { $0.id == agent.id }) {
             // Show agent details in properties panel
             appState.selectedNodeID = agent.id
             showToastMessage("Opened: \(agent.name)", type: .info)

@@ -82,7 +82,7 @@ struct CanvasContentView: View {
             }
             // 拖拽目标识别 - 添加视觉反馈
             .onDrop(of: [.text], isTargeted: $isDraggingOverCanvas) { providers, location in
-                handleDrop(providers: providers, location: location)
+                _ = handleDrop(providers: providers, location: location)
                 return true
             }
         }
