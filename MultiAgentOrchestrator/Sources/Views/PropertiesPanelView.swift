@@ -71,7 +71,7 @@ struct NodePropertiesView: View {
                             if let agent = appState.getAgent(for: node) {
                                 Divider()
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("Agent")
+                                    Text(LocalizedString.agent)
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                     Text(agent.name)
@@ -82,7 +82,7 @@ struct NodePropertiesView: View {
                             Divider()
                             
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Position")
+                                Text(LocalizedString.position)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 HStack {
@@ -144,7 +144,7 @@ struct NodePropertiesView: View {
                         Text(LocalizedString.selectNode)
                             .font(.headline)
                         
-                        Text("Select a node on the canvas to view and edit its properties.")
+                        Text(LocalizedString.selectNodeToEdit)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)

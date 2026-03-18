@@ -310,7 +310,7 @@ struct EditorToolbar: View {
             
             // 连接状态提示
             if isConnectMode {
-                Text("Select target agent")
+                Text(LocalizedString.selectTargetAgent)
                     .font(.caption)
                     .foregroundColor(.blue)
             }
@@ -374,7 +374,7 @@ struct EditorToolbar: View {
                 HStack(spacing: 4) {
                     ProgressView()
                         .scaleEffect(0.6)
-                    Text("Saving...")
+                    Text(LocalizedString.saving)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -382,7 +382,7 @@ struct EditorToolbar: View {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
-                    Text("Auto-saved")
+                    Text(LocalizedString.autoSaved)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -996,7 +996,7 @@ struct AgentLibrarySidebar: View {
             // 标题
             HStack {
                 Image(systemName: "cube.box")
-                Text("Agent Library")
+                Text(LocalizedString.agentLibrary)
                     .font(.headline)
                 Spacer()
             }
@@ -1029,7 +1029,7 @@ struct AgentLibrarySidebar: View {
                         // 组标题
                         HStack {
                             Image(systemName: "network")
-                            Text("OpenClaw Agents")
+                            Text(LocalizedString.openclawAgents)
                                 .font(.caption)
                                 .fontWeight(.semibold)
                             Spacer()
@@ -1057,7 +1057,7 @@ struct AgentLibrarySidebar: View {
                     let projectAgents = appState.currentProject?.agents ?? []
                     HStack {
                         Image(systemName: "folder")
-                        Text("Project Agents")
+                        Text(LocalizedString.projectAgents)
                             .font(.caption)
                             .fontWeight(.semibold)
                         Spacer()
@@ -1083,7 +1083,7 @@ struct AgentLibrarySidebar: View {
             
             // 节点类型
             VStack(alignment: .leading, spacing: 8) {
-                Text("Node Types")
+                Text(LocalizedString.nodeTypes)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)

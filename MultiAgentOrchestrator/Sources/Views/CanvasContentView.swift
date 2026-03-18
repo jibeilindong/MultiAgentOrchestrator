@@ -161,7 +161,7 @@ struct DropIndicatorView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    Text("释放以添加节点")
+                    Text(LocalizedString.dropToAddNode)
                         .font(.caption)
                         .fontWeight(.medium)
                         .foregroundColor(.white)

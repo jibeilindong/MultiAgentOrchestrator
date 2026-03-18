@@ -569,7 +569,7 @@ struct ImportPreviewView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Import Preview")
+            Text(LocalizedString.importPreview)
                 .font(.headline)
             
             Divider()
@@ -596,7 +596,7 @@ struct ImportPreviewView: View {
                     
                     if !previewData.kanbanTasks.isEmpty {
                         Divider()
-                        Text("Kanban Status").font(.caption.bold())
+                        Text(LocalizedString.kanbanStatus).font(.caption.bold())
                         ForEach(Array(previewData.kanbanTasks.keys), id: \.self) { status in
                             if let count = previewData.kanbanTasks[status] {
                                 LabeledContent(status.rawValue) { 

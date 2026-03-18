@@ -24,7 +24,7 @@ struct NewTaskView: View {
         VStack(spacing: 0) {
             // 标题栏
             HStack {
-                Text("New Task")
+                Text(LocalizedString.newTask)
                     .font(.headline)
                 Spacer()
                 Button("Cancel") {

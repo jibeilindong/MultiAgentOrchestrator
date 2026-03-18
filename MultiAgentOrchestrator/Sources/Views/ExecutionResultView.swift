@@ -15,7 +15,7 @@ struct ExecutionResultView: View {
             HStack {
                 Image(systemName: statusIcon)
                     .foregroundColor(statusColor)
-                Text("Node Execution")
+                Text(LocalizedString.nodeExecution)
                     .font(.headline)
                 Spacer()
                 Text(statusText)

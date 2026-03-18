@@ -75,10 +75,10 @@ struct SubflowEditorView: View {
                 .font(.system(size: 60))
                 .foregroundColor(.purple.opacity(0.5))
             
-            Text("No Subflow Assigned")
+            Text(LocalizedString.noSubflowAssigned)
                 .font(.headline)
             
-            Text("Create a new subflow or select an existing one.")
+            Text(LocalizedString.createOrSelectSubflow)
                 .font(.caption)
                 .foregroundColor(.secondary)
             

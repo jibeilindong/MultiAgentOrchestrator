@@ -83,7 +83,7 @@ struct NodeView: View {
                 HStack(spacing: 2) {
                     Image(systemName: "arrow.down.doc")
                         .font(.caption2)
-                    Text("Subflow")
+                    Text(LocalizedString.subflow)
                         .font(.caption2)
                 }
                 .foregroundColor(.purple)

@@ -60,7 +60,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 Button(action: { showLogs.toggle() }) {
                     HStack {
                         Image(systemName: showLogs ? "doc.text.fill" : "doc.text")
-                        Text("Logs")
+                        Text(LocalizedString.logs)
                     }
                 }
                 .disabled(openClawService.executionLogs.isEmpty && !isExecuting)
@@ -166,7 +166,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     private var realTimeLogView: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Execution Logs")
+                Text(LocalizedString.executionLogs)
                     .font(.headline)
                 Spacer()
                 Button("Clear") {
@@ -208,7 +208,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                     ContentUnavailableView(
                         "No Results",
                         systemImage: "chart.bar",
-                        description: Text("Execute a workflow to see results")
+                        description: Text(LocalizedString.executeWorkflowToSeeResults)
                     )
                 } else {
                     // 统计摘要

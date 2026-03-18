@@ -15,7 +15,7 @@ struct ProjectPickerView: View {
         VStack(spacing: 0) {
             // 标题
             HStack {
-                Text("Projects")
+                Text(LocalizedString.projects)
                     .font(.headline)
                 Spacer()
                 Button(action: { showingNewProject = true }) {

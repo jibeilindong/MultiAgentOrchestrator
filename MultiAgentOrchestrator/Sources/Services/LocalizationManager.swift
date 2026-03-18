@@ -191,6 +191,38 @@ struct LocalizedString {
             "show_welcome_screen": "Show Welcome Screen",
             "enable_animations": "Enable Animations",
             "max_undo_steps": "Max Undo Steps",
+            "drop_to_add_node": "Drop to add node",
+            "connecting_to_openclaw": "Connecting to OpenClaw...",
+            "node_execution": "Node Execution",
+            "execution_logs": "Execution Logs",
+            "execute_workflow_to_see_results": "Execute a workflow to see results",
+            "import_preview": "Import Preview",
+            "kanban_status": "Kanban Status",
+            "add_agents_to_start_messaging": "Add agents to start messaging",
+            "select_agent_to_view_messages": "Select an agent to view messages",
+            "all_messages_approved": "All messages have been approved",
+            "estimated_time": "Estimated Time:",
+            "subflow": "Subflow",
+            "no_agents_permission": "No Agents",
+            "na": "N/A",
+            "select_node_to_edit": "Select a node on the canvas to view and edit its properties.",
+            "soul_md_config": "Soul.md Configuration",
+            "capabilities": "Capabilities",
+            "no_agents_created": "No agents created yet.",
+            "export_project_backup": "Export your project for sharing or backup.",
+            "no_subflow_assigned": "No Subflow Assigned",
+            "create_or_select_subflow": "Create a new subflow or select an existing one.",
+            "new_subflow_will_be_created": "A new subflow will be created and linked to this node.",
+            "no_nodes_in_subflow": "No nodes in this subflow",
+            "task_details": "Task Details",
+            "select_target_agent": "Select target agent",
+            "test": "Test",
+            "auto_detect": "Auto Detect",
+            "saving": "Saving...",
+            "auto_saved": "Auto-saved",
+            "position": "Position",
+            "start_conversation": "Start a conversation with %@",
+            "pending_approvals": "%@ pending",
             "canvas_controls": "Canvas Controls",
             "drag_to_move_canvas": "Drag to move canvas",
             "pinch_to_zoom": "Pinch to zoom",
@@ -217,7 +249,19 @@ struct LocalizedString {
             "connection_success": "Connection successful!",
             "connection_failed": "Connection failed",
             "default_agent": "Default Agent",
-            "auto_connect": "Auto Connect on Startup"
+            "auto_connect": "Auto Connect on Startup",
+            "agent_library": "Agent Library",
+            "openclaw_agents": "OpenClaw Agents",
+            "project_agents": "Project Agents",
+            "node_types": "Node Types",
+            "generate_architecture": "Generate Architecture",
+            "add_agents_to_project": "Add Agents to Project",
+            "close_project": "Close Project",
+            "auto_detect_connect": "Auto Detect & Connect",
+            "manual_connect": "Manual Connect",
+            "disconnect": "Disconnect",
+            "connected": "Connected",
+            "disconnected": "Disconnected"
         ]
         
         let zhHans: [String: String] = [
@@ -360,7 +404,39 @@ struct LocalizedString {
             "auto_save_interval": "自动保存间隔",
             "show_welcome_screen": "显示欢迎屏幕",
             "enable_animations": "启用动画",
-            "max_undo_steps": "最大撤销步骤"
+            "max_undo_steps": "最大撤销步骤",
+            "drop_to_add_node": "释放以添加节点",
+            "connecting_to_openclaw": "正在连接 OpenClaw...",
+            "node_execution": "节点执行",
+            "execution_logs": "执行日志",
+            "execute_workflow_to_see_results": "执行工作流以查看结果",
+            "import_preview": "导入预览",
+            "kanban_status": "看板状态",
+            "add_agents_to_start_messaging": "添加智能体以开始消息",
+            "select_agent_to_view_messages": "选择智能体以查看消息",
+            "all_messages_approved": "所有消息已批准",
+            "estimated_time": "预计时间：",
+            "subflow": "子流程",
+            "no_agents_permission": "无智能体",
+            "na": "N/A",
+            "select_node_to_edit": "在画布上选择节点以查看和编辑其属性",
+            "soul_md_config": "Soul.md 配置",
+            "capabilities": "能力",
+            "no_agents_created": "尚未创建智能体",
+            "export_project_backup": "导出项目以共享或备份",
+            "no_subflow_assigned": "未分配子流程",
+            "create_or_select_subflow": "创建新子流程或选择现有子流程",
+            "new_subflow_will_be_created": "将创建新子流程并链接到此节点",
+            "no_nodes_in_subflow": "此子流程中没有节点",
+            "task_details": "任务详情",
+            "select_target_agent": "选择目标智能体",
+            "test": "测试",
+            "auto_detect": "自动检测",
+            "saving": "保存中...",
+            "auto_saved": "已自动保存",
+            "position": "位置",
+            "start_conversation": "开始与 %@ 对话",
+            "pending_approvals": "%@ 待审批"
         ]
         
         let zhHant: [String: String] = [
@@ -503,7 +579,39 @@ struct LocalizedString {
             "auto_save_interval": "自動儲存間隔",
             "show_welcome_screen": "顯示歡迎畫面",
             "enable_animations": "啟用動畫",
-            "max_undo_steps": "最大復原步驟"
+            "max_undo_steps": "最大復原步驟",
+            "drop_to_add_node": "釋放以新增節點",
+            "connecting_to_openclaw": "正在連線 OpenClaw...",
+            "node_execution": "節點執行",
+            "execution_logs": "執行日誌",
+            "execute_workflow_to_see_results": "執行工作流以查看結果",
+            "import_preview": "匯入預覽",
+            "kanban_status": "看板狀態",
+            "add_agents_to_start_messaging": "新增智慧體以開始訊息",
+            "select_agent_to_view_messages": "選擇智慧體以查看訊息",
+            "all_messages_approved": "所有訊息已核准",
+            "estimated_time": "預估時間：",
+            "subflow": "子流程",
+            "no_agents_permission": "無智慧體",
+            "na": "N/A",
+            "select_node_to_edit": "在畫布上選擇節點以檢視和編輯其屬性",
+            "soul_md_config": "Soul.md 組態",
+            "capabilities": "能力",
+            "no_agents_created": "尚未建立智慧體",
+            "export_project_backup": "匯出專案以共用或備份",
+            "no_subflow_assigned": "未分配子流程",
+            "create_or_select_subflow": "建立新子流程或選擇現有子流程",
+            "new_subflow_will_be_created": "將建立新子流程並連結至此節點",
+            "no_nodes_in_subflow": "此子流程中沒有節點",
+            "task_details": "任務詳情",
+            "select_target_agent": "選擇目標智慧體",
+            "test": "測試",
+            "auto_detect": "自動偵測",
+            "saving": "儲存中...",
+            "auto_saved": "已自動儲存",
+            "position": "位置",
+            "start_conversation": "開始與 %@ 對話",
+            "pending_approvals": "%@ 待審批"
         ]
         
         let dict: [String: String]
@@ -671,6 +779,17 @@ struct LocalizedString {
     static var connectionFailed: String { localized("connection_failed") }
     static var defaultAgent: String { localized("default_agent") }
     static var autoConnect: String { localized("auto_connect") }
+    static var agentLibrary: String { localized("agent_library") }
+    static var openclawAgents: String { localized("openclaw_agents") }
+    static var projectAgents: String { localized("project_agents") }
+    static var nodeTypes: String { localized("node_types") }
+    static var generateArchitecture: String { localized("generate_architecture") }
+    static var addAgentsToProject: String { localized("add_agents_to_project") }
+    static var closeProject: String { localized("close_project") }
+    static var autoDetectConnect: String { localized("auto_detect_connect") }
+    static var manualConnect: String { localized("manual_connect") }
+    static var connected: String { localized("connected") }
+    static var disconnected: String { localized("disconnected") }
     static var systemStatus: String { localized("system_status") }
     static var agentStatus: String { localized("agent_status") }
     static var noAgentsAvailable: String { localized("no_agents_available") }
@@ -682,4 +801,36 @@ struct LocalizedString {
     static var showWelcomeScreen: String { localized("show_welcome_screen") }
     static var enableAnimations: String { localized("enable_animations") }
     static var maxUndoSteps: String { localized("max_undo_steps") }
+    static var dropToAddNode: String { localized("drop_to_add_node") }
+    static var connectingToOpenClaw: String { localized("connecting_to_openclaw") }
+    static var nodeExecution: String { localized("node_execution") }
+    static var executionLogs: String { localized("execution_logs") }
+    static var executeWorkflowToSeeResults: String { localized("execute_workflow_to_see_results") }
+    static var importPreview: String { localized("import_preview") }
+    static var kanbanStatus: String { localized("kanban_status") }
+    static var addAgentsToStartMessaging: String { localized("add_agents_to_start_messaging") }
+    static var selectAgentToViewMessages: String { localized("select_agent_to_view_messages") }
+    static var allMessagesApproved: String { localized("all_messages_approved") }
+    static var estimatedTime: String { localized("estimated_time") }
+    static var subflow: String { localized("subflow") }
+    static var noAgentsPermission: String { localized("no_agents_permission") }
+    static var na: String { localized("na") }
+    static var selectNodeToEdit: String { localized("select_node_to_edit") }
+    static var soulMdConfig: String { localized("soul_md_config") }
+    static var capabilities: String { localized("capabilities") }
+    static var noAgentsCreated: String { localized("no_agents_created") }
+    static var exportProjectBackup: String { localized("export_project_backup") }
+    static var noSubflowAssigned: String { localized("no_subflow_assigned") }
+    static var createOrSelectSubflow: String { localized("create_or_select_subflow") }
+    static var newSubflowWillBeCreated: String { localized("new_subflow_will_be_created") }
+    static var noNodesInSubflow: String { localized("no_nodes_in_subflow") }
+    static var taskDetails: String { localized("task_details") }
+    static var selectTargetAgent: String { localized("select_target_agent") }
+    static var test: String { localized("test") }
+    static var autoDetect: String { localized("auto_detect") }
+    static var saving: String { localized("saving") }
+    static var autoSaved: String { localized("auto_saved") }
+    static var position: String { localized("position") }
+    static var startConversation: String { localized("start_conversation") }
+    static var pendingApprovals: String { localized("pending_approvals") }
 }

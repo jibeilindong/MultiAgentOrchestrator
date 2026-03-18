@@ -100,22 +100,22 @@ struct ContentView: View {
                         }
                         
                         Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
-                            Label("Settings", systemImage: "gear")
+                            Label(LocalizedString.settings, systemImage: "gear")
                         }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "wrench.and.screwdriver")
-                            Text("Tools")
+                            Text(LocalizedString.tools)
                         }
                     }
                     .frame(width: 60)
                     
                     Button(action: { appState.createNewProject() }) {
-                        Label("New", systemImage: "plus")
+                        Label(LocalizedString.new, systemImage: "plus")
                     }
                     
                     Button(action: { appState.saveProject() }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
+                        Label(LocalizedString.save, systemImage: "square.and.arrow.down")
                     }
                     
                     Spacer()
@@ -162,7 +162,7 @@ struct ContentView: View {
             if isConnectingOpenClaw {
                 HStack {
                     ProgressView()
-                    Text("Connecting to OpenClaw...")
+                    Text(LocalizedString.connectingToOpenClaw)
                         .font(.caption)
                 }
                 .padding()

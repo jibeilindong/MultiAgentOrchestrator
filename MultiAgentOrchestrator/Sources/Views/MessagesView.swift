@@ -67,7 +67,7 @@ struct MessagesView: View {
                 ContentUnavailableView(
                     "No Agents",
                     systemImage: "person.slash",
-                    description: Text("Add agents to start messaging")
+                    description: Text(LocalizedString.addAgentsToStartMessaging)
                 )
             } else {
                 HStack(spacing: 0) {
@@ -103,7 +103,7 @@ struct MessagesView: View {
                         ContentUnavailableView(
                             "Select an Agent",
                             systemImage: "person.crop.circle",
-                            description: Text("Select an agent to view messages")
+                            description: Text(LocalizedString.selectAgentToViewMessages)
                         )
                     }
                 }
