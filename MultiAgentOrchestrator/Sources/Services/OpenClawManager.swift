@@ -30,76 +30,52 @@ class OpenClawManager: ObservableObject {
         // 创建备份目录
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
     }
+
+    private static let possiblePaths = [
+        "/Users/chenrongze/.local/bin/openclaw",
+        "/usr/local/bin/openclaw",
+        "/opt/homebrew/bin/openclaw",
+        "/usr/bin/openclaw"
+    ]
     
     // 连接OpenClaw - 使用配置
     func connect() {
         status = .connecting
-        
+        config.save()
+        refreshAgents { _ in }
+    }
+
+    func refreshAgents(completion: @escaping ([String]) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            // 保存配置
-            self.config.save()
-            
-            // 检测OpenClaw - 使用CLI命令
-            let possiblePaths = [
-                "/Users/chenrongze/.local/bin/openclaw",
-                "/usr/local/bin/openclaw",
-                "/opt/homebrew/bin/openclaw",
-                "/usr/bin/openclaw"
-            ]
-            
-            var openclawPath = "/Users/chenrongze/.local/bin/openclaw"
-            for path in possiblePaths {
-                if FileManager.default.fileExists(atPath: path) {
-                    openclawPath = path
-                    break
-                }
-            }
-            
+            guard let self else { return }
+
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: openclawPath)
+            process.executableURL = URL(fileURLWithPath: self.resolveOpenClawPath())
             process.arguments = ["agents", "list"]
-            
+
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
-            
+
             do {
                 try process.run()
                 process.waitUntilExit()
-                
+
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let output = String(data: data, encoding: .utf8) {
-                    // 解析agents
-                    var agentNames: [String] = []
-                    let lines = output.components(separatedBy: "\n")
-                    for line in lines {
-                        if line.hasPrefix("- ") {
-                            var name = String(line.dropFirst(2))
-                            if name.contains(" (") {
-                                name = name.components(separatedBy: " (").first ?? name
-                            }
-                            if !name.isEmpty {
-                                agentNames.append(name)
-                            }
-                        }
-                    }
-                    
-                    DispatchQueue.main.async {
-                        self.agents = agentNames
-                        self.isConnected = true
-                        self.status = .connected
-                        print("OpenClaw connected, agents: \(agentNames)")
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        self.status = .error("No output from openclaw")
-                    }
+                let output = String(data: data, encoding: .utf8) ?? ""
+                let agentNames = Self.parseAgentNames(from: output)
+
+                DispatchQueue.main.async {
+                    self.agents = agentNames
+                    self.isConnected = process.terminationStatus == 0
+                    self.status = process.terminationStatus == 0 ? .connected : .error(output.trimmingCharacters(in: .whitespacesAndNewlines))
+                    completion(agentNames)
                 }
             } catch {
                 DispatchQueue.main.async {
+                    self.isConnected = false
                     self.status = .error(error.localizedDescription)
+                    completion([])
                 }
             }
         }
@@ -206,5 +182,26 @@ class OpenClawManager: ObservableObject {
         // 目前只是占位实现
         print("Applying configuration for \(agents.count) agents")
         return true
+    }
+
+    private func resolveOpenClawPath() -> String {
+        for path in Self.possiblePaths where FileManager.default.fileExists(atPath: path) {
+            return path
+        }
+        return Self.possiblePaths[0]
+    }
+
+    private static func parseAgentNames(from output: String) -> [String] {
+        let parsed = output
+            .split(separator: "\n")
+            .compactMap { line -> String? in
+                guard line.hasPrefix("- ") else { return nil }
+                let rawName = line.dropFirst(2)
+                let name = rawName.split(separator: "(", maxSplits: 1).first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return name.isEmpty ? nil : name
+            }
+
+        return Array(NSOrderedSet(array: parsed)) as? [String] ?? parsed
     }
 }

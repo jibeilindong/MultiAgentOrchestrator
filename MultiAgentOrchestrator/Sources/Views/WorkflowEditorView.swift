@@ -21,13 +21,12 @@ struct WorkflowEditorView: View {
     @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
     
-    // 确保OpenClaw agents被加载
-    private var openClawAgentList: [String] {
-        let agents = appState.openClawManager.agents
-        if agents.isEmpty {
-            return loadOpenClawAgents()
+    // 同步加载OpenClaw agents
+    private func loadOpenClawAgentsIfNeeded() {
+        guard appState.openClawManager.agents.isEmpty else { return }
+        appState.openClawManager.refreshAgents { _ in
+            refreshKey += 1
         }
-        return agents
     }
     
     enum ConnectionType: String, CaseIterable {
@@ -67,7 +66,10 @@ struct WorkflowEditorView: View {
                 onRunTest: runTest,
                 onStopTest: stopTest
             )
-            .zIndex(1000) // 确保工具栏始终在最上层
+            .zIndex(1000)
+            .onAppear {
+                loadOpenClawAgentsIfNeeded()
+            }
             
             Divider()
             
@@ -109,47 +111,14 @@ struct WorkflowEditorView: View {
     }
     
     private func handleAgentConnection(from: UUID, to: UUID) {
-        guard var project = appState.currentProject,
-              var workflow = project.workflows.first else { return }
-        
-        // 添加连接边（从源到目标）
-        let edge = WorkflowEdge(from: from, to: to)
-        workflow.edges.append(edge)
-        
-        // 添加权限到权限矩阵
-        addPermission(from: from, to: to, bidirectional: connectionType == .bidirectional)
-        
-        // 如果是双向连接，还需要添加反向边
-        if connectionType == .bidirectional {
-            let reverseEdge = WorkflowEdge(from: to, to: from)
-            workflow.edges.append(reverseEdge)
+        let sourceNodeID = resolveNodeID(for: from, preferredIndex: 0)
+        let targetNodeID = resolveNodeID(for: to, preferredIndex: 1)
+
+        if let sourceNodeID, let targetNodeID, sourceNodeID != targetNodeID {
+            appState.connectNodes(from: sourceNodeID, to: targetNodeID, bidirectional: connectionType == .bidirectional)
         }
-        
-        // 更新项目
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-            appState.currentProject = project
-        }
-        
-        // 清除连接模式
+
         connectFromAgentID = nil
-    }
-    
-    // 添加权限到权限矩阵
-    private func addPermission(from: UUID, to: UUID, bidirectional: Bool) {
-        guard var project = appState.currentProject else { return }
-        
-        // 添加从源到目标的权限（允许）
-        let forwardPerm = Permission(fromAgentID: from, toAgentID: to, permissionType: .allow)
-        project.permissions.append(forwardPerm)
-        
-        // 如果是双向连接，添加反向权限
-        if bidirectional {
-            let reversePerm = Permission(fromAgentID: to, toAgentID: from, permissionType: .allow)
-            project.permissions.append(reversePerm)
-        }
-        
-        appState.currentProject = project
     }
     
     private func runTest() {
@@ -185,7 +154,7 @@ struct WorkflowEditorView: View {
         guard var execution = testExecution else { return }
         
         // 按拓扑顺序执行节点
-        let agentNodes = workflow.nodes.filter { $0.type == .agent }
+        let agentNodes = appState.openClawService.executionPlan(for: workflow)
         
         for (index, node) in agentNodes.enumerated() {
             guard let agentID = node.agentID,
@@ -250,6 +219,21 @@ struct WorkflowEditorView: View {
         } else {
             return "校验确认 - 验证结果准确性"
         }
+    }
+
+    private func resolveNodeID(for identifier: UUID, preferredIndex: Int) -> UUID? {
+        guard let workflow = appState.currentProject?.workflows.first else { return nil }
+
+        if workflow.nodes.contains(where: { $0.id == identifier }) {
+            return identifier
+        }
+
+        if let node = workflow.nodes.first(where: { $0.agentID == identifier && $0.type == .agent }) {
+            return node.id
+        }
+
+        let fallbackX: CGFloat = preferredIndex == 0 ? -180 : 180
+        return appState.ensureAgentNode(agentID: identifier, suggestedPosition: CGPoint(x: fallbackX, y: 0))
     }
 }
 
@@ -668,7 +652,7 @@ struct ArchitectureView: View {
             AgentLibrarySidebar(
                 onAddAll: { self.addAllAgentsToCanvas() },
                 isOpenClawConnected: appState.openClawManager.isConnected,
-                openClawAgents: openClawAgentList
+                openClawAgents: appState.openClawManager.agents
             )
                 .frame(width: 200)
             
@@ -698,100 +682,20 @@ struct ArchitectureView: View {
                     }
                 }
             }
-            .onDrop(of: [.text], isTargeted: nil) { providers, location in
-                for provider in providers {
-                    provider.loadObject(ofClass: NSString.self) { item, error in
-                        if let agentName = item as? String {
-                            DispatchQueue.main.async {
-                                self.addAgentNodeToCanvas(agentName: agentName, at: location)
-                            }
-                        }
-                    }
-                }
-                return true
-            }
-            .onDrop(of: [.text], isTargeted: nil) { providers, location in
-                for provider in providers {
-                    provider.loadObject(ofClass: NSString.self) { item, error in
-                        if let agentName = item as? String {
-                            DispatchQueue.main.async {
-                                self.addAgentNodeToCanvas(agentName: agentName, at: location)
-                            }
-                        }
-                    }
-                }
-                return true
-            }
         }
-    }
-    
-    private func handleDrop(providers: [NSItemProvider], location: CGPoint) -> Bool {
-        // Handle dropped Agent from library
-        for provider in providers {
-            provider.loadObject(ofClass: NSString.self) { item, error in
-                if let agentName = item as? String {
-                    DispatchQueue.main.async {
-                        addAgentNodeToCanvas(agentName: agentName, at: location)
-                    }
-                }
-            }
-        }
-        return true
     }
     
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
-        
-        guard var project = appState.currentProject else { 
-            return 
-        }
-        
-        
-        // 确保有workflow
-        if project.workflows.isEmpty {
-            var newWorkflow = Workflow(name: "Main Workflow")
-            project.workflows.append(newWorkflow)
-        }
-        
-        guard var workflow = project.workflows.first else { return }
-        
-        // 查找或创建agent
-        var agent: Agent
-        if let existingAgent = project.agents.first(where: { $0.name == agentName }) {
-            agent = existingAgent
-        } else {
-            // 如果agent不存在，创建一个新的
-            agent = Agent(name: agentName)
-            agent.description = "Agent: \(agentName)"
-            project.agents.append(agent)
-        }
-        
-        // 使用固定位置（画布中心）
-        let dropPosition = CGPoint(x: 300, y: 200)
-        
-        // Create new node at drop location
-        var newNode = WorkflowNode(type: .agent)
-        newNode.agentID = agent.id
-        newNode.position = dropPosition
-        
-        workflow.nodes.append(newNode)
-        
-        
-        // Update project
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-        }
-        
-        appState.currentProject = project
+        appState.addAgentNode(agentName: agentName, position: location)
     }
     
     // 添加所有OpenClaw agents到画布
     private func addAllAgentsToCanvas() {
-        guard var project = appState.currentProject,
-              var workflow = project.workflows.first else { return }
-        
-        // 清除现有节点
-        workflow.nodes.removeAll()
-        workflow.edges.removeAll()
+        guard var project = appState.currentProject else { return }
+
+        appState.ensureMainWorkflow()
+
+        var rebuiltWorkflow = Workflow(name: project.workflows.first?.name ?? "Main Workflow")
         
         // 计算布局 - 根据角色分组
         let agentPositions = calculateAgentPositions(agents: project.agents)
@@ -800,7 +704,7 @@ struct ArchitectureView: View {
             var newNode = WorkflowNode(type: .agent)
             newNode.agentID = agent.id
             newNode.position = position
-            workflow.nodes.append(newNode)
+            rebuiltWorkflow.nodes.append(newNode)
         }
         
         // 自动生成连接
@@ -808,22 +712,31 @@ struct ArchitectureView: View {
         for (fromName, toName) in connections {
             if let fromAgent = project.agents.first(where: { $0.name == fromName }),
                let toAgent = project.agents.first(where: { $0.name == toName }),
-               let fromNode = workflow.nodes.first(where: { $0.agentID == fromAgent.id }),
-               let toNode = workflow.nodes.first(where: { $0.agentID == toAgent.id }) {
+               let fromNode = rebuiltWorkflow.nodes.first(where: { $0.agentID == fromAgent.id }),
+               let toNode = rebuiltWorkflow.nodes.first(where: { $0.agentID == toAgent.id }) {
                 let edge = WorkflowEdge(from: fromNode.id, to: toNode.id)
-                workflow.edges.append(edge)
-                
-                // 添加权限
-                let perm = Permission(fromAgentID: fromAgent.id, toAgentID: toAgent.id, permissionType: .allow)
-                project.permissions.append(perm)
+                if !rebuiltWorkflow.edges.contains(where: { $0.fromNodeID == edge.fromNodeID && $0.toNodeID == edge.toNodeID }) {
+                    rebuiltWorkflow.edges.append(edge)
+                }
             }
         }
-        
-        // 更新项目
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-            appState.currentProject = project
+
+        project.permissions.removeAll()
+        for edge in rebuiltWorkflow.edges {
+            guard let fromAgentID = rebuiltWorkflow.nodes.first(where: { $0.id == edge.fromNodeID })?.agentID,
+                  let toAgentID = rebuiltWorkflow.nodes.first(where: { $0.id == edge.toNodeID })?.agentID else { continue }
+            project.permissions.append(
+                Permission(fromAgentID: fromAgentID, toAgentID: toAgentID, permissionType: .allow)
+            )
         }
+
+        if project.workflows.isEmpty {
+            project.workflows = [rebuiltWorkflow]
+        } else {
+            project.workflows[0] = rebuiltWorkflow
+        }
+
+        appState.currentProject = project
     }
     
     // 计算agent位置（基于角色层级）
@@ -964,44 +877,7 @@ struct ArchitectureView: View {
     
     // 创建连接
     private func createConnection(from: UUID, to: UUID) {
-        guard var project = appState.currentProject,
-              var workflow = project.workflows.first else { return }
-        
-        // 添加连接边（从源到目标）
-        let edge = WorkflowEdge(from: from, to: to)
-        workflow.edges.append(edge)
-        
-        // 添加权限到权限矩阵
-        addPermission(from: from, to: to, bidirectional: connectionType == .bidirectional)
-        
-        // 如果是双向连接，还需要添加反向边
-        if connectionType == .bidirectional {
-            let reverseEdge = WorkflowEdge(from: to, to: from)
-            workflow.edges.append(reverseEdge)
-        }
-        
-        // 更新项目
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-            appState.currentProject = project
-        }
-    }
-    
-    // 添加权限到权限矩阵
-    private func addPermission(from: UUID, to: UUID, bidirectional: Bool) {
-        guard var project = appState.currentProject else { return }
-        
-        // 添加从源到目标的权限（允许）
-        let forwardPerm = Permission(fromAgentID: from, toAgentID: to, permissionType: .allow)
-        project.permissions.append(forwardPerm)
-        
-        // 如果是双向连接，添加反向权限
-        if bidirectional {
-            let reversePerm = Permission(fromAgentID: to, toAgentID: from, permissionType: .allow)
-            project.permissions.append(reversePerm)
-        }
-        
-        appState.currentProject = project
+        appState.connectNodes(from: from, to: to, bidirectional: connectionType == .bidirectional)
     }
 }
 

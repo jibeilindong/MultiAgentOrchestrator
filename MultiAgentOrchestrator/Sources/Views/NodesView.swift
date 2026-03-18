@@ -129,25 +129,15 @@ struct NodesView: View {
     }
     
     private func createConnection(from: UUID, to: UUID) {
-        guard var workflow = currentWorkflow,
+        guard let workflow = currentWorkflow,
               workflow.nodes.contains(where: { $0.id == from }),
               workflow.nodes.contains(where: { $0.id == to }) else { return }
-        
-        let newEdge = WorkflowEdge(from: from, to: to)
-        workflow.edges.append(newEdge)
-        updateWorkflow(workflow)
+
+        appState.connectNodes(from: from, to: to)
     }
     
     private func deleteNode(_ nodeID: UUID) {
-        guard var workflow = currentWorkflow else { return }
-        
-        // 删除节点
-        workflow.nodes.removeAll { $0.id == nodeID }
-        
-        // 删除相关的连接线
-        workflow.edges.removeAll { $0.fromNodeID == nodeID || $0.toNodeID == nodeID }
-        
-        updateWorkflow(workflow)
+        appState.removeNode(nodeID)
         
         if selectedNodeID == nodeID {
             selectedNodeID = nil

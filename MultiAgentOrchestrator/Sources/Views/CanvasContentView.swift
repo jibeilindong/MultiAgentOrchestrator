@@ -78,8 +78,7 @@ struct CanvasContentView: View {
             }
             // 拖拽目标识别 - 添加视觉反馈
             .onDrop(of: [.text], isTargeted: $isDraggingOverCanvas) { providers, location in
-                handleDrop(providers: providers, location: location)
-                return true
+                return handleDrop(providers: providers, location: location)
             }
         }
     }
@@ -107,28 +106,14 @@ struct CanvasContentView: View {
     }
     
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
-        guard var project = appState.currentProject,
-              var workflow = project.workflows.first else { return }
-        
-        guard let agent = project.agents.first(where: { $0.name == agentName }) else { return }
-        
-        var newNode = WorkflowNode(type: .agent)
-        newNode.agentID = agent.id
-        
-        // 将屏幕坐标转换为画布坐标
         let centerX: CGFloat = 200
         let centerY: CGFloat = 200
-        newNode.position = CGPoint(
+        let canvasPosition = CGPoint(
             x: (location.x - centerX - offset.width) / scale,
             y: (location.y - centerY - offset.height) / scale
         )
-        
-        workflow.nodes.append(newNode)
-        
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-            appState.currentProject = project
-        }
+
+        appState.addAgentNode(agentName: agentName, position: canvasPosition)
     }
 }
 

@@ -348,8 +348,7 @@ class OpenClawService: ObservableObject {
         executionResults.removeAll()
         lastError = nil
         
-        // 过滤出Agent节点
-        let agentNodes = workflow.nodes.filter { $0.type == .agent }
+        let agentNodes = executionPlan(for: workflow)
         totalSteps = agentNodes.count
         currentStep = 0
         
@@ -381,6 +380,57 @@ class OpenClawService: ObservableObject {
             
             completion(results)
         }
+    }
+
+    func executionPlan(for workflow: Workflow) -> [WorkflowNode] {
+        let executableNodes = workflow.nodes.filter { $0.type == .agent }
+        guard !executableNodes.isEmpty else { return [] }
+
+        let executableIDs = Set(executableNodes.map(\.id))
+        let relevantEdges = workflow.edges.filter {
+            executableIDs.contains($0.fromNodeID) && executableIDs.contains($0.toNodeID)
+        }
+
+        var indegree: [UUID: Int] = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, 0) })
+        var adjacency: [UUID: [UUID]] = [:]
+
+        for edge in relevantEdges {
+            adjacency[edge.fromNodeID, default: []].append(edge.toNodeID)
+            indegree[edge.toNodeID, default: 0] += 1
+        }
+
+        let nodeLookup = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, $0) })
+        var queue = executableNodes
+            .filter { indegree[$0.id] == 0 }
+            .sorted(by: nodeSort)
+
+        var ordered: [WorkflowNode] = []
+        var visited = Set<UUID>()
+
+        while !queue.isEmpty {
+            let node = queue.removeFirst()
+            guard visited.insert(node.id).inserted else { continue }
+
+            ordered.append(node)
+
+            for nextID in adjacency[node.id, default: []].sorted(by: nodeIDSort(nodeLookup: nodeLookup)) {
+                indegree[nextID, default: 0] -= 1
+                if indegree[nextID] == 0, let nextNode = nodeLookup[nextID] {
+                    queue.append(nextNode)
+                    queue.sort(by: nodeSort)
+                }
+            }
+        }
+
+        if ordered.count != executableNodes.count {
+            let remaining = executableNodes
+                .filter { !visited.contains($0.id) }
+                .sorted(by: nodeSort)
+            addLog(.warning, "Workflow contains cycles or disconnected branches. Falling back to stable node order for remaining nodes.")
+            ordered.append(contentsOf: remaining)
+        }
+
+        return ordered
     }
     
     private func executeNodesSequentially(_ nodes: [WorkflowNode], workflow: Workflow, agents: [Agent], completion: @escaping ([ExecutionResult]) -> Void) {
@@ -452,7 +502,7 @@ class OpenClawService: ObservableObject {
         let instruction = buildInstruction(for: node, agent: agent)
         
         // 调用openclaw agent命令
-        callOpenClawAgent(instruction: instruction) { [weak self] success, output in
+        callOpenClawAgent(instruction: instruction) { success, output in
             let status: ExecutionStatus = success ? .completed : .failed
             let result = ExecutionResult(
                 nodeID: node.id,
@@ -497,8 +547,8 @@ class OpenClawService: ObservableObject {
             args.append("--json")
             
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", args.joined(separator: " ")]
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = args
             
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -619,5 +669,24 @@ class OpenClawService: ObservableObject {
     func clearResults() {
         executionResults.removeAll()
         lastError = nil
+    }
+
+    private func nodeSort(_ lhs: WorkflowNode, _ rhs: WorkflowNode) -> Bool {
+        if lhs.position.y != rhs.position.y {
+            return lhs.position.y < rhs.position.y
+        }
+        if lhs.position.x != rhs.position.x {
+            return lhs.position.x < rhs.position.x
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private func nodeIDSort(nodeLookup: [UUID: WorkflowNode]) -> (UUID, UUID) -> Bool {
+        { lhs, rhs in
+            guard let leftNode = nodeLookup[lhs], let rightNode = nodeLookup[rhs] else {
+                return lhs.uuidString < rhs.uuidString
+            }
+            return self.nodeSort(leftNode, rightNode)
+        }
     }
 }

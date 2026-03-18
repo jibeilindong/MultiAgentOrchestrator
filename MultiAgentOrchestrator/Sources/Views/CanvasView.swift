@@ -150,24 +150,17 @@ struct CanvasView: View {
     }
     
     private func setupDefaultNodes() {
-        guard let workflow = appState.currentProject?.workflows.first,
+        guard let workflow = appState.ensureMainWorkflow(),
               workflow.nodes.isEmpty else { return }
-        
-        // 添加起始节点
-        let startNode = WorkflowNode(type: .start)
-        var startNodeCopy = startNode
-        startNodeCopy.position = CGPoint(x: 100, y: 100)
-        
-        // 添加结束节点
-        let endNode = WorkflowNode(type: .end)
-        var endNodeCopy = endNode
-        endNodeCopy.position = CGPoint(x: 500, y: 100)
-        
-        var updatedWorkflow = workflow
-        updatedWorkflow.nodes = [startNodeCopy, endNodeCopy]
-        
-        if let index = appState.currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            appState.currentProject?.workflows[index] = updatedWorkflow
+
+        appState.updateMainWorkflow { workflow in
+            var startNode = WorkflowNode(type: .start)
+            startNode.position = CGPoint(x: 100, y: 100)
+
+            var endNode = WorkflowNode(type: .end)
+            endNode.position = CGPoint(x: 500, y: 100)
+
+            workflow.nodes = [startNode, endNode]
         }
     }
 }

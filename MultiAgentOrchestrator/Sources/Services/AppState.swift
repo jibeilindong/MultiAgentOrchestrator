@@ -274,6 +274,147 @@ class AppState: ObservableObject {
         // 当工作流更新时，重新生成任务
         generateTasksFromWorkflow()
     }
+
+    @discardableResult
+    func ensureMainWorkflow(named name: String = "Main Workflow") -> Workflow? {
+        guard var project = currentProject else { return nil }
+
+        if let workflow = project.workflows.first {
+            return workflow
+        }
+
+        let workflow = Workflow(name: name)
+        project.workflows = [workflow]
+        currentProject = project
+        generateTasksFromWorkflow()
+        return workflow
+    }
+
+    func updateMainWorkflow(_ update: (inout Workflow) -> Void) {
+        guard var project = currentProject else { return }
+
+        if project.workflows.isEmpty {
+            project.workflows = [Workflow(name: "Main Workflow")]
+        }
+
+        update(&project.workflows[0])
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        generateTasksFromWorkflow()
+    }
+
+    @discardableResult
+    func ensureAgent(named name: String, description: String? = nil) -> Agent? {
+        guard var project = currentProject else { return nil }
+
+        if let existing = project.agents.first(where: { $0.name == name }) {
+            return existing
+        }
+
+        var agent = Agent(name: name)
+        if let description {
+            agent.description = description
+        }
+        project.agents.append(agent)
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        return agent
+    }
+
+    func addAgentNode(agentName: String, position: CGPoint) {
+        guard let agent = ensureAgent(named: agentName, description: "Agent: \(agentName)") else { return }
+
+        updateMainWorkflow { workflow in
+            var newNode = WorkflowNode(type: .agent)
+            newNode.agentID = agent.id
+            newNode.position = position
+            workflow.nodes.append(newNode)
+        }
+    }
+
+    @discardableResult
+    func ensureAgentNode(agentID: UUID, suggestedPosition: CGPoint = CGPoint(x: 0, y: 0)) -> UUID? {
+        guard let workflow = ensureMainWorkflow() else { return nil }
+
+        if let existingNode = workflow.nodes.first(where: { $0.agentID == agentID && $0.type == .agent }) {
+            return existingNode.id
+        }
+
+        var createdNodeID: UUID?
+        updateMainWorkflow { workflow in
+            if let existingNode = workflow.nodes.first(where: { $0.agentID == agentID && $0.type == .agent }) {
+                createdNodeID = existingNode.id
+                return
+            }
+
+            var newNode = WorkflowNode(type: .agent)
+            newNode.agentID = agentID
+            newNode.position = suggestedPosition
+            createdNodeID = newNode.id
+            workflow.nodes.append(newNode)
+        }
+
+        return createdNodeID
+    }
+
+    func connectNodes(from sourceNodeID: UUID, to targetNodeID: UUID, bidirectional: Bool = false) {
+        guard let project = currentProject,
+              let workflow = project.workflows.first,
+              let sourceNode = workflow.nodes.first(where: { $0.id == sourceNodeID }),
+              let targetNode = workflow.nodes.first(where: { $0.id == targetNodeID }) else { return }
+
+        updateMainWorkflow { workflow in
+            appendEdgeIfNeeded(from: sourceNodeID, to: targetNodeID, workflow: &workflow)
+            if bidirectional {
+                appendEdgeIfNeeded(from: targetNodeID, to: sourceNodeID, workflow: &workflow)
+            }
+        }
+
+        if let sourceAgentID = sourceNode.agentID, let targetAgentID = targetNode.agentID {
+            setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
+            if bidirectional {
+                setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
+            }
+        }
+    }
+
+    func removeNode(_ nodeID: UUID) {
+        updateMainWorkflow { workflow in
+            workflow.nodes.removeAll { $0.id == nodeID }
+            workflow.edges.removeAll { $0.fromNodeID == nodeID || $0.toNodeID == nodeID }
+        }
+    }
+
+    func setPermission(fromAgentID: UUID, toAgentID: UUID, type: PermissionType) {
+        guard var project = currentProject else { return }
+
+        if let index = project.permissions.firstIndex(where: {
+            $0.fromAgentID == fromAgentID && $0.toAgentID == toAgentID
+        }) {
+            project.permissions[index].permissionType = type
+            project.permissions[index].updatedAt = Date()
+        } else {
+            project.permissions.append(
+                Permission(fromAgentID: fromAgentID, toAgentID: toAgentID, permissionType: type)
+            )
+        }
+
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+    }
+
+    private func appendEdgeIfNeeded(from sourceNodeID: UUID, to targetNodeID: UUID, workflow: inout Workflow) {
+        let edgeExists = workflow.edges.contains {
+            $0.fromNodeID == sourceNodeID && $0.toNodeID == targetNodeID
+        }
+
+        if !edgeExists {
+            workflow.edges.append(WorkflowEdge(from: sourceNodeID, to: targetNodeID))
+        }
+    }
     
     func getAgent(for node: WorkflowNode) -> Agent? {
         guard let agentID = node.agentID else { return nil }
@@ -386,20 +527,11 @@ class AppState: ObservableObject {
     
     // 添加新节点
     func addNewNode() {
-        guard var project = currentProject,
-              var workflow = project.workflows.first else { return }
-        
-        var newNode = WorkflowNode(type: .agent)
-        newNode.position = CGPoint(x: 200, y: 200)
-        workflow.nodes.append(newNode)
-        
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-            currentProject = project
+        updateMainWorkflow { workflow in
+            var newNode = WorkflowNode(type: .agent)
+            newNode.position = CGPoint(x: 200, y: 200)
+            workflow.nodes.append(newNode)
         }
-        objectWillChange.send()
-        
-        generateTasksFromWorkflow()
     }
     
     // 显示帮助
