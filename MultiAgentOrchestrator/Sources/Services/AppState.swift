@@ -133,7 +133,8 @@ class AppState: ObservableObject {
     @Published var isAutoSaving: Bool = false
     
     init() {
-        createNewProject()
+        // 不自动创建项目，让用户手动创建
+        // createNewProject()
         startAutoSave()
     }
     
@@ -234,6 +235,11 @@ class AppState: ObservableObject {
         
         // 刷新项目列表
         projectManager.loadProjectList()
+    }
+    
+    // 关闭当前项目
+    func closeProject() {
+        currentProject = nil
     }
     
     func loadProject() {

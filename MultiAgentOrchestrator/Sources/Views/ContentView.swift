@@ -4,22 +4,123 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
     @Binding var zoomScale: CGFloat
+    @State private var openClawMessage: String?
+    @State private var isConnectingOpenClaw = false
     
     var body: some View {
         HStack(spacing: 0) {
+            // 左侧：导航栏
             SidebarView()
                 .frame(width: 250)
             
             Divider()
             
+            // 中间：主内容区
             VStack(spacing: 0) {
+                // 顶部工具栏
                 HStack {
+                    // 项目名称
                     Text(appState.currentProject?.name ?? LocalizedString.appName)
                         .font(.headline)
                         .padding(.leading)
                     
                     Spacer()
                     
+                    // 缩放控制
+                    HStack(spacing: 4) {
+                        Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
+                            Image(systemName: "minus.magnifyingglass")
+                        }
+                        Text("\(Int(zoomScale * 100))%")
+                            .font(.caption)
+                            .frame(width: 40)
+                        Button(action: { zoomScale = min(zoomScale * 1.25, 3.0) }) {
+                            Image(systemName: "plus.magnifyingglass")
+                        }
+                    }
+                    .padding(6)
+                    .background(Color(.controlBackgroundColor))
+                    .cornerRadius(6)
+                    
+                    // 语言切换
+                    Menu {
+                        ForEach(AppLanguage.allCases) { language in
+                            Button(action: { appState.localizationManager.setLanguage(language) }) {
+                                HStack {
+                                    Text(language.displayName)
+                                    if appState.localizationManager.currentLanguage == language {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                            Text(appState.localizationManager.currentLanguage == .simplifiedChinese ? "简" : "EN")
+                        }
+                    }
+                    .frame(width: 40)
+                    
+                    // Tools菜单
+                    Menu {
+                        // 连接状态
+                        HStack {
+                            Circle()
+                                .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(appState.openClawManager.isConnected ? "Connected" : "Disconnected")
+                        }
+                        .padding(.vertical, 4)
+                        
+                        Divider()
+                        
+                        if appState.openClawManager.isConnected {
+                            Button(action: { appState.openClawManager.disconnect() }) {
+                                Label("Disconnect", systemImage: "link.badge.minus")
+                            }
+                            Divider()
+                            Button(action: { addOpenClawAgentsToProject() }) {
+                                Label("Add Agents to Project", systemImage: "person.badge.plus")
+                            }
+                        } else {
+                            Button(action: { autoDetectAndConnect() }) {
+                                Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
+                            }
+                        }
+                        
+                        Divider()
+                        
+                        // 关闭项目按钮
+                        if appState.currentProject != nil {
+                            Button(action: { appState.closeProject() }) {
+                                Label("Close Project", systemImage: "xmark.circle")
+                            }
+                            Divider()
+                        }
+                        
+                        Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
+                            Label("Settings", systemImage: "gear")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "wrench.and.screwdriver")
+                            Text("Tools")
+                        }
+                    }
+                    .frame(width: 60)
+                    
+                    Button(action: { appState.createNewProject() }) {
+                        Label("New", systemImage: "plus")
+                    }
+                    
+                    Button(action: { appState.saveProject() }) {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                    }
+                    
+                    Spacer()
+                    
+                    // Tab选择器
                     Picker("", selection: $selectedTab) {
                         Label(LocalizedString.workflow, systemImage: "square.grid.2x2").tag(0)
                         Label(LocalizedString.tasks, systemImage: "square.stack.3d.up").tag(1)
@@ -31,174 +132,21 @@ struct ContentView: View {
                     .frame(width: 500)
                     
                     Spacer()
-                    
-                    HStack(spacing: 12) {
-                        // 缩放控制
-                        HStack(spacing: 4) {
-                            Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
-                                Image(systemName: "minus.magnifyingglass")
-                            }
-                            .help(LocalizedString.zoomOut)
-                            
-                            Text("\(Int(zoomScale * 100))%")
-                                .font(.caption)
-                                .frame(width: 40)
-                            
-                            Button(action: { zoomScale = min(zoomScale * 1.25, 3.0) }) {
-                                Image(systemName: "plus.magnifyingglass")
-                            }
-                            .help(LocalizedString.zoomIn)
-                            
-                            Button(action: { zoomScale = 1.0 }) {
-                                Image(systemName: "1.magnifyingglass")
-                            }
-                            .help(LocalizedString.resetZoom)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color(.controlBackgroundColor))
-                        .cornerRadius(6)
-                        
-                        Menu {
-                            ForEach(AppLanguage.allCases) { language in
-                                Button(action: {
-                                    appState.localizationManager.setLanguage(language)
-                                }) {
-                                    HStack {
-                                        Text(language.displayName)
-                                        if appState.localizationManager.currentLanguage == language {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "globe")
-                                Text(appState.localizationManager.currentLanguage == .simplifiedChinese ? "简" : (appState.localizationManager.currentLanguage == .traditionalChinese ? "繁" : "EN"))
-                            }
-                        }
-                        .help(LocalizedString.switchLanguage)
-                        .menuStyle(.borderlessButton)
-                        .frame(width: 40)
-                        
-                        // Tools 菜单
-                        Menu {
-                            // OpenClaw连接状态
-                            HStack {
-                                Image(systemName: appState.openClawManager.isConnected ? "checkmark.circle.fill" : "circle.slash")
-                                    .foregroundColor(appState.openClawManager.isConnected ? .green : .red)
-                                Text(appState.openClawManager.isConnected ? "Connected (\(appState.openClawManager.agents.count) agents)" : "Disconnected")
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.vertical, 4)
-                            
-                            Divider()
-                            
-                            // 连接/断开
-                            if appState.openClawManager.isConnected {
-                                Button(action: {
-                                    appState.openClawManager.disconnect()
-                                }) {
-                                    Label("Disconnect OpenClaw", systemImage: "link.badge.minus")
-                                }
-                                
-                                Divider()
-                                
-                                // 添加Agents到项目
-                                Button(action: {
-                                    addOpenClawAgentsToProject()
-                                }) {
-                                    Label("Add Agents to Project", systemImage: "person.badge.plus")
-                                }
-                                
-                                Divider()
-                                
-                                // 应用配置到OpenClaw
-                                Button(action: {
-                                    if let agents = appState.currentProject?.agents {
-                                        _ = appState.openClawManager.applyConfiguration(agents: agents)
-                                    }
-                                }) {
-                                    Label("Apply Configuration", systemImage: "arrow.up.doc")
-                                }
-                                
-                                // 还原配置
-                                Menu {
-                                    ForEach(appState.openClawManager.listBackups(), id: \.self) { backup in
-                                        Button(action: {
-                                            _ = appState.openClawManager.restore(backupPath: backup)
-                                        }) {
-                                            Text(backup.lastPathComponent)
-                                        }
-                                    }
-                                } label: {
-                                    Label("Restore Backup", systemImage: "arrow.down.doc")
-                                }
-                            } else {
-                                // 自动检测并连接
-                                Button(action: {
-                                    autoDetectAndConnect()
-                                }) {
-                                    Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
-                                }
-                                
-                                Button(action: {
-                                    appState.openClawManager.connect()
-                                }) {
-                                    Label("Manual Connect", systemImage: "link.badge.plus")
-                                }
-                            }
-                            
-                            Divider()
-                            
-                            // OpenClaw设置
-                            Button(action: {
-                                NotificationCenter.default.post(name: .openSettings, object: nil)
-                            }) {
-                                Label("OpenClaw Settings", systemImage: "gear")
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "wrench.and.screwdriver")
-                                Text("Tools")
-                            }
-                        }
-                        .help("Tools")
-                        .menuStyle(.borderlessButton)
-                        .frame(width: 60)
-                        
-                        Button(action: { appState.createNewProject() }) {
-                            Label(LocalizedString.new, systemImage: "plus")
-                        }
-                        .help(LocalizedString.newProject)
-                        
-                        Button(action: { appState.saveProject() }) {
-                            Label(LocalizedString.save, systemImage: "square.and.arrow.down")
-                        }
-                        .help(LocalizedString.saveProject)
-                    }
-                    .padding(.trailing)
                 }
                 .padding(.vertical, 8)
                 .background(Color(.windowBackgroundColor))
                 
                 Divider()
                 
+                // 主内容
                 Group {
                     switch selectedTab {
-                    case 0:
-                        WorkflowEditorView(zoomScale: $zoomScale)
-                    case 1:
-                        KanbanView()
-                    case 2:
-                        TaskDashboardView(taskManager: appState.taskManager)
-                    case 3:
-                        ControlPanelView()
-                    case 4:
-                        PermissionsView()
-                    default:
-                        WorkflowEditorView(zoomScale: $zoomScale)
+                    case 0: WorkflowEditorView(zoomScale: $zoomScale)
+                    case 1: KanbanView()
+                    case 2: TaskDashboardView(taskManager: appState.taskManager)
+                    case 3: ControlPanelView()
+                    case 4: PermissionsView()
+                    default: WorkflowEditorView(zoomScale: $zoomScale)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -206,55 +154,68 @@ struct ContentView: View {
             
             Divider()
             
+            // 右侧：属性面板
             PropertiesPanelView()
                 .frame(width: 250)
         }
+        .overlay(alignment: .bottom) {
+            if isConnectingOpenClaw {
+                HStack {
+                    ProgressView()
+                    Text("Connecting to OpenClaw...")
+                        .font(.caption)
+                }
+                .padding()
+                .background(Color(.windowBackgroundColor).opacity(0.95))
+                .cornerRadius(8)
+                .padding(.bottom)
+            }
+        }
+        .alert("OpenClaw", isPresented: Binding(
+            get: { openClawMessage != nil },
+            set: { if !$0 { openClawMessage = nil } }
+        )) {
+            Button("OK") { }
+        } message: {
+            Text(openClawMessage ?? "")
+        }
     }
     
-    // 将OpenClaw agents添加到当前项目
+    private func autoDetectAndConnect() {
+        let paths = ["/Users/chenrongze/.local/bin/openclaw", "/usr/local/bin/openclaw"]
+        var found = false
+        for p in paths {
+            if FileManager.default.fileExists(atPath: p) { found = true; break }
+        }
+        if !found {
+            openClawMessage = "OpenClaw not found!"
+            return
+        }
+        isConnectingOpenClaw = true
+        appState.openClawManager.connect()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            self.isConnectingOpenClaw = false
+            if self.appState.openClawManager.isConnected {
+                self.openClawMessage = "Connected! Found \(self.appState.openClawManager.agents.count) agents."
+            } else {
+                self.openClawMessage = "Connection failed."
+            }
+        }
+    }
+    
     private func addOpenClawAgentsToProject() {
-        guard var project = appState.currentProject else { return }
-        
-        for agentName in appState.openClawManager.agents {
-            // 检查是否已存在
-            if !project.agents.contains(where: { $0.name == agentName }) {
-                var agent = Agent(name: agentName)
-                agent.description = "OpenClaw Agent: \(agentName)"
-                agent.soulMD = "# \(agentName)\nOpenClaw Agent"
+        guard var project = appState.currentProject else {
+            openClawMessage = "Please create or open a project first."
+            return
+        }
+        for name in appState.openClawManager.agents {
+            if !project.agents.contains(where: { $0.name == name }) {
+                var agent = Agent(name: name)
+                agent.description = "OpenClaw Agent: \(name)"
                 project.agents.append(agent)
             }
         }
-        
         appState.currentProject = project
-    }
-
-    // 自动检测OpenClaw并连接
-    private func autoDetectAndConnect() {
-        print("Auto Detect OpenClaw starting...")
-        
-        let fileManager = FileManager.default
-        let possiblePaths = [
-            "/Users/chenrongze/.local/bin/openclaw",
-            "/usr/local/bin/openclaw",
-            "/opt/homebrew/bin/openclaw", 
-            "/usr/bin/openclaw"
-        ]
-        
-        var foundPath: String?
-        for path in possiblePaths {
-            if fileManager.fileExists(atPath: path) {
-                foundPath = path
-                print("Found OpenClaw at: \(path)")
-                break
-            }
-        }
-        
-        if foundPath == nil {
-            print("OpenClaw not found in any location!")
-        }
-        
-        // 无论如何都尝试连接
-        print("Calling connect...")
-        appState.openClawManager.connect()
+        openClawMessage = "Added \(appState.openClawManager.agents.count) agents."
     }
 }

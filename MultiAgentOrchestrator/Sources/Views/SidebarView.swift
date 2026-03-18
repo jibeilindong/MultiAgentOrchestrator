@@ -14,19 +14,30 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             // 项目切换控件
-            Button(action: { showingProjectPicker = true }) {
-                HStack {
-                    Image(systemName: "folder")
-                    Text(appState.currentProject?.name ?? "No Project")
-                        .font(.headline)
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.caption)
+            HStack {
+                Button(action: { showingProjectPicker = true }) {
+                    HStack {
+                        Image(systemName: "folder")
+                        Text(appState.currentProject?.name ?? "No Project")
+                            .font(.headline)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.caption)
+                    }
                 }
-                .padding()
-                .background(Color(.controlBackgroundColor))
+                .buttonStyle(.plain)
+                
+                // 关闭项目按钮
+                if appState.currentProject != nil {
+                    Button(action: { appState.closeProject() }) {
+                        Image(systemName: "minus.circle")
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
+            .padding()
+            .background(Color(.controlBackgroundColor))
             .sheet(isPresented: $showingProjectPicker) {
                 ProjectPickerView()
                     .environmentObject(appState)

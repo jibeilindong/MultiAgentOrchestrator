@@ -355,9 +355,7 @@ struct EditorToolbar: View {
             
             // 自动识别Agents按钮
             Button(action: { 
-                appState.openClawService.checkConnection()
-                // 重新加载agents
-                appState.createNewProject()
+                appState.openClawManager.connect()
             }) {
                 HStack(spacing: 4) {
                     Image(systemName: "wand.and.stars")
@@ -366,7 +364,7 @@ struct EditorToolbar: View {
                 }
             }
             .buttonStyle(.bordered)
-            .help("Auto-detect OpenClaw agents and generate architecture")
+            .help("Auto-detect OpenClaw agents")
             
             Divider()
                 .frame(height: 20)
@@ -660,7 +658,8 @@ struct ArchitectureView: View {
             // Agent库侧边栏
             AgentLibrarySidebar(
                 onAddAll: { self.addAllAgentsToCanvas() },
-                isOpenClawConnected: appState.openClawService.isConnected
+                isOpenClawConnected: appState.openClawManager.isConnected,
+                openClawAgents: appState.openClawManager.agents
             )
                 .frame(width: 200)
             
@@ -706,24 +705,44 @@ struct ArchitectureView: View {
     }
     
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
-        guard var project = appState.currentProject,
-              var workflow = project.workflows.first else { return }
+        guard var project = appState.currentProject else { return }
         
-        // Find the agent in project
-        guard let agent = project.agents.first(where: { $0.name == agentName }) else { return }
+        // 确保有workflow
+        if project.workflows.isEmpty {
+            var newWorkflow = Workflow(name: "Main Workflow")
+            project.workflows.append(newWorkflow)
+        }
+        
+        guard var workflow = project.workflows.first else { return }
+        
+        // 查找或创建agent
+        var agent: Agent
+        if let existingAgent = project.agents.first(where: { $0.name == agentName }) {
+            agent = existingAgent
+        } else {
+            // 如果agent不存在，创建一个新的
+            agent = Agent(name: agentName)
+            agent.description = "Agent: \(agentName)"
+            project.agents.append(agent)
+        }
+        
+        // 使用更明显的位置（画布中心偏上）
+        let dropPosition = CGPoint(x: max(100, location.x), y: max(100, location.y))
         
         // Create new node at drop location
         var newNode = WorkflowNode(type: .agent)
         newNode.agentID = agent.id
-        newNode.position = location
+        newNode.position = dropPosition
         
         workflow.nodes.append(newNode)
+        
+        print("Added node for agent: \(agentName) at position: \(dropPosition)")
         
         // Update project
         if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
             project.workflows[index] = workflow
-            appState.currentProject = project
         }
+        appState.currentProject = project
     }
     
     // 添加所有OpenClaw agents到画布
@@ -952,6 +971,7 @@ struct AgentLibrarySidebar: View {
     @EnvironmentObject var appState: AppState
     var onAddAll: () -> Void
     var isOpenClawConnected: Bool = false
+    var openClawAgents: [String] = []
     
     var body: some View {
         VStack(spacing: 0) {
@@ -987,35 +1007,32 @@ struct AgentLibrarySidebar: View {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     // OpenClaw Agents 组（仅在连接时显示）
-                    if isOpenClawConnected {
-                        let openClawAgents = loadOpenClawAgents()
-                        if !openClawAgents.isEmpty {
-                            // 组标题
-                            HStack {
-                                Image(systemName: "network")
-                                Text("OpenClaw Agents")
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                Spacer()
-                                Text("\(openClawAgents.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.secondary.opacity(0.2))
-                                    .cornerRadius(4)
-                            }
-                            .padding(.horizontal)
-                            .padding(.top, 8)
-                            
-                            ForEach(openClawAgents, id: \.self) { agentName in
-                                DraggableAgentItem(name: agentName)
-                                    .padding(.horizontal, 4)
-                            }
+                    if isOpenClawConnected && !openClawAgents.isEmpty {
+                        // 组标题
+                        HStack {
+                            Image(systemName: "network")
+                            Text("OpenClaw Agents")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Text("\(openClawAgents.count)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.2))
+                                .cornerRadius(4)
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                        
+                        ForEach(openClawAgents, id: \.self) { agentName in
+                            DraggableAgentItem(name: agentName)
+                                .padding(.horizontal, 4)
+                        }
                             
                             Divider()
                                 .padding(.vertical, 8)
-                        }
                     }
                     
                     // 项目中的Agents
@@ -1068,8 +1085,22 @@ struct AgentLibrarySidebar: View {
     
     private func loadOpenClawAgents() -> [String] {
         // 使用OpenClaw CLI获取agents列表
+        let possiblePaths = [
+            "/Users/chenrongze/.local/bin/openclaw",
+            "/usr/local/bin/openclaw",
+            "/opt/homebrew/bin/openclaw"
+        ]
+        
+        var openclawPath = "/Users/chenrongze/.local/bin/openclaw"
+        for path in possiblePaths {
+            if FileManager.default.fileExists(atPath: path) {
+                openclawPath = path
+                break
+            }
+        }
+        
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/openclaw")
+        process.executableURL = URL(fileURLWithPath: openclawPath)
         process.arguments = ["agents", "list"]
         
         let pipe = Pipe()
