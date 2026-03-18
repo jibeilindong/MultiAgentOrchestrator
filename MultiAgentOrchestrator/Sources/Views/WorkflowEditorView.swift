@@ -665,6 +665,14 @@ struct ArchitectureView: View {
             
             Divider()
             
+            // 测试按钮：点击添加agent到画布
+            Button("Add Test Agent") {
+                addAgentNodeToCanvas(agentName: "TestAgent", at: CGPoint(x: 300, y: 200))
+            }
+            .padding()
+            
+            Divider()
+            
             // 画布区域
             ZStack {
                 CanvasView(
@@ -672,11 +680,11 @@ struct ArchitectureView: View {
                     isConnectMode: isConnectMode,
                     onNodeClickInConnectMode: { node in
                         self.handleNodeClickInConnectMode(node: node)
+                    },
+                    onDropAgent: { agentName, location in
+                        self.addAgentNodeToCanvas(agentName: agentName, at: location)
                     }
                 )
-                    .onDrop(of: [.text], isTargeted: nil) { providers, location in
-                        handleDrop(providers: providers, location: location)
-                    }
                 
                 // 节点属性面板（从右侧滑入）
                 if showNodePropertyPanel, let node = selectedNodeForProperty {
@@ -705,12 +713,20 @@ struct ArchitectureView: View {
     }
     
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
-        guard var project = appState.currentProject else { return }
+        print(">>> addAgentNodeToCanvas called: \(agentName) at \(location)")
+        
+        guard var project = appState.currentProject else { 
+            print(">>> No current project!")
+            return 
+        }
+        
+        print(">>> Project: \(project.name), Agents: \(project.agents.count)")
         
         // 确保有workflow
         if project.workflows.isEmpty {
             var newWorkflow = Workflow(name: "Main Workflow")
             project.workflows.append(newWorkflow)
+            print(">>> Created new workflow")
         }
         
         guard var workflow = project.workflows.first else { return }
@@ -724,10 +740,11 @@ struct ArchitectureView: View {
             agent = Agent(name: agentName)
             agent.description = "Agent: \(agentName)"
             project.agents.append(agent)
+            print(">>> Created new agent: \(agentName)")
         }
         
-        // 使用更明显的位置（画布中心偏上）
-        let dropPosition = CGPoint(x: max(100, location.x), y: max(100, location.y))
+        // 使用固定位置（画布中心）
+        let dropPosition = CGPoint(x: 300, y: 200)
         
         // Create new node at drop location
         var newNode = WorkflowNode(type: .agent)
@@ -736,13 +753,15 @@ struct ArchitectureView: View {
         
         workflow.nodes.append(newNode)
         
-        print("Added node for agent: \(agentName) at position: \(dropPosition)")
+        print(">>> Added node: \(newNode.id) for agent: \(agentName)")
         
         // Update project
         if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
             project.workflows[index] = workflow
         }
+        
         appState.currentProject = project
+        print(">>> Updated project, now has \(project.workflows.first?.nodes.count ?? 0) nodes")
     }
     
     // 添加所有OpenClaw agents到画布

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CanvasView: View {
     @EnvironmentObject var appState: AppState
@@ -26,11 +27,13 @@ struct CanvasView: View {
     // Connection mode from parent
     var isConnectMode: Bool = false
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
+    var onDropAgent: ((String, CGPoint) -> Void)?
     
-    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil) {
+    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil, onDropAgent: ((String, CGPoint) -> Void)? = nil) {
         self._zoomScale = zoomScale
         self.isConnectMode = isConnectMode
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
+        self.onDropAgent = onDropAgent
     }
     
     var body: some View {
@@ -44,6 +47,21 @@ struct CanvasView: View {
             onNodeClick: onNodeClickInConnectMode,
             onSubflowEdit: handleSubflowEdit  // 新增
         )
+        .onDrop(of: [.text], isTargeted: nil) { providers, location in
+            print(">>> CanvasView onDrop called at \(location)")
+            for provider in providers {
+                provider.loadObject(ofClass: NSString.self) { item, error in
+                    print(">>> Dropped item: \(item)")
+                    if let agentName = item as? String {
+                        DispatchQueue.main.async {
+                            print(">>> Calling onDropAgent with: \(agentName)")
+                            self.onDropAgent?(agentName, location)
+                        }
+                    }
+                }
+            }
+            return true
+        }
         .gesture(createCanvasGesture())
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
