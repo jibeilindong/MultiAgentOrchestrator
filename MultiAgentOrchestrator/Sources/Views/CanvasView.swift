@@ -47,21 +47,6 @@ struct CanvasView: View {
             onNodeClick: onNodeClickInConnectMode,
             onSubflowEdit: handleSubflowEdit  // 新增
         )
-        .onDrop(of: [.text], isTargeted: nil) { providers, location in
-            print(">>> CanvasView onDrop called at \(location)")
-            for provider in providers {
-                provider.loadObject(ofClass: NSString.self) { item, error in
-                    print(">>> Dropped item: \(item)")
-                    if let agentName = item as? String {
-                        DispatchQueue.main.async {
-                            print(">>> Calling onDropAgent with: \(agentName)")
-                            self.onDropAgent?(agentName, location)
-                        }
-                    }
-                }
-            }
-            return true
-        }
         .gesture(createCanvasGesture())
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
