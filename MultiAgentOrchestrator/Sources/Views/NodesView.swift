@@ -17,6 +17,7 @@ struct NodesView: View {
     let offset: CGSize
     let geometry: GeometryProxy
     var onNodeClick: ((WorkflowNode) -> Void)?
+    var onNodeSelected: ((WorkflowNode) -> Void)?
     var onSubflowEdit: ((WorkflowNode) -> Void)?  // 新增：子流程编辑回调
     
     @State private var draggingNode: WorkflowNode?
@@ -113,6 +114,8 @@ struct NodesView: View {
         selectedNodeID = node.id
         connectingFromNode = nil
         tempConnectionEnd = nil
+        appState.selectNode(node.id)
+        onNodeSelected?(node)
         
         if let callback = onNodeClick {
             callback(node)

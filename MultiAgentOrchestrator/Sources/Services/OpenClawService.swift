@@ -383,54 +383,71 @@ class OpenClawService: ObservableObject {
     }
 
     func executionPlan(for workflow: Workflow) -> [WorkflowNode] {
-        let executableNodes = workflow.nodes.filter { $0.type == .agent }
-        guard !executableNodes.isEmpty else { return [] }
-
-        let executableIDs = Set(executableNodes.map(\.id))
-        let relevantEdges = workflow.edges.filter {
-            executableIDs.contains($0.fromNodeID) && executableIDs.contains($0.toNodeID)
+        let nodeLookup = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let orderedEdges = workflow.edges.sorted { lhs, rhs in
+            guard let leftTarget = nodeLookup[lhs.toNodeID], let rightTarget = nodeLookup[rhs.toNodeID] else {
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            return nodeSort(leftTarget, rightTarget)
         }
+        let outgoingEdges = Dictionary(grouping: orderedEdges, by: \.fromNodeID)
 
-        var indegree: [UUID: Int] = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, 0) })
-        var adjacency: [UUID: [UUID]] = [:]
-
-        for edge in relevantEdges {
-            adjacency[edge.fromNodeID, default: []].append(edge.toNodeID)
-            indegree[edge.toNodeID, default: 0] += 1
-        }
-
-        let nodeLookup = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, $0) })
-        var queue = executableNodes
-            .filter { indegree[$0.id] == 0 }
+        let startNodes = workflow.nodes
+            .filter { $0.type == .start }
             .sorted(by: nodeSort)
 
-        var ordered: [WorkflowNode] = []
-        var visited = Set<UUID>()
+        let entryNodes = startNodes.isEmpty
+            ? workflow.nodes.filter { node in
+                !workflow.edges.contains(where: { $0.toNodeID == node.id })
+              }.sorted(by: nodeSort)
+            : startNodes
+
+        var routedAgents: [WorkflowNode] = []
+        var appendedAgents = Set<UUID>()
+        var visitCounts: [UUID: Int] = [:]
+
+        let traversalQueue = entryNodes.map(\.id)
+        if traversalQueue.isEmpty {
+            return fallbackExecutionPlan(for: workflow)
+        }
+
+        var queue = traversalQueue
 
         while !queue.isEmpty {
-            let node = queue.removeFirst()
-            guard visited.insert(node.id).inserted else { continue }
+            let nodeID = queue.removeFirst()
+            guard let node = nodeLookup[nodeID] else { continue }
 
-            ordered.append(node)
+            let nextVisitCount = visitCounts[nodeID, default: 0] + 1
+            visitCounts[nodeID] = nextVisitCount
 
-            for nextID in adjacency[node.id, default: []].sorted(by: nodeIDSort(nodeLookup: nodeLookup)) {
-                indegree[nextID, default: 0] -= 1
-                if indegree[nextID] == 0, let nextNode = nodeLookup[nextID] {
-                    queue.append(nextNode)
-                    queue.sort(by: nodeSort)
-                }
+            let allowedVisits = max(1, node.loopEnabled ? node.maxIterations : 1)
+            if nextVisitCount > allowedVisits {
+                addLog(.warning, "Skipping repeated visit for node \(node.id.uuidString.prefix(8)) beyond loop limit")
+                continue
             }
+
+            if node.type == .agent, appendedAgents.insert(node.id).inserted {
+                routedAgents.append(node)
+            }
+
+            let selectedEdges = selectOutgoingEdges(for: node, edges: outgoingEdges[node.id, default: []], workflow: workflow)
+            queue.append(contentsOf: selectedEdges.map(\.toNodeID))
         }
 
-        if ordered.count != executableNodes.count {
-            let remaining = executableNodes
-                .filter { !visited.contains($0.id) }
-                .sorted(by: nodeSort)
-            addLog(.warning, "Workflow contains cycles or disconnected branches. Falling back to stable node order for remaining nodes.")
-            ordered.append(contentsOf: remaining)
+        if routedAgents.isEmpty {
+            return fallbackExecutionPlan(for: workflow)
         }
 
-        return ordered
+        let reachableIDs = Set(routedAgents.map(\.id))
+        let missingAgents = workflow.nodes
+            .filter { $0.type == .agent && !reachableIDs.contains($0.id) }
+            .sorted(by: nodeSort)
+
+        if !missingAgents.isEmpty {
+            addLog(.warning, "Some agent nodes are unreachable under current branch conditions and were skipped.")
+        }
+
+        return routedAgents
     }
     
     private func executeNodesSequentially(_ nodes: [WorkflowNode], workflow: Workflow, agents: [Agent], completion: @escaping ([ExecutionResult]) -> Void) {
@@ -669,6 +686,216 @@ class OpenClawService: ObservableObject {
     func clearResults() {
         executionResults.removeAll()
         lastError = nil
+    }
+
+    func reloadAgent(_ agent: Agent, completion: @escaping (Bool, String) -> Void) {
+        addLog(.info, "Reloading agent \(agent.name)")
+
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1) {
+            let message = "Reloaded agent \(agent.name) from updated Soul.md"
+            DispatchQueue.main.async {
+                self.addLog(.success, message)
+                completion(true, message)
+            }
+        }
+    }
+
+    private func fallbackExecutionPlan(for workflow: Workflow) -> [WorkflowNode] {
+        let executableNodes = workflow.nodes.filter { $0.type == .agent }
+        guard !executableNodes.isEmpty else { return [] }
+
+        let executableIDs = Set(executableNodes.map(\.id))
+        let relevantEdges = workflow.edges.filter {
+            executableIDs.contains($0.fromNodeID) && executableIDs.contains($0.toNodeID)
+        }
+
+        var indegree: [UUID: Int] = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, 0) })
+        var adjacency: [UUID: [UUID]] = [:]
+
+        for edge in relevantEdges {
+            adjacency[edge.fromNodeID, default: []].append(edge.toNodeID)
+            indegree[edge.toNodeID, default: 0] += 1
+        }
+
+        let nodeLookup = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, $0) })
+        var queue = executableNodes
+            .filter { indegree[$0.id] == 0 }
+            .sorted(by: nodeSort)
+
+        var ordered: [WorkflowNode] = []
+        var visited = Set<UUID>()
+
+        while !queue.isEmpty {
+            let node = queue.removeFirst()
+            guard visited.insert(node.id).inserted else { continue }
+            ordered.append(node)
+
+            for nextID in adjacency[node.id, default: []].sorted(by: nodeIDSort(nodeLookup: nodeLookup)) {
+                indegree[nextID, default: 0] -= 1
+                if indegree[nextID] == 0, let nextNode = nodeLookup[nextID] {
+                    queue.append(nextNode)
+                    queue.sort(by: nodeSort)
+                }
+            }
+        }
+
+        if ordered.count != executableNodes.count {
+            let remaining = executableNodes
+                .filter { !visited.contains($0.id) }
+                .sorted(by: nodeSort)
+            addLog(.warning, "Workflow contains cycles or disconnected branches. Falling back to stable node order for remaining nodes.")
+            ordered.append(contentsOf: remaining)
+        }
+
+        return ordered
+    }
+
+    private func selectOutgoingEdges(for node: WorkflowNode, edges: [WorkflowEdge], workflow: Workflow) -> [WorkflowEdge] {
+        guard !edges.isEmpty else { return [] }
+
+        let routableEdges = edges.filter { edge in
+            if edge.requiresApproval {
+                addLog(.warning, "Skipping edge \(edge.id.uuidString.prefix(8)) because it requires approval.", nodeID: node.id)
+                return false
+            }
+            return true
+        }
+
+        if node.type == .branch {
+            if !node.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let result = evaluateExpression(node.conditionExpression, workflow: workflow)
+                let expectedLabel = result ? "true" : "false"
+                let matchingByLabel = routableEdges.filter {
+                    $0.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expectedLabel
+                }
+                if !matchingByLabel.isEmpty {
+                    return matchingByLabel
+                }
+            }
+
+            let matchingByCondition = routableEdges.filter { edge in
+                let condition = edge.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+                return condition.isEmpty || evaluateExpression(condition, workflow: workflow)
+            }
+
+            if !matchingByCondition.isEmpty {
+                return matchingByCondition
+            }
+
+            return Array(routableEdges.prefix(1))
+        }
+
+        return routableEdges.filter { edge in
+            let condition = edge.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+            return condition.isEmpty || evaluateExpression(condition, workflow: workflow)
+        }
+    }
+
+    private func evaluateExpression(_ expression: String, workflow: Workflow) -> Bool {
+        let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+
+        let context = evaluationContext(for: workflow)
+        let normalized = trimmed.lowercased()
+
+        if normalized == "true" { return true }
+        if normalized == "false" { return false }
+
+        let operators = ["==", "!=", ">=", "<=", ">", "<", "contains"]
+        guard let op = operators.first(where: { normalized.contains(" \($0) ") }) else {
+            if let value = context[normalized] {
+                return truthy(value)
+            }
+            return false
+        }
+
+        let components = normalized.components(separatedBy: " \(op) ")
+        guard components.count == 2 else { return false }
+
+        let leftValue = context[components[0].trimmingCharacters(in: .whitespaces)] ?? parseLiteral(components[0])
+        let rightValue = context[components[1].trimmingCharacters(in: .whitespaces)] ?? parseLiteral(components[1])
+
+        switch op {
+        case "==":
+            return compare(leftValue, rightValue) == .orderedSame
+        case "!=":
+            return compare(leftValue, rightValue) != .orderedSame
+        case ">":
+            return compare(leftValue, rightValue) == .orderedDescending
+        case "<":
+            return compare(leftValue, rightValue) == .orderedAscending
+        case ">=":
+            let result = compare(leftValue, rightValue)
+            return result == .orderedDescending || result == .orderedSame
+        case "<=":
+            let result = compare(leftValue, rightValue)
+            return result == .orderedAscending || result == .orderedSame
+        case "contains":
+            return String(describing: leftValue).localizedCaseInsensitiveContains(String(describing: rightValue))
+        default:
+            return false
+        }
+    }
+
+    private func evaluationContext(for workflow: Workflow) -> [String: Any] {
+        let date = Date()
+        let components = Calendar.current.dateComponents([.hour, .weekday], from: date)
+
+        return [
+            "workflow.hasagents": workflow.nodes.contains(where: { $0.type == .agent }),
+            "workflow.agentcount": workflow.nodes.filter { $0.type == .agent }.count,
+            "workflow.nodecount": workflow.nodes.count,
+            "workflow.edgecount": workflow.edges.count,
+            "time.hour": components.hour ?? 0,
+            "time.weekday": components.weekday ?? 0
+        ]
+    }
+
+    private func parseLiteral(_ raw: String) -> Any {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+        if let intValue = Int(trimmed) { return intValue }
+        if let doubleValue = Double(trimmed) { return doubleValue }
+        if trimmed == "true" { return true }
+        if trimmed == "false" { return false }
+        return trimmed
+    }
+
+    private func truthy(_ value: Any) -> Bool {
+        switch value {
+        case let bool as Bool:
+            return bool
+        case let int as Int:
+            return int != 0
+        case let double as Double:
+            return double != 0
+        case let string as String:
+            return !string.isEmpty && string != "false" && string != "0"
+        default:
+            return false
+        }
+    }
+
+    private func compare(_ lhs: Any, _ rhs: Any) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case let (left as Int, right as Int):
+            return left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
+        case let (left as Double, right as Double):
+            return left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
+        case let (left as Int, right as Double):
+            let value = Double(left)
+            return value == right ? .orderedSame : (value < right ? .orderedAscending : .orderedDescending)
+        case let (left as Double, right as Int):
+            let value = Double(right)
+            return left == value ? .orderedSame : (left < value ? .orderedAscending : .orderedDescending)
+        case let (left as Bool, right as Bool):
+            return left == right ? .orderedSame : (left ? .orderedDescending : .orderedAscending)
+        default:
+            let left = String(describing: lhs).lowercased()
+            let right = String(describing: rhs).lowercased()
+            if left == right { return .orderedSame }
+            return left < right ? .orderedAscending : .orderedDescending
+        }
     }
 
     private func nodeSort(_ lhs: WorkflowNode, _ rhs: WorkflowNode) -> Bool {

@@ -39,12 +39,19 @@ struct MultiAgentArchitecture: Codable {
         var agentID: UUID?
         var type: String
         var position: CGPoint
+        var title: String?
+        var conditionExpression: String?
+        var loopEnabled: Bool?
+        var maxIterations: Int?
     }
     
     struct EdgeExport: Codable {
         var id: UUID
         var fromNodeID: UUID
         var toNodeID: UUID
+        var label: String?
+        var conditionExpression: String?
+        var requiresApproval: Bool?
     }
     
     struct PermissionExport: Codable {
@@ -107,7 +114,11 @@ class ImportExportService {
                     id: node.id,
                     agentID: node.agentID,
                     type: node.type.rawValue,
-                    position: node.position
+                    position: node.position,
+                    title: node.title,
+                    conditionExpression: node.conditionExpression,
+                    loopEnabled: node.loopEnabled,
+                    maxIterations: node.maxIterations
                 )
             }
             
@@ -115,7 +126,10 @@ class ImportExportService {
                 MultiAgentArchitecture.EdgeExport(
                     id: edge.id,
                     fromNodeID: edge.fromNodeID,
-                    toNodeID: edge.toNodeID
+                    toNodeID: edge.toNodeID,
+                    label: edge.label,
+                    conditionExpression: edge.conditionExpression,
+                    requiresApproval: edge.requiresApproval
                 )
             }
             
@@ -213,13 +227,20 @@ class ImportExportService {
                 var node = WorkflowNode(type: WorkflowNode.NodeType(rawValue: nodeExport.type) ?? .agent)
                 node.agentID = nodeExport.agentID.flatMap { idMapping[$0] }
                 node.position = nodeExport.position
+                node.title = nodeExport.title ?? ""
+                node.conditionExpression = nodeExport.conditionExpression ?? ""
+                node.loopEnabled = nodeExport.loopEnabled ?? false
+                node.maxIterations = nodeExport.maxIterations ?? 1
                 workflow.nodes.append(node)
             }
             
             // 转换边
             for edgeExport in workflowExport.edges {
                 var edge = WorkflowEdge(from: nodeIDMapping[edgeExport.fromNodeID] ?? edgeExport.fromNodeID,
-                                       to: nodeIDMapping[edgeExport.toNodeID] ?? edgeExport.toNodeID)
+                                        to: nodeIDMapping[edgeExport.toNodeID] ?? edgeExport.toNodeID)
+                edge.label = edgeExport.label ?? ""
+                edge.conditionExpression = edgeExport.conditionExpression ?? ""
+                edge.requiresApproval = edgeExport.requiresApproval ?? false
                 workflow.edges.append(edge)
             }
             

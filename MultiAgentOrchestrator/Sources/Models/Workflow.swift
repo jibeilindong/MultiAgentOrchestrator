@@ -133,6 +133,10 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
     var agentID: UUID?
     var type: NodeType
     var position: CGPoint
+    var title: String
+    var conditionExpression: String
+    var loopEnabled: Bool
+    var maxIterations: Int
     // 子流程相关属性
     var subflowID: UUID?  // 关联的子工作流ID
     var nestingLevel: Int = 0  // 嵌套层级（0表示顶层）
@@ -142,15 +146,51 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
     
     enum NodeType: String, Codable, Hashable {
         case agent
+        case branch
         case start
         case end
         case subflow  // 子流程节点
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case agentID
+        case type
+        case position
+        case title
+        case conditionExpression
+        case loopEnabled
+        case maxIterations
+        case subflowID
+        case nestingLevel
+        case inputParameters
+        case outputParameters
     }
     
     init(type: NodeType) {
         self.id = UUID()
         self.type = type
         self.position = .zero
+        self.title = ""
+        self.conditionExpression = ""
+        self.loopEnabled = false
+        self.maxIterations = 1
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        agentID = try container.decodeIfPresent(UUID.self, forKey: .agentID)
+        type = try container.decode(NodeType.self, forKey: .type)
+        position = try container.decode(CGPoint.self, forKey: .position)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
+        loopEnabled = try container.decodeIfPresent(Bool.self, forKey: .loopEnabled) ?? false
+        maxIterations = try container.decodeIfPresent(Int.self, forKey: .maxIterations) ?? 1
+        subflowID = try container.decodeIfPresent(UUID.self, forKey: .subflowID)
+        nestingLevel = try container.decodeIfPresent(Int.self, forKey: .nestingLevel) ?? 0
+        inputParameters = try container.decodeIfPresent([SubflowParameter].self, forKey: .inputParameters) ?? []
+        outputParameters = try container.decodeIfPresent([SubflowParameter].self, forKey: .outputParameters) ?? []
     }
 }
 
@@ -158,13 +198,40 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
     let id: UUID
     var fromNodeID: UUID
     var toNodeID: UUID
+    var label: String
+    var conditionExpression: String
+    var requiresApproval: Bool
     // 数据传递：边上的数据映射
     var dataMapping: [String: String] = [:]  // fromKey -> toKey
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case fromNodeID
+        case toNodeID
+        case label
+        case conditionExpression
+        case requiresApproval
+        case dataMapping
+    }
     
     init(from: UUID, to: UUID) {
         self.id = UUID()
         self.fromNodeID = from
         self.toNodeID = to
+        self.label = ""
+        self.conditionExpression = ""
+        self.requiresApproval = false
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        fromNodeID = try container.decode(UUID.self, forKey: .fromNodeID)
+        toNodeID = try container.decode(UUID.self, forKey: .toNodeID)
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
+        conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
+        requiresApproval = try container.decodeIfPresent(Bool.self, forKey: .requiresApproval) ?? false
+        dataMapping = try container.decodeIfPresent([String: String].self, forKey: .dataMapping) ?? [:]
     }
 }
 

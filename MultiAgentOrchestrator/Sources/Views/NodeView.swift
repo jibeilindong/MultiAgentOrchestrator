@@ -88,6 +88,13 @@ struct NodeView: View {
                 }
                 .foregroundColor(.purple)
             }
+
+            if node.type == .branch, !node.conditionExpression.isEmpty {
+                Text(node.conditionExpression)
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
         }
         .frame(width: nodeWidth, height: nodeHeight)
         .background(
@@ -153,6 +160,7 @@ struct NodeView: View {
     private var nodeTypeIcon: String {
         switch node.type {
         case .agent: return "person.circle.fill"
+        case .branch: return "arrow.triangle.branch"
         case .start: return "play.circle.fill"
         case .end: return "stop.circle.fill"
         case .subflow: return "arrow.down.doc.fill"
@@ -163,9 +171,13 @@ struct NodeView: View {
         if node.type == .agent, let agent = agent {
             return agent.name
         }
+        if !node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return node.title
+        }
         
         switch node.type {
         case .agent: return "Agent"
+        case .branch: return "Branch"
         case .start: return "Start"
         case .end: return "End"
         case .subflow: return "Subflow"
@@ -178,6 +190,7 @@ struct NodeView: View {
         }
         switch node.type {
         case .agent: return .blue
+        case .branch: return .orange
         case .start: return .green
         case .end: return .red
         case .subflow: return .purple
@@ -190,6 +203,7 @@ struct NodeView: View {
         }
         switch node.type {
         case .agent: return Color.blue.opacity(0.08)
+        case .branch: return Color.orange.opacity(0.12)
         case .start: return Color.green.opacity(0.08)
         case .end: return Color.red.opacity(0.08)
         case .subflow: return Color.purple.opacity(0.08)
@@ -209,6 +223,7 @@ struct NodeView: View {
     private var nodeWidth: CGFloat {
         switch node.type {
         case .agent: return 110
+        case .branch: return 130
         case .subflow: return 130
         default: return 90
         }
@@ -216,6 +231,7 @@ struct NodeView: View {
     
     private var nodeHeight: CGFloat {
         switch node.type {
+        case .branch: return 78
         case .subflow: return 75
         default: return 65
         }

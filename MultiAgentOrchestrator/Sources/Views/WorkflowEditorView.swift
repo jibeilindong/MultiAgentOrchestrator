@@ -667,6 +667,10 @@ struct ArchitectureView: View {
                         onNodeClickInConnectMode: { node in
                             self.handleNodeClickInConnectMode(node: node)
                         },
+                        onNodeSelected: { node in
+                            selectedNodeForProperty = node
+                            showNodePropertyPanel = true
+                        },
                         onDropAgent: { agentName, location in
                             self.addAgentNodeToCanvas(agentName: agentName, at: location)
                         }
@@ -988,7 +992,7 @@ struct AgentLibrarySidebar: View {
                 HStack(spacing: 8) {
                     NodeTypeButton(icon: "play.circle", label: LocalizedString.startNode, type: .start)
                     NodeTypeButton(icon: "circle", label: LocalizedString.agentNode, type: .agent)
-                    NodeTypeButton(icon: "arrow.triangle.branch", label: "Branch", type: .agent)
+                    NodeTypeButton(icon: "arrow.triangle.branch", label: "Branch", type: .branch)
                     NodeTypeButton(icon: "stop.circle", label: LocalizedString.endNode, type: .end)
                 }
                 .padding(.horizontal)
@@ -996,62 +1000,6 @@ struct AgentLibrarySidebar: View {
             }
             .background(Color(.controlBackgroundColor))
         }
-    }
-    
-    private func loadOpenClawAgents() -> [String] {
-        // 使用OpenClaw CLI获取agents列表
-        let possiblePaths = [
-            "/Users/chenrongze/.local/bin/openclaw",
-            "/usr/local/bin/openclaw",
-            "/opt/homebrew/bin/openclaw"
-        ]
-        
-        var openclawPath = "/Users/chenrongze/.local/bin/openclaw"
-        for path in possiblePaths {
-            if FileManager.default.fileExists(atPath: path) {
-                openclawPath = path
-                break
-            }
-        }
-        
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: openclawPath)
-        process.arguments = ["agents", "list"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                // 解析输出，提取agent名称
-                var agents: [String] = []
-                let lines = output.components(separatedBy: "\n")
-                for line in lines {
-                    // 匹配 "- agentName (default)" 格式
-                    if line.hasPrefix("- ") {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        // 去掉 "- " 前缀和可能的 " (default)" 后缀
-                        var name = String(trimmed.dropFirst(2))
-                        if name.contains(" (") {
-                            name = name.components(separatedBy: " (").first ?? name
-                        }
-                        if !name.isEmpty {
-                            agents.append(name)
-                        }
-                    }
-                }
-                return agents.sorted()
-            }
-        } catch {
-            print("Failed to run openclaw agents list: \(error)")
-        }
-        
-        return []
     }
 }
 
@@ -1105,11 +1053,13 @@ struct NodePropertyPanel: View {
     let node: WorkflowNode
     @Binding var isPresented: Bool
     
-    @State private var nodeName: String = ""
+    @State private var nodeTitle: String = ""
     @State private var soulConfig: String = ""
-    @State private var condition: String = ""
-    @State private var cpuQuota: Double = 1.0
-    @State private var memoryQuota: Double = 1.0
+    @State private var conditionExpression: String = ""
+    @State private var loopEnabled: Bool = false
+    @State private var maxIterations: Double = 1
+    @State private var reloadStatus: String?
+    @State private var outgoingEdgeDrafts: [UUID: EdgeDraft] = [:]
     
     var body: some View {
         VStack(spacing: 0) {
@@ -1143,6 +1093,11 @@ struct NodePropertyPanel: View {
                             LabeledContent("Type") {
                                 Text(node.type.rawValue.capitalized)
                             }
+
+                            if node.type != .agent {
+                                TextField("Title", text: $nodeTitle)
+                                    .textFieldStyle(.roundedBorder)
+                            }
                             
                             LabeledContent("Position") {
                                 Text("(\(Int(node.position.x)), \(Int(node.position.y)))")
@@ -1158,7 +1113,7 @@ struct NodePropertyPanel: View {
                        let agent = getAgent(id: agentID) {
                         GroupBox("Agent: \(agent.name)") {
                             VStack(alignment: .leading, spacing: 12) {
-                                TextField("Name", text: $nodeName)
+                                TextField("Name", text: $nodeTitle)
                                     .textFieldStyle(.roundedBorder)
                                 
                                 Text("Soul.md Configuration")
@@ -1169,46 +1124,32 @@ struct NodePropertyPanel: View {
                                     .font(.system(.caption, design: .monospaced))
                                     .frame(height: 150)
                                     .border(Color.gray.opacity(0.3))
-                                
-                                // 资源配额
-                                Text("Resource Quota")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                
-                                HStack {
-                                    Text("CPU")
-                                    Slider(value: $cpuQuota, in: 0.1...4.0, step: 0.1)
-                                    Text("\(cpuQuota, specifier: "%.1f")x")
+
+                                if let reloadStatus {
+                                    Text(reloadStatus)
                                         .font(.caption)
-                                }
-                                
-                                HStack {
-                                    Text("Memory")
-                                    Slider(value: $memoryQuota, in: 0.1...4.0, step: 0.1)
-                                    Text("\(memoryQuota, specifier: "%.1f")x")
-                                        .font(.caption)
+                                        .foregroundColor(.secondary)
                                 }
                             }
                             .padding(8)
                         }
                     }
                     
-                    // 分支/条件配置（如果是控制节点）
-                    if node.type == .start || node.type == .end {
-                        GroupBox("Flow Control") {
+                    if node.type == .branch {
+                        GroupBox("Branch Logic") {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Condition (e.g., priority > high)")
+                                Text("Condition expression")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 
-                                TextField("condition", text: $condition)
+                                TextField("workflow.hasAgents == true", text: $conditionExpression)
                                     .textFieldStyle(.roundedBorder)
                                 
                                 Text("Available variables:")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 
-                                Text("task.priority, task.status, agent.load, time.hour")
+                                Text("workflow.hasAgents, workflow.agentCount, workflow.nodeCount, workflow.edgeCount, time.hour, time.weekday")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
@@ -1216,12 +1157,32 @@ struct NodePropertyPanel: View {
                         }
                     }
                     
-                    // 循环配置（可选）
                     GroupBox("Loop Settings") {
-                        Toggle("Enable Loop", isOn: .constant(false))
-                        TextField("Max Iterations", value: .constant(10), format: .number)
-                            .textFieldStyle(.roundedBorder)
+                        Toggle("Enable Loop", isOn: $loopEnabled)
+                        HStack {
+                            Text("Max Iterations")
+                            Slider(value: $maxIterations, in: 1...10, step: 1)
+                            Text("\(Int(maxIterations))")
+                                .font(.caption)
+                                .monospacedDigit()
+                        }
+                        .disabled(!loopEnabled)
                         .padding(8)
+                    }
+
+                    if !outgoingEdges.isEmpty {
+                        GroupBox("Outgoing Routes") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(outgoingEdges) { edge in
+                                    RouteEditorRow(
+                                        edge: binding(for: edge),
+                                        targetName: targetName(for: edge),
+                                        isBranchNode: node.type == .branch
+                                    )
+                                }
+                            }
+                            .padding(8)
+                        }
                     }
                 }
                 .padding()
@@ -1258,28 +1219,119 @@ struct NodePropertyPanel: View {
     }
     
     private func loadNodeData() {
+        nodeTitle = node.title
+        conditionExpression = node.conditionExpression
+        loopEnabled = node.loopEnabled
+        maxIterations = Double(max(1, node.maxIterations))
+
         if let agentID = node.agentID,
            let agent = getAgent(id: agentID) {
-            nodeName = agent.name
+            nodeTitle = agent.name
             soulConfig = agent.soulMD
         }
+
+        outgoingEdgeDrafts = Dictionary(uniqueKeysWithValues: outgoingEdges.map {
+            ($0.id, EdgeDraft(edge: $0))
+        })
     }
     
     private func saveChanges() {
-        // Save changes to workflow node and agent
-        guard var project = appState.currentProject,
-              var workflow = project.workflows.first,
-              let nodeIndex = workflow.nodes.firstIndex(where: { $0.id == node.id }) else { return }
-        
-        // Update node name if changed
+        var updatedNode = node
+        updatedNode.title = node.type == .agent ? "" : nodeTitle
+        updatedNode.conditionExpression = conditionExpression
+        updatedNode.loopEnabled = loopEnabled
+        updatedNode.maxIterations = loopEnabled ? max(1, Int(maxIterations)) : 1
+        appState.updateNode(updatedNode)
+
         if let agentID = node.agentID,
-           let agentIndex = project.agents.firstIndex(where: { $0.id == agentID }) {
-            project.agents[agentIndex].name = nodeName
-            project.agents[agentIndex].soulMD = soulConfig
-            project.agents[agentIndex].updatedAt = Date()
+           var agent = getAgent(id: agentID) {
+            agent.name = nodeTitle
+            agent.soulMD = soulConfig
+            agent.updatedAt = Date()
+            appState.updateAgent(agent, reload: true)
+            reloadStatus = "Reload requested at \(Date.now.formatted(date: .omitted, time: .shortened))"
         }
-        
-        appState.currentProject = project
+
+        for draft in outgoingEdgeDrafts.values {
+            var updatedEdge = draft.edge
+            updatedEdge.label = draft.label
+            updatedEdge.conditionExpression = draft.conditionExpression
+            updatedEdge.requiresApproval = draft.requiresApproval
+            appState.updateEdge(updatedEdge)
+        }
+    }
+
+    private var outgoingEdges: [WorkflowEdge] {
+        appState.currentProject?.workflows.first?.edges.filter { $0.fromNodeID == node.id } ?? []
+    }
+
+    private func binding(for edge: WorkflowEdge) -> Binding<EdgeDraft> {
+        Binding(
+            get: { outgoingEdgeDrafts[edge.id] ?? EdgeDraft(edge: edge) },
+            set: { outgoingEdgeDrafts[edge.id] = $0 }
+        )
+    }
+
+    private func targetName(for edge: WorkflowEdge) -> String {
+        guard let workflow = appState.currentProject?.workflows.first,
+              let targetNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) else {
+            return "Unknown"
+        }
+
+        if let targetAgent = targetNode.agentID.flatMap(getAgent(id:)) {
+            return targetAgent.name
+        }
+
+        if !targetNode.title.isEmpty {
+            return targetNode.title
+        }
+
+        return targetNode.type.rawValue.capitalized
+    }
+
+    struct EdgeDraft {
+        var edge: WorkflowEdge
+        var label: String
+        var conditionExpression: String
+        var requiresApproval: Bool
+
+        init(edge: WorkflowEdge) {
+            self.edge = edge
+            self.label = edge.label
+            self.conditionExpression = edge.conditionExpression
+            self.requiresApproval = edge.requiresApproval
+        }
+    }
+}
+
+struct RouteEditorRow: View {
+    @Binding var edge: NodePropertyPanel.EdgeDraft
+    let targetName: String
+    let isBranchNode: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "arrow.turn.down.right")
+                    .foregroundColor(.secondary)
+                Text(targetName)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Spacer()
+                Toggle("Approval", isOn: $edge.requiresApproval)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+
+            TextField(isBranchNode ? "Route label, e.g. true / false" : "Condition label", text: $edge.label)
+                .textFieldStyle(.roundedBorder)
+
+            TextField("Condition expression", text: $edge.conditionExpression)
+                .textFieldStyle(.roundedBorder)
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(8)
     }
 }
 

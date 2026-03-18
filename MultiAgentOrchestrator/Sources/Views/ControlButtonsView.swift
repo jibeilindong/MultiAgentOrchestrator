@@ -59,6 +59,10 @@ struct ControlButtonsView: View {
                             Button("End Node") {
                                 addNode(type: .end)
                             }
+
+                            Button("Branch Node") {
+                                addNode(type: .branch)
+                            }
                             
                             Button("Subflow Node") {  // 新增
                                 addNode(type: .subflow)
@@ -134,47 +138,16 @@ struct ControlButtonsView: View {
     }
     
     private func addNode(type: WorkflowNode.NodeType) {
-        guard let workflow = appState.currentProject?.workflows.first else { return }
-        
-        let newNode = WorkflowNode(type: type)
-        var newNodeCopy = newNode
-        newNodeCopy.position = CGPoint(x: 300, y: 200)
-        
-        var updatedWorkflow = workflow
-        updatedWorkflow.nodes.append(newNodeCopy)
-        
-        if let index = appState.currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            appState.currentProject?.workflows[index] = updatedWorkflow
-        }
+        appState.addNode(type: type, position: CGPoint(x: 300, y: 200))
     }
     
     private func addAgentNode(_ agent: Agent) {
-        guard let workflow = appState.currentProject?.workflows.first else { return }
-        
-        var newNode = WorkflowNode(type: .agent)
-        newNode.agentID = agent.id
-        newNode.position = CGPoint(x: 300, y: 200)
-        
-        var updatedWorkflow = workflow
-        updatedWorkflow.nodes.append(newNode)
-        
-        if let index = appState.currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            appState.currentProject?.workflows[index] = updatedWorkflow
-        }
+        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
     }
     
     private func deleteSelectedNode() {
-        guard let nodeID = selectedNodeID,
-              let workflow = appState.currentProject?.workflows.first else { return }
-        
-        var updatedWorkflow = workflow
-        updatedWorkflow.nodes.removeAll { $0.id == nodeID }
-        updatedWorkflow.edges.removeAll { $0.fromNodeID == nodeID || $0.toNodeID == nodeID }
-        
-        if let index = appState.currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            appState.currentProject?.workflows[index] = updatedWorkflow
-        }
-        
+        guard let nodeID = selectedNodeID else { return }
+        appState.removeNode(nodeID)
         selectedNodeID = nil
     }
 }

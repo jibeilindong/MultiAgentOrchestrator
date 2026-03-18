@@ -27,12 +27,14 @@ struct CanvasView: View {
     // Connection mode from parent
     var isConnectMode: Bool = false
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
+    var onNodeSelected: ((WorkflowNode) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
     
-    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil, onDropAgent: ((String, CGPoint) -> Void)? = nil) {
+    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil, onNodeSelected: ((WorkflowNode) -> Void)? = nil, onDropAgent: ((String, CGPoint) -> Void)? = nil) {
         self._zoomScale = zoomScale
         self.isConnectMode = isConnectMode
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
+        self.onNodeSelected = onNodeSelected
         self.onDropAgent = onDropAgent
     }
     
@@ -45,6 +47,7 @@ struct CanvasView: View {
             connectingFromNode: $connectingFromNode,
             tempConnectionEnd: $tempConnectionEnd,
             onNodeClick: onNodeClickInConnectMode,
+            onNodeSelected: onNodeSelected,
             onSubflowEdit: handleSubflowEdit  // 新增
         )
         .onDrop(of: [.text], isTargeted: nil) { providers, location in

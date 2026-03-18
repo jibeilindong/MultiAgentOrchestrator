@@ -17,6 +17,7 @@ struct CanvasContentView: View {
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     var onNodeClick: ((WorkflowNode) -> Void)?
+    var onNodeSelected: ((WorkflowNode) -> Void)?
     var onSubflowEdit: ((WorkflowNode) -> Void)?
     
     // 拖拽状态
@@ -69,6 +70,7 @@ struct CanvasContentView: View {
                     offset: offset,
                     geometry: geometry,
                     onNodeClick: onNodeClick,
+                    onNodeSelected: onNodeSelected,
                     onSubflowEdit: onSubflowEdit
                 )
                 .environmentObject(appState)

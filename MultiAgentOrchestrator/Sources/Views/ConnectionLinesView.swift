@@ -41,11 +41,18 @@ struct ConnectionLinesView: View {
                         
                         // 画直线
                         ConnectionLineShape(from: startPoint, to: endPoint)
-                            .stroke(Color.blue.opacity(0.6), lineWidth: 2)
+                            .stroke(edge.requiresApproval ? Color.orange.opacity(0.7) : Color.blue.opacity(0.6),
+                                    style: StrokeStyle(lineWidth: 2, dash: edge.requiresApproval ? [8, 4] : []))
                         
                         // 画箭头
                         ArrowShape(from: startPoint, to: endPoint)
-                            .stroke(Color.blue.opacity(0.8), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .stroke(edge.requiresApproval ? Color.orange.opacity(0.85) : Color.blue.opacity(0.8),
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round))
+
+                        if !edgeDisplayText(edge).isEmpty {
+                            EdgeLabelView(text: edgeDisplayText(edge), requiresApproval: edge.requiresApproval)
+                                .position(midPoint(from: startPoint, to: endPoint))
+                        }
                     }
                 }
             }
@@ -86,6 +93,53 @@ struct ConnectionLinesView: View {
         let y = from.y + t * sin(angle)
         
         return CGPoint(x: x, y: y)
+    }
+
+    private func midPoint(from: CGPoint, to: CGPoint) -> CGPoint {
+        CGPoint(x: (from.x + to.x) / 2, y: (from.y + to.y) / 2)
+    }
+
+    private func edgeDisplayText(_ edge: WorkflowEdge) -> String {
+        let label = edge.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let condition = edge.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !label.isEmpty && !condition.isEmpty {
+            return "\(label): \(condition)"
+        }
+        if !label.isEmpty {
+            return label
+        }
+        if !condition.isEmpty {
+            return condition
+        }
+        return edge.requiresApproval ? "Requires approval" : ""
+    }
+}
+
+struct EdgeLabelView: View {
+    let text: String
+    let requiresApproval: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if requiresApproval {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 8))
+            }
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(requiresApproval ? Color.orange.opacity(0.95) : Color(NSColor.windowBackgroundColor).opacity(0.95))
+        .foregroundColor(requiresApproval ? .white : .primary)
+        .overlay(
+            Capsule()
+                .stroke(requiresApproval ? Color.orange : Color.blue.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(Capsule())
+        .shadow(color: Color.black.opacity(0.08), radius: 3, x: 0, y: 1)
     }
 }
 

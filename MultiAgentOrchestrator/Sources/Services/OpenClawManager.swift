@@ -11,6 +11,7 @@ class OpenClawManager: ObservableObject {
     
     @Published var isConnected: Bool = false
     @Published var agents: [String] = []
+    @Published var activeAgents: [UUID: ActiveAgentRuntime] = [:]
     @Published var status: OpenClawStatus = .disconnected
     @Published var config: OpenClawConfig = .load()
     
@@ -24,6 +25,13 @@ class OpenClawManager: ObservableObject {
         case connecting
         case connected
         case error(String)
+    }
+
+    struct ActiveAgentRuntime: Codable {
+        var agentID: UUID
+        var name: String
+        var status: String
+        var lastReloadedAt: Date?
     }
     
     private init() {
@@ -85,7 +93,40 @@ class OpenClawManager: ObservableObject {
     func disconnect() {
         isConnected = false
         agents = []
+        activeAgents.removeAll()
         status = .disconnected
+    }
+
+    func activateAgent(_ agent: Agent) {
+        activeAgents[agent.id] = ActiveAgentRuntime(
+            agentID: agent.id,
+            name: agent.name,
+            status: "active",
+            lastReloadedAt: nil
+        )
+    }
+
+    func terminateAgent(_ agentID: UUID) {
+        activeAgents.removeValue(forKey: agentID)
+    }
+
+    func reloadAgent(_ agent: Agent) {
+        var runtime = activeAgents[agent.id] ?? ActiveAgentRuntime(
+            agentID: agent.id,
+            name: agent.name,
+            status: "active",
+            lastReloadedAt: nil
+        )
+        runtime.name = agent.name
+        runtime.status = "reloading"
+        runtime.lastReloadedAt = Date()
+        activeAgents[agent.id] = runtime
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            var updatedRuntime = runtime
+            updatedRuntime.status = "active"
+            self.activeAgents[agent.id] = updatedRuntime
+        }
     }
     
     // 备份当前OpenClaw配置
