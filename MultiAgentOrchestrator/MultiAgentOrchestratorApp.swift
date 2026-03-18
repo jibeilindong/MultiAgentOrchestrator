@@ -4,6 +4,11 @@
 
 import SwiftUI
 
+// 通知名称扩展
+extension Notification.Name {
+    static let openSettings = Notification.Name("openSettings")
+}
+
 @main
 struct MultiAgentOrchestratorApp: App {
     @StateObject private var appState = AppState()
@@ -18,6 +23,9 @@ struct MultiAgentOrchestratorApp: App {
                 .sheet(isPresented: $showingSettings) {
                     SettingsView()
                         .environmentObject(appState)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
+                    showingSettings = true
                 }
         }
         .commands {

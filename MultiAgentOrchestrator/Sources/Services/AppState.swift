@@ -9,8 +9,97 @@ import SwiftUI
 import Combine
 import UniformTypeIdentifiers
 
+// 项目文件管理器
+class ProjectManager: ObservableObject {
+    static let shared = ProjectManager()
+    
+    @Published var projects: [String] = []  // 项目名称列表
+    
+    var projectsDirectory: URL {
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return documentsPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
+    }
+    
+    var backupsDirectory: URL {
+        return projectsDirectory.appendingPathComponent("backups", isDirectory: true)
+    }
+    
+    private init() {
+        createDirectoriesIfNeeded()
+        loadProjectList()
+    }
+    
+    func createDirectoriesIfNeeded() {
+        try? FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+    }
+    
+    func loadProjectList() {
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: projectsDirectory, includingPropertiesForKeys: nil) else {
+            projects = []
+            return
+        }
+        projects = contents
+            .filter { $0.pathExtension == "maoproj" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+            .sorted()
+    }
+    
+    func projectURL(for name: String) -> URL {
+        return projectsDirectory.appendingPathComponent("\(name).maoproj")
+    }
+    
+    func createProject(name: String) -> MAProject {
+        var project = MAProject(name: name)
+        // 添加示例Agent
+        var agent1 = Agent(name: "Research Assistant")
+        agent1.description = "Helps with research tasks"
+        agent1.soulMD = "# Research Assistant\nYou are a research assistant."
+        var agent2 = Agent(name: "Writer Agent")
+        agent2.description = "Writes reports and documents"
+        agent2.soulMD = "# Writer Agent\nYou are a writer."
+        var agent3 = Agent(name: "Analyst Agent")
+        agent3.description = "Analyzes data and provides insights"
+        agent3.soulMD = "# Analyst Agent\nYou analyze data."
+        project.agents = [agent1, agent2, agent3]
+        
+        // 保存到文件
+        saveProject(project)
+        loadProjectList()
+        return project
+    }
+    
+    func saveProject(_ project: MAProject) {
+        let url = projectURL(for: project.name)
+        do {
+            let data = try JSONEncoder().encode(project)
+            try data.write(to: url)
+        } catch {
+            print("保存项目失败: \(error)")
+        }
+    }
+    
+    func loadProject(name: String) -> MAProject? {
+        let url = projectURL(for: name)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(MAProject.self, from: data)
+    }
+    
+    func deleteProject(name: String) {
+        let url = projectURL(for: name)
+        try? FileManager.default.removeItem(at: url)
+        loadProjectList()
+    }
+}
+
 class AppState: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
+    
+    // 项目管理器
+    let projectManager = ProjectManager.shared
+    
+    // OpenClaw管理器
+    let openClawManager = OpenClawManager.shared
     
     // 本地化管理器
     @Published var localizationManager = LocalizationManager.shared
@@ -120,142 +209,39 @@ class AppState: ObservableObject {
         return nil
     }
     
-    // 从OpenClaw加载agents
-    private func loadOpenClawAgents() -> [Agent] {
-        var agents: [Agent] = []
-        
-        // 方案1: 从 ~/.openclaw/agents/ 目录加载
-        let agentsPath = NSHomeDirectory() + "/.openclaw/agents"
-        if let contents = try? FileManager.default.contentsOfDirectory(atPath: agentsPath) {
-            for agentDir in contents where !agentDir.hasPrefix(".") && agentDir != "a" {
-                let dirPath = agentsPath + "/" + agentDir
-                
-                // 查找SOUL.md（可能在根目录或workspace子目录）
-                var soulMD = ""
-                let soulPaths = [dirPath + "/SOUL.md", dirPath + "/agent/SOUL.md", dirPath + "/../workspace-" + agentDir + "/SOUL.md"]
-                for soulPath in soulPaths {
-                    if let content = try? String(contentsOfFile: soulPath, encoding: .utf8), !content.isEmpty {
-                        soulMD = content
-                        break
-                    }
-                }
-                
-                // 读取skills
-                var skills: [String] = []
-                let skillsPath = dirPath + "/skills"
-                if let skillContents = try? FileManager.default.contentsOfDirectory(atPath: skillsPath) {
-                    skills = skillContents.filter { $0.hasSuffix(".md") }
-                }
-                
-                var agent = Agent(name: agentDir)
-                agent.description = "Agent: \(agentDir)"
-                agent.soulMD = soulMD
-                agent.capabilities = skills.map { $0.replacingOccurrences(of: ".md", with: "") }
-                
-                agents.append(agent)
-            }
-        }
-        
-        // 方案2: 从 ~/.openclaw/workspace-*/SOUL.md 加载
-        let openclawPath = NSHomeDirectory() + "/.openclaw"
-        if let contents = try? FileManager.default.contentsOfDirectory(atPath: openclawPath) {
-            for item in contents where item.hasPrefix("workspace-") {
-                let workspaceName = String(item.dropFirst("workspace-".count))
-                let soulPath = openclawPath + "/" + item + "/SOUL.md"
-                
-                if let content = try? String(contentsOfFile: soulPath, encoding: .utf8), !content.isEmpty {
-                    // 避免重复添加
-                    if !agents.contains(where: { $0.name == workspaceName }) {
-                        var agent = Agent(name: workspaceName)
-                        agent.description = "Agent from workspace: \(workspaceName)"
-                        agent.soulMD = content
-                        agents.append(agent)
-                    }
-                }
-            }
-        }
-        
-        return agents
-    }
-    
     func createNewProject() {
-        var project = MAProject(name: "Untitled Project")
-        
-        // 自动从OpenClaw加载agents
-        let openClawAgents = loadOpenClawAgents()
-        
-        if !openClawAgents.isEmpty {
-            // 使用OpenClaw agents
-            project.agents = openClawAgents
-        } else {
-            // 添加示例Agent（如果没有OpenClaw agents）
-            var agent1 = Agent(name: "Research Assistant")
-            agent1.description = "Helps with research tasks"
-            agent1.soulMD = """
-            # Research Assistant
-            You are a research assistant that helps find and summarize information.
-            """
-            
-            var agent2 = Agent(name: "Writer Agent")
-            agent2.description = "Writes reports and documents"
-            agent2.soulMD = """
-            # Writer Agent
-            You are a writer that creates documents based on research.
-            """
-            
-            var agent3 = Agent(name: "Analyst Agent")
-            agent3.description = "Analyzes data and provides insights"
-            agent3.soulMD = """
-            # Analyst Agent
-            You analyze data and provide insights.
-            """
-            
-            project.agents = [agent1, agent2, agent3]
+        // 生成新项目名称
+        let baseName = "New Project"
+        var projectName = baseName
+        var counter = 1
+        while projectManager.projects.contains(projectName) {
+            counter += 1
+            projectName = "\(baseName) \(counter)"
         }
         
-        // 设置示例权限 - 明确指定 PermissionType
-        // 只在有agent的情况下设置权限
-        if let firstAgent = project.agents.first,
-           let secondAgent = project.agents.dropFirst().first,
-           let thirdAgent = project.agents.dropFirst(2).first {
-            project.setPermission(from: firstAgent, to: secondAgent, type: PermissionType.requireApproval)
-            project.setPermission(from: secondAgent, to: thirdAgent, type: PermissionType.deny)
-            project.setPermission(from: thirdAgent, to: firstAgent, type: PermissionType.allow)
-        }
-        
-        // 创建一个默认工作流
-        let workflow = Workflow(name: "Research Workflow")
-        project.workflows = [workflow]
-        
-        currentProject = project
+        // 使用ProjectManager创建项目
+        currentProject = projectManager.createProject(name: projectName)
         
         // 从工作流生成示例任务
         generateTasksFromWorkflow()
-        
-        // 添加示例消息
-        messageManager.addSampleMessages(agents: project.agents, project: project)
     }
     
     func saveProject() {
         guard let project = currentProject else { return }
         
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "maoproj") ?? .json]
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
-                do {
-                    let data = try JSONEncoder().encode(project)
-                    try data.write(to: url)
-                } catch {
-                    print("保存失败: \(error)")
-                }
-            }
-        }
+        // 使用ProjectManager保存到Documents目录
+        projectManager.saveProject(project)
+        
+        // 刷新项目列表
+        projectManager.loadProjectList()
     }
     
     func loadProject() {
+        // 显示项目选择菜单
+        // 这里可以显示一个Alert让用户选择项目
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "maoproj") ?? .json]
+        panel.directoryURL = projectManager.projectsDirectory
         panel.begin { response in
             if response == .OK, let url = panel.url {
                 do {

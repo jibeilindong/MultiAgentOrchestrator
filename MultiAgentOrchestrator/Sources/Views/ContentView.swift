@@ -82,6 +82,92 @@ struct ContentView: View {
                         .menuStyle(.borderlessButton)
                         .frame(width: 40)
                         
+                        // Tools 菜单
+                        Menu {
+                            // OpenClaw连接状态
+                            HStack {
+                                Image(systemName: appState.openClawManager.isConnected ? "checkmark.circle.fill" : "circle.slash")
+                                    .foregroundColor(appState.openClawManager.isConnected ? .green : .red)
+                                Text(appState.openClawManager.isConnected ? "Connected (\(appState.openClawManager.agents.count) agents)" : "Disconnected")
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                            
+                            Divider()
+                            
+                            // 连接/断开
+                            if appState.openClawManager.isConnected {
+                                Button(action: {
+                                    appState.openClawManager.disconnect()
+                                }) {
+                                    Label("Disconnect OpenClaw", systemImage: "link.badge.minus")
+                                }
+                                
+                                Divider()
+                                
+                                // 添加Agents到项目
+                                Button(action: {
+                                    addOpenClawAgentsToProject()
+                                }) {
+                                    Label("Add Agents to Project", systemImage: "person.badge.plus")
+                                }
+                                
+                                Divider()
+                                
+                                // 应用配置到OpenClaw
+                                Button(action: {
+                                    if let agents = appState.currentProject?.agents {
+                                        _ = appState.openClawManager.applyConfiguration(agents: agents)
+                                    }
+                                }) {
+                                    Label("Apply Configuration", systemImage: "arrow.up.doc")
+                                }
+                                
+                                // 还原配置
+                                Menu {
+                                    ForEach(appState.openClawManager.listBackups(), id: \.self) { backup in
+                                        Button(action: {
+                                            _ = appState.openClawManager.restore(backupPath: backup)
+                                        }) {
+                                            Text(backup.lastPathComponent)
+                                        }
+                                    }
+                                } label: {
+                                    Label("Restore Backup", systemImage: "arrow.down.doc")
+                                }
+                            } else {
+                                // 自动检测并连接
+                                Button(action: {
+                                    autoDetectAndConnect()
+                                }) {
+                                    Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
+                                }
+                                
+                                Button(action: {
+                                    appState.openClawManager.connect()
+                                }) {
+                                    Label("Manual Connect", systemImage: "link.badge.plus")
+                                }
+                            }
+                            
+                            Divider()
+                            
+                            // OpenClaw设置
+                            Button(action: {
+                                NotificationCenter.default.post(name: .openSettings, object: nil)
+                            }) {
+                                Label("OpenClaw Settings", systemImage: "gear")
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "wrench.and.screwdriver")
+                                Text("Tools")
+                            }
+                        }
+                        .help("Tools")
+                        .menuStyle(.borderlessButton)
+                        .frame(width: 60)
+                        
                         Button(action: { appState.createNewProject() }) {
                             Label(LocalizedString.new, systemImage: "plus")
                         }
@@ -123,5 +209,52 @@ struct ContentView: View {
             PropertiesPanelView()
                 .frame(width: 250)
         }
+    }
+    
+    // 将OpenClaw agents添加到当前项目
+    private func addOpenClawAgentsToProject() {
+        guard var project = appState.currentProject else { return }
+        
+        for agentName in appState.openClawManager.agents {
+            // 检查是否已存在
+            if !project.agents.contains(where: { $0.name == agentName }) {
+                var agent = Agent(name: agentName)
+                agent.description = "OpenClaw Agent: \(agentName)"
+                agent.soulMD = "# \(agentName)\nOpenClaw Agent"
+                project.agents.append(agent)
+            }
+        }
+        
+        appState.currentProject = project
+    }
+
+    // 自动检测OpenClaw并连接
+    private func autoDetectAndConnect() {
+        print("Auto Detect OpenClaw starting...")
+        
+        let fileManager = FileManager.default
+        let possiblePaths = [
+            "/Users/chenrongze/.local/bin/openclaw",
+            "/usr/local/bin/openclaw",
+            "/opt/homebrew/bin/openclaw", 
+            "/usr/bin/openclaw"
+        ]
+        
+        var foundPath: String?
+        for path in possiblePaths {
+            if fileManager.fileExists(atPath: path) {
+                foundPath = path
+                print("Found OpenClaw at: \(path)")
+                break
+            }
+        }
+        
+        if foundPath == nil {
+            print("OpenClaw not found in any location!")
+        }
+        
+        // 无论如何都尝试连接
+        print("Calling connect...")
+        appState.openClawManager.connect()
     }
 }

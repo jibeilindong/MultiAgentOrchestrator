@@ -9,9 +9,31 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
+    @State private var showingProjectPicker = false
     
     var body: some View {
         VStack(spacing: 0) {
+            // 项目切换控件
+            Button(action: { showingProjectPicker = true }) {
+                HStack {
+                    Image(systemName: "folder")
+                    Text(appState.currentProject?.name ?? "No Project")
+                        .font(.headline)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showingProjectPicker) {
+                ProjectPickerView()
+                    .environmentObject(appState)
+            }
+            
+            Divider()
+            
             // 标题
             Text(LocalizedString.navigation)
                 .font(.headline)

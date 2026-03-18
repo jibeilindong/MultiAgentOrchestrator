@@ -8,18 +8,34 @@
 import Foundation
 import CoreGraphics
 
+// 运行时状态
+struct RuntimeState: Codable {
+    var sessionID: String
+    var messageQueue: [String]
+    var agentStates: [String: String]
+    var lastUpdated: Date
+    
+    init() {
+        self.sessionID = UUID().uuidString
+        self.messageQueue = []
+        self.agentStates = [:]
+        self.lastUpdated = Date()
+    }
+}
+
 struct MAProject: Codable, Identifiable {
     let id: UUID
     var name: String
     var agents: [Agent]
     var workflows: [Workflow]
     var permissions: [Permission]
+    var runtimeState: RuntimeState
     var createdAt: Date
     var updatedAt: Date
     
     // 显式实现 Codable
     enum CodingKeys: String, CodingKey {
-        case id, name, agents, workflows, permissions, createdAt, updatedAt
+        case id, name, agents, workflows, permissions, runtimeState, createdAt, updatedAt
     }
     
     init(from decoder: Decoder) throws {
@@ -29,6 +45,7 @@ struct MAProject: Codable, Identifiable {
         agents = try container.decode([Agent].self, forKey: .agents)
         workflows = try container.decode([Workflow].self, forKey: .workflows)
         permissions = try container.decode([Permission].self, forKey: .permissions)
+        runtimeState = (try? container.decode(RuntimeState.self, forKey: .runtimeState)) ?? RuntimeState()
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
@@ -40,6 +57,7 @@ struct MAProject: Codable, Identifiable {
         try container.encode(agents, forKey: .agents)
         try container.encode(workflows, forKey: .workflows)
         try container.encode(permissions, forKey: .permissions)
+        try container.encode(runtimeState, forKey: .runtimeState)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
@@ -50,6 +68,7 @@ struct MAProject: Codable, Identifiable {
         self.agents = []
         self.workflows = []
         self.permissions = []
+        self.runtimeState = RuntimeState()
         self.createdAt = Date()
         self.updatedAt = Date()
     }
