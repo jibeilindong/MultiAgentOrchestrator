@@ -809,6 +809,10 @@ class OpenClawManager: ObservableObject {
         try runOpenClawCommand(using: config ?? self.config, arguments: arguments, standardInput: standardInput)
     }
 
+    func resolvedOpenClawPath(using config: OpenClawConfig? = nil) -> String {
+        resolveOpenClawPath(for: config ?? self.config)
+    }
+
     private func parseManagedAgents(from data: Data, using config: OpenClawConfig) -> [ManagedAgentRecord] {
         guard
             let jsonData = extractJSONPayload(from: data),

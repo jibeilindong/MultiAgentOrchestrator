@@ -22,7 +22,7 @@ struct MonitoringDashboardView: View {
         let agentIDs = Set(project.agents.map(\.id))
         return appState.messageManager.messages
             .filter { message in
-                agentIDs.contains(message.fromAgentID) && agentIDs.contains(message.toAgentID)
+                agentIDs.contains(message.fromAgentID) || agentIDs.contains(message.toAgentID)
             }
             .sorted { $0.timestamp < $1.timestamp }
     }
@@ -34,12 +34,38 @@ struct MonitoringDashboardView: View {
         let messages = workflowConversationMessages
 
         return project.agents.map { agent in
-            let outgoingCount = messages.filter {
-                $0.fromAgentID == agent.id && $0.toAgentID != agent.id
-            }.count
-            let incomingCount = messages.filter {
-                $0.toAgentID == agent.id && $0.fromAgentID != agent.id
-            }.count
+            let outgoingCount = messages.reduce(into: 0) { partial, message in
+                let role = message.metadata["role"]?.lowercased()
+                let kind = message.metadata["kind"]?.lowercased()
+
+                if message.fromAgentID == agent.id && message.toAgentID == agent.id {
+                    if role == "assistant" || kind == "output" {
+                        partial += 1
+                    }
+                    return
+                }
+
+                if message.fromAgentID == agent.id {
+                    partial += 1
+                }
+            }
+
+            let incomingCount = messages.reduce(into: 0) { partial, message in
+                let role = message.metadata["role"]?.lowercased()
+                let kind = message.metadata["kind"]?.lowercased()
+
+                if message.fromAgentID == agent.id && message.toAgentID == agent.id {
+                    if role == "user" || kind == "input" {
+                        partial += 1
+                    }
+                    return
+                }
+
+                if message.toAgentID == agent.id {
+                    partial += 1
+                }
+            }
+
             let state = onlineState(for: agent, in: project)
             let skillCount = Set(agent.capabilities.map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines)

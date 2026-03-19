@@ -36,13 +36,63 @@ struct WorkbenchConversationView: View {
         messageManager.workbenchMessages(for: selectedWorkflow?.id)
     }
 
-    private var workbenchTasks: [Task] {
-        appState.taskManager.tasks
-            .filter { task in
-                task.metadata["source"] == "workbench"
-                    && (selectedWorkflow == nil || task.metadata["workflowID"] == selectedWorkflow?.id.uuidString)
+    private var lastWorkbenchMessageSignature: String {
+        guard let last = workbenchMessages.last else { return "empty" }
+        return [
+            last.id.uuidString,
+            String(last.content.count),
+            last.metadata["thinking"] ?? "false",
+            last.metadata["outputType"] ?? ""
+        ].joined(separator: "|")
+    }
+
+    private var currentExecutingNodeID: UUID? {
+        guard appState.openClawService.isExecuting else { return nil }
+        return appState.openClawService.executionLogs
+            .reversed()
+            .first(where: { $0.nodeID != nil && $0.message.hasPrefix("Executing node") })?
+            .nodeID
+    }
+
+    private var latestResultByNodeID: [UUID: ExecutionResult] {
+        guard let workflow = selectedWorkflow else { return [:] }
+        let nodeIDs = Set(workflow.nodes.map(\.id))
+        var mapping: [UUID: ExecutionResult] = [:]
+        for result in appState.openClawService.executionResults.reversed() where nodeIDs.contains(result.nodeID) {
+            if mapping[result.nodeID] == nil {
+                mapping[result.nodeID] = result
             }
-            .sorted { $0.createdAt > $1.createdAt }
+        }
+        return mapping
+    }
+
+    private var workflowFlowReceipts: [WorkflowFlowReceipt] {
+        guard let workflow = selectedWorkflow else { return [] }
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+
+        return workflow.edges.compactMap { edge in
+            guard let fromNode = nodeByID[edge.fromNodeID],
+                  let toNode = nodeByID[edge.toNodeID] else {
+                return nil
+            }
+
+            let fromStatus = nodeExecutionStatus(for: fromNode, in: workflow)
+            let toStatus = nodeExecutionStatus(for: toNode, in: workflow)
+            return WorkflowFlowReceipt(
+                id: edge.id,
+                fromName: nodeDisplayName(fromNode),
+                toName: nodeDisplayName(toNode),
+                fromStatus: fromStatus,
+                toStatus: toStatus,
+                flowStatus: flowStatus(from: fromStatus, to: toStatus)
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.flowStatus.priority == rhs.flowStatus.priority {
+                return lhs.fromName.localizedCaseInsensitiveCompare(rhs.fromName) == .orderedAscending
+            }
+            return lhs.flowStatus.priority < rhs.flowStatus.priority
+        }
     }
 
     private var hasOpenClawConfiguration: Bool {
@@ -276,6 +326,13 @@ struct WorkbenchConversationView: View {
                         }
                     }
                 }
+                .onChange(of: lastWorkbenchMessageSignature) { _, _ in
+                    if let lastID = workbenchMessages.last?.id {
+                        withAnimation {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
+                }
             }
 
             Divider()
@@ -287,15 +344,35 @@ struct WorkbenchConversationView: View {
                         .foregroundColor(.red)
                 }
 
-                TextField(
-                    "描述要交给当前工作流处理的任务，例如：先调研，再拆分，再给出执行方案。",
-                    text: $prompt,
-                    axis: .vertical
-                )
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(3...8)
-                .onSubmit {
-                    publishPrompt()
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField(
+                        "描述要交给当前工作流处理的任务，例如：先调研，再拆分，再给出执行方案。",
+                        text: $prompt,
+                        axis: .vertical
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(3...8)
+                    .onSubmit {
+                        publishPrompt()
+                    }
+
+                    if !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Markdown 预览")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+
+                            ScrollView {
+                                MarkdownText(prompt)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                            }
+                            .frame(minHeight: 64, maxHeight: 140)
+                            .background(Color(.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                    }
                 }
 
                 HStack {
@@ -324,10 +401,10 @@ struct WorkbenchConversationView: View {
     private var taskPane: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("任务回执")
+                Text("信息流转回执")
                     .font(.headline)
                 Spacer()
-                Text("\(workbenchTasks.count)")
+                Text("\(workflowFlowReceipts.count)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -337,34 +414,41 @@ struct WorkbenchConversationView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    if workbenchTasks.isEmpty {
-                        Text("当前工作流还没有由工作台发布的任务。")
+                    if workflowFlowReceipts.isEmpty {
+                        Text("当前工作流还没有可展示的信息流转。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding()
                     } else {
-                        ForEach(workbenchTasks.prefix(12)) { task in
+                        ForEach(workflowFlowReceipts) { flow in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
-                                    MarkdownText(task.title)
+                                    Text("\(flow.fromName) → \(flow.toName)")
                                         .font(.subheadline)
                                         .fontWeight(.medium)
                                         .lineLimit(1)
                                     Spacer()
-                                    statusBadge(title: task.status.rawValue, color: task.status.color)
+                                    statusBadge(title: flow.flowStatus.title, color: flow.flowStatus.color)
                                 }
 
-                                if let agentID = task.assignedAgentID,
-                                   let agent = project?.agents.first(where: { $0.id == agentID }) {
-                                    Text("入口 Agent: \(agent.name)")
+                                HStack(spacing: 8) {
+                                    statusBadge(
+                                        title: "\(flow.fromName): \(flow.fromStatus.icon) \(flow.fromStatus.title)",
+                                        color: flow.fromStatus.color
+                                    )
+                                    Text("→")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
+                                    statusBadge(
+                                        title: "\(flow.toName): \(flow.toStatus.icon) \(flow.toStatus.title)",
+                                        color: flow.toStatus.color
+                                    )
                                 }
 
-                                MarkdownText(task.description)
+                                Text("流转状态：\(flow.flowStatus.title)")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                    .lineLimit(3)
+                                    .lineLimit(2)
                             }
                             .padding(10)
                             .background(Color(.windowBackgroundColor))
@@ -384,6 +468,66 @@ struct WorkbenchConversationView: View {
             return nil
         }
         return appState.taskManager.task(with: taskID)
+    }
+
+    private func nodeDisplayName(_ node: WorkflowNode) -> String {
+        switch node.type {
+        case .start:
+            return node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Start" : node.title
+        case .agent:
+            if let agentID = node.agentID,
+               let agent = project?.agents.first(where: { $0.id == agentID }) {
+                return agent.name
+            }
+            return node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Agent" : node.title
+        }
+    }
+
+    private func nodeExecutionStatus(for node: WorkflowNode, in workflow: Workflow) -> NodeExecutionDisplayStatus {
+        if let state = appState.openClawService.executionState,
+           state.workflowID == workflow.id {
+            if state.failedNodes.contains(node.id) {
+                return .failed
+            }
+            if state.completedNodes.contains(node.id) {
+                return .completed
+            }
+            if currentExecutingNodeID == node.id {
+                return .running
+            }
+            if node.type == .start,
+               (!state.completedNodes.isEmpty || !state.failedNodes.isEmpty || currentExecutingNodeID != nil) {
+                return .completed
+            }
+        }
+
+        if let latest = latestResultByNodeID[node.id] {
+            switch latest.status {
+            case .failed:
+                return .failed
+            case .completed:
+                return .completed
+            case .running, .waiting:
+                return .running
+            case .idle:
+                return .idle
+            }
+        }
+
+        return .idle
+    }
+
+    private func flowStatus(from: NodeExecutionDisplayStatus, to: NodeExecutionDisplayStatus) -> WorkflowFlowStatus {
+        if from == .failed || to == .failed {
+            return .blocked
+        }
+        if to == .completed {
+            return .completed
+        }
+        if from == .running || to == .running || (from == .completed && to == .idle) {
+            return .inProgress
+        }
+        return .pending
     }
 
     private func publishPrompt() {
@@ -437,6 +581,107 @@ private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
     }
 }
 
+private struct WorkflowFlowReceipt: Identifiable {
+    let id: UUID
+    let fromName: String
+    let toName: String
+    let fromStatus: NodeExecutionDisplayStatus
+    let toStatus: NodeExecutionDisplayStatus
+    let flowStatus: WorkflowFlowStatus
+}
+
+private enum NodeExecutionDisplayStatus: String {
+    case idle
+    case running
+    case completed
+    case failed
+
+    var title: String {
+        switch self {
+        case .idle:
+            return "待命"
+        case .running:
+            return "执行中"
+        case .completed:
+            return "已完成"
+        case .failed:
+            return "失败"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .idle:
+            return .secondary
+        case .running:
+            return .orange
+        case .completed:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .idle:
+            return "○"
+        case .running:
+            return "◔"
+        case .completed:
+            return "✓"
+        case .failed:
+            return "✕"
+        }
+    }
+}
+
+private enum WorkflowFlowStatus: String {
+    case pending
+    case inProgress
+    case completed
+    case blocked
+
+    var title: String {
+        switch self {
+        case .pending:
+            return "待流转"
+        case .inProgress:
+            return "流转中"
+        case .completed:
+            return "已流转"
+        case .blocked:
+            return "阻塞"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .pending:
+            return .secondary
+        case .inProgress:
+            return .orange
+        case .completed:
+            return .green
+        case .blocked:
+            return .red
+        }
+    }
+
+    var priority: Int {
+        switch self {
+        case .inProgress:
+            return 0
+        case .blocked:
+            return 1
+        case .pending:
+            return 2
+        case .completed:
+            return 3
+        }
+    }
+}
+
 private struct WorkbenchMessageBubble: View {
     let message: Message
     let linkedTask: Task?
@@ -445,14 +690,40 @@ private struct WorkbenchMessageBubble: View {
         message.metadata["role"] == "user"
     }
 
+    private var agentName: String {
+        let name = message.metadata["agentName"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "Agent" : name
+    }
+
+    private var isThinking: Bool {
+        !isUserMessage && message.metadata["thinking"] == "true"
+    }
+
     var body: some View {
         VStack(alignment: isUserMessage ? .trailing : .leading, spacing: 6) {
             HStack {
                 if isUserMessage { Spacer() }
-                Text(isUserMessage ? "任务输入" : "工作流回执")
+                Text(isUserMessage ? "你" : "回复 Agent: \(agentName)")
                     .font(.caption2)
+                    .fontWeight(.medium)
                     .foregroundColor(.secondary)
+                if !isUserMessage {
+                    Text(isThinking ? "思考中…" : "已回复")
+                        .font(.caption2)
+                        .foregroundColor(isThinking ? .orange : .secondary)
+                }
                 if !isUserMessage { Spacer() }
+            }
+
+            if isThinking {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("正在生成回复，内容会实时更新")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
             }
 
             MarkdownText(message.content)
@@ -464,7 +735,7 @@ private struct WorkbenchMessageBubble: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             HStack(spacing: 8) {
-                if let linkedTask {
+                if !isUserMessage, let linkedTask {
                     Label(linkedTask.status.rawValue, systemImage: linkedTask.status.icon)
                         .foregroundColor(linkedTask.status.color)
                 }

@@ -91,6 +91,12 @@ struct ExecutionResult: Codable, Identifiable {
     }
 }
 
+struct NodeStreamUpdate {
+    let nodeID: UUID
+    let agentID: UUID
+    let chunk: String
+}
+
 // OpenClaw Agent配置
 struct OpenClawAgentConfig: Codable {
     var agentID: String      // Agent ID (如 taizi, zhongshu)
@@ -424,6 +430,7 @@ class OpenClawService: ObservableObject {
         _ workflow: Workflow,
         agents: [Agent],
         prompt: String? = nil,
+        onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
@@ -462,6 +469,7 @@ class OpenClawService: ObservableObject {
             workflow: workflow,
             agents: agents,
             prompt: prompt,
+            onNodeStream: onNodeStream,
             onNodeCompleted: onNodeCompleted
         ) { nodeResults in
             results = nodeResults
@@ -557,6 +565,7 @@ class OpenClawService: ObservableObject {
         workflow: Workflow,
         agents: [Agent],
         prompt: String?,
+        onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
@@ -602,7 +611,20 @@ class OpenClawService: ObservableObject {
             }
             
             // 调用OpenClaw执行节点
-            executeNodeOnOpenClaw(node: node, agent: agent, prompt: prompt) { result in
+            executeNodeOnOpenClaw(
+                node: node,
+                agent: agent,
+                prompt: prompt,
+                onStream: { chunk in
+                    onNodeStream?(
+                        NodeStreamUpdate(
+                            nodeID: node.id,
+                            agentID: agent.id,
+                            chunk: chunk
+                        )
+                    )
+                }
+            ) { result in
                 results.append(result)
                 self.executionResults.append(result)
                 onNodeCompleted?(result)
@@ -629,6 +651,7 @@ class OpenClawService: ObservableObject {
         node: WorkflowNode,
         agent: Agent,
         prompt: String?,
+        onStream: ((String) -> Void)? = nil,
         completion: @escaping (ExecutionResult) -> Void
     ) {
         // 构建执行指令
@@ -636,7 +659,11 @@ class OpenClawService: ObservableObject {
         let targetAgentID = resolvedAgentIdentifier(for: agent)
         
         // 调用openclaw agent命令
-        callOpenClawAgent(instruction: instruction, agentIdentifier: targetAgentID) { success, output, outputType in
+        callOpenClawAgent(
+            instruction: instruction,
+            agentIdentifier: targetAgentID,
+            onPartial: onStream
+        ) { success, output, outputType in
             let status: ExecutionStatus = success ? .completed : .failed
             let result = ExecutionResult(
                 nodeID: node.id,
@@ -671,6 +698,7 @@ class OpenClawService: ObservableObject {
     private func callOpenClawAgent(
         instruction: String,
         agentIdentifier: String,
+        onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Bool, String, ExecutionOutputType) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -731,7 +759,19 @@ class OpenClawService: ObservableObject {
             args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
 
             do {
-                let result = try manager.executeOpenClawCLI(arguments: args, using: connectionConfig)
+                let result = try self.executeOpenClawAgentStreamingProcess(
+                    manager: manager,
+                    config: connectionConfig,
+                    arguments: args,
+                    onStdoutChunk: { chunk in
+                        guard let onPartial else { return }
+                        let visibleChunk = self.extractStreamingTextChunk(from: chunk)
+                        guard !visibleChunk.isEmpty else { return }
+                        DispatchQueue.main.async {
+                            onPartial(visibleChunk)
+                        }
+                    }
+                )
                 let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""
                 let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
                 let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -845,6 +885,122 @@ class OpenClawService: ObservableObject {
         }
 
         return enabledFlags
+    }
+
+    private func executeOpenClawAgentStreamingProcess(
+        manager: OpenClawManager,
+        config: OpenClawConfig,
+        arguments: [String],
+        onStdoutChunk: @escaping (String) -> Void
+    ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
+        let process = Process()
+
+        switch config.deploymentKind {
+        case .local:
+            process.executableURL = URL(fileURLWithPath: manager.resolvedOpenClawPath(using: config))
+            process.arguments = arguments
+        case .container:
+            let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !containerName.isEmpty else {
+                throw NSError(
+                    domain: "OpenClawService",
+                    code: 2001,
+                    userInfo: [NSLocalizedDescriptionKey: "容器名称未配置，无法执行 OpenClaw agent 命令。"]
+                )
+            }
+            let engine = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "docker"
+                : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [engine, "exec", containerName, "openclaw"] + arguments
+        case .remoteServer:
+            throw NSError(
+                domain: "OpenClawService",
+                code: 2002,
+                userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 OpenClaw CLI。"]
+            )
+        }
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let lock = NSLock()
+        var stdoutData = Data()
+        var stderrData = Data()
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            lock.lock()
+            stdoutData.append(data)
+            lock.unlock()
+            onStdoutChunk(String(decoding: data, as: UTF8.self))
+        }
+
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            lock.lock()
+            stderrData.append(data)
+            lock.unlock()
+        }
+
+        try process.run()
+        process.waitUntilExit()
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+        let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingStdout.isEmpty {
+            lock.lock()
+            stdoutData.append(remainingStdout)
+            lock.unlock()
+            onStdoutChunk(String(decoding: remainingStdout, as: UTF8.self))
+        }
+
+        let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingStderr.isEmpty {
+            lock.lock()
+            stderrData.append(remainingStderr)
+            lock.unlock()
+        }
+
+        return (process.terminationStatus, stdoutData, stderrData)
+    }
+
+    private func extractStreamingTextChunk(from chunk: String) -> String {
+        let normalized = chunk.replacingOccurrences(of: "\r", with: "")
+        guard !normalized.isEmpty else { return "" }
+
+        let lines = normalized.components(separatedBy: .newlines)
+        var visibleLines: [String] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                visibleLines.append(line)
+                continue
+            }
+
+            if looksLikeRuntimeLog(trimmed) {
+                continue
+            }
+            if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+                continue
+            }
+            visibleLines.append(line)
+        }
+
+        var filtered = visibleLines.joined(separator: "\n")
+        if normalized.hasSuffix("\n"), !filtered.hasSuffix("\n") {
+            filtered += "\n"
+        }
+
+        guard !filtered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        return filtered
     }
 
     private func resolvedAgentIdentifier(for agent: Agent) -> String {

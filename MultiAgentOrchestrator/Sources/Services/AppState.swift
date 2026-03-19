@@ -1439,20 +1439,6 @@ class AppState: ObservableObject {
         userMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: trimmedPrompt))
         messageManager.appendMessage(userMessage)
 
-        var queuedMessage = Message(
-            from: leadAgent.id,
-            to: leadAgent.id,
-            type: .notification,
-            content: "任务已发布到 \(workflow.name)，入口节点已路由给 \(leadAgent.name)。"
-        )
-        queuedMessage.status = .read
-        queuedMessage.metadata["channel"] = "workbench"
-        queuedMessage.metadata["role"] = "assistant"
-        queuedMessage.metadata["kind"] = "system"
-        queuedMessage.metadata["workflowID"] = workflow.id.uuidString
-        queuedMessage.metadata["taskID"] = task.id.uuidString
-        messageManager.appendMessage(queuedMessage)
-
         taskManager.moveTask(task.id, to: .inProgress)
         openClawService.addLog(.info, "Workbench published task '\(task.title)' to workflow \(workflow.name)")
 
@@ -1465,11 +1451,58 @@ class AppState: ObservableObject {
         }
 
         var entryReplySent = false
+        var streamingMessageIDByAgent: [UUID: UUID] = [:]
+        var streamingContentByAgent: [UUID: String] = [:]
 
         openClawService.executeWorkflow(
             workflow,
             agents: project.agents,
             prompt: trimmedPrompt,
+            onNodeStream: { [weak self] update in
+                guard let self else { return }
+                guard entryAgentIDs.contains(update.agentID) else { return }
+
+                let chunk = update.chunk
+                guard !chunk.isEmpty,
+                      !chunk.allSatisfy({ $0.isWhitespace || $0.isNewline }) else { return }
+
+                let respondingAgent = project.agents.first(where: { $0.id == update.agentID }) ?? leadAgent
+                let nextContent = (streamingContentByAgent[update.agentID, default: ""]) + chunk
+                streamingContentByAgent[update.agentID] = nextContent
+
+                if let messageID = streamingMessageIDByAgent[update.agentID] {
+                    self.messageManager.updateMessage(messageID) { message in
+                        message.content = nextContent
+                        message.timestamp = Date()
+                        message.metadata["thinking"] = "true"
+                        message.metadata["streamed"] = "true"
+                        message.metadata["agentName"] = respondingAgent.name
+                        message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
+                        message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: nextContent))
+                    }
+                } else {
+                    var streamingMessage = Message(
+                        from: respondingAgent.id,
+                        to: respondingAgent.id,
+                        type: .notification,
+                        content: nextContent
+                    )
+                    streamingMessage.status = .read
+                    streamingMessage.metadata["channel"] = "workbench"
+                    streamingMessage.metadata["role"] = "assistant"
+                    streamingMessage.metadata["kind"] = "output"
+                    streamingMessage.metadata["workflowID"] = workflow.id.uuidString
+                    streamingMessage.metadata["taskID"] = task.id.uuidString
+                    streamingMessage.metadata["entryReply"] = "true"
+                    streamingMessage.metadata["streamed"] = "true"
+                    streamingMessage.metadata["thinking"] = "true"
+                    streamingMessage.metadata["agentName"] = respondingAgent.name
+                    streamingMessage.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
+                    streamingMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: nextContent))
+                    self.messageManager.appendMessage(streamingMessage)
+                    streamingMessageIDByAgent[update.agentID] = streamingMessage.id
+                }
+            },
             onNodeCompleted: { [weak self] result in
                 guard let self else { return }
                 guard !entryReplySent, entryAgentIDs.contains(result.agentID) else { return }
@@ -1487,23 +1520,37 @@ class AppState: ObservableObject {
                 guard !output.isEmpty else { return }
                 entryReplySent = true
 
-                var responseMessage = Message(
-                    from: respondingAgent.id,
-                    to: respondingAgent.id,
-                    type: result.status == .completed ? .notification : .data,
-                    content: output
-                )
-                responseMessage.status = .read
-                responseMessage.metadata["channel"] = "workbench"
-                responseMessage.metadata["role"] = "assistant"
-                responseMessage.metadata["kind"] = "output"
-                responseMessage.metadata["outputType"] = result.outputType.rawValue
-                responseMessage.metadata["workflowID"] = workflow.id.uuidString
-                responseMessage.metadata["taskID"] = task.id.uuidString
-                responseMessage.metadata["entryReply"] = "true"
-                responseMessage.metadata["streamed"] = "true"
-                responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
-                self.messageManager.appendMessage(responseMessage)
+                if let messageID = streamingMessageIDByAgent[result.agentID] {
+                    self.messageManager.updateMessage(messageID) { message in
+                        message.content = output
+                        message.timestamp = Date()
+                        message.type = result.status == .completed ? .notification : .data
+                        message.metadata["thinking"] = "false"
+                        message.metadata["agentName"] = respondingAgent.name
+                        message.metadata["outputType"] = result.outputType.rawValue
+                        message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
+                    }
+                } else {
+                    var responseMessage = Message(
+                        from: respondingAgent.id,
+                        to: respondingAgent.id,
+                        type: result.status == .completed ? .notification : .data,
+                        content: output
+                    )
+                    responseMessage.status = .read
+                    responseMessage.metadata["channel"] = "workbench"
+                    responseMessage.metadata["role"] = "assistant"
+                    responseMessage.metadata["kind"] = "output"
+                    responseMessage.metadata["outputType"] = result.outputType.rawValue
+                    responseMessage.metadata["workflowID"] = workflow.id.uuidString
+                    responseMessage.metadata["taskID"] = task.id.uuidString
+                    responseMessage.metadata["entryReply"] = "true"
+                    responseMessage.metadata["streamed"] = "true"
+                    responseMessage.metadata["thinking"] = "false"
+                    responseMessage.metadata["agentName"] = respondingAgent.name
+                    responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
+                    self.messageManager.appendMessage(responseMessage)
+                }
             }
         ) { [weak self] results in
             guard let self else { return }
@@ -1523,22 +1570,42 @@ class AppState: ObservableObject {
                     let respondingAgent = project.agents.first(where: { $0.id == entryResult.agentID }) ?? leadAgent
                     let output = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
 
-                    var responseMessage = Message(
-                        from: respondingAgent.id,
-                        to: respondingAgent.id,
-                        type: failedCount == 0 ? .notification : .data,
-                        content: output
-                    )
-                    responseMessage.status = .read
-                    responseMessage.metadata["channel"] = "workbench"
-                    responseMessage.metadata["role"] = "assistant"
-                    responseMessage.metadata["kind"] = "output"
-                    responseMessage.metadata["outputType"] = entryResult.outputType.rawValue
-                    responseMessage.metadata["workflowID"] = workflow.id.uuidString
-                    responseMessage.metadata["taskID"] = task.id.uuidString
-                    responseMessage.metadata["entryReply"] = "true"
-                    responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
-                    self.messageManager.appendMessage(responseMessage)
+                    if let messageID = streamingMessageIDByAgent[entryResult.agentID] {
+                        self.messageManager.updateMessage(messageID) { message in
+                            message.content = output
+                            message.timestamp = Date()
+                            message.type = failedCount == 0 ? .notification : .data
+                            message.metadata["thinking"] = "false"
+                            message.metadata["agentName"] = respondingAgent.name
+                            message.metadata["outputType"] = entryResult.outputType.rawValue
+                            message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
+                        }
+                    } else {
+                        var responseMessage = Message(
+                            from: respondingAgent.id,
+                            to: respondingAgent.id,
+                            type: failedCount == 0 ? .notification : .data,
+                            content: output
+                        )
+                        responseMessage.status = .read
+                        responseMessage.metadata["channel"] = "workbench"
+                        responseMessage.metadata["role"] = "assistant"
+                        responseMessage.metadata["kind"] = "output"
+                        responseMessage.metadata["outputType"] = entryResult.outputType.rawValue
+                        responseMessage.metadata["workflowID"] = workflow.id.uuidString
+                        responseMessage.metadata["taskID"] = task.id.uuidString
+                        responseMessage.metadata["entryReply"] = "true"
+                        responseMessage.metadata["thinking"] = "false"
+                        responseMessage.metadata["agentName"] = respondingAgent.name
+                        responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
+                        self.messageManager.appendMessage(responseMessage)
+                    }
+                    entryReplySent = true
+                } else if let fallbackStreaming = streamingMessageIDByAgent.values.first {
+                    self.messageManager.updateMessage(fallbackStreaming) { message in
+                        message.metadata["thinking"] = "false"
+                    }
+                    entryReplySent = true
                 } else {
                     self.openClawService.addLog(
                         .info,

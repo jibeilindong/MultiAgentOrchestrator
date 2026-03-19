@@ -31,6 +31,23 @@ class MessageManager: ObservableObject {
         }
     }
 
+    func updateMessage(_ messageID: UUID, mutate: (inout Message) -> Void) {
+        guard let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
+        var message = messages[index]
+        mutate(&message)
+        messages[index] = message
+
+        if let pendingIndex = pendingApprovals.firstIndex(where: { $0.id == messageID }) {
+            if message.status == .waitingForApproval {
+                pendingApprovals[pendingIndex] = message
+            } else {
+                pendingApprovals.remove(at: pendingIndex)
+            }
+        } else if message.status == .waitingForApproval {
+            pendingApprovals.append(message)
+        }
+    }
+
     func workbenchMessages(for workflowID: UUID?) -> [Message] {
         messages
             .filter { message in
