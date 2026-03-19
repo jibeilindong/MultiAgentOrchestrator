@@ -75,8 +75,8 @@ struct SettingsView: View {
                     Section {
                         Button(action: { selectedTab = 3 }) {
                             HStack {
-                                Image(systemName: "gearshape.2")
-                                Text(LocalizedString.advanced)
+                                Image(systemName: "person.2.badge.gearshape")
+                                Text("OpenClaw Agents")
                                 Spacer()
                                 if selectedTab == 3 {
                                     Image(systemName: "checkmark")
@@ -85,14 +85,28 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    
+
                     Section {
                         Button(action: { selectedTab = 4 }) {
+                            HStack {
+                                Image(systemName: "gearshape.2")
+                                Text(LocalizedString.advanced)
+                                Spacer()
+                                if selectedTab == 4 {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Section {
+                        Button(action: { selectedTab = 5 }) {
                             HStack {
                                 Image(systemName: "info.circle")
                                 Text(LocalizedString.about)
                                 Spacer()
-                                if selectedTab == 4 {
+                                if selectedTab == 5 {
                                     Image(systemName: "checkmark")
                                 }
                             }
@@ -114,8 +128,10 @@ struct SettingsView: View {
                     case 2:
                         OpenClawConfigView()
                     case 3:
-                        AdvancedSettingsView()
+                        OpenClawAgentManagementView()
                     case 4:
+                        AdvancedSettingsView()
+                    case 5:
                         AboutSettingsView()
                     default:
                         LanguageSettingsView()

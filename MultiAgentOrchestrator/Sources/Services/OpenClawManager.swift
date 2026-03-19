@@ -69,6 +69,12 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    struct ClawHubSkillRecord: Identifiable, Hashable {
+        var id: String { slug }
+        var slug: String
+        var summary: String
+    }
+
     private struct SessionContext {
         let projectID: UUID
         let rootURL: URL
@@ -603,6 +609,64 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    func searchClawHubSkills(
+        query: String,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String, [ClawHubSkillRecord]) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedQuery.isEmpty else {
+            completion(true, "请输入关键词后再搜索。", [])
+            return
+        }
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持 ClawHub 搜索。", [])
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let searchResult = try self.runClawHubCommand(
+                    using: resolvedConfig,
+                    arguments: ["search", trimmedQuery, "--plain"]
+                )
+
+                if searchResult.terminationStatus == 0 {
+                    let parsed = self.parseClawHubSkillRecords(from: searchResult.standardOutput)
+                    let filtered = self.filterSkillRecords(parsed, with: trimmedQuery)
+                    DispatchQueue.main.async {
+                        completion(true, "搜索到 \(filtered.count) 条技能结果。", filtered)
+                    }
+                    return
+                }
+
+                let listResult = try self.runClawHubCommand(using: resolvedConfig, arguments: ["list", "--plain"])
+                guard listResult.terminationStatus == 0 else {
+                    let fallback = String(data: searchResult.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(searchResult.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "ClawHub 搜索失败" : fallback]
+                    )
+                }
+
+                let parsed = self.parseClawHubSkillRecords(from: listResult.standardOutput)
+                let filtered = self.filterSkillRecords(parsed, with: trimmedQuery)
+                DispatchQueue.main.async {
+                    completion(true, "搜索到 \(filtered.count) 条技能结果。", filtered)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [])
+                }
+            }
+        }
+    }
+
     func removeSkill(
         _ skillName: String,
         from agent: ManagedAgentRecord,
@@ -814,6 +878,65 @@ class OpenClawManager: ObservableObject {
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private func parseClawHubSkillRecords(from data: Data) -> [ClawHubSkillRecord] {
+        let lines = parsePlainTextList(from: data)
+        var records: [ClawHubSkillRecord] = []
+
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("NAME") || line.hasPrefix("SLUG") {
+                continue
+            }
+            if line.allSatisfy({ $0 == "-" || $0 == "|" }) {
+                continue
+            }
+
+            if line.contains("|") {
+                let columns = line
+                    .split(separator: "|")
+                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                if let slug = columns.first, !slug.isEmpty {
+                    let summary = columns.dropFirst().joined(separator: " | ")
+                    records.append(ClawHubSkillRecord(slug: slug, summary: summary))
+                    continue
+                }
+            }
+
+            if let range = line.range(of: " - ") {
+                let slug = String(line[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let summary = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !slug.isEmpty {
+                    records.append(ClawHubSkillRecord(slug: slug, summary: summary))
+                    continue
+                }
+            }
+
+            let parts = line
+                .split(maxSplits: 1, omittingEmptySubsequences: true) { $0 == " " || $0 == "\t" }
+                .map(String.init)
+            if let slug = parts.first, !slug.isEmpty {
+                let summary = parts.count > 1 ? parts[1].trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) : ""
+                records.append(ClawHubSkillRecord(slug: slug, summary: summary))
+            }
+        }
+
+        var seen = Set<String>()
+        return records
+            .filter { seen.insert($0.slug.lowercased()).inserted }
+            .sorted { $0.slug.localizedCaseInsensitiveCompare($1.slug) == .orderedAscending }
+    }
+
+    private func filterSkillRecords(_ records: [ClawHubSkillRecord], with query: String) -> [ClawHubSkillRecord] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedQuery.isEmpty else { return records }
+
+        return records.filter { record in
+            record.slug.lowercased().contains(normalizedQuery) || record.summary.lowercased().contains(normalizedQuery)
+        }
     }
 
     private func dictionaryArray(in value: Any) -> [[String: Any]]? {

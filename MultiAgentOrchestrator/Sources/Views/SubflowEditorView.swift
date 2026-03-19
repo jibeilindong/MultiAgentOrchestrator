@@ -16,7 +16,6 @@ struct SubflowEditorView: View {
     let parentWorkflow: Workflow
     @Binding var isPresented: Bool
     
-    @State private var subflow: Workflow?
     @State private var newSubflowName: String = ""
     @State private var isCreatingNew: Bool = false
     
@@ -206,8 +205,7 @@ struct SubflowEditorView: View {
         var newSubflow = Workflow(name: newSubflowName)
         newSubflow.parentNodeID = parentNode.id
 
-        var entryNode = WorkflowNode(type: .agent)
-        entryNode.title = "Subflow Agent"
+        var entryNode = WorkflowNode(type: .start)
         entryNode.position = CGPoint(x: 200, y: 100)
         entryNode.nestingLevel = parentNode.nestingLevel + 1
 
@@ -235,8 +233,7 @@ struct SubflowEditorView: View {
     
     // 更新父节点的subflowID
     private func updateParentNodeSubflowID(_ newSubflowID: UUID?) {
-        guard let project = appState.currentProject,
-              var workflow = project.workflows.first(where: { $0.id == parentWorkflow.id }),
+        guard var workflow = appState.currentProject?.workflows.first(where: { $0.id == parentWorkflow.id }),
               let index = workflow.nodes.firstIndex(where: { $0.id == parentNode.id }) else { return }
         
         workflow.nodes[index].subflowID = newSubflowID
@@ -249,22 +246,22 @@ struct SubflowEditorView: View {
     // 辅助函数
     private func nodeIcon(for type: WorkflowNode.NodeType) -> String {
         switch type {
+        case .start: return "play.circle.fill"
         case .agent: return "person.circle.fill"
-        case .subflow: return "arrow.down.doc.fill"
         }
     }
     
     private func nodeColor(for type: WorkflowNode.NodeType) -> Color {
         switch type {
+        case .start: return .orange
         case .agent: return .blue
-        case .subflow: return .purple
         }
     }
     
     private func nodeTitle(for node: WorkflowNode) -> String {
         switch node.type {
+        case .start: return "Start"
         case .agent: return "Agent Node"
-        case .subflow: return "Subflow"
         }
     }
 }
@@ -273,7 +270,7 @@ struct SubflowEditorView: View {
 struct SubflowEditorView_Previews: PreviewProvider {
     static var previews: some View {
         SubflowEditorView(
-            parentNode: WorkflowNode(type: .subflow),
+            parentNode: WorkflowNode(type: .agent),
             parentWorkflow: Workflow(name: "Main"),
             isPresented: .constant(true)
         )

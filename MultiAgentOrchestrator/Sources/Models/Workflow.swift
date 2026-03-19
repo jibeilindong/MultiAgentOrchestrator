@@ -170,8 +170,19 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
     var outputParameters: [SubflowParameter] = []  // 输出参数
     
     enum NodeType: String, Codable, Hashable {
+        case start
         case agent
-        case subflow  // 子流程节点
+
+        static func decoded(from rawType: String) -> NodeType {
+            switch rawType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "start", "startnode", "entry", "root":
+                return .start
+            case "agent", "subflow", "branch", "end":
+                return .agent
+            default:
+                return .agent
+            }
+        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -193,7 +204,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         self.id = UUID()
         self.type = type
         self.position = .zero
-        self.title = ""
+        self.title = type == .start ? "Start" : ""
         self.conditionExpression = ""
         self.loopEnabled = false
         self.maxIterations = 1
@@ -204,7 +215,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         id = try container.decode(UUID.self, forKey: .id)
         agentID = try container.decodeIfPresent(UUID.self, forKey: .agentID)
         let rawType = try container.decodeIfPresent(String.self, forKey: .type) ?? NodeType.agent.rawValue
-        type = WorkflowNode.NodeType(rawValue: rawType) ?? .agent
+        type = WorkflowNode.NodeType(rawValue: rawType) ?? WorkflowNode.NodeType.decoded(from: rawType)
         position = try container.decode(CGPoint.self, forKey: .position)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""

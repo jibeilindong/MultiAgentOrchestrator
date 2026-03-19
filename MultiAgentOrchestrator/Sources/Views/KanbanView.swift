@@ -87,8 +87,8 @@ struct KanbanView: View {
                         appState.taskManager.updateTask(updatedTask)
                     },
                     onDelete: {
-                        if let task = selectedTask {
-                            appState.taskManager.deleteTask(task.id)
+                        if let selectedTask {
+                            appState.taskManager.deleteTask(selectedTask.id)
                         }
                     }
                 )
@@ -165,7 +165,7 @@ struct KanbanColumnView: View {
             .background(Color(.controlBackgroundColor))
             .cornerRadius(8)
             .dropDestination(for: String.self) { items, location in
-                if let draggedTask = draggingTask,
+                if draggingTask != nil,
                    let item = items.first,
                    let taskID = UUID(uuidString: item) {
                     
