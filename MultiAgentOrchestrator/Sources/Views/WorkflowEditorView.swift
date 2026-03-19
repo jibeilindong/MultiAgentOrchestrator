@@ -622,12 +622,12 @@ struct ArchitectureView: View {
     
     // 处理连接模式下的节点点击
     private func handleNodeClickInConnectMode(node: WorkflowNode) {
-        guard node.type == .agent else { return }
+        guard node.type == .agent || node.type == .start else { return }
 
         if isConnectMode {
             if let fromID = connectFromAgentID {
                 // Create connection from source to this node
-                if let sourceNodeID = resolveAgentNodeID(from: fromID) {
+                if let sourceNodeID = resolveConnectableNodeID(from: fromID) {
                     self.createConnection(from: sourceNodeID, to: node.id)
                 }
                 connectFromAgentID = nil
@@ -643,10 +643,10 @@ struct ArchitectureView: View {
         appState.connectNodes(from: from, to: to, bidirectional: connectionType == .bidirectional)
     }
 
-    private func resolveAgentNodeID(from identifier: UUID) -> UUID? {
+    private func resolveConnectableNodeID(from identifier: UUID) -> UUID? {
         guard let workflow = appState.currentProject?.workflows.first else { return nil }
 
-        if workflow.nodes.contains(where: { $0.id == identifier && $0.type == .agent }) {
+        if workflow.nodes.contains(where: { $0.id == identifier && ($0.type == .agent || $0.type == .start) }) {
             return identifier
         }
 

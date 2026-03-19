@@ -1082,7 +1082,9 @@ class AppState: ObservableObject {
               let sourceNode = workflow.nodes.first(where: { $0.id == sourceNodeID }),
               let targetNode = workflow.nodes.first(where: { $0.id == targetNodeID }) else { return }
 
-        if sourceNode.type != .agent || targetNode.type != .agent {
+        // 当前编辑器支持 start/agent 两类节点连线；仅在 agent<->agent 时自动补权限。
+        let supportedTypes: Set<WorkflowNode.NodeType> = [.start, .agent]
+        if !supportedTypes.contains(sourceNode.type) || !supportedTypes.contains(targetNode.type) {
             return
         }
 
@@ -1093,7 +1095,10 @@ class AppState: ObservableObject {
             }
         }
 
-        if let sourceAgentID = sourceNode.agentID, let targetAgentID = targetNode.agentID {
+        if sourceNode.type == .agent,
+           targetNode.type == .agent,
+           let sourceAgentID = sourceNode.agentID,
+           let targetAgentID = targetNode.agentID {
             setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
             if bidirectional {
                 setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
