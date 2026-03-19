@@ -321,7 +321,7 @@ struct AgentPropertiesView: View {
                             
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
-                                    Text("Soul.md Configuration")
+                                    Text("Workspace SOUL Content")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                     Spacer()

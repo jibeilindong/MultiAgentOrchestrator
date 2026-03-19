@@ -22,13 +22,10 @@ struct CanvasView: View {
     @State private var selectedBoundaryIDs: Set<UUID> = []
     @State private var connectingFromNode: WorkflowNode?
     @State private var tempConnectionEnd: CGPoint?
-    @State private var isDraggingCanvas: Bool = false
     @State private var isLassoMode: Bool = false
     @State private var isTransientLassoMode: Bool = false
     @State private var lassoRect: CGRect?
     @State private var suppressCanvasTapClear: Bool = false
-    @State private var isHoveringCanvas: Bool = false
-    @State private var didPanCanvasInCurrentGesture: Bool = false
 
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
@@ -105,11 +102,6 @@ struct CanvasView: View {
                 suppressCanvasTapClear = true
             }
         }
-        .background(
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(createCanvasGesture())
-        )
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                 if event.modifierFlags.contains(.command) {
@@ -152,13 +144,6 @@ struct CanvasView: View {
             if !newValue {
                 connectFromAgentID = nil
             }
-        }
-        .onHover { hovering in
-            isHoveringCanvas = hovering
-            updateCanvasCursor()
-        }
-        .onChange(of: isDraggingCanvas) { _, _ in
-            updateCanvasCursor()
         }
     }
 
@@ -272,76 +257,7 @@ struct CanvasView: View {
         self.selectedEdgeID = nil
     }
 
-    private func createCanvasGesture() -> some Gesture {
-        SimultaneousGesture(
-            MagnificationGesture()
-                .onChanged { value in
-                    scale = lastOffset == .zero ? value.magnitude : scale
-                    scale = max(0.05, min(scale, 20.0))
-                }
-                .onEnded { _ in
-                    lastOffset = offset
-                    zoomScale = scale
-                },
-            SimultaneousGesture(
-                DragGesture(minimumDistance: 3)
-                    .onChanged { value in
-                        guard !isLassoMode, !isTransientLassoMode, connectingFromNode == nil else { return }
-                        didPanCanvasInCurrentGesture = true
-                        isDraggingCanvas = true
-                        offset = CGSize(
-                            width: lastOffset.width + value.translation.width,
-                            height: lastOffset.height + value.translation.height
-                        )
-                    }
-                    .onEnded { _ in
-                        guard !isLassoMode, !isTransientLassoMode else { return }
-                        if isDraggingCanvas {
-                            lastOffset = offset
-                            isDraggingCanvas = false
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                            didPanCanvasInCurrentGesture = false
-                        }
-                    },
-                TapGesture(count: 1)
-                    .onEnded {
-                        guard !isLassoMode, !isTransientLassoMode else { return }
-                        if didPanCanvasInCurrentGesture {
-                            didPanCanvasInCurrentGesture = false
-                            return
-                        }
-                        if suppressCanvasTapClear {
-                            suppressCanvasTapClear = false
-                            return
-                        }
-                        selectedNodeID = nil
-                        selectedNodeIDs.removeAll()
-                        selectedEdgeID = nil
-                        selectedBoundaryIDs.removeAll()
-                        connectingFromNode = nil
-                        tempConnectionEnd = nil
-                        if !isConnectMode {
-                            connectFromAgentID = nil
-                        }
-                    }
-            )
-        )
-    }
-
     private func setupDefaultNodes() {
         _ = appState.ensureMainWorkflow()
-    }
-
-    private func updateCanvasCursor() {
-        guard isHoveringCanvas else {
-            NSCursor.arrow.set()
-            return
-        }
-        if isDraggingCanvas {
-            NSCursor.closedHand.set()
-        } else {
-            NSCursor.openHand.set()
-        }
     }
 }

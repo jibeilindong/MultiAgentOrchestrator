@@ -973,20 +973,28 @@ struct NodePropertyPanel: View {
                                     .textFieldStyle(.roundedBorder)
 
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Soul.md Configuration")
+                                    Text("SOUL Source")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
 
                                     if let soulSourcePath {
-                                        LabeledContent("Source file") {
-                                            Text(soulSourcePath)
+                                        let sourceURL = URL(fileURLWithPath: soulSourcePath)
+                                        LabeledContent("Workspace") {
+                                            Text(sourceWorkspaceName(for: sourceURL))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .multilineTextAlignment(.trailing)
+                                                .textSelection(.enabled)
+                                        }
+                                        LabeledContent("SOUL file") {
+                                            Text(sourceURL.lastPathComponent)
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
                                                 .multilineTextAlignment(.trailing)
                                                 .textSelection(.enabled)
                                         }
                                     } else {
-                                        Text("未定位到 SOUL.md 文件，当前编辑的是项目缓存。")
+                                        Text("未定位到 workspace 中的 SOUL 文件，当前编辑的是项目缓存。")
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                     }
@@ -1044,7 +1052,12 @@ struct NodePropertyPanel: View {
     private func getAgent(id: UUID) -> Agent? {
         appState.currentProject?.agents.first { $0.id == id }
     }
-    
+
+    private func sourceWorkspaceName(for sourceURL: URL) -> String {
+        let parent = sourceURL.deletingLastPathComponent()
+        return parent.lastPathComponent.isEmpty ? parent.path : parent.lastPathComponent
+    }
+
     private func loadNodeData() {
         nodeTitle = node.title
         agentDescription = ""

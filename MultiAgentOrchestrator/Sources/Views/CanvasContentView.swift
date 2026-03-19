@@ -151,6 +151,35 @@ struct CanvasContentView: View {
             }
             interactiveCanvas
             .background(
+                BlankCanvasDragMonitor(
+                    isEnabled: { !(isLassoMode || isTransientLassoMode) },
+                    isBlankLocation: { location in
+                        isBlankCanvasLocation(location, geometry: geometry)
+                    },
+                    currentOffset: { offset },
+                    onBlankClick: {
+                        clearCanvasSelection()
+                    },
+                    onDragStart: {
+                        NSCursor.openHand.set()
+                    },
+                    onDragChanged: { translation, startOffset in
+                        offset = CGSize(
+                            width: startOffset.width + translation.width,
+                            height: startOffset.height + translation.height
+                        )
+                        NSCursor.closedHand.set()
+                    },
+                    onDragEnded: { didDrag, location in
+                        if didDrag {
+                            lastOffset = offset
+                        }
+                        NSCursor.arrow.set()
+                        _ = location
+                    }
+                )
+            )
+            .background(
                 RightMouseDragMonitor(
                     onStart: { start in
                         isTransientLassoMode = true
@@ -361,6 +390,16 @@ struct CanvasContentView: View {
         }
     }
 
+    private func clearCanvasSelection() {
+        selectedNodeID = nil
+        selectedNodeIDs.removeAll()
+        selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
+        connectingFromNode = nil
+        tempConnectionEnd = nil
+        suppressCanvasTapClear = false
+    }
+
     private func collaborationGroups(in geometry: GeometryProxy) -> [CGRect] {
         guard currentWorkflow?.boundaries.isEmpty ?? true else { return [] }
         guard let workflow = currentWorkflow else { return [] }
@@ -440,6 +479,15 @@ struct CanvasContentView: View {
         }
     }
 
+    private func boundary(at location: CGPoint, geometry: GeometryProxy) -> WorkflowBoundary? {
+        guard let workflow = currentWorkflow else { return nil }
+        return workflow.boundaries.reversed().first { boundary in
+            boundaryFrame(for: boundary, geometry: geometry)
+                .insetBy(dx: -8, dy: -8)
+                .contains(location)
+        }
+    }
+
     private func edge(at location: CGPoint, geometry: GeometryProxy) -> WorkflowEdge? {
         guard let workflow = currentWorkflow else { return nil }
         let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
@@ -453,6 +501,13 @@ struct CanvasContentView: View {
             let points = orthogonalRoute(from: startPoint, to: endPoint)
             return isPoint(location, near: points, tolerance: 8)
         }
+    }
+
+    private func isBlankCanvasLocation(_ location: CGPoint, geometry: GeometryProxy) -> Bool {
+        guard node(at: location, geometry: geometry) == nil else { return false }
+        guard edge(at: location, geometry: geometry) == nil else { return false }
+        guard boundary(at: location, geometry: geometry) == nil else { return false }
+        return true
     }
 
     private func edgePoint(from: CGPoint, to: CGPoint) -> CGPoint {
@@ -627,6 +682,150 @@ struct DropIndicatorView: View {
                         .position(x: geometry.size.width - 70, y: geometry.size.height - 40)
                 }
             }
+        }
+    }
+}
+
+private struct BlankCanvasDragMonitor: NSViewRepresentable {
+    var isEnabled: () -> Bool
+    var isBlankLocation: (CGPoint) -> Bool
+    var currentOffset: () -> CGSize
+    var onBlankClick: () -> Void
+    var onDragStart: () -> Void
+    var onDragChanged: (_ translation: CGSize, _ startOffset: CGSize) -> Void
+    var onDragEnded: (_ didDrag: Bool, _ location: CGPoint) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            isEnabled: isEnabled,
+            isBlankLocation: isBlankLocation,
+            currentOffset: currentOffset,
+            onBlankClick: onBlankClick,
+            onDragStart: onDragStart,
+            onDragChanged: onDragChanged,
+            onDragEnded: onDragEnded
+        )
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.isBlankLocation = isBlankLocation
+        context.coordinator.currentOffset = currentOffset
+        context.coordinator.onBlankClick = onBlankClick
+        context.coordinator.onDragStart = onDragStart
+        context.coordinator.onDragChanged = onDragChanged
+        context.coordinator.onDragEnded = onDragEnded
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator {
+        var isEnabled: () -> Bool
+        var isBlankLocation: (CGPoint) -> Bool
+        var currentOffset: () -> CGSize
+        var onBlankClick: () -> Void
+        var onDragStart: () -> Void
+        var onDragChanged: (_ translation: CGSize, _ startOffset: CGSize) -> Void
+        var onDragEnded: (_ didDrag: Bool, _ location: CGPoint) -> Void
+
+        private weak var view: NSView?
+        private var monitor: Any?
+        private var tracking = false
+        private var dragging = false
+        private var startLocation: CGPoint = .zero
+        private var startOffset: CGSize = .zero
+        private let dragThreshold: CGFloat = 2
+
+        init(
+            isEnabled: @escaping () -> Bool,
+            isBlankLocation: @escaping (CGPoint) -> Bool,
+            currentOffset: @escaping () -> CGSize,
+            onBlankClick: @escaping () -> Void,
+            onDragStart: @escaping () -> Void,
+            onDragChanged: @escaping (_ translation: CGSize, _ startOffset: CGSize) -> Void,
+            onDragEnded: @escaping (_ didDrag: Bool, _ location: CGPoint) -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.isBlankLocation = isBlankLocation
+            self.currentOffset = currentOffset
+            self.onBlankClick = onBlankClick
+            self.onDragStart = onDragStart
+            self.onDragChanged = onDragChanged
+            self.onDragEnded = onDragEnded
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                guard let self, let view = self.view, view.window != nil else { return event }
+                guard self.isEnabled() else { return event }
+
+                let converted = view.convert(event.locationInWindow, from: nil)
+                let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
+
+                switch event.type {
+                case .leftMouseDown:
+                    guard self.isBlankLocation(location) else { return event }
+                    self.tracking = true
+                    self.dragging = false
+                    self.startLocation = location
+                    self.startOffset = self.currentOffset()
+                    NSCursor.openHand.set()
+                    return nil
+
+                case .leftMouseDragged:
+                    guard self.tracking else { return event }
+                    let translation = CGSize(
+                        width: location.x - self.startLocation.x,
+                        height: location.y - self.startLocation.y
+                    )
+                    let distance = hypot(translation.width, translation.height)
+                    if !self.dragging {
+                        guard distance >= self.dragThreshold else { return nil }
+                        self.dragging = true
+                        self.onDragStart()
+                    }
+                    self.onDragChanged(translation, self.startOffset)
+                    return nil
+
+                case .leftMouseUp:
+                    guard self.tracking else { return event }
+                    let didDrag = self.dragging
+                    self.tracking = false
+                    self.dragging = false
+                    if didDrag {
+                        self.onDragEnded(true, location)
+                    } else {
+                        self.onBlankClick()
+                        self.onDragEnded(false, location)
+                    }
+                    NSCursor.arrow.set()
+                    return nil
+
+                default:
+                    return event
+                }
+            }
+        }
+
+        func detach() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+            tracking = false
+            dragging = false
         }
     }
 }
