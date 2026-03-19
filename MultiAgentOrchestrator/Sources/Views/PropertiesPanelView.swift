@@ -197,6 +197,16 @@ struct AgentPropertiesView: View {
     @State private var agentDescription: String = ""
     @State private var soulMD: String = ""
     @State private var capabilities: [String] = ["Basic"]
+    @State private var colorHex: String = ""
+
+    private let agentColorPresets: [(title: String, hex: String, color: Color)] = [
+        ("蓝", "2563EB", .blue),
+        ("绿", "059669", .green),
+        ("橙", "EA580C", .orange),
+        ("红", "DC2626", .red),
+        ("紫", "7C3AED", .purple),
+        ("石墨", "334155", .gray)
+    ]
     
     var selectedAgent: Agent? {
         if let id = selectedAgentID {
@@ -224,6 +234,7 @@ struct AgentPropertiesView: View {
                             agentDescription = agent.description
                             soulMD = agent.soulMD
                             capabilities = agent.capabilities
+                            colorHex = agent.colorHex ?? ""
                         } else {
                             resetForm()
                         }
@@ -246,6 +257,37 @@ struct AgentPropertiesView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 TextField("Agent Description", text: $agentDescription)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                            }
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Agent Color")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                HStack(spacing: 8) {
+                                    ForEach(agentColorPresets, id: \.hex) { preset in
+                                        Button(action: { colorHex = preset.hex }) {
+                                            Circle()
+                                                .fill(preset.color)
+                                                .frame(width: 18, height: 18)
+                                                .overlay(
+                                                    Circle()
+                                                        .stroke(colorHex == preset.hex ? Color.primary : Color.clear, lineWidth: 2)
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help(preset.title)
+                                    }
+
+                                    Button("清除") {
+                                        colorHex = ""
+                                    }
+                                    .font(.caption)
+                                    .buttonStyle(.borderless)
+                                }
+
+                                TextField("Hex Color", text: $colorHex)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
                             
@@ -338,6 +380,7 @@ struct AgentPropertiesView: View {
                 agentDescription = firstAgent.description
                 soulMD = firstAgent.soulMD
                 capabilities = firstAgent.capabilities
+                colorHex = firstAgent.colorHex ?? ""
             }
         }
     }
@@ -347,7 +390,8 @@ struct AgentPropertiesView: View {
         return agent.name != agentName ||
                agent.description != agentDescription ||
                agent.soulMD != soulMD ||
-               agent.capabilities != capabilities
+               agent.capabilities != capabilities ||
+               (agent.colorHex ?? "") != colorHex
     }
     
     private func loadTemplate() {
@@ -388,9 +432,11 @@ struct AgentPropertiesView: View {
         updatedAgent.description = agentDescription
         updatedAgent.soulMD = soulMD
         updatedAgent.capabilities = capabilities
+        updatedAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.updatedAt = Date()
         
         appState.currentProject?.agents[index] = updatedAgent
+        appState.reloadAgent(agent.id)
     }
     
     private func deleteAgent() {
@@ -410,6 +456,7 @@ struct AgentPropertiesView: View {
         agentDescription = newAgent.description
         soulMD = newAgent.soulMD
         capabilities = newAgent.capabilities
+        colorHex = newAgent.colorHex ?? ""
     }
     
     private func resetForm() {
@@ -417,6 +464,7 @@ struct AgentPropertiesView: View {
         agentDescription = ""
         soulMD = ""
         capabilities = ["Basic"]
+        colorHex = ""
     }
 }
 

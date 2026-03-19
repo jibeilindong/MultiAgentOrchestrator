@@ -47,6 +47,10 @@ struct CanvasContentView: View {
                     currentWorkflow: currentWorkflow,
                     scale: $scale,
                     offset: offset,
+                    lineColor: appState.canvasDisplaySettings.lineColor.color,
+                    lineWidth: appState.canvasDisplaySettings.lineWidth,
+                    textScale: appState.canvasDisplaySettings.textScale,
+                    textColor: appState.canvasDisplaySettings.textColor.color,
                     selectedEdgeID: $selectedEdgeID,
                     onEdgeSelected: { _ in
                         selectedNodeID = nil

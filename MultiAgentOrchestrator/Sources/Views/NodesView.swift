@@ -36,7 +36,9 @@ struct NodesView: View {
                 onTap: { handleSingleTap(node) },
                 onDoubleTap: { handleDoubleTap(node) },
                 onLongPress: { handleLongPress(node) },
-                accentColor: displayColor(for: node)
+                accentColor: displayColor(for: node),
+                textScale: appState.canvasDisplaySettings.textScale,
+                textColor: appState.canvasDisplaySettings.textColor.color
             )
             .position(adjustedPosition(node.position))
             .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))

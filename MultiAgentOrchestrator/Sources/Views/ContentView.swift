@@ -109,6 +109,72 @@ struct ContentView: View {
                         }
                     }
                     .frame(width: 60)
+
+                    Menu {
+                        Section("线条粗细") {
+                            ForEach([1.0, 2.0, 3.0, 4.0, 6.0], id: \.self) { width in
+                                Button(action: { appState.canvasDisplaySettings.lineWidth = width }) {
+                                    HStack {
+                                        Text("\(Int(width)) px")
+                                        if appState.canvasDisplaySettings.lineWidth == width {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Section("文字大小") {
+                            ForEach([0.85, 1.0, 1.15, 1.3, 1.5], id: \.self) { scale in
+                                Button(action: { appState.canvasDisplaySettings.textScale = scale }) {
+                                    HStack {
+                                        Text(String(format: "%.0f%%", scale * 100))
+                                        if appState.canvasDisplaySettings.textScale == scale {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Section("线条颜色") {
+                            ForEach(CanvasColorPreset.allCases) { preset in
+                                Button(action: { appState.canvasDisplaySettings.lineColor = preset }) {
+                                    HStack {
+                                        Circle()
+                                            .fill(preset.color)
+                                            .frame(width: 8, height: 8)
+                                        Text(preset.title)
+                                        if appState.canvasDisplaySettings.lineColor == preset {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Section("文字颜色") {
+                            ForEach(CanvasColorPreset.allCases) { preset in
+                                Button(action: { appState.canvasDisplaySettings.textColor = preset }) {
+                                    HStack {
+                                        Circle()
+                                            .fill(preset.color)
+                                            .frame(width: 8, height: 8)
+                                        Text(preset.title)
+                                        if appState.canvasDisplaySettings.textColor == preset {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "eye")
+                            Text("显示")
+                        }
+                    }
+                    .frame(width: 56)
                     
                     Button(action: { appState.createNewProject() }) {
                         Label(LocalizedString.new, systemImage: "plus")

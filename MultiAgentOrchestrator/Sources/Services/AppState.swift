@@ -92,6 +92,46 @@ class ProjectManager: ObservableObject {
     }
 }
 
+enum CanvasColorPreset: String, CaseIterable, Codable, Identifiable {
+    case blue
+    case graphite
+    case green
+    case orange
+    case red
+    case primary
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .blue: return "蓝"
+        case .graphite: return "石墨"
+        case .green: return "绿"
+        case .orange: return "橙"
+        case .red: return "红"
+        case .primary: return "默认"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .blue: return .blue
+        case .graphite: return .gray
+        case .green: return .green
+        case .orange: return .orange
+        case .red: return .red
+        case .primary: return .primary
+        }
+    }
+}
+
+struct CanvasDisplaySettings: Codable {
+    var lineWidth: CGFloat = 2
+    var textScale: CGFloat = 1
+    var lineColor: CanvasColorPreset = .blue
+    var textColor: CanvasColorPreset = .primary
+}
+
 class AppState: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     
@@ -124,6 +164,7 @@ class AppState: ObservableObject {
     
     // OpenClaw 执行服务
     @Published var openClawService = OpenClawService()
+    @Published var canvasDisplaySettings = CanvasDisplaySettings()
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
