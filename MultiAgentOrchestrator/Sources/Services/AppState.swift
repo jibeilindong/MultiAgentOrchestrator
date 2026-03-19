@@ -125,6 +125,30 @@ enum CanvasColorPreset: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum ContentToolbarItem: String, CaseIterable, Codable, Identifiable {
+    case project
+    case file
+    case view
+    case display
+    case openClaw
+    case language
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .project: return "项目信息"
+        case .file: return "文件"
+        case .view: return "视图"
+        case .display: return "显示控制"
+        case .openClaw: return "OpenClaw"
+        case .language: return "语言"
+        }
+    }
+
+    static let defaultOrder: [ContentToolbarItem] = [.project, .file, .view, .display, .openClaw, .language]
+}
+
 struct CanvasDisplaySettings: Codable {
     var lineWidth: CGFloat = 2
     var textScale: CGFloat = 1
@@ -165,6 +189,8 @@ class AppState: ObservableObject {
     // OpenClaw 执行服务
     @Published var openClawService = OpenClawService()
     @Published var canvasDisplaySettings = CanvasDisplaySettings()
+    @Published var orderedToolbarItems = ContentToolbarItem.defaultOrder
+    @Published var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
@@ -176,6 +202,7 @@ class AppState: ObservableObject {
     init() {
         // 不自动创建项目，让用户手动创建
         // createNewProject()
+        loadToolbarPreferences()
         startAutoSave()
     }
     
@@ -493,6 +520,41 @@ class AppState: ObservableObject {
         }
     }
 
+    func generateArchitectureFromProjectAgents() {
+        guard var project = currentProject,
+              var workflow = project.workflows.first else { return }
+
+        workflow.nodes.removeAll()
+        workflow.edges.removeAll()
+
+        let agentPositions = calculateAgentPositions(agents: project.agents)
+        for (agent, position) in agentPositions {
+            var newNode = WorkflowNode(type: .agent)
+            newNode.agentID = agent.id
+            newNode.position = position
+            workflow.nodes.append(newNode)
+        }
+
+        let connections = analyzeAndGenerateConnections(agents: project.agents)
+        for (fromName, toName) in connections {
+            if let fromAgent = project.agents.first(where: { $0.name == fromName }),
+               let toAgent = project.agents.first(where: { $0.name == toName }),
+               let fromNode = workflow.nodes.first(where: { $0.agentID == fromAgent.id }),
+               let toNode = workflow.nodes.first(where: { $0.agentID == toAgent.id }) {
+                workflow.edges.append(WorkflowEdge(from: fromNode.id, to: toNode.id))
+                project.permissions.append(
+                    Permission(fromAgentID: fromAgent.id, toAgentID: toAgent.id, permissionType: .allow)
+                )
+            }
+        }
+
+        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
+            project.workflows[index] = workflow
+            project.updatedAt = Date()
+            currentProject = project
+        }
+    }
+
     func updateNode(_ nodeID: UUID, updates: (inout WorkflowNode) -> Void) {
         updateMainWorkflow { workflow in
             guard let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
@@ -705,5 +767,171 @@ class AppState: ObservableObject {
     // 显示键盘快捷键
     func showKeyboardShortcuts() {
         print("显示键盘快捷键...")
+    }
+
+    func setToolbarItem(_ item: ContentToolbarItem, visible: Bool) {
+        if visible {
+            visibleToolbarItems.insert(item)
+        } else {
+            visibleToolbarItems.remove(item)
+        }
+        persistToolbarPreferences()
+    }
+
+    func moveToolbarItem(_ item: ContentToolbarItem, by offset: Int) {
+        guard let index = orderedToolbarItems.firstIndex(of: item) else { return }
+        let targetIndex = index + offset
+        guard orderedToolbarItems.indices.contains(targetIndex) else { return }
+
+        let moved = orderedToolbarItems.remove(at: index)
+        orderedToolbarItems.insert(moved, at: targetIndex)
+        persistToolbarPreferences()
+    }
+
+    func resetToolbarLayout() {
+        orderedToolbarItems = ContentToolbarItem.defaultOrder
+        visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
+        persistToolbarPreferences()
+    }
+
+    var toolbarItemsInDisplayOrder: [ContentToolbarItem] {
+        orderedToolbarItems.filter { visibleToolbarItems.contains($0) }
+    }
+
+    private func loadToolbarPreferences() {
+        let defaults = UserDefaults.standard
+        if let orderRaw = defaults.string(forKey: "content.toolbar.order"), !orderRaw.isEmpty {
+            let parsed = orderRaw
+                .split(separator: ",")
+                .compactMap { ContentToolbarItem(rawValue: String($0)) }
+            orderedToolbarItems = normalizedToolbarOrder(parsed)
+        }
+
+        if let visibleRaw = defaults.string(forKey: "content.toolbar.visible"), !visibleRaw.isEmpty {
+            let parsed = Set(
+                visibleRaw
+                    .split(separator: ",")
+                    .compactMap { ContentToolbarItem(rawValue: String($0)) }
+            )
+            visibleToolbarItems = parsed.isEmpty ? Set(ContentToolbarItem.defaultOrder) : parsed
+        }
+    }
+
+    private func persistToolbarPreferences() {
+        let defaults = UserDefaults.standard
+        defaults.set(orderedToolbarItems.map(\.rawValue).joined(separator: ","), forKey: "content.toolbar.order")
+        defaults.set(
+            orderedToolbarItems.filter { visibleToolbarItems.contains($0) }.map(\.rawValue).joined(separator: ","),
+            forKey: "content.toolbar.visible"
+        )
+    }
+
+    private func normalizedToolbarOrder(_ items: [ContentToolbarItem]) -> [ContentToolbarItem] {
+        var unique: [ContentToolbarItem] = []
+        for item in items where !unique.contains(item) {
+            unique.append(item)
+        }
+        for item in ContentToolbarItem.defaultOrder where !unique.contains(item) {
+            unique.append(item)
+        }
+        return unique
+    }
+
+    private func calculateAgentPositions(agents: [Agent]) -> [(Agent, CGPoint)] {
+        var positions: [(Agent, CGPoint)] = []
+
+        let tier1 = ["taizi", "太子"]
+        let tier2 = ["zhongshu", "中书省"]
+        let tier3 = ["shangshu", "尚书省"]
+        let tier4 = ["menxia", "门下省"]
+
+        var tier1Agents: [Agent] = []
+        var tier2Agents: [Agent] = []
+        var tier3Agents: [Agent] = []
+        var tier4Agents: [Agent] = []
+        var deptAgents: [Agent] = []
+
+        for agent in agents {
+            let name = agent.name.lowercased()
+            if tier1.contains(where: { name.contains($0.lowercased()) }) {
+                tier1Agents.append(agent)
+            } else if tier2.contains(where: { name.contains($0.lowercased()) }) {
+                tier2Agents.append(agent)
+            } else if tier3.contains(where: { name.contains($0.lowercased()) }) {
+                tier3Agents.append(agent)
+            } else if tier4.contains(where: { name.contains($0.lowercased()) }) {
+                tier4Agents.append(agent)
+            } else {
+                deptAgents.append(agent)
+            }
+        }
+
+        let startX: CGFloat = 100
+        let startY: CGFloat = 80
+        let tierSpacing: CGFloat = 200
+        let nodeSpacing: CGFloat = 160
+
+        for (index, agent) in tier1Agents.enumerated() {
+            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY)))
+        }
+        for (index, agent) in tier2Agents.enumerated() {
+            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY + tierSpacing)))
+        }
+        for (index, agent) in tier3Agents.enumerated() {
+            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY + tierSpacing * 2)))
+        }
+        for (index, agent) in tier4Agents.enumerated() {
+            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY + tierSpacing * 3)))
+        }
+
+        let columns = 4
+        for (index, agent) in deptAgents.enumerated() {
+            let col = index % columns
+            let row = index / columns
+            positions.append((agent, CGPoint(x: startX + CGFloat(col) * nodeSpacing, y: startY + tierSpacing * 4 + CGFloat(row) * 100)))
+        }
+
+        return positions
+    }
+
+    private func analyzeAndGenerateConnections(agents: [Agent]) -> [(String, String)] {
+        var connections: [(String, String)] = []
+
+        if agents.contains(where: { $0.name == "taizi" || $0.name == "太子" }) &&
+            agents.contains(where: { $0.name == "zhongshu" || $0.name == "中书省" }) {
+            connections.append(("taizi", "zhongshu"))
+            connections.append(("太子", "中书省"))
+        }
+
+        if agents.contains(where: { $0.name == "zhongshu" || $0.name == "中书省" }) &&
+            agents.contains(where: { $0.name == "shangshu" || $0.name == "尚书省" }) {
+            connections.append(("zhongshu", "shangshu"))
+            connections.append(("中书省", "尚书省"))
+        }
+
+        if agents.contains(where: { $0.name == "shangshu" || $0.name == "尚书省" }) &&
+            agents.contains(where: { $0.name == "taizi" || $0.name == "太子" }) {
+            connections.append(("shangshu", "taizi"))
+            connections.append(("尚书省", "太子"))
+        }
+
+        let departments = ["libu", "吏部", "hubu", "户部", "bingbu", "兵部", "xingbu", "刑部", "gongbu", "工部", "libu_hr", "menxia", "门下省"]
+        for dept in departments {
+            if agents.contains(where: { $0.name == "zhongshu" || $0.name == "中书省" }) &&
+                agents.contains(where: { $0.name == dept }) {
+                connections.append(("zhongshu", dept))
+                connections.append(("中书省", dept))
+            }
+        }
+
+        for dept in departments {
+            if agents.contains(where: { $0.name == "shangshu" || $0.name == "尚书省" }) &&
+                agents.contains(where: { $0.name == dept }) {
+                connections.append((dept, "shangshu"))
+                connections.append((dept, "尚书省"))
+            }
+        }
+
+        return connections
     }
 }

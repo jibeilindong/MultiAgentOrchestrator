@@ -29,7 +29,6 @@ struct MultiAgentOrchestratorApp: App {
                 }
         }
         .commands {
-            // ========== 应用菜单 ==========
             CommandGroup(replacing: .appInfo) {
                 Button("About \(LocalizedString.appName)") {
                     NSApplication.shared.orderFrontStandardAboutPanel(
@@ -47,8 +46,7 @@ struct MultiAgentOrchestratorApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
-            
-            // ========== 文件菜单 ==========
+
             CommandMenu(LocalizedString.file) {
                 Button(LocalizedString.newProject) {
                     appState.createNewProject()
@@ -78,16 +76,8 @@ struct MultiAgentOrchestratorApp: App {
                     appState.exportData()
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
-                
-                Divider()
-                
-                Button(LocalizedString.exit) {
-                    NSApplication.shared.terminate(nil)
-                }
-                .keyboardShortcut("q", modifiers: .command)
             }
-            
-            // ========== 编辑菜单 ==========
+
             CommandMenu(LocalizedString.edit) {
                 Button(LocalizedString.undo) {
                     NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
@@ -121,8 +111,7 @@ struct MultiAgentOrchestratorApp: App {
                 }
                 .keyboardShortcut("a", modifiers: .command)
             }
-            
-            // ========== 视图菜单 ==========
+
             CommandMenu(LocalizedString.view) {
                 Button(LocalizedString.workflow) {
                     selectedTab = 0
@@ -139,7 +128,7 @@ struct MultiAgentOrchestratorApp: App {
                 }
                 .keyboardShortcut("3", modifiers: .command)
                 
-                Button(LocalizedString.controlPanel) {
+                Button(LocalizedString.messages) {
                     selectedTab = 3
                 }
                 .keyboardShortcut("4", modifiers: .command)
@@ -167,15 +156,21 @@ struct MultiAgentOrchestratorApp: App {
                 .keyboardShortcut("0", modifiers: .command)
                 
                 Divider()
+
+                Button(appState.showLogs ? "Hide Logs" : "Show Logs") {
+                    appState.showLogs.toggle()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+
+                Divider()
                 
                 Button(LocalizedString.toggleSidebar) {
                     NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             }
-            
-            // ========== 工具菜单 ==========
-            CommandMenu(LocalizedString.tools) {
+
+            CommandMenu("Workflow") {
                 Button(LocalizedString.addAgent) {
                     appState.addNewAgent()
                 }
@@ -192,16 +187,32 @@ struct MultiAgentOrchestratorApp: App {
                     appState.generateTasksFromWorkflow()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
-                
-                Divider()
-                
-                Button(LocalizedString.systemLogs) {
-                    appState.showLogs.toggle()
-                }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
-            
-            // ========== 语言菜单 ==========
+
+            CommandMenu("OpenClaw") {
+                Button("Refresh Status") {
+                    appState.openClawService.checkConnection()
+                }
+
+                Button(LocalizedString.autoDetectConnect) {
+                    appState.openClawManager.connect()
+                }
+
+                Button(LocalizedString.disconnect) {
+                    appState.openClawManager.disconnect()
+                }
+
+                Button(LocalizedString.addAgentsToProject) {
+                    addOpenClawAgentsToProject()
+                }
+
+                Divider()
+
+                Button(LocalizedString.settings) {
+                    showingSettings = true
+                }
+            }
+
             CommandMenu(LocalizedString.language) {
                 ForEach(AppLanguage.allCases) { language in
                     Button(action: {
@@ -216,8 +227,7 @@ struct MultiAgentOrchestratorApp: App {
                     }
                 }
             }
-            
-            // ========== 窗口菜单 ==========
+
             CommandMenu(LocalizedString.window) {
                 Button(LocalizedString.minimize) {
                     NSApp.keyWindow?.miniaturize(nil)
@@ -235,9 +245,8 @@ struct MultiAgentOrchestratorApp: App {
                     NSApp.arrangeInFront(nil)
                 }
             }
-            
-            // ========== 帮助菜单 ==========
-            CommandGroup(replacing: .help) {
+
+            CommandMenu(LocalizedString.help) {
                 Button(LocalizedString.help) {
                     appState.showHelp()
                 }
@@ -267,5 +276,18 @@ struct MultiAgentOrchestratorApp: App {
                 .keyboardShortcut("/", modifiers: .command)
             }
         }
+    }
+
+    private func addOpenClawAgentsToProject() {
+        guard var project = appState.currentProject else { return }
+
+        for name in appState.openClawManager.agents where !project.agents.contains(where: { $0.name == name }) {
+            var agent = Agent(name: name)
+            agent.description = "OpenClaw Agent: \(name)"
+            project.agents.append(agent)
+        }
+
+        project.updatedAt = Date()
+        appState.currentProject = project
     }
 }

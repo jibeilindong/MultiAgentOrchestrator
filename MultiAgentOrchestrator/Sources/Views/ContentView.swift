@@ -1,61 +1,28 @@
 import SwiftUI
 
-private enum ContentToolbarItem: String, CaseIterable, Identifiable {
-    case project
-    case file
-    case view
-    case display
-    case openClaw
-    case language
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .project: return "项目信息"
-        case .file: return "文件"
-        case .view: return "视图"
-        case .display: return "显示控制"
-        case .openClaw: return "OpenClaw"
-        case .language: return "语言"
-        }
-    }
-
-    static let defaultOrder: [ContentToolbarItem] = [.project, .file, .view, .display, .openClaw, .language]
-}
-
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
     @Binding var zoomScale: CGFloat
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
-    @State private var orderedToolbarItems = ContentToolbarItem.defaultOrder
-    @State private var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
-    @State private var showingToolbarCustomizer = false
     
     var body: some View {
         HStack(spacing: 0) {
             // 左侧：导航栏
-            SidebarView()
-                .frame(width: 250)
+            SidebarView(selectedTab: $selectedTab)
+                .frame(width: 280)
             
             Divider()
             
             // 中间：主内容区
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
-                    ForEach(toolbarItemsInDisplayOrder) { item in
+                    ForEach(appState.toolbarItemsInDisplayOrder) { item in
                         toolbarContent(for: item)
                     }
 
                     Spacer(minLength: 12)
-
-                    ToolbarCustomizerButton(
-                        orderedItems: $orderedToolbarItems,
-                        visibleItems: $visibleToolbarItems,
-                        isPresented: $showingToolbarCustomizer
-                    )
 
                     Picker("", selection: $selectedTab) {
                         Label(LocalizedString.workflow, systemImage: "square.grid.2x2").tag(0)
@@ -114,11 +81,6 @@ struct ContentView: View {
         } message: {
             Text(openClawMessage ?? "")
         }
-        .onAppear(perform: loadToolbarPreferences)
-    }
-
-    private var toolbarItemsInDisplayOrder: [ContentToolbarItem] {
-        orderedToolbarItems.filter { visibleToolbarItems.contains($0) }
     }
 
     private var projectSummary: String {
@@ -209,53 +171,55 @@ struct ContentView: View {
                 .environmentObject(appState)
         case .openClaw:
             TopToolbarGroup {
-                Menu {
-                    statusMenuRow
-                    Divider()
+                HStack(spacing: 8) {
+                    Label("OpenClaw", systemImage: "bolt.horizontal.circle")
+                    statusBadge
+
                     if appState.openClawManager.isConnected {
                         Button(action: { appState.openClawManager.disconnect() }) {
-                            Label("Disconnect", systemImage: "link.badge.minus")
+                            Label("断开", systemImage: "link.badge.minus")
                         }
+                        .buttonStyle(.bordered)
+
                         Button(action: { addOpenClawAgentsToProject() }) {
-                            Label("Add Agents to Project", systemImage: "person.badge.plus")
+                            Label("导入 Agents", systemImage: "person.badge.plus")
                         }
+                        .buttonStyle(.bordered)
                     } else {
                         Button(action: { autoDetectAndConnect() }) {
-                            Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
+                            Label("自动连接", systemImage: "antenna.radiowaves.left.and.right")
                         }
+                        .buttonStyle(.borderedProminent)
                     }
-                    Divider()
+
+                    Button(action: { appState.openClawService.checkConnection() }) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.bordered)
+
                     Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
-                        Label(LocalizedString.settings, systemImage: "gear")
+                        Image(systemName: "gear")
                     }
-                } label: {
-                    Label("OpenClaw", systemImage: "bolt.horizontal.circle")
+                    .buttonStyle(.bordered)
                 }
             }
         case .language:
             TopToolbarGroup {
-                Menu {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
                     ForEach(AppLanguage.allCases) { language in
                         Button(action: { appState.localizationManager.setLanguage(language) }) {
-                            HStack {
-                                Text(language.displayName)
-                                if appState.localizationManager.currentLanguage == language {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
+                            Text(language.displayName == "简体中文" ? "简体" : language.displayName == "繁體中文" ? "繁中" : "EN")
                         }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "globe")
-                        Text(appState.localizationManager.currentLanguage == .simplifiedChinese ? "简体" : "EN")
+                        .buttonStyle(.bordered)
+                        .tint(appState.localizationManager.currentLanguage == language ? .accentColor : nil)
                     }
                 }
             }
         }
     }
 
-    private var statusMenuRow: some View {
+    private var statusBadge: some View {
         HStack(spacing: 8) {
             Circle()
                 .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
@@ -301,36 +265,6 @@ struct ContentView: View {
         }
         appState.currentProject = project
         openClawMessage = "Added \(appState.openClawManager.agents.count) agents."
-    }
-
-    private func loadToolbarPreferences() {
-        let defaults = UserDefaults.standard
-        if let orderRaw = defaults.string(forKey: "content.toolbar.order"), !orderRaw.isEmpty {
-            let parsed = orderRaw
-                .split(separator: ",")
-                .compactMap { ContentToolbarItem(rawValue: String($0)) }
-            orderedToolbarItems = normalizedOrder(parsed)
-        }
-
-        if let visibleRaw = defaults.string(forKey: "content.toolbar.visible"), !visibleRaw.isEmpty {
-            let parsed = Set(
-                visibleRaw
-                    .split(separator: ",")
-                    .compactMap { ContentToolbarItem(rawValue: String($0)) }
-            )
-            visibleToolbarItems = parsed.isEmpty ? Set(ContentToolbarItem.defaultOrder) : parsed
-        }
-    }
-
-    private func normalizedOrder(_ items: [ContentToolbarItem]) -> [ContentToolbarItem] {
-        var unique: [ContentToolbarItem] = []
-        for item in items where !unique.contains(item) {
-            unique.append(item)
-        }
-        for item in ContentToolbarItem.defaultOrder where !unique.contains(item) {
-            unique.append(item)
-        }
-        return unique
     }
 }
 
@@ -466,97 +400,6 @@ private struct ToolbarColorSelector: View {
                 }
             }
         }
-    }
-}
-
-private struct ToolbarCustomizerButton: View {
-    @Binding var orderedItems: [ContentToolbarItem]
-    @Binding var visibleItems: Set<ContentToolbarItem>
-    @Binding var isPresented: Bool
-
-    var body: some View {
-        Button(action: { isPresented.toggle() }) {
-            Label("工具栏", systemImage: "slider.horizontal.3")
-        }
-        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            ToolbarCustomizationPanel(
-                orderedItems: $orderedItems,
-                visibleItems: $visibleItems
-            )
-            .frame(width: 320)
-            .padding()
-        }
-    }
-}
-
-private struct ToolbarCustomizationPanel: View {
-    @Binding var orderedItems: [ContentToolbarItem]
-    @Binding var visibleItems: Set<ContentToolbarItem>
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("工具栏显示与顺序")
-                .font(.headline)
-
-            ForEach(Array(orderedItems.enumerated()), id: \.element) { index, item in
-                HStack(spacing: 10) {
-                    Toggle(isOn: visibilityBinding(for: item)) {
-                        Text(item.title)
-                            .font(.subheadline)
-                    }
-                    .toggleStyle(.checkbox)
-
-                    Spacer()
-
-                    Button(action: { moveItem(from: index, offset: -1) }) {
-                        Image(systemName: "arrow.up")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(index == 0)
-
-                    Button(action: { moveItem(from: index, offset: 1) }) {
-                        Image(systemName: "arrow.down")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(index == orderedItems.count - 1)
-                }
-            }
-        }
-        .onChange(of: orderedItems) { _, _ in
-            persistPreferences()
-        }
-        .onChange(of: visibleItems) { _, _ in
-            persistPreferences()
-        }
-    }
-
-    private func visibilityBinding(for item: ContentToolbarItem) -> Binding<Bool> {
-        Binding(
-            get: { visibleItems.contains(item) },
-            set: { isVisible in
-                if isVisible {
-                    visibleItems.insert(item)
-                } else {
-                    visibleItems.remove(item)
-                }
-            }
-        )
-    }
-
-    private func moveItem(from index: Int, offset: Int) {
-        let targetIndex = index + offset
-        guard orderedItems.indices.contains(targetIndex) else { return }
-        let item = orderedItems.remove(at: index)
-        orderedItems.insert(item, at: targetIndex)
-    }
-
-    private func persistPreferences() {
-        let defaults = UserDefaults.standard
-        defaults.set(orderedItems.map(\.rawValue).joined(separator: ","), forKey: "content.toolbar.order")
-        defaults.set(
-            orderedItems.filter { visibleItems.contains($0) }.map(\.rawValue).joined(separator: ","),
-            forKey: "content.toolbar.visible"
-        )
     }
 }
 
