@@ -1424,15 +1424,21 @@ class AppState: ObservableObject {
     private func agentSoulRootCandidates(for agent: Agent) -> [URL] {
         var roots: [URL] = []
 
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ]
+
+        if let workspaceSoulURL = openClawManager.localAgentSoulURL(matching: candidateNames) {
+            roots.append(workspaceSoulURL.deletingLastPathComponent())
+        }
+
         if let directPath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
             let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
             roots.append(directURL.deletingLastPathComponent())
         }
 
-        let keys = Set([
-            normalizeAgentKey(agent.name),
-            normalizeAgentKey(agent.openClawDefinition.agentIdentifier)
-        ].filter { !$0.isEmpty })
+        let keys = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
 
         if !keys.isEmpty {
             if let record = openClawManager.discoveryResults.first(where: { keys.contains(normalizeAgentKey($0.name)) }) {

@@ -39,7 +39,7 @@ struct CanvasContentView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack {
+            let canvasLayer = ZStack {
                 GridBackground()
                     .frame(width: geometry.size.width * 10, height: geometry.size.height * 10)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
@@ -139,8 +139,17 @@ struct CanvasContentView: View {
                         .position(x: lassoRect.midX, y: lassoRect.midY)
                 }
             }
-            .contentShape(Rectangle())
-            .highPriorityGesture(lassoGesture(in: geometry))
+            let interactiveCanvas = Group {
+                if isLassoMode || isTransientLassoMode {
+                    canvasLayer
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(lassoGesture(in: geometry))
+                } else {
+                    canvasLayer
+                        .contentShape(Rectangle())
+                }
+            }
+            interactiveCanvas
             .background(
                 RightMouseDragMonitor(
                     onStart: { start in

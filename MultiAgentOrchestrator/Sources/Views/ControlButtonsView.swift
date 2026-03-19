@@ -182,7 +182,7 @@ struct ControlButtonsView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
             )
-            .simultaneousGesture(edgeResizeGesture)
+            .overlay(resizeEdgeZones)
             .simultaneousGesture(moveGesture)
             .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
         }
@@ -229,6 +229,67 @@ struct ControlButtonsView: View {
                     activeResizeEdges = []
                 }
         )
+    }
+
+    private var resizeEdgeZones: some View {
+        ZStack {
+            edgeResizeStrip(edges: [.top], width: panelSize.width - edgeResizeThreshold * 2, height: edgeResizeThreshold)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.horizontal, edgeResizeThreshold)
+
+            edgeResizeStrip(edges: [.bottom], width: panelSize.width - edgeResizeThreshold * 2, height: edgeResizeThreshold)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.horizontal, edgeResizeThreshold)
+
+            HStack {
+                edgeResizeStrip(edges: [.left], width: edgeResizeThreshold, height: panelSize.height - edgeResizeThreshold * 2)
+                    .frame(maxHeight: .infinity, alignment: .leading)
+                    .padding(.vertical, edgeResizeThreshold)
+
+                Spacer(minLength: 0)
+
+                edgeResizeStrip(edges: [.right], width: edgeResizeThreshold, height: panelSize.height - edgeResizeThreshold * 2)
+                    .frame(maxHeight: .infinity, alignment: .trailing)
+                    .padding(.vertical, edgeResizeThreshold)
+            }
+        }
+        .frame(width: panelSize.width, height: panelSize.height)
+    }
+
+    private func edgeResizeStrip(edges: PanelResizeEdges, width: CGFloat, height: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: max(0, width), height: max(0, height))
+            .contentShape(Rectangle())
+            .gesture(resizeGesture(for: edges))
+    }
+
+    private func resizeGesture(for edges: PanelResizeEdges) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if panelSizeAtDragStart == nil {
+                    panelSizeAtDragStart = panelSize
+                    panelCenterAtResizeStart = panelCenter
+                    activeResizeEdges = edges
+                }
+
+                guard let startSize = panelSizeAtDragStart,
+                      let startCenter = panelCenterAtResizeStart else { return }
+
+                let metrics = resizedPanelMetrics(
+                    from: startSize,
+                    center: startCenter,
+                    translation: value.translation,
+                    edges: activeResizeEdges
+                )
+                panelSize = metrics.size
+                panelCenter = metrics.center
+            }
+            .onEnded { _ in
+                panelSizeAtDragStart = nil
+                panelCenterAtResizeStart = nil
+                activeResizeEdges = []
+            }
     }
 
     private func resizeEdges(at location: CGPoint) -> PanelResizeEdges {

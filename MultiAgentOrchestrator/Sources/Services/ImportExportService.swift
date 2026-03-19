@@ -322,15 +322,17 @@ class ImportExportService {
                 continue
             }
 
+            let workspacePath = OpenClawManager.shared.localAgentWorkspacePath(matching: [agentDir]) ?? dirURL.path
+            let sourceRootURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
             var soulMD = ""
             var skills: [String] = []
 
-            let soulSourcePath = preferredSoulSourcePath(in: dirURL)
+            let soulSourcePath = preferredSoulSourcePath(in: sourceRootURL)
             if let content = try? String(contentsOf: soulSourcePath, encoding: .utf8) {
                 soulMD = content
             }
 
-            let skillsPath = preferredSkillsDirectory(in: dirURL)
+            let skillsPath = preferredSkillsDirectory(in: sourceRootURL)
             if let skillContents = try? fileManager.contentsOfDirectory(atPath: skillsPath.path) {
                 skills = skillContents.filter { $0.hasSuffix(".md") || $0.hasSuffix(".MD") }
             }
@@ -338,6 +340,7 @@ class ImportExportService {
             configs[agentDir] = OpenClawAgentInfo(
                 agentID: agentDir,
                 soulMD: soulMD,
+                workspacePath: workspacePath,
                 soulSourcePath: soulSourcePath.path,
                 skills: skills
             )
@@ -390,6 +393,7 @@ class ImportExportService {
 struct OpenClawAgentInfo {
     var agentID: String
     var soulMD: String
+    var workspacePath: String
     var soulSourcePath: String
     var skills: [String]
 }

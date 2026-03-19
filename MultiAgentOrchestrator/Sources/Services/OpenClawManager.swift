@@ -979,31 +979,15 @@ class OpenClawManager: ObservableObject {
             return
         }
 
-        guard let record = discoveryResults.first(where: {
-            normalizedNames.contains(normalizeAgentKey($0.name))
-        }) else {
-            completion(false, "未找到对应的 OpenClaw 目录，仅更新了项目缓存。")
+        guard let soulURL = localAgentSoulURL(matching: candidateNames) else {
+            completion(false, "未找到对应的 OpenClaw SOUL.md，仅更新了项目缓存。")
             return
         }
-
-        guard let rootPath = record.directoryPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty else {
-            completion(false, "未找到 OpenClaw 根目录，仅更新了项目缓存。")
-            return
-        }
-
-        let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
-        let preferredSoulURL = rootURL.appendingPathComponent("SOUL.md")
-        let fallbackSoulURL = rootURL.appendingPathComponent("soul.md")
 
         do {
-            if FileManager.default.fileExists(atPath: preferredSoulURL.path) {
-                try soulMD.write(to: preferredSoulURL, atomically: true, encoding: .utf8)
-            } else if FileManager.default.fileExists(atPath: fallbackSoulURL.path) {
-                try soulMD.write(to: fallbackSoulURL, atomically: true, encoding: .utf8)
-            } else {
-                try soulMD.write(to: preferredSoulURL, atomically: true, encoding: .utf8)
-            }
-            completion(true, "SOUL.md 已同步到 OpenClaw。")
+            try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+            completion(true, "SOUL.md 已同步到 OpenClaw: \(soulURL.path)")
         } catch {
             completion(false, "同步 SOUL.md 失败: \(error.localizedDescription)")
         }
@@ -1480,6 +1464,88 @@ class OpenClawManager: ObservableObject {
             .appendingPathComponent(".openclaw", isDirectory: true)
     }
 
+    func localAgentSoulURL(matching candidateNames: [String]) -> URL? {
+        if let existing = existingLocalAgentSoulURL(matching: candidateNames) {
+            return existing
+        }
+
+        guard let workspacePath = localAgentWorkspacePath(matching: candidateNames) else {
+            return nil
+        }
+
+        return preferredSoulURL(in: URL(fileURLWithPath: workspacePath, isDirectory: true))
+    }
+
+    func localAgentWorkspacePath(matching candidateNames: [String]) -> String? {
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
+        guard !normalizedNames.isEmpty else { return nil }
+
+        let workspaceMap = localAgentWorkspaceMap()
+        for name in normalizedNames {
+            if let workspacePath = workspaceMap[name] {
+                return workspacePath
+            }
+        }
+        return nil
+    }
+
+    private func existingLocalAgentSoulURL(matching candidateNames: [String]) -> URL? {
+        if let workspacePath = localAgentWorkspacePath(matching: candidateNames) {
+            let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
+            if let soulURL = existingSoulURL(in: workspaceURL) {
+                return soulURL
+            }
+        }
+
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
+        if !normalizedNames.isEmpty {
+            if let record = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
+                if let copiedRoot = firstNonEmptyPath(record.copiedToProjectPath),
+                   let soulURL = existingSoulURL(in: URL(fileURLWithPath: copiedRoot, isDirectory: true)) {
+                    return soulURL
+                }
+                if let directoryPath = firstNonEmptyPath(record.directoryPath),
+                   let soulURL = existingSoulURL(in: URL(fileURLWithPath: directoryPath, isDirectory: true)) {
+                    return soulURL
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func localAgentWorkspaceMap() -> [String: String] {
+        let configURL = localOpenClawRootURL().appendingPathComponent("openclaw.json")
+        guard
+            let data = try? Data(contentsOf: configURL),
+            let json = try? JSONSerialization.jsonObject(with: data),
+            let root = json as? [String: Any],
+            let agents = root["agents"] as? [String: Any],
+            let list = agents["list"] as? [[String: Any]]
+        else {
+            return [:]
+        }
+
+        var map: [String: String] = [:]
+        for entry in list {
+            guard let id = stringValue(entry, keys: ["id", "agentID", "agentId", "name"]),
+                  let workspace = stringValue(entry, keys: ["workspace", "workspacePath", "workdir", "workPath"]) else {
+                continue
+            }
+            map[normalizeAgentKey(id)] = workspace
+        }
+        return map
+    }
+
+    private func existingSoulURL(in rootURL: URL) -> URL? {
+        let preferred = rootURL.appendingPathComponent("SOUL.md")
+        if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
+
+        let fallback = rootURL.appendingPathComponent("soul.md")
+        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
+        return nil
+    }
+
     private struct DirectoryInspection {
         let name: String
         let path: String
@@ -1533,12 +1599,23 @@ class OpenClawManager: ObservableObject {
             let directory = directoryMap[key]
             let configCandidate = configMap[key]
             var issues: [String] = []
-            let directoryValidated = directory != nil
+            let workspacePath = configCandidate?.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceURL = (workspacePath?.isEmpty == false)
+                ? URL(fileURLWithPath: workspacePath!, isDirectory: true)
+                : nil
+            let workspaceValidated = workspaceURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            let sourceDirectoryPath = workspaceValidated ? workspaceURL?.path : directory?.path
+            let directoryValidated = workspaceValidated || directory != nil
             let configValidated = configCandidate != nil
 
             if !directoryValidated {
-                issues.append("agent 目录未找到")
-            } else if directory?.hasSoulFile == false {
+                issues.append("workspace 目录未找到")
+            } else if let sourceDirectoryPath {
+                let soulURL = URL(fileURLWithPath: sourceDirectoryPath, isDirectory: true)
+                if existingSoulURL(in: soulURL) == nil {
+                    issues.append("缺少 SOUL.md")
+                }
+            } else {
                 issues.append("缺少 SOUL.md")
             }
 
@@ -1549,14 +1626,14 @@ class OpenClawManager: ObservableObject {
             let name = configCandidate?.name ?? directory?.name ?? key
             let recordID = [
                 name,
-                directory?.path ?? "",
+                sourceDirectoryPath ?? "",
                 configCandidate?.configPath ?? ""
             ].joined(separator: "|")
 
             return ProjectOpenClawDetectedAgentRecord(
                 id: recordID,
                 name: name,
-                directoryPath: directory?.path,
+                directoryPath: sourceDirectoryPath,
                 configPath: configCandidate?.configPath,
                 workspacePath: configCandidate?.workspacePath ?? directory?.workspacePath,
                 statePath: configCandidate?.statePath ?? directory?.statePath,
