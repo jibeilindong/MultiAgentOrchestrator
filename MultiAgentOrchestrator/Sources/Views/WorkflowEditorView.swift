@@ -87,6 +87,12 @@ struct WorkflowEditorView: View {
                 onSave: { appState.saveProject() }
             )
             .zIndex(1000)
+            .background(
+                DeleteKeyMonitor(
+                    isEnabled: { viewMode == .architecture },
+                    onDelete: handleDeleteShortcut
+                )
+            )
             
             Divider()
             
@@ -293,6 +299,14 @@ struct WorkflowEditorView: View {
         guard let selectedEdgeID else { return }
         appState.removeEdge(selectedEdgeID)
         self.selectedEdgeID = nil
+    }
+
+    private func handleDeleteShortcut() {
+        if selectedEdgeID != nil, activeNodeSelection().isEmpty, selectedBoundaryIDs.isEmpty {
+            deleteSelectedEdge()
+        } else {
+            deleteSelection()
+        }
     }
 
     private func addNode() {
@@ -575,7 +589,7 @@ struct EditorToolbar: View {
         }
         .buttonStyle(.plain)
         .foregroundColor(viewMode == mode ? .accentColor : .secondary)
-        .frame(width: 128, height: 32)
+        .frame(height: 32)
         .background(viewMode == mode ? Color.accentColor.opacity(0.18) : Color.clear)
         .cornerRadius(8)
     }
@@ -584,12 +598,14 @@ struct EditorToolbar: View {
         Label(title, systemImage: systemName)
             .font(.caption.weight(.medium))
             .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     private func toolbarActionButton(title: String, systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             toolbarButtonLabel(title: title, systemName: systemName)
-                .frame(width: 128, height: 32)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
         }
         .buttonStyle(.bordered)
     }
@@ -606,13 +622,15 @@ struct EditorToolbar: View {
             if prominent {
                 Button(action: action) {
                     toolbarButtonLabel(title: title, systemName: systemName)
-                        .frame(width: 128, height: 32)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
                 }
                 .buttonStyle(.borderedProminent)
             } else {
                 Button(action: action) {
                     toolbarButtonLabel(title: title, systemName: systemName)
-                        .frame(width: 128, height: 32)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
                 }
                 .buttonStyle(.bordered)
             }
@@ -628,7 +646,8 @@ struct EditorToolbar: View {
             isConnectMode = true
         }) {
             toolbarButtonLabel(title: type.description, systemName: icon)
-                .frame(width: 128, height: 32)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
         }
         .buttonStyle(.bordered)
         .tint(connectionType == type ? .blue : nil)
@@ -673,6 +692,68 @@ struct EditorToolbar: View {
                 isConnectMode = false
                 connectFromAgentID = nil
             }
+        }
+    }
+}
+
+private struct DeleteKeyMonitor: NSViewRepresentable {
+    var isEnabled: () -> Bool
+    var onDelete: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isEnabled: isEnabled, onDelete: onDelete)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onDelete = onDelete
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator {
+        var isEnabled: () -> Bool
+        var onDelete: () -> Void
+
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        init(isEnabled: @escaping () -> Bool, onDelete: @escaping () -> Void) {
+            self.isEnabled = isEnabled
+            self.onDelete = onDelete
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+                guard let self, let view = self.view, view.window != nil else { return event }
+                guard self.isEnabled() else { return event }
+                guard event.keyCode == 51 || event.keyCode == 117 else { return event }
+                if view.window?.firstResponder is NSTextView {
+                    return event
+                }
+
+                self.onDelete()
+                return nil
+            }
+        }
+
+        func detach() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
         }
     }
 }

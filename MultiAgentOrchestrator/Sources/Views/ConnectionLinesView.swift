@@ -304,7 +304,7 @@ struct WorkflowEdgeRoutePlanner {
         let end = anchorPoint(on: targetFrame, side: targetSide)
         let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
 
-        let candidates = candidatePaths(from: start, to: end, preferredAxis: preferredAxis, laneOffset: laneOffset)
+        let candidates = candidatePaths(from: start, to: end, laneOffset: laneOffset)
 
         for path in candidates {
             if isClear(path, blockedRects: blockedRects) {
@@ -318,7 +318,6 @@ struct WorkflowEdgeRoutePlanner {
     private static func candidatePaths(
         from start: CGPoint,
         to end: CGPoint,
-        preferredAxis: EdgeRouteAxis,
         laneOffset: CGFloat
     ) -> [[CGPoint]] {
         var paths: [[CGPoint]] = []
@@ -327,26 +326,13 @@ struct WorkflowEdgeRoutePlanner {
             paths.append([start, end])
         }
 
-        if preferredAxis == .horizontal {
-            paths.append([start, CGPoint(x: end.x, y: start.y), end])
-            paths.append([start, CGPoint(x: start.x, y: end.y), end])
-        } else {
-            paths.append([start, CGPoint(x: start.x, y: end.y), end])
-            paths.append([start, CGPoint(x: end.x, y: start.y), end])
-        }
-
         let offsets = candidateOffsets(for: laneOffset)
         for offset in offsets {
+            let midY = (start.y + end.y) / 2 + offset
             paths.append([
                 start,
-                CGPoint(x: start.x, y: start.y + offset),
-                CGPoint(x: end.x, y: start.y + offset),
-                end
-            ])
-            paths.append([
-                start,
-                CGPoint(x: start.x + offset, y: start.y),
-                CGPoint(x: start.x + offset, y: end.y),
+                CGPoint(x: start.x, y: midY),
+                CGPoint(x: end.x, y: midY),
                 end
             ])
         }
@@ -360,29 +346,24 @@ struct WorkflowEdgeRoutePlanner {
     }
 
     static func preferredOutgoingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        preferredSide(for: rect, toward: point)
+        preferredVerticalSide(for: rect, toward: point)
     }
 
     static func preferredIncomingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        preferredSide(for: rect, toward: point)
+        preferredVerticalSide(for: rect, toward: point)
     }
 
-    private static func preferredSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
+    private static func preferredVerticalSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
         let center = rect.center
-        let dx = point.x - center.x
-        let dy = point.y - center.y
-        if abs(dx) >= abs(dy) {
-            return dx >= 0 ? .right : .left
-        }
-        return dy >= 0 ? .bottom : .top
+        return point.y >= center.y ? .bottom : .top
     }
 
     private static func anchorPoint(on rect: CGRect, side: EdgeAnchorSide) -> CGPoint {
         switch side {
-        case .left: return CGPoint(x: rect.minX - anchorClearance, y: rect.midY)
-        case .right: return CGPoint(x: rect.maxX + anchorClearance, y: rect.midY)
         case .top: return CGPoint(x: rect.midX, y: rect.minY - anchorClearance)
         case .bottom: return CGPoint(x: rect.midX, y: rect.maxY + anchorClearance)
+        case .left: return CGPoint(x: rect.midX, y: rect.minY - anchorClearance)
+        case .right: return CGPoint(x: rect.midX, y: rect.maxY + anchorClearance)
         }
     }
 
