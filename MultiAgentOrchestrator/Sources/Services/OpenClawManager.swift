@@ -47,45 +47,55 @@ class OpenClawManager: ObservableObject {
     }
     
     // 连接OpenClaw - 使用配置
-    func connect() {
+    func connect(completion: ((Bool, String) -> Void)? = nil) {
         status = .connecting
         config.save()
-        refreshAgents { _ in }
+        confirmConnection(using: config) { success, message in
+            completion?(success, message)
+        }
     }
 
     func refreshAgents(completion: @escaping ([String]) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        testConnection(using: config) { [weak self] success, message, agentNames in
             guard let self else { return }
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: self.resolveOpenClawPath())
-            process.arguments = ["agents", "list"]
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                let agentNames = Self.parseAgentNames(from: output)
-
-                DispatchQueue.main.async {
-                    self.agents = agentNames
-                    self.isConnected = process.terminationStatus == 0
-                    self.status = process.terminationStatus == 0 ? .connected : .error(output.trimmingCharacters(in: .whitespacesAndNewlines))
-                    completion(agentNames)
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.isConnected = false
-                    self.status = .error(error.localizedDescription)
-                    completion([])
-                }
+            DispatchQueue.main.async {
+                self.agents = success ? agentNames : []
+                self.isConnected = success
+                self.status = success ? .connected : .error(message)
+                completion(self.agents)
             }
+        }
+    }
+
+    func confirmConnection(using config: OpenClawConfig, completion: @escaping (Bool, String) -> Void) {
+        status = .connecting
+        testConnection(using: config) { [weak self] success, message, agentNames in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.config = config
+                self.config.save()
+                self.agents = success ? agentNames : []
+                self.isConnected = success
+                self.status = success ? .connected : .error(message)
+                if !success {
+                    self.activeAgents.removeAll()
+                }
+                completion(success, message)
+            }
+        }
+    }
+
+    func testConnection(
+        using config: OpenClawConfig,
+        completion: @escaping (Bool, String, [String]) -> Void
+    ) {
+        switch config.deploymentKind {
+        case .local:
+            runLocalConnectionTest(binaryPath: resolveOpenClawPath(for: config), completion: completion)
+        case .container:
+            runContainerConnectionTest(config: config, completion: completion)
+        case .remoteServer:
+            runRemoteConnectionTest(config: config, completion: completion)
         }
     }
     
@@ -172,7 +182,7 @@ class OpenClawManager: ObservableObject {
         }
     }
 
-    private func resolveOpenClawPath() -> String {
+    private func resolveOpenClawPath(for config: OpenClawConfig) -> String {
         if FileManager.default.fileExists(atPath: config.localBinaryPath) {
             return config.localBinaryPath
         }
@@ -188,6 +198,147 @@ class OpenClawManager: ObservableObject {
                 return raw.components(separatedBy: " (").first?.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             .filter { !$0.isEmpty }
+    }
+
+    private func runLocalConnectionTest(
+        binaryPath: String,
+        completion: @escaping (Bool, String, [String]) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard FileManager.default.fileExists(atPath: binaryPath) else {
+                DispatchQueue.main.async {
+                    completion(false, "未找到 OpenClaw 可执行文件：\(binaryPath)", [])
+                }
+                return
+            }
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: binaryPath)
+            process.arguments = ["agents", "list"]
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                let agentNames = Self.parseAgentNames(from: output)
+                let success = process.terminationStatus == 0
+                let message: String
+
+                if success {
+                    message = "连接成功，发现 \(agentNames.count) 个 OpenClaw agents"
+                } else {
+                    let fallback = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    message = fallback.isEmpty ? "OpenClaw 本地连接失败" : fallback
+                }
+
+                DispatchQueue.main.async {
+                    completion(success, message, agentNames)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [])
+                }
+            }
+        }
+    }
+
+    private func runContainerConnectionTest(
+        config: OpenClawConfig,
+        completion: @escaping (Bool, String, [String]) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !containerName.isEmpty else {
+                DispatchQueue.main.async {
+                    completion(false, "请先填写容器名称", [])
+                }
+                return
+            }
+
+            let engine = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "docker"
+                : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [engine, "exec", containerName, "openclaw", "agents", "list"]
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                let agentNames = Self.parseAgentNames(from: output)
+                let success = process.terminationStatus == 0
+                let message: String
+
+                if success {
+                    message = "容器连接成功，发现 \(agentNames.count) 个 OpenClaw agents"
+                } else {
+                    let fallback = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    message = fallback.isEmpty ? "OpenClaw 容器连接失败" : fallback
+                }
+
+                DispatchQueue.main.async {
+                    completion(success, message, agentNames)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [])
+                }
+            }
+        }
+    }
+
+    private func runRemoteConnectionTest(
+        config: OpenClawConfig,
+        completion: @escaping (Bool, String, [String]) -> Void
+    ) {
+        let host = config.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else {
+            completion(false, "请先填写远程主机地址", [])
+            return
+        }
+
+        guard let url = URL(string: config.baseURL) else {
+            completion(false, "远程地址无效：\(config.baseURL)", [])
+            return
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: TimeInterval(max(config.timeout, 5)))
+        if !config.apiKey.isEmpty {
+            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [])
+                }
+                return
+            }
+
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let success = (200..<400).contains(statusCode)
+            let message = success
+                ? "远程连接成功：\(config.baseURL)"
+                : "远程连接失败，HTTP \(statusCode)"
+
+            DispatchQueue.main.async {
+                completion(success, message, [])
+            }
+        }.resume()
     }
     
     // 备份当前OpenClaw配置

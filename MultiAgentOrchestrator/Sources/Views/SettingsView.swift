@@ -101,7 +101,7 @@ struct SettingsView: View {
                     }
                 }
                 .listStyle(SidebarListStyle())
-                .frame(width: 200)
+                .frame(width: 220)
                 
                 Divider()
                 
@@ -124,7 +124,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(width: 550, height: 400)
+        .frame(minWidth: 860, minHeight: 620)
     }
 }
 

@@ -6,6 +6,7 @@ struct ContentView: View {
     @Binding var zoomScale: CGFloat
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
+    @State private var showingProjectPicker = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -94,6 +95,10 @@ struct ContentView: View {
         } message: {
             Text(openClawMessage ?? "")
         }
+        .sheet(isPresented: $showingProjectPicker) {
+            ProjectPickerView()
+                .environmentObject(appState)
+        }
     }
 
     private var projectSummary: String {
@@ -109,6 +114,20 @@ struct ContentView: View {
         case .file:
             TopToolbarGroup {
                 Menu {
+                    Section("当前项目") {
+                        Button(action: { showingProjectPicker = true }) {
+                            Label("切换或管理项目", systemImage: "rectangle.stack")
+                        }
+
+                        ForEach(appState.projectManager.projects.prefix(8)) { project in
+                            Button(action: { appState.openProject(at: project.url) }) {
+                                Label(project.name, systemImage: project.url == appState.currentProjectFileURL ? "checkmark.circle.fill" : "folder")
+                            }
+                        }
+                    }
+
+                    Divider()
+
                     Button(action: { appState.createNewProject() }) {
                         Label(LocalizedString.new, systemImage: "plus")
                     }
@@ -138,7 +157,14 @@ struct ContentView: View {
                         }
                     }
                 } label: {
-                    Label("项目", systemImage: "folder")
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder")
+                        Text(appState.currentProject?.name ?? "项目")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
         case .project:

@@ -10,16 +10,11 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
-    @State private var showingProjectPicker = false
     @State private var agentLibraryHeight: CGFloat = 320
     @State private var agentLibraryHeightAtDragStart: CGFloat?
 
     var body: some View {
         VStack(spacing: 0) {
-            projectHeader
-
-            Divider()
-
             navigationSection
 
             if selectedTab == 0 {
@@ -44,49 +39,12 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var projectHeader: some View {
-        HStack {
-            Button(action: { showingProjectPicker = true }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "folder")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(appState.currentProject?.name ?? "No Project")
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text(projectMeta)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.caption)
-                }
-            }
-            .buttonStyle(.plain)
-
-            if appState.currentProject != nil {
-                Button(action: { appState.closeProject() }) {
-                    Image(systemName: "minus.circle")
-                        .foregroundColor(.red)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding()
-        .background(Color(.controlBackgroundColor))
-        .sheet(isPresented: $showingProjectPicker) {
-            ProjectPickerView()
-                .environmentObject(appState)
-        }
-    }
-
     private var navigationSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(LocalizedString.navigation)
                 .font(.headline)
                 .padding(.horizontal)
-                .padding(.top, 12)
+                .padding(.top, 16)
 
             ForEach(navigationItems) { item in
                 Button(action: { selectedTab = item.tag }) {
@@ -126,7 +84,7 @@ struct SidebarView: View {
                         if agentLibraryHeightAtDragStart == nil {
                             agentLibraryHeightAtDragStart = agentLibraryHeight
                         }
-                        agentLibraryHeight = min(max(startHeight - value.translation.height, 180), 560)
+                        agentLibraryHeight = min(max(startHeight + value.translation.height, 180), 560)
                     }
                     .onEnded { _ in
                         agentLibraryHeightAtDragStart = nil
@@ -134,14 +92,6 @@ struct SidebarView: View {
             )
             .help("拖拉调整智能体库高度")
     }
-
-    private var projectMeta: String {
-        let agentCount = appState.currentProject?.agents.count ?? 0
-        let workflowCount = appState.currentProject?.workflows.count ?? 0
-        let taskCount = appState.taskManager.tasks.count
-        return "\(agentCount) agents • \(workflowCount) workflows • \(taskCount) tasks"
-    }
-
     private var navigationItems: [NavigationItem] {
         [
             NavigationItem(tag: 0, title: "工作流编辑器", icon: "square.grid.2x2"),
