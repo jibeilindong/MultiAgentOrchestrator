@@ -1288,12 +1288,27 @@ class AppState: ObservableObject {
             return false
         }
 
-        let executionPlan = openClawService.executionPlan(for: workflow)
-        guard let leadNode = executionPlan.first ?? workflow.nodes.first(where: { $0.type == .agent }),
+        let entryAgentNodes = entryConnectedAgentNodes(in: workflow)
+        guard let leadNode = entryAgentNodes.first,
               let leadAgentID = leadNode.agentID,
               let leadAgent = project.agents.first(where: { $0.id == leadAgentID }) else {
-            openClawService.addLog(.error, "Workbench publish failed: workflow has no executable agent node")
+            openClawService.addLog(
+                .error,
+                "Workbench publish failed: no agent is connected to the workflow entry(start) node."
+            )
             return false
+        }
+
+        let entryAgentIDs = Set(entryAgentNodes.compactMap(\.agentID))
+        let entryAgentNames = project.agents
+            .filter { entryAgentIDs.contains($0.id) }
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        if !entryAgentNames.isEmpty {
+            openClawService.addLog(
+                .info,
+                "Workbench entry routing: prompt will be delivered to entry-connected agent(s): \(entryAgentNames.joined(separator: ", "))"
+            )
         }
 
         var task = Task(
@@ -1309,6 +1324,7 @@ class AppState: ObservableObject {
         task.metadata["source"] = "workbench"
         task.metadata["workflowID"] = workflow.id.uuidString
         task.metadata["entryAgentID"] = leadAgent.id.uuidString
+        task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
         taskManager.addTask(task)
 
         var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
@@ -1323,7 +1339,7 @@ class AppState: ObservableObject {
             from: leadAgent.id,
             to: leadAgent.id,
             type: .notification,
-            content: "任务已发布到 \(workflow.name)，由 \(leadAgent.name) 发起编排。"
+            content: "任务已发布到 \(workflow.name)，入口节点已路由给 \(leadAgent.name)。"
         )
         queuedMessage.status = .read
         queuedMessage.metadata["channel"] = "workbench"
@@ -1351,16 +1367,26 @@ class AppState: ObservableObject {
             let finalStatus: TaskStatus = results.isEmpty ? .blocked : (failedCount == 0 ? .done : .blocked)
             self.taskManager.moveTask(task.id, to: finalStatus)
 
+            let entryResult = results.first { entryAgentIDs.contains($0.agentID) }
+            let respondingAgent = entryResult
+                .flatMap { result in project.agents.first(where: { $0.id == result.agentID }) }
+                ?? leadAgent
+
             let responseText: String
             if results.isEmpty {
                 responseText = "工作流未返回执行结果，请检查 OpenClaw 连接、Agent 定义或部署配置。"
+            } else if let entryResult {
+                let output = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                responseText = output.isEmpty
+                    ? "\(respondingAgent.name) 已从入口链路执行完成，\(completedCount) 个节点完成，\(failedCount) 个节点失败。"
+                    : output
             } else {
                 responseText = "工作流 \(workflow.name) 执行完成，\(completedCount) 个节点完成，\(failedCount) 个节点失败。"
             }
 
             var responseMessage = Message(
-                from: leadAgent.id,
-                to: leadAgent.id,
+                from: respondingAgent.id,
+                to: respondingAgent.id,
                 type: failedCount == 0 ? .notification : .data,
                 content: responseText
             )
@@ -1369,6 +1395,7 @@ class AppState: ObservableObject {
             responseMessage.metadata["role"] = "assistant"
             responseMessage.metadata["workflowID"] = workflow.id.uuidString
             responseMessage.metadata["taskID"] = task.id.uuidString
+            responseMessage.metadata["entryReply"] = "true"
             self.messageManager.appendMessage(responseMessage)
 
             if var mutableProject = self.currentProject {
@@ -1608,6 +1635,39 @@ class AppState: ObservableObject {
     // 显示键盘快捷键
     func showKeyboardShortcuts() {
         print("显示键盘快捷键...")
+    }
+
+    private func entryConnectedAgentNodes(in workflow: Workflow) -> [WorkflowNode] {
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let startNodes = workflow.nodes
+            .filter { $0.type == .start }
+            .sorted(by: workbenchNodeSort)
+
+        guard let entryNode = startNodes.first else {
+            return []
+        }
+
+        var seen = Set<UUID>()
+        let connectedAgents = workflow.edges
+            .filter { $0.fromNodeID == entryNode.id }
+            .compactMap { nodeByID[$0.toNodeID] }
+            .filter { node in
+                guard node.type == .agent, let agentID = node.agentID else { return false }
+                return seen.insert(agentID).inserted
+            }
+            .sorted(by: workbenchNodeSort)
+
+        return connectedAgents
+    }
+
+    private func workbenchNodeSort(_ lhs: WorkflowNode, _ rhs: WorkflowNode) -> Bool {
+        if lhs.position.y != rhs.position.y {
+            return lhs.position.y < rhs.position.y
+        }
+        if lhs.position.x != rhs.position.x {
+            return lhs.position.x < rhs.position.x
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 
     private func workbenchTaskTitle(from prompt: String) -> String {

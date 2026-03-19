@@ -57,8 +57,22 @@ struct WorkbenchConversationView: View {
     }
 
     private var hasExecutableWorkflow: Bool {
-        guard let workflow = selectedWorkflow else { return false }
-        return workflow.nodes.contains { $0.type == .agent }
+        entryConnectedAgentCount > 0
+    }
+
+    private var entryConnectedAgentCount: Int {
+        guard let workflow = selectedWorkflow else { return 0 }
+
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let startNode = workflow.nodes.first { $0.type == .start }
+        guard let startNode else { return 0 }
+
+        let agentIDs = Set(
+            workflow.edges
+                .filter { $0.fromNodeID == startNode.id }
+                .compactMap { nodeByID[$0.toNodeID]?.agentID }
+        )
+        return agentIDs.count
     }
 
     var body: some View {
@@ -84,7 +98,7 @@ struct WorkbenchConversationView: View {
             } else if !hasExecutableWorkflow {
                 WorkbenchEmptyState(
                     title: "当前工作流还不能执行",
-                    description: "工作流至少需要一个 Agent 节点。节点负责执行，连接线负责通讯权限，边界负责文件权限。",
+                    description: "入口（Start）节点至少需要连接一个 Agent 节点。工作台输入会路由到入口连线对应的 Agent。",
                     primaryTitle: "导入 Project Agents",
                     primaryAction: { appState.generateArchitectureFromProjectAgents() },
                     secondaryTitle: "配置 OpenClaw",
@@ -254,7 +268,11 @@ struct WorkbenchConversationView: View {
                     Button("发送到工作流") {
                         publishPrompt()
                     }
-                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appState.openClawService.isExecuting)
+                    .disabled(
+                        prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || appState.openClawService.isExecuting
+                            || !hasExecutableWorkflow
+                    )
                     .buttonStyle(.borderedProminent)
                 }
             }
@@ -336,7 +354,7 @@ struct WorkbenchConversationView: View {
         }
 
         guard hasExecutableWorkflow else {
-            errorText = "当前工作流还没有可执行的 Agent 节点。"
+            errorText = "当前工作流入口节点尚未连接 Agent，请先从 Start 节点连线到目标 Agent。"
             return
         }
 
