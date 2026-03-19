@@ -653,7 +653,6 @@ struct DropIndicatorView: View {
     var body: some View {
         ZStack {
             Color.blue.opacity(0.08)
-                .edgesIgnoringSafeArea(.all)
 
             Circle()
                 .stroke(Color.blue, lineWidth: 2)

@@ -145,6 +145,7 @@ struct CanvasView: View {
                 connectFromAgentID = nil
             }
         }
+        .clipped()
     }
 
     private var activeSelection: Set<UUID> {
