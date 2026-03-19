@@ -35,6 +35,40 @@ class OpenClawManager: ObservableObject {
         var lastReloadedAt: Date?
     }
 
+    struct ManagedAgentSkillRecord: Identifiable, Hashable {
+        var id: String { name }
+        var name: String
+        var path: String
+    }
+
+    struct ManagedAgentRecord: Identifiable, Hashable {
+        var id: String
+        var configIndex: Int
+        var name: String
+        var agentDirPath: String?
+        var workspacePath: String?
+        var modelIdentifier: String
+        var installedSkills: [ManagedAgentSkillRecord]
+
+        init(
+            id: String,
+            configIndex: Int,
+            name: String,
+            agentDirPath: String? = nil,
+            workspacePath: String? = nil,
+            modelIdentifier: String = "",
+            installedSkills: [ManagedAgentSkillRecord] = []
+        ) {
+            self.id = id
+            self.configIndex = configIndex
+            self.name = name
+            self.agentDirPath = agentDirPath
+            self.workspacePath = workspacePath
+            self.modelIdentifier = modelIdentifier
+            self.installedSkills = installedSkills
+        }
+    }
+
     private struct SessionContext {
         let projectID: UUID
         let rootURL: URL
@@ -389,6 +423,438 @@ class OpenClawManager: ObservableObject {
         }
 
         return importedRecords
+    }
+
+    func loadManagedAgents(
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String, [ManagedAgentRecord]) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持直接修改 OpenClaw agent 配置。", [])
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
+                guard result.terminationStatus == 0 else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(result.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw agents 失败" : fallback]
+                    )
+                }
+
+                let records = self.parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
+                DispatchQueue.main.async {
+                    completion(true, "已加载 \(records.count) 个 OpenClaw agents。", records)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [])
+                }
+            }
+        }
+    }
+
+    func loadAvailableModels(
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String, [String]) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下无法读取本地模型目录。", [])
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["models", "list", "--plain"])
+                guard result.terminationStatus == 0 else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(result.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取模型列表失败" : fallback]
+                    )
+                }
+
+                let rawModels = self.parsePlainTextList(from: result.standardOutput)
+                var seen = Set<String>()
+                let models = rawModels.filter { seen.insert($0).inserted }
+                DispatchQueue.main.async {
+                    completion(true, "已加载 \(models.count) 个模型。", models)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [])
+                }
+            }
+        }
+    }
+
+    func updateManagedAgentModel(
+        _ agent: ManagedAgentRecord,
+        model: String,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持修改单个 agent 的 model。")
+            return
+        }
+
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty else {
+            completion(false, "Model 不能为空。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try self.runOpenClawCommand(
+                    using: resolvedConfig,
+                    arguments: ["config", "set", "agents.list[\(agent.configIndex)].model", trimmedModel]
+                )
+
+                guard result.terminationStatus == 0 else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(result.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "更新 agent model 失败" : fallback]
+                    )
+                }
+
+                DispatchQueue.main.async {
+                    completion(true, "\(agent.name) 的 model 已更新为 \(trimmedModel)。建议重新连接或重启 OpenClaw 使其完全生效。")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func installSkill(
+        _ skillSlug: String,
+        for agent: ManagedAgentRecord,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持通过本应用安装技能。")
+            return
+        }
+
+        let trimmedSkill = skillSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSkill.isEmpty else {
+            completion(false, "请先输入 skill slug。")
+            return
+        }
+
+        guard let workspacePath = agent.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !workspacePath.isEmpty else {
+            completion(false, "\(agent.name) 未配置 workspace，无法安装技能。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                if resolvedConfig.deploymentKind == .local {
+                    let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
+                    try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+                }
+
+                let result = try self.runClawHubCommand(
+                    using: resolvedConfig,
+                    arguments: ["install", trimmedSkill, "--workdir", workspacePath]
+                )
+
+                guard result.terminationStatus == 0 else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(result.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "安装技能失败" : fallback]
+                    )
+                }
+
+                DispatchQueue.main.async {
+                    completion(true, "\(trimmedSkill) 已安装到 \(agent.name) 的 workspace。")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func removeSkill(
+        _ skillName: String,
+        from agent: ManagedAgentRecord,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持移除技能。")
+            return
+        }
+
+        let trimmedSkill = skillName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSkill.isEmpty else {
+            completion(false, "技能名称不能为空。")
+            return
+        }
+
+        guard let workspacePath = agent.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !workspacePath.isEmpty else {
+            completion(false, "\(agent.name) 未配置 workspace，无法移除技能。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let skillsPath = URL(fileURLWithPath: workspacePath, isDirectory: true)
+                    .appendingPathComponent("skills", isDirectory: true)
+                    .appendingPathComponent(trimmedSkill, isDirectory: true)
+
+                switch resolvedConfig.deploymentKind {
+                case .local:
+                    if FileManager.default.fileExists(atPath: skillsPath.path) {
+                        try FileManager.default.removeItem(at: skillsPath)
+                    }
+                case .container:
+                    guard let containerName = self.containerName(for: resolvedConfig) else {
+                        throw NSError(domain: "OpenClawManager", code: 20, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
+                    }
+                    let result = try self.runDeploymentCommand(
+                        using: resolvedConfig,
+                        arguments: ["exec", containerName, "rm", "-rf", skillsPath.path]
+                    )
+                    guard result.terminationStatus == 0 else {
+                        let fallback = String(data: result.standardError, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        throw NSError(
+                            domain: "OpenClawManager",
+                            code: Int(result.terminationStatus),
+                            userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "移除技能失败" : fallback]
+                        )
+                    }
+                case .remoteServer:
+                    break
+                }
+
+                DispatchQueue.main.async {
+                    completion(true, "\(trimmedSkill) 已从 \(agent.name) 的 workspace 移除。")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func parseManagedAgents(from data: Data, using config: OpenClawConfig) -> [ManagedAgentRecord] {
+        guard
+            let jsonObject = try? JSONSerialization.jsonObject(with: data),
+            let dictionaries = dictionaryArray(in: jsonObject)
+        else {
+            let names = parsePlainTextList(from: data)
+            return names.enumerated().map { index, name in
+                ManagedAgentRecord(
+                    id: name,
+                    configIndex: index,
+                    name: name,
+                    modelIdentifier: ""
+                )
+            }
+        }
+
+        return dictionaries.enumerated().map { index, dictionary in
+            let id = stringValue(dictionary, keys: ["id", "agentID", "agentId", "name"]) ?? "agent-\(index)"
+            let name = stringValue(dictionary, keys: ["name", "displayName", "agentName"]) ?? id
+            let agentDirPath = stringValue(dictionary, keys: ["agentDir", "agentDirPath", "directory", "agentDirectory"])
+            let workspacePath = stringValue(dictionary, keys: ["workspace", "workspacePath", "workdir", "workPath"])
+            let modelIdentifier = stringValue(dictionary, keys: ["model", "modelIdentifier", "primaryModel", "defaultModel"]) ?? ""
+
+            let installedSkills = loadInstalledSkills(
+                forWorkspacePath: workspacePath,
+                using: config
+            )
+
+            return ManagedAgentRecord(
+                id: id,
+                configIndex: index,
+                name: name,
+                agentDirPath: agentDirPath,
+                workspacePath: workspacePath,
+                modelIdentifier: modelIdentifier,
+                installedSkills: installedSkills
+            )
+        }
+    }
+
+    private func loadInstalledSkills(
+        forWorkspacePath workspacePath: String?,
+        using config: OpenClawConfig
+    ) -> [ManagedAgentSkillRecord] {
+        guard let workspacePath, !workspacePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
+        }
+
+        switch config.deploymentKind {
+        case .local:
+            let skillsPath = URL(fileURLWithPath: workspacePath, isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+            guard let contents = try? FileManager.default.contentsOfDirectory(at: skillsPath, includingPropertiesForKeys: [.isDirectoryKey]) else {
+                return []
+            }
+
+            return contents.compactMap { item in
+                let values = try? item.resourceValues(forKeys: [.isDirectoryKey])
+                if values?.isDirectory == true {
+                    return ManagedAgentSkillRecord(name: item.lastPathComponent, path: item.path)
+                }
+                if item.pathExtension.lowercased() == "md" {
+                    return ManagedAgentSkillRecord(name: item.deletingPathExtension().lastPathComponent, path: item.path)
+                }
+                return nil
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .container:
+            guard let containerName = containerName(for: config) else { return [] }
+
+            let skillsPath = URL(fileURLWithPath: workspacePath, isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true)
+                .path
+
+            let script = """
+            if [ -d \(shellQuoted(skillsPath)) ]; then
+              find \(shellQuoted(skillsPath)) -mindepth 1 -maxdepth 1 -print 2>/dev/null
+            fi
+            """
+
+            guard let result = try? runDeploymentCommand(
+                using: config,
+                arguments: ["exec", containerName, "sh", "-lc", script]
+            ), result.terminationStatus == 0 else {
+                return []
+            }
+
+            let paths = parsePlainTextList(from: result.standardOutput)
+            return paths.map {
+                ManagedAgentSkillRecord(name: URL(fileURLWithPath: $0).lastPathComponent, path: $0)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .remoteServer:
+            return []
+        }
+    }
+
+    private func parsePlainTextList(from data: Data) -> [String] {
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return output
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func dictionaryArray(in value: Any) -> [[String: Any]]? {
+        if let array = value as? [[String: Any]] {
+            return array
+        }
+
+        if let dictionary = value as? [String: Any] {
+            for key in ["agents", "list", "items", "data"] {
+                if let nested = dictionary[key], let nestedArray = dictionaryArray(in: nested) {
+                    return nestedArray
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func runOpenClawCommand(
+        using config: OpenClawConfig,
+        arguments: [String],
+        standardInput: FileHandle? = nil
+    ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
+        switch config.deploymentKind {
+        case .local:
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: resolveOpenClawPath(for: config))
+            process.arguments = arguments
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+            process.standardInput = standardInput
+
+            try process.run()
+            process.waitUntilExit()
+
+            let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            return (process.terminationStatus, stdout, stderr)
+        case .container:
+            guard let containerName = containerName(for: config) else {
+                throw NSError(domain: "OpenClawManager", code: 11, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
+            }
+            return try runDeploymentCommand(using: config, arguments: ["exec", containerName, "openclaw"] + arguments, standardInput: standardInput)
+        case .remoteServer:
+            throw NSError(domain: "OpenClawManager", code: 12, userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 OpenClaw CLI"])
+        }
+    }
+
+    private func runClawHubCommand(
+        using config: OpenClawConfig,
+        arguments: [String],
+        standardInput: FileHandle? = nil
+    ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
+        switch config.deploymentKind {
+        case .local:
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["clawhub"] + arguments
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+            process.standardInput = standardInput
+
+            try process.run()
+            process.waitUntilExit()
+
+            let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            return (process.terminationStatus, stdout, stderr)
+        case .container:
+            guard let containerName = containerName(for: config) else {
+                throw NSError(domain: "OpenClawManager", code: 13, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
+            }
+            return try runDeploymentCommand(using: config, arguments: ["exec", containerName, "clawhub"] + arguments, standardInput: standardInput)
+        case .remoteServer:
+            throw NSError(domain: "OpenClawManager", code: 14, userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 ClawHub CLI"])
+        }
     }
 
     private func mergeImportedRecords(_ importedRecords: [ProjectOpenClawDetectedAgentRecord]) -> [ProjectOpenClawDetectedAgentRecord] {
