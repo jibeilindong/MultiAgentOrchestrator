@@ -1,8 +1,6 @@
 //
-//  Untitled.swift
+//  CanvasView.swift
 //  MultiAgentOrchestrator
-//
-//  Created by 陈荣泽 on 2026/3/18.
 //
 
 import SwiftUI
@@ -15,44 +13,54 @@ struct CanvasView: View {
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var selectedNodeID: UUID?
+    @State private var selectedEdgeID: UUID?
     @State private var connectingFromNode: WorkflowNode?
     @State private var tempConnectionEnd: CGPoint?
     @State private var isDraggingCanvas: Bool = false
-    
-    // 子流程编辑相关
+
     @State private var showingSubflowEditor: Bool = false
     @State private var editingSubflowNode: WorkflowNode?
     @State private var currentWorkflowForSubflow: Workflow?
-    
-    // Connection mode from parent
+
     var isConnectMode: Bool = false
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
+    var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
-    
-    init(zoomScale: Binding<CGFloat> = .constant(1.0), isConnectMode: Bool = false, onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil, onNodeSelected: ((WorkflowNode) -> Void)? = nil, onDropAgent: ((String, CGPoint) -> Void)? = nil) {
+
+    init(
+        zoomScale: Binding<CGFloat> = .constant(1.0),
+        isConnectMode: Bool = false,
+        onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil,
+        onNodeSelected: ((WorkflowNode) -> Void)? = nil,
+        onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
+        onDropAgent: ((String, CGPoint) -> Void)? = nil
+    ) {
         self._zoomScale = zoomScale
         self.isConnectMode = isConnectMode
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
         self.onNodeSelected = onNodeSelected
+        self.onEdgeSelected = onEdgeSelected
         self.onDropAgent = onDropAgent
     }
-    
+
     var body: some View {
         CanvasContentView(
             scale: $scale,
             offset: $offset,
             lastOffset: $lastOffset,
             selectedNodeID: $selectedNodeID,
+            selectedEdgeID: $selectedEdgeID,
             connectingFromNode: $connectingFromNode,
             tempConnectionEnd: $tempConnectionEnd,
             onNodeClick: onNodeClickInConnectMode,
             onNodeSelected: onNodeSelected,
-            onSubflowEdit: handleSubflowEdit  // 新增
+            onEdgeSelected: onEdgeSelected,
+            onSubflowEdit: handleSubflowEdit
         )
         .onDrop(of: [.text], isTargeted: nil) { providers, location in
             for provider in providers {
-                provider.loadObject(ofClass: NSString.self) { item, error in
+                provider.loadObject(ofClass: NSString.self) { item, _ in
                     if let agentName = item as? String {
                         DispatchQueue.main.async {
                             self.onDropAgent?(agentName, location)
@@ -66,7 +74,6 @@ struct CanvasView: View {
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                 if event.modifierFlags.contains(.command) {
-                    // Cmd + 滚轮 = 缩放
                     let delta = event.scrollingDeltaY * 0.01
                     let newScale = max(0.1, min(2.0, self.scale + delta))
                     self.scale = newScale
@@ -76,14 +83,16 @@ struct CanvasView: View {
                 return event
             }
         }
-        .overlay(ControlButtonsView(
-            scale: $scale,
-            offset: $offset,
-            lastOffset: $lastOffset,
-            selectedNodeID: $selectedNodeID,
-            appState: appState
-        ))
-        // 子流程编辑器弹窗
+        .overlay(
+            ControlButtonsView(
+                scale: $scale,
+                offset: $offset,
+                lastOffset: $lastOffset,
+                selectedNodeID: $selectedNodeID,
+                selectedEdgeID: $selectedEdgeID,
+                appState: appState
+            )
+        )
         .sheet(isPresented: $showingSubflowEditor) {
             if let node = editingSubflowNode, let workflow = currentWorkflowForSubflow {
                 SubflowEditorView(
@@ -101,8 +110,7 @@ struct CanvasView: View {
             scale = newValue
         }
     }
-    
-    // 处理子流程编辑
+
     private func handleSubflowEdit(_ node: WorkflowNode) {
         if let workflow = appState.currentProject?.workflows.first {
             editingSubflowNode = node
@@ -110,7 +118,7 @@ struct CanvasView: View {
             showingSubflowEditor = true
         }
     }
-    
+
     private func createCanvasGesture() -> some Gesture {
         SimultaneousGesture(
             MagnificationGesture()
@@ -122,7 +130,6 @@ struct CanvasView: View {
                     lastOffset = offset
                     zoomScale = scale
                 },
-            
             SimultaneousGesture(
                 DragGesture(minimumDistance: 5)
                     .onChanged { value in
@@ -140,18 +147,17 @@ struct CanvasView: View {
                             isDraggingCanvas = false
                         }
                     },
-                
                 TapGesture(count: 1)
                     .onEnded {
-                        // 点击空白处取消选择
                         selectedNodeID = nil
+                        selectedEdgeID = nil
                         connectingFromNode = nil
                         tempConnectionEnd = nil
                     }
             )
         )
     }
-    
+
     private func setupDefaultNodes() {
         guard let workflow = appState.ensureMainWorkflow(),
               workflow.nodes.isEmpty else { return }

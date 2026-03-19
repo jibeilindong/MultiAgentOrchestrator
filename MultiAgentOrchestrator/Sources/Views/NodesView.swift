@@ -11,6 +11,7 @@ struct NodesView: View {
     @EnvironmentObject var appState: AppState
     let currentWorkflow: Workflow?
     @Binding var selectedNodeID: UUID?
+    @Binding var selectedEdgeID: UUID?
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     let scale: CGFloat
@@ -112,6 +113,7 @@ struct NodesView: View {
     
     private func handleSingleTap(_ node: WorkflowNode) {
         selectedNodeID = node.id
+        selectedEdgeID = nil
         connectingFromNode = nil
         tempConnectionEnd = nil
         appState.selectNode(node.id)

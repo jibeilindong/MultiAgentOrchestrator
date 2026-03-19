@@ -2,8 +2,6 @@
 //  CanvasContentView.swift
 //  MultiAgentOrchestrator
 //
-//  Created by 陈荣泽 on 2026/3/18.
-//
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -14,43 +12,44 @@ struct CanvasContentView: View {
     @Binding var offset: CGSize
     @Binding var lastOffset: CGSize
     @Binding var selectedNodeID: UUID?
+    @Binding var selectedEdgeID: UUID?
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
+    var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onSubflowEdit: ((WorkflowNode) -> Void)?
-    
-    // 拖拽状态
+
     @State private var isDraggingOverCanvas: Bool = false
-    @State private var dropLocation: CGPoint = .zero
-    
+
     var currentWorkflow: Workflow? {
         appState.currentProject?.workflows.first
     }
-    
+
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // 1. 网格背景
                 GridBackground()
                     .scaleEffect(scale)
                     .offset(offset)
                     .opacity(isDraggingOverCanvas ? 0.6 : 1.0)
-                
-                // 拖拽时的放置指示器
+
                 if isDraggingOverCanvas {
                     DropIndicatorView(geometry: geometry)
                 }
-                
-                // 2. 连接线（添加选中状态支持）
+
                 ConnectionLinesView(
                     currentWorkflow: currentWorkflow,
                     scale: $scale,
                     offset: offset,
-                    geometry: geometry
+                    geometry: geometry,
+                    selectedEdgeID: $selectedEdgeID,
+                    onEdgeSelected: { edge in
+                        selectedNodeID = nil
+                        onEdgeSelected?(edge)
+                    }
                 )
-                
-                // 3. 临时连接线（正在拖拽连接时）
+
                 if let fromNode = connectingFromNode,
                    let endPoint = tempConnectionEnd {
                     ConnectionLineShape(
@@ -59,11 +58,11 @@ struct CanvasContentView: View {
                     )
                     .stroke(Color.orange.opacity(0.8), style: StrokeStyle(lineWidth: 3, dash: [6, 3]))
                 }
-                
-                // 4. 节点
+
                 NodesView(
                     currentWorkflow: currentWorkflow,
                     selectedNodeID: $selectedNodeID,
+                    selectedEdgeID: $selectedEdgeID,
                     connectingFromNode: $connectingFromNode,
                     tempConnectionEnd: $tempConnectionEnd,
                     scale: scale,
@@ -74,17 +73,15 @@ struct CanvasContentView: View {
                     onSubflowEdit: onSubflowEdit
                 )
                 .environmentObject(appState)
-                
-                // 5. 提示视图
+
                 HintViews(geometry: geometry)
             }
-            // 拖拽目标识别 - 添加视觉反馈
             .onDrop(of: [.text], isTargeted: $isDraggingOverCanvas) { providers, location in
-                return handleDrop(providers: providers, location: location)
+                handleDrop(providers: providers, location: location)
             }
         }
     }
-    
+
     private func adjustedPosition(_ position: CGPoint, geometry: GeometryProxy) -> CGPoint {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
@@ -93,10 +90,10 @@ struct CanvasContentView: View {
             y: position.y * scale + offset.height + centerY
         )
     }
-    
+
     private func handleDrop(providers: [NSItemProvider], location: CGPoint) -> Bool {
         for provider in providers {
-            provider.loadObject(ofClass: NSString.self) { item, error in
+            provider.loadObject(ofClass: NSString.self) { item, _ in
                 if let agentName = item as? String {
                     DispatchQueue.main.async {
                         addAgentNodeToCanvas(agentName: agentName, at: location)
@@ -106,7 +103,7 @@ struct CanvasContentView: View {
         }
         return true
     }
-    
+
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
         let centerX: CGFloat = 200
         let centerY: CGFloat = 200
@@ -119,17 +116,14 @@ struct CanvasContentView: View {
     }
 }
 
-// 拖拽放置指示器视图
 struct DropIndicatorView: View {
     let geometry: GeometryProxy
-    
+
     var body: some View {
         ZStack {
-            // 半透明覆盖层
             Color.blue.opacity(0.08)
                 .edgesIgnoringSafeArea(.all)
-            
-            // 中心放置指示器
+
             Circle()
                 .stroke(Color.blue, lineWidth: 2)
                 .fill(Color.blue.opacity(0.15))
@@ -142,8 +136,7 @@ struct DropIndicatorView: View {
                             .opacity(0.5)
                     }
                 )
-            
-            // 提示文字
+
             VStack {
                 Spacer()
                 HStack {

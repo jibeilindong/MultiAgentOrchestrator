@@ -430,6 +430,12 @@ class AppState: ObservableObject {
         }
     }
 
+    func removeEdge(_ edgeID: UUID) {
+        updateMainWorkflow { workflow in
+            workflow.edges.removeAll { $0.id == edgeID }
+        }
+    }
+
     func updateAgent(_ updatedAgent: Agent, reload: Bool = false) {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == updatedAgent.id }) else { return }

@@ -645,6 +645,8 @@ struct ArchitectureView: View {
     
     @State private var showNodePropertyPanel = false
     @State private var selectedNodeForProperty: WorkflowNode?
+    @State private var showEdgePropertyPanel = false
+    @State private var selectedEdgeForProperty: WorkflowEdge?
     
     var body: some View {
         HStack(spacing: 0) {
@@ -668,8 +670,16 @@ struct ArchitectureView: View {
                             self.handleNodeClickInConnectMode(node: node)
                         },
                         onNodeSelected: { node in
+                            selectedEdgeForProperty = nil
+                            showEdgePropertyPanel = false
                             selectedNodeForProperty = node
                             showNodePropertyPanel = true
+                        },
+                        onEdgeSelected: { edge in
+                            selectedNodeForProperty = nil
+                            showNodePropertyPanel = false
+                            selectedEdgeForProperty = edge
+                            showEdgePropertyPanel = true
                         },
                         onDropAgent: { agentName, location in
                             self.addAgentNodeToCanvas(agentName: agentName, at: location)
@@ -681,6 +691,14 @@ struct ArchitectureView: View {
                         NodePropertyPanel(
                             node: node,
                             isPresented: $showNodePropertyPanel
+                        )
+                        .transition(.move(edge: .trailing))
+                    }
+
+                    if showEdgePropertyPanel, let edge = selectedEdgeForProperty {
+                        EdgePropertyPanel(
+                            edge: edge,
+                            isPresented: $showEdgePropertyPanel
                         )
                         .transition(.move(edge: .trailing))
                     }
@@ -1332,6 +1350,196 @@ struct RouteEditorRow: View {
         .padding(10)
         .background(Color(.controlBackgroundColor))
         .cornerRadius(8)
+    }
+}
+
+struct EdgePropertyPanel: View {
+    @EnvironmentObject var appState: AppState
+    let edge: WorkflowEdge
+    @Binding var isPresented: Bool
+
+    @State private var label: String = ""
+    @State private var conditionExpression: String = ""
+    @State private var requiresApproval: Bool = false
+    @State private var dataMappingText: String = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("Edge Properties", systemImage: "arrowshape.right")
+                    .font(.headline)
+                Spacer()
+                Button("Close") {
+                    isPresented = false
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox("Route Summary") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("From: \(sourceName)")
+                            Text("To: \(targetName)")
+                            Text("Edge ID: \(edge.id.uuidString.prefix(8))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
+
+                    GroupBox("Visual Summary") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 10) {
+                                summaryBadge(text: sourceName, color: .blue)
+                                Image(systemName: "arrow.right")
+                                    .foregroundColor(.secondary)
+                                summaryBadge(text: targetName, color: .green)
+                            }
+
+                            HStack(spacing: 8) {
+                                summaryBadge(
+                                    text: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unlabeled route" : label,
+                                    color: .accentColor
+                                )
+                                if requiresApproval {
+                                    summaryBadge(text: "Approval", color: .orange)
+                                }
+                            }
+
+                            Text(
+                                conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    ? "No condition expression. This route is always eligible when reached."
+                                    : conditionExpression
+                            )
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
+
+                    GroupBox("Route Settings") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Route label", text: $label)
+                                .textFieldStyle(.roundedBorder)
+
+                            TextField("Condition expression", text: $conditionExpression)
+                                .textFieldStyle(.roundedBorder)
+
+                            Toggle("Requires approval", isOn: $requiresApproval)
+                        }
+                        .padding(8)
+                    }
+
+                    GroupBox("Data Mapping") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("One mapping per line using source=target.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            TextEditor(text: $dataMappingText)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(height: 110)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+                                )
+                        }
+                        .padding(8)
+                    }
+                }
+                .padding()
+            }
+
+            Divider()
+
+            HStack {
+                Button("Delete Route", role: .destructive) {
+                    appState.removeEdge(edge.id)
+                    isPresented = false
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                Button("Apply") {
+                    var updatedEdge = edge
+                    updatedEdge.label = label
+                    updatedEdge.conditionExpression = conditionExpression
+                    updatedEdge.requiresApproval = requiresApproval
+                    updatedEdge.dataMapping = parseDataMapping()
+                    appState.updateEdge(updatedEdge)
+                    isPresented = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+        .frame(width: 320)
+        .background(Color(.windowBackgroundColor))
+        .onAppear {
+            label = edge.label
+            conditionExpression = edge.conditionExpression
+            requiresApproval = edge.requiresApproval
+            dataMappingText = formattedDataMapping(edge.dataMapping)
+        }
+    }
+
+    private var sourceName: String { endpointName(for: edge.fromNodeID) }
+    private var targetName: String { endpointName(for: edge.toNodeID) }
+
+    private func summaryBadge(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption)
+            .fontWeight(.medium)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.14))
+            .foregroundColor(color)
+            .clipShape(Capsule())
+    }
+
+    private func formattedDataMapping(_ mapping: [String: String]) -> String {
+        mapping
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: "\n")
+    }
+
+    private func parseDataMapping() -> [String: String] {
+        dataMappingText
+            .split(whereSeparator: \.isNewline)
+            .reduce(into: [String: String]()) { result, line in
+                let parts = line.split(separator: "=", maxSplits: 1).map {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return }
+                result[parts[0]] = parts[1]
+            }
+    }
+
+    private func endpointName(for nodeID: UUID) -> String {
+        guard let workflow = appState.currentProject?.workflows.first,
+              let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
+            return "Unknown"
+        }
+
+        if let agentID = node.agentID,
+           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
+            return agent.name
+        }
+
+        if !node.title.isEmpty {
+            return node.title
+        }
+
+        return node.type.rawValue.capitalized
     }
 }
 
