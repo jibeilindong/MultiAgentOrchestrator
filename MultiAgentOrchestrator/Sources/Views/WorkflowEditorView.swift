@@ -81,6 +81,9 @@ struct WorkflowEditorView: View {
                 onDeleteSelection: deleteSelection,
                 onAddBoundary: addBoundaryFromSelection,
                 onDeleteBoundary: deleteBoundaryFromSelection,
+                onAlignSelected: alignSelectedElements,
+                onDistributeSelected: distributeSelectedElements,
+                onOrganizeConnections: organizeConnections,
                 onGenerateTasks: generateTasksFromWorkflow,
                 onRunTest: runTest,
                 onStopTest: stopTest,
@@ -88,10 +91,21 @@ struct WorkflowEditorView: View {
             )
             .zIndex(1000)
             .background(
-                DeleteKeyMonitor(
-                    isEnabled: { viewMode == .architecture },
-                    onDelete: handleDeleteShortcut
-                )
+                ZStack {
+                    DeleteKeyMonitor(
+                        isEnabled: { viewMode == .architecture },
+                        onDelete: handleDeleteShortcut
+                    )
+                    WorkflowShortcutMonitor(
+                        isEnabled: { viewMode == .architecture },
+                        onCopy: copySelection,
+                        onCut: cutSelection,
+                        onPaste: pasteSelection,
+                        onUndo: { appState.undoWorkflowChange() },
+                        onRedo: { appState.redoWorkflowChange() },
+                        onSelectAll: selectAllSelection
+                    )
+                }
             )
             
             Divider()
@@ -301,6 +315,14 @@ struct WorkflowEditorView: View {
         self.selectedEdgeID = nil
     }
 
+    private func selectAllSelection() {
+        guard let workflow = currentWorkflow() else { return }
+        selectedNodeID = nil
+        selectedNodeIDs = Set(workflow.nodes.map(\.id))
+        selectedEdgeID = nil
+        selectedBoundaryIDs = Set(workflow.boundaries.map(\.id))
+    }
+
     private func handleDeleteShortcut() {
         if selectedEdgeID != nil, activeNodeSelection().isEmpty, selectedBoundaryIDs.isEmpty {
             deleteSelectedEdge()
@@ -330,6 +352,201 @@ struct WorkflowEditorView: View {
         let selection = activeNodeSelection()
         guard !selection.isEmpty else { return }
         appState.removeBoundary(around: selection)
+    }
+
+    private func alignSelectedElements(_ alignment: AlignmentAxis) {
+        let nodeIDs = activeNodeSelection()
+        if !nodeIDs.isEmpty {
+            appState.updateMainWorkflow { workflow in
+                applyNodeAlignment(alignment, in: &workflow, nodeIDs: nodeIDs)
+            }
+            return
+        }
+
+        if !selectedBoundaryIDs.isEmpty {
+            appState.updateMainWorkflow { workflow in
+                applyBoundaryAlignment(alignment, in: &workflow, boundaryIDs: selectedBoundaryIDs)
+            }
+        }
+    }
+
+    private func distributeSelectedElements(_ axis: DistributionAxis) {
+        let nodeIDs = activeNodeSelection()
+        if !nodeIDs.isEmpty {
+            appState.updateMainWorkflow { workflow in
+                applyNodeDistribution(axis, in: &workflow, nodeIDs: nodeIDs)
+            }
+            return
+        }
+
+        if !selectedBoundaryIDs.isEmpty {
+            appState.updateMainWorkflow { workflow in
+                applyBoundaryDistribution(axis, in: &workflow, boundaryIDs: selectedBoundaryIDs)
+            }
+        }
+    }
+
+    private func organizeConnections() {
+        appState.updateMainWorkflow { workflow in
+            workflow.edges.sort { lhs, rhs in
+                let lhsKey = "\(lhs.requiresApproval ? 1 : 0)-\(lhs.toNodeID.uuidString)-\(lhs.fromNodeID.uuidString)"
+                let rhsKey = "\(rhs.requiresApproval ? 1 : 0)-\(rhs.toNodeID.uuidString)-\(rhs.fromNodeID.uuidString)"
+                return lhsKey < rhsKey
+            }
+        }
+    }
+
+    enum AlignmentAxis {
+        case left, center, right, top, middle, bottom
+    }
+
+    enum DistributionAxis {
+        case horizontal, vertical
+    }
+
+    private func applyNodeAlignment(_ alignment: AlignmentAxis, in workflow: inout Workflow, nodeIDs: Set<UUID>) {
+        let indexes = workflow.nodes.indices.filter { nodeIDs.contains(workflow.nodes[$0].id) }
+        guard !indexes.isEmpty else { return }
+
+        switch alignment {
+        case .left:
+            let target = indexes.map { workflow.nodes[$0].position.x }.min() ?? 0
+            for index in indexes {
+                workflow.nodes[index].position.x = appState.snapPointToGrid(CGPoint(x: target, y: workflow.nodes[index].position.y)).x
+            }
+        case .center:
+            let target = indexes.map { workflow.nodes[$0].position.x }.reduce(0, +) / CGFloat(indexes.count)
+            for index in indexes {
+                workflow.nodes[index].position.x = appState.snapPointToGrid(CGPoint(x: target, y: workflow.nodes[index].position.y)).x
+            }
+        case .right:
+            let target = indexes.map { workflow.nodes[$0].position.x }.max() ?? 0
+            for index in indexes {
+                workflow.nodes[index].position.x = appState.snapPointToGrid(CGPoint(x: target, y: workflow.nodes[index].position.y)).x
+            }
+        case .top:
+            let target = indexes.map { workflow.nodes[$0].position.y }.min() ?? 0
+            for index in indexes {
+                workflow.nodes[index].position.y = appState.snapPointToGrid(CGPoint(x: workflow.nodes[index].position.x, y: target)).y
+            }
+        case .middle:
+            let target = indexes.map { workflow.nodes[$0].position.y }.reduce(0, +) / CGFloat(indexes.count)
+            for index in indexes {
+                workflow.nodes[index].position.y = appState.snapPointToGrid(CGPoint(x: workflow.nodes[index].position.x, y: target)).y
+            }
+        case .bottom:
+            let target = indexes.map { workflow.nodes[$0].position.y }.max() ?? 0
+            for index in indexes {
+                workflow.nodes[index].position.y = appState.snapPointToGrid(CGPoint(x: workflow.nodes[index].position.x, y: target)).y
+            }
+        }
+    }
+
+    private func applyBoundaryAlignment(_ alignment: AlignmentAxis, in workflow: inout Workflow, boundaryIDs: Set<UUID>) {
+        let indexes = workflow.boundaries.indices.filter { boundaryIDs.contains(workflow.boundaries[$0].id) }
+        guard !indexes.isEmpty else { return }
+
+        let rects = indexes.map { workflow.boundaries[$0].rect }
+        switch alignment {
+        case .left:
+            let target = rects.map(\.minX).min() ?? 0
+            for index in indexes {
+                workflow.boundaries[index].rect.origin.x = target
+            }
+        case .center:
+            let target = rects.map(\.midX).reduce(0, +) / CGFloat(rects.count)
+            for index in indexes {
+                let width = workflow.boundaries[index].rect.width
+                workflow.boundaries[index].rect.origin.x = target - width / 2
+            }
+        case .right:
+            let target = rects.map(\.maxX).max() ?? 0
+            for index in indexes {
+                let width = workflow.boundaries[index].rect.width
+                workflow.boundaries[index].rect.origin.x = target - width
+            }
+        case .top:
+            let target = rects.map(\.minY).min() ?? 0
+            for index in indexes {
+                workflow.boundaries[index].rect.origin.y = target
+            }
+        case .middle:
+            let target = rects.map(\.midY).reduce(0, +) / CGFloat(rects.count)
+            for index in indexes {
+                let height = workflow.boundaries[index].rect.height
+                workflow.boundaries[index].rect.origin.y = target - height / 2
+            }
+        case .bottom:
+            let target = rects.map(\.maxY).max() ?? 0
+            for index in indexes {
+                let height = workflow.boundaries[index].rect.height
+                workflow.boundaries[index].rect.origin.y = target - height
+            }
+        }
+    }
+
+    private func applyNodeDistribution(_ axis: DistributionAxis, in workflow: inout Workflow, nodeIDs: Set<UUID>) {
+        let indexes = workflow.nodes.indices.filter { nodeIDs.contains(workflow.nodes[$0].id) }
+        guard indexes.count > 2 else { return }
+
+        let sorted = indexes.sorted {
+            let lhs = workflow.nodes[$0].position
+            let rhs = workflow.nodes[$1].position
+            switch axis {
+            case .horizontal: return lhs.x < rhs.x
+            case .vertical: return lhs.y < rhs.y
+            }
+        }
+
+        switch axis {
+        case .horizontal:
+            let positions = sorted.map { workflow.nodes[$0].position.x }.sorted()
+            guard let minX = positions.first, let maxX = positions.last, maxX > minX else { return }
+            let step = (maxX - minX) / CGFloat(sorted.count - 1)
+            for (index, nodeIndex) in sorted.enumerated() {
+                workflow.nodes[nodeIndex].position.x = minX + step * CGFloat(index)
+            }
+        case .vertical:
+            let positions = sorted.map { workflow.nodes[$0].position.y }.sorted()
+            guard let minY = positions.first, let maxY = positions.last, maxY > minY else { return }
+            let step = (maxY - minY) / CGFloat(sorted.count - 1)
+            for (index, nodeIndex) in sorted.enumerated() {
+                workflow.nodes[nodeIndex].position.y = minY + step * CGFloat(index)
+            }
+        }
+    }
+
+    private func applyBoundaryDistribution(_ axis: DistributionAxis, in workflow: inout Workflow, boundaryIDs: Set<UUID>) {
+        let indexes = workflow.boundaries.indices.filter { boundaryIDs.contains(workflow.boundaries[$0].id) }
+        guard indexes.count > 2 else { return }
+
+        let sorted = indexes.sorted {
+            let lhs = workflow.boundaries[$0].rect
+            let rhs = workflow.boundaries[$1].rect
+            switch axis {
+            case .horizontal: return lhs.midX < rhs.midX
+            case .vertical: return lhs.midY < rhs.midY
+            }
+        }
+
+        switch axis {
+        case .horizontal:
+            let positions = sorted.map { workflow.boundaries[$0].rect.midX }.sorted()
+            guard let minX = positions.first, let maxX = positions.last, maxX > minX else { return }
+            let step = (maxX - minX) / CGFloat(sorted.count - 1)
+            for (index, boundaryIndex) in sorted.enumerated() {
+                let width = workflow.boundaries[boundaryIndex].rect.width
+                workflow.boundaries[boundaryIndex].rect.origin.x = minX + step * CGFloat(index) - width / 2
+            }
+        case .vertical:
+            let positions = sorted.map { workflow.boundaries[$0].rect.midY }.sorted()
+            guard let minY = positions.first, let maxY = positions.last, maxY > minY else { return }
+            let step = (maxY - minY) / CGFloat(sorted.count - 1)
+            for (index, boundaryIndex) in sorted.enumerated() {
+                let height = workflow.boundaries[boundaryIndex].rect.height
+                workflow.boundaries[boundaryIndex].rect.origin.y = minY + step * CGFloat(index) - height / 2
+            }
+        }
     }
 
     private func generateTasksFromWorkflow() {
@@ -448,6 +665,9 @@ struct EditorToolbar: View {
     var onDeleteSelection: () -> Void
     var onAddBoundary: () -> Void
     var onDeleteBoundary: () -> Void
+    var onAlignSelected: (WorkflowEditorView.AlignmentAxis) -> Void
+    var onDistributeSelected: (WorkflowEditorView.DistributionAxis) -> Void
+    var onOrganizeConnections: () -> Void
     var onGenerateTasks: () -> Void
     var onRunTest: () -> Void
     var onStopTest: () -> Void
@@ -457,98 +677,133 @@ struct EditorToolbar: View {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
     }
 
+    private var hasBoundarySelection: Bool {
+        !selectedBoundaryIDs.isEmpty
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             WorkflowToolbarGroup(title: "View") {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
-                            toolbarModeButton(mode)
-                        }
-
-                        Divider().frame(height: 18)
-
-                        toolbarActionButton(title: "Zoom Out", systemName: "minus.magnifyingglass", action: zoomOut)
-                        toolbarActionButton(title: "Zoom In", systemName: "plus.magnifyingglass", action: zoomIn)
-                        toolbarActionButton(title: "Reset", systemName: "arrow.counterclockwise", action: resetView)
-
-                        Divider().frame(height: 18)
-
-                        toolbarToggleButton(
-                            title: "Lasso",
-                            systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
-                            action: toggleLassoMode,
-                            isActive: isLassoMode,
-                            tooltip: "框选模式"
-                        )
-
-                        toolbarActionButton(title: "Copy", systemName: "doc.on.doc", action: onCopySelection)
-                            .disabled(!hasNodeSelection)
-                        toolbarActionButton(title: "Cut", systemName: "scissors", action: onCutSelection)
-                            .disabled(!hasNodeSelection)
-                        toolbarActionButton(title: "Paste", systemName: "doc.on.clipboard", action: onPasteSelection)
-                        toolbarActionButton(title: "Delete", systemName: "trash", action: onDeleteSelection)
-                            .disabled(!hasNodeSelection && selectedBoundaryIDs.isEmpty)
+                HStack(spacing: 8) {
+                    ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
+                        toolbarModeButton(mode)
                     }
-                    .padding(.horizontal, 4)
+
+                    Divider().frame(height: 18)
+
+                    Menu {
+                        Button("Zoom Out") { zoomOut() }
+                        Button("Reset Zoom") { resetView() }
+                        Button("Zoom In") { zoomIn() }
+                    } label: {
+                        toolbarMenuLabel(title: "View", systemName: "eye")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    toolbarIconToggleButton(
+                        systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
+                        action: toggleLassoMode,
+                        isActive: isLassoMode,
+                        tooltip: "框选模式"
+                    )
                 }
             }
 
             WorkflowToolbarGroup(title: "Execution") {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        toolbarToggleButton(
-                            title: "Connect",
-                            systemName: isConnectMode ? "link.circle.fill" : "link.circle",
-                            action: toggleConnectMode,
-                            isActive: isConnectMode,
-                            tooltip: isConnectMode ? "取消创建连线" : "准备创建连线",
-                            prominent: true
-                        )
-
-                        if isConnectMode {
-                            connectionTypeButton(type: .unidirectional)
-                            connectionTypeButton(type: .bidirectional)
-                        }
-
-                        Divider().frame(height: 18)
-
-                        Menu {
-                            Button("New Agent Node") { onAddNode() }
-                            if let agents = appState.currentProject?.agents, !agents.isEmpty {
-                                Divider()
-                                ForEach(agents) { agent in
-                                    Button(agent.name) {
-                                        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
-                                    }
+                HStack(spacing: 8) {
+                    Menu {
+                        Button("New Agent Node") { onAddNode() }
+                        if let agents = appState.currentProject?.agents, !agents.isEmpty {
+                            Divider()
+                            ForEach(agents) { agent in
+                                Button(agent.name) {
+                                    appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
                                 }
                             }
-                        } label: {
-                            toolbarButtonLabel(title: "Add Node", systemName: "plus.circle")
                         }
-                        .menuStyle(.borderlessButton)
-
-                        toolbarActionButton(title: "Delete Edge", systemName: "link.badge.minus", action: onDeleteSelectedEdge)
-                            .disabled(selectedEdgeID == nil)
-
-                        toolbarActionButton(title: "Add Boundary", systemName: "square.dashed", action: onAddBoundary)
-                            .disabled(!hasNodeSelection)
-                        toolbarActionButton(title: "Remove Boundary", systemName: "square.dashed.badge.minus", action: onDeleteBoundary)
-                            .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
-
-                        toolbarActionButton(title: "Generate", systemName: "list.bullet.clipboard", action: onGenerateTasks)
-
-                        Divider().frame(height: 18)
-
-                        Button(action: isRunning ? onStopTest : onRunTest) {
-                            toolbarButtonLabel(title: isRunning ? "Stop" : "Test", systemName: isRunning ? "stop.circle" : "play.circle")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .frame(width: 128, height: 32)
-
-                        toolbarActionButton(title: "Save", systemName: "square.and.arrow.down", action: onSave)
+                    } label: {
+                        toolbarMenuLabel(title: "Add Node", systemName: "plus.circle")
                     }
-                    .padding(.horizontal, 4)
+                    .menuStyle(.borderlessButton)
+
+                    Menu {
+                        Button("Add Boundary") { onAddBoundary() }
+                            .disabled(!hasNodeSelection)
+                        Button("Remove Boundary") { onDeleteBoundary() }
+                            .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
+                    } label: {
+                        toolbarMenuLabel(title: "Insert", systemName: "plus.square.on.square")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    Menu {
+                        Button("Undo") { appState.undoWorkflowChange() }
+                            .disabled(!appState.canUndoWorkflowChange)
+                        Button("Redo") { appState.redoWorkflowChange() }
+                            .disabled(!appState.canRedoWorkflowChange)
+                        Divider()
+                        Button("Copy") { onCopySelection() }.disabled(!hasNodeSelection)
+                        Button("Cut") { onCutSelection() }.disabled(!hasNodeSelection)
+                        Button("Paste") { onPasteSelection() }
+                        Button("Select All") { selectAllItems() }
+                        Button("Delete") { onDeleteSelection() }.disabled(!hasNodeSelection && selectedBoundaryIDs.isEmpty && selectedEdgeID == nil)
+                    } label: {
+                        toolbarMenuLabel(title: "Edit", systemName: "doc.on.doc")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    Menu {
+                        Button("Align Left") { onAlignSelected(.left) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Button("Align Center") { onAlignSelected(.center) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Button("Align Right") { onAlignSelected(.right) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Divider()
+                        Button("Align Top") { onAlignSelected(.top) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Button("Align Middle") { onAlignSelected(.middle) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Button("Align Bottom") { onAlignSelected(.bottom) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Divider()
+                        Button("Distribute Horizontally") { onDistributeSelected(.horizontal) }
+                            .disabled((selectedNodeIDs.count + selectedBoundaryIDs.count) < 3)
+                        Button("Distribute Vertically") { onDistributeSelected(.vertical) }
+                            .disabled((selectedNodeIDs.count + selectedBoundaryIDs.count) < 3)
+                        Divider()
+                        Button("Organize Connections") { onOrganizeConnections() }
+                        Button("Delete Selected Edge") { onDeleteSelectedEdge() }
+                            .disabled(selectedEdgeID == nil)
+                    } label: {
+                        toolbarMenuLabel(title: "Layout", systemName: "rectangle.3.group")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    toolbarIconToggleButton(
+                        systemName: isConnectMode ? "link.circle.fill" : "link.circle",
+                        action: toggleConnectMode,
+                        isActive: isConnectMode,
+                        tooltip: isConnectMode ? "取消创建连线" : "准备创建连线",
+                        prominent: true
+                    )
+
+                    if isConnectMode {
+                        connectionTypeButton(type: .unidirectional)
+                        connectionTypeButton(type: .bidirectional)
+                    }
+
+                    toolbarIconButton(systemName: "list.bullet.clipboard", action: onGenerateTasks, tooltip: "生成任务")
+
+                    Button(action: isRunning ? onStopTest : onRunTest) {
+                        Image(systemName: isRunning ? "stop.circle" : "play.circle")
+                            .font(.caption.weight(.medium))
+                            .frame(width: 34, height: 32)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .help(isRunning ? "停止测试" : "运行测试")
+
+                    toolbarIconButton(systemName: "square.and.arrow.down", action: onSave, tooltip: "保存")
                 }
 
                 if appState.isAutoSaving {
@@ -585,33 +840,44 @@ struct EditorToolbar: View {
 
     private func toolbarModeButton(_ mode: WorkflowEditorView.EditorViewMode) -> some View {
         Button(action: { viewMode = mode }) {
-            toolbarButtonLabel(title: mode.rawValue, systemName: mode.icon)
+            Image(systemName: mode.icon)
+                .font(.caption.weight(.medium))
+                .frame(width: 34, height: 32)
         }
         .buttonStyle(.plain)
         .foregroundColor(viewMode == mode ? .accentColor : .secondary)
-        .frame(height: 32)
         .background(viewMode == mode ? Color.accentColor.opacity(0.18) : Color.clear)
         .cornerRadius(8)
+        .help(mode.rawValue)
     }
 
-    private func toolbarButtonLabel(title: String, systemName: String) -> some View {
+    private func toolbarMenuLabel(title: String, systemName: String) -> some View {
         Label(title, systemImage: systemName)
             .font(.caption.weight(.medium))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
+            .frame(height: 32)
     }
 
-    private func toolbarActionButton(title: String, systemName: String, action: @escaping () -> Void) -> some View {
+    private func selectAllItems() {
+        guard let workflow = appState.currentProject?.workflows.first else { return }
+        selectedNodeID = nil
+        selectedNodeIDs = Set(workflow.nodes.map(\.id))
+        selectedBoundaryIDs = Set(workflow.boundaries.map(\.id))
+        selectedEdgeID = nil
+    }
+
+    private func toolbarIconButton(systemName: String, action: @escaping () -> Void, tooltip: String) -> some View {
         Button(action: action) {
-            toolbarButtonLabel(title: title, systemName: systemName)
-                .padding(.horizontal, 12)
-                .frame(height: 32)
+            Image(systemName: systemName)
+                .font(.caption.weight(.medium))
+                .frame(width: 34, height: 32)
         }
         .buttonStyle(.bordered)
+        .help(tooltip)
     }
 
-    private func toolbarToggleButton(
-        title: String,
+    private func toolbarIconToggleButton(
         systemName: String,
         action: @escaping () -> Void,
         isActive: Bool,
@@ -621,16 +887,16 @@ struct EditorToolbar: View {
         Group {
             if prominent {
                 Button(action: action) {
-                    toolbarButtonLabel(title: title, systemName: systemName)
-                        .padding(.horizontal, 12)
-                        .frame(height: 32)
+                    Image(systemName: systemName)
+                        .font(.caption.weight(.medium))
+                        .frame(width: 34, height: 32)
                 }
                 .buttonStyle(.borderedProminent)
             } else {
                 Button(action: action) {
-                    toolbarButtonLabel(title: title, systemName: systemName)
-                        .padding(.horizontal, 12)
-                        .frame(height: 32)
+                    Image(systemName: systemName)
+                        .font(.caption.weight(.medium))
+                        .frame(width: 34, height: 32)
                 }
                 .buttonStyle(.bordered)
             }
@@ -645,9 +911,9 @@ struct EditorToolbar: View {
             connectionType = type
             isConnectMode = true
         }) {
-            toolbarButtonLabel(title: type.description, systemName: icon)
-                .padding(.horizontal, 12)
-                .frame(height: 32)
+            Image(systemName: icon)
+                .font(.caption.weight(.medium))
+                .frame(width: 34, height: 32)
         }
         .buttonStyle(.bordered)
         .tint(connectionType == type ? .blue : nil)
@@ -758,6 +1024,125 @@ private struct DeleteKeyMonitor: NSViewRepresentable {
     }
 }
 
+private struct WorkflowShortcutMonitor: NSViewRepresentable {
+    var isEnabled: () -> Bool
+    var onCopy: () -> Void
+    var onCut: () -> Void
+    var onPaste: () -> Void
+    var onUndo: () -> Void
+    var onRedo: () -> Void
+    var onSelectAll: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            isEnabled: isEnabled,
+            onCopy: onCopy,
+            onCut: onCut,
+            onPaste: onPaste,
+            onUndo: onUndo,
+            onRedo: onRedo,
+            onSelectAll: onSelectAll
+        )
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onCopy = onCopy
+        context.coordinator.onCut = onCut
+        context.coordinator.onPaste = onPaste
+        context.coordinator.onUndo = onUndo
+        context.coordinator.onRedo = onRedo
+        context.coordinator.onSelectAll = onSelectAll
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator {
+        var isEnabled: () -> Bool
+        var onCopy: () -> Void
+        var onCut: () -> Void
+        var onPaste: () -> Void
+        var onUndo: () -> Void
+        var onRedo: () -> Void
+        var onSelectAll: () -> Void
+
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        init(
+            isEnabled: @escaping () -> Bool,
+            onCopy: @escaping () -> Void,
+            onCut: @escaping () -> Void,
+            onPaste: @escaping () -> Void,
+            onUndo: @escaping () -> Void,
+            onRedo: @escaping () -> Void,
+            onSelectAll: @escaping () -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.onCopy = onCopy
+            self.onCut = onCut
+            self.onPaste = onPaste
+            self.onUndo = onUndo
+            self.onRedo = onRedo
+            self.onSelectAll = onSelectAll
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+                guard let self, let view = self.view, view.window != nil else { return event }
+                guard self.isEnabled() else { return event }
+                guard !(view.window?.firstResponder is NSTextView) else { return event }
+
+                let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+                guard modifiers.contains(.command) else { return event }
+                guard let characters = event.charactersIgnoringModifiers?.lowercased() else { return event }
+
+                switch (characters, modifiers.contains(.shift), modifiers.contains(.option), modifiers.contains(.control)) {
+                case ("c", false, false, false):
+                    self.onCopy()
+                    return nil
+                case ("x", false, false, false):
+                    self.onCut()
+                    return nil
+                case ("v", false, false, false):
+                    self.onPaste()
+                    return nil
+                case ("z", false, false, false):
+                    self.onUndo()
+                    return nil
+                case ("z", true, false, false):
+                    self.onRedo()
+                    return nil
+                case ("a", false, false, false):
+                    self.onSelectAll()
+                    return nil
+                default:
+                    return event
+                }
+            }
+        }
+
+        func detach() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+        }
+    }
+}
+
 private struct WorkflowToolbarGroup<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
@@ -767,8 +1152,10 @@ private struct WorkflowToolbarGroup<Content: View>: View {
             Text(title.uppercased())
                 .font(.caption2)
                 .foregroundColor(.secondary)
-            VStack(alignment: .leading, spacing: 6) {
-                content
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 6) {
+                    content
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -1037,7 +1424,7 @@ struct ArchitectureView: View {
     
     var body: some View {
         GeometryReader { _ in
-            ZStack {
+            HStack(spacing: 0) {
                 CanvasView(
                     zoomScale: $zoomScale,
                     offset: $offset,
@@ -1080,20 +1467,21 @@ struct ArchitectureView: View {
                         self.addAgentNodeToCanvas(agentName: agentName, at: location)
                     }
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 if showNodePropertyPanel, let node = selectedNodeForProperty {
                     NodePropertyPanel(
                         node: node,
                         isPresented: $showNodePropertyPanel
                     )
+                    .frame(width: 420)
                     .transition(.move(edge: .trailing))
-                }
-
-                if showEdgePropertyPanel, let edge = selectedEdgeForProperty {
+                } else if showEdgePropertyPanel, let edge = selectedEdgeForProperty {
                     EdgePropertyPanel(
                         edge: edge,
                         isPresented: $showEdgePropertyPanel
                     )
+                    .frame(width: 360)
                     .transition(.move(edge: .trailing))
                 }
             }

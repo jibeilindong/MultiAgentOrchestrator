@@ -261,7 +261,11 @@ private struct RoutedEdgeCandidate {
     let targetSide: EdgeAnchorSide
 
     var bundleKey: RoutedEdgeBundleKey {
-        RoutedEdgeBundleKey(targetNodeID: edge.toNodeID, incomingSide: targetSide)
+        RoutedEdgeBundleKey(
+            targetNodeID: edge.toNodeID,
+            incomingSide: targetSide,
+            requiresApproval: edge.requiresApproval
+        )
     }
 
     var preferredAxis: EdgeRouteAxis {
@@ -274,6 +278,7 @@ private struct RoutedEdgeCandidate {
 private struct RoutedEdgeBundleKey: Hashable {
     let targetNodeID: UUID
     let incomingSide: EdgeAnchorSide
+    let requiresApproval: Bool
 }
 
 enum EdgeAnchorSide: String, Hashable {
@@ -285,8 +290,8 @@ enum EdgeAnchorSide: String, Hashable {
 
 struct WorkflowEdgeRoutePlanner {
     private static let anchorClearance: CGFloat = 10
-    private static let obstaclePadding: CGFloat = 12
-    private static let candidateSpacing: CGFloat = 14
+    private static let obstaclePadding: CGFloat = 14
+    private static let candidateSpacing: CGFloat = 16
 
     static func route(
         from sourceFrame: CGRect,
@@ -300,11 +305,17 @@ struct WorkflowEdgeRoutePlanner {
         let sourceSide = preferredOutgoingSide(for: sourceFrame, toward: targetCenter)
         let targetSide = preferredIncomingSide(for: targetFrame, toward: sourceCenter)
 
-        let start = anchorPoint(on: sourceFrame, side: sourceSide)
-        let end = anchorPoint(on: targetFrame, side: targetSide)
+        let start = anchorPoint(on: sourceFrame, side: sourceSide, laneOffset: laneOffset)
+        let end = anchorPoint(on: targetFrame, side: targetSide, laneOffset: laneOffset)
         let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
 
-        let candidates = candidatePaths(from: start, to: end, laneOffset: laneOffset)
+        let candidates = candidatePaths(
+            from: start,
+            to: end,
+            blockedRects: blockedRects,
+            laneOffset: laneOffset,
+            preferredAxis: preferredAxis
+        )
 
         for path in candidates {
             if isClear(path, blockedRects: blockedRects) {
@@ -318,31 +329,128 @@ struct WorkflowEdgeRoutePlanner {
     private static func candidatePaths(
         from start: CGPoint,
         to end: CGPoint,
-        laneOffset: CGFloat
+        blockedRects: [CGRect],
+        laneOffset: CGFloat,
+        preferredAxis: EdgeRouteAxis
     ) -> [[CGPoint]] {
-        var paths: [[CGPoint]] = []
+        var ranked: [(points: [CGPoint], bends: Int, length: CGFloat)] = []
+        var seen = Set<String>()
 
-        if abs(start.x - end.x) < 0.5 || abs(start.y - end.y) < 0.5 {
-            paths.append([start, end])
+        func append(_ points: [CGPoint], bends: Int) {
+            let key = points.map { "\(Int(($0.x * 10).rounded())):\(Int(($0.y * 10).rounded()))" }.joined(separator: "|")
+            guard seen.insert(key).inserted else { return }
+            ranked.append((points: points, bends: bends, length: pathLength(points)))
         }
 
-        let offsets = candidateOffsets(for: laneOffset)
-        for offset in offsets {
-            let midY = (start.y + end.y) / 2 + offset
-            paths.append([
+        if abs(start.x - end.x) < 0.5 {
+            append([start, end], bends: 0)
+        }
+
+        let corridorYs = corridorYs(
+            from: start,
+            to: end,
+            blockedRects: blockedRects,
+            laneOffset: laneOffset,
+            preferredAxis: preferredAxis
+        )
+        for y in corridorYs {
+            append([
                 start,
-                CGPoint(x: start.x, y: midY),
-                CGPoint(x: end.x, y: midY),
+                CGPoint(x: start.x, y: y),
+                CGPoint(x: end.x, y: y),
                 end
-            ])
+            ], bends: 2)
         }
 
-        return paths
+        let outerXs = outerCorridorXs(for: blockedRects, laneOffset: laneOffset)
+        let yPairs = orderedYPairs(from: corridorYs)
+        for outerX in outerXs {
+            for pair in yPairs {
+                append([
+                    start,
+                    CGPoint(x: start.x, y: pair.0),
+                    CGPoint(x: outerX, y: pair.0),
+                    CGPoint(x: outerX, y: pair.1),
+                    CGPoint(x: end.x, y: pair.1),
+                    end
+                ], bends: 4)
+            }
+        }
+
+        return ranked
+            .sorted { lhs, rhs in
+                if lhs.bends != rhs.bends { return lhs.bends < rhs.bends }
+                return lhs.length < rhs.length
+            }
+            .map(\.points)
     }
 
-    private static func candidateOffsets(for laneOffset: CGFloat) -> [CGFloat] {
-        let base = laneOffset
-        return [base, base + candidateSpacing, base - candidateSpacing, base + candidateSpacing * 2, base - candidateSpacing * 2]
+    private static func corridorYs(
+        from start: CGPoint,
+        to end: CGPoint,
+        blockedRects: [CGRect],
+        laneOffset: CGFloat,
+        preferredAxis: EdgeRouteAxis
+    ) -> [CGFloat] {
+        var values: [CGFloat] = [
+            (start.y + end.y) / 2 + laneOffset
+        ]
+
+        for rect in blockedRects {
+            values.append(rect.minY - candidateSpacing)
+            values.append(rect.maxY + candidateSpacing)
+        }
+
+        let anchorBias = preferredAxis == .horizontal ? candidateSpacing : candidateSpacing * 0.5
+        values.append(min(start.y, end.y) - candidateSpacing - anchorBias)
+        values.append(max(start.y, end.y) + candidateSpacing + anchorBias)
+
+        return uniqueSorted(values)
+    }
+
+    private static func outerCorridorXs(for blockedRects: [CGRect], laneOffset: CGFloat) -> [CGFloat] {
+        guard !blockedRects.isEmpty else { return [laneOffset == 0 ? 0 : laneOffset] }
+
+        let minX = blockedRects.map(\.minX).min() ?? 0
+        let maxX = blockedRects.map(\.maxX).max() ?? 0
+        return uniqueSorted([
+            minX - candidateSpacing * 2 - abs(laneOffset),
+            maxX + candidateSpacing * 2 + abs(laneOffset)
+        ])
+    }
+
+    private static func orderedYPairs(from values: [CGFloat]) -> [(CGFloat, CGFloat)] {
+        guard values.count > 1 else { return [] }
+        var pairs: [(CGFloat, CGFloat)] = []
+        for lhs in values {
+            for rhs in values where abs(lhs - rhs) > 0.5 {
+                pairs.append((lhs, rhs))
+            }
+        }
+        return pairs.sorted { lhs, rhs in
+            let lhsMid = (lhs.0 + lhs.1) / 2
+            let rhsMid = (rhs.0 + rhs.1) / 2
+            let lhsSpan = abs(lhs.0 - lhs.1)
+            let rhsSpan = abs(rhs.0 - rhs.1)
+            if lhsSpan != rhsSpan { return lhsSpan < rhsSpan }
+            return abs(lhsMid) < abs(rhsMid)
+        }
+    }
+
+    private static func uniqueSorted(_ values: [CGFloat]) -> [CGFloat] {
+        var result: [CGFloat] = []
+        for value in values.sorted() {
+            if result.contains(where: { abs($0 - value) < 0.5 }) { continue }
+            result.append(value)
+        }
+        return result
+    }
+
+    private static func pathLength(_ points: [CGPoint]) -> CGFloat {
+        guard points.count >= 2 else { return 0 }
+        return zip(points, points.dropFirst()).reduce(0) { partial, segment in
+            partial + hypot(segment.1.x - segment.0.x, segment.1.y - segment.0.y)
+        }
     }
 
     static func preferredOutgoingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
@@ -358,10 +466,10 @@ struct WorkflowEdgeRoutePlanner {
         return point.y >= center.y ? .bottom : .top
     }
 
-    private static func anchorPoint(on rect: CGRect, side: EdgeAnchorSide) -> CGPoint {
+    private static func anchorPoint(on rect: CGRect, side: EdgeAnchorSide, laneOffset: CGFloat) -> CGPoint {
         switch side {
-        case .top: return CGPoint(x: rect.midX, y: rect.minY - anchorClearance)
-        case .bottom: return CGPoint(x: rect.midX, y: rect.maxY + anchorClearance)
+        case .top: return CGPoint(x: rect.midX + laneOffset, y: rect.minY - anchorClearance)
+        case .bottom: return CGPoint(x: rect.midX + laneOffset, y: rect.maxY + anchorClearance)
         case .left: return CGPoint(x: rect.midX, y: rect.minY - anchorClearance)
         case .right: return CGPoint(x: rect.midX, y: rect.maxY + anchorClearance)
         }

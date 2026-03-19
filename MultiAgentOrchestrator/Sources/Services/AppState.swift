@@ -237,6 +237,8 @@ class AppState: ObservableObject {
     @Published var canvasDisplaySettings = CanvasDisplaySettings()
     @Published var orderedToolbarItems = ContentToolbarItem.defaultOrder
     @Published var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
+    @Published private(set) var canUndoWorkflowChange: Bool = false
+    @Published private(set) var canRedoWorkflowChange: Bool = false
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
@@ -244,6 +246,8 @@ class AppState: ObservableObject {
     @Published var autoSaveEnabled: Bool = true
     @Published var lastAutoSaveTime: Date?
     @Published var isAutoSaving: Bool = false
+    private var workflowUndoStack: [MAProject] = []
+    private var workflowRedoStack: [MAProject] = []
     
     init() {
         loadToolbarPreferences()
@@ -1049,6 +1053,7 @@ class AppState: ObservableObject {
               var project = currentProject,
               let index = project.workflows.indices.first else { return }
 
+        pushWorkflowUndoSnapshot()
         updates(&project.workflows[index])
         let deduplication = enforceUniqueAgentNodes(in: project.workflows[index])
         project.workflows[index] = deduplication.workflow
@@ -1064,6 +1069,28 @@ class AppState: ObservableObject {
                 "工作流中存在重复 Agent 节点，已移除 \(deduplication.removedNodeIDs.count) 个重复项。"
             )
         }
+    }
+
+    func undoWorkflowChange() {
+        guard let current = currentProject,
+              let previous = workflowUndoStack.popLast() else { return }
+
+        workflowRedoStack.append(current)
+        currentProject = previous
+        canUndoWorkflowChange = !workflowUndoStack.isEmpty
+        canRedoWorkflowChange = true
+        generateTasksFromWorkflow()
+    }
+
+    func redoWorkflowChange() {
+        guard let current = currentProject,
+              let next = workflowRedoStack.popLast() else { return }
+
+        workflowUndoStack.append(current)
+        currentProject = next
+        canUndoWorkflowChange = !workflowUndoStack.isEmpty
+        canRedoWorkflowChange = !workflowRedoStack.isEmpty
+        generateTasksFromWorkflow()
     }
 
     @discardableResult
@@ -1093,6 +1120,17 @@ class AppState: ObservableObject {
     // 节点选择
     func selectNode(_ nodeID: UUID?) {
         selectedNodeID = nodeID
+    }
+
+    private func pushWorkflowUndoSnapshot() {
+        guard let project = currentProject else { return }
+        workflowUndoStack.append(project)
+        if workflowUndoStack.count > 50 {
+            workflowUndoStack.removeFirst(workflowUndoStack.count - 50)
+        }
+        workflowRedoStack.removeAll()
+        canUndoWorkflowChange = true
+        canRedoWorkflowChange = false
     }
 
     func addNode(type: WorkflowNode.NodeType, position: CGPoint) {

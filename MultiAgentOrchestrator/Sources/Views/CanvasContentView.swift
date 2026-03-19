@@ -609,7 +609,11 @@ private struct RoutedEdgeHitCandidate {
     let targetSide: EdgeAnchorSide
 
     var bundleKey: RoutedEdgeBundleKey {
-        RoutedEdgeBundleKey(targetNodeID: edge.toNodeID, incomingSide: targetSide)
+        RoutedEdgeBundleKey(
+            targetNodeID: edge.toNodeID,
+            incomingSide: targetSide,
+            requiresApproval: edge.requiresApproval
+        )
     }
 
     var preferredAxis: EdgeRouteAxis {
@@ -622,6 +626,7 @@ private struct RoutedEdgeHitCandidate {
 private struct RoutedEdgeBundleKey: Hashable {
     let targetNodeID: UUID
     let incomingSide: EdgeAnchorSide
+    let requiresApproval: Bool
 }
 
 private struct RoutedEdgeHitLayout {
