@@ -515,6 +515,7 @@ class OpenClawManager: ObservableObject {
             agent.capabilities = capabilities
             agent.openClawDefinition.agentIdentifier = record.name
             agent.openClawDefinition.memoryBackupPath = privateRoot.path
+            agent.openClawDefinition.soulSourcePath = preferredSoulURL(in: sourceDirectory).path
             agent.openClawDefinition.runtimeProfile = "imported"
             agent.updatedAt = Date()
             project.agents.append(agent)
@@ -1669,6 +1670,14 @@ class OpenClawManager: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func preferredSoulURL(in rootURL: URL) -> URL {
+        let preferred = rootURL.appendingPathComponent("SOUL.md")
+        let fallback = rootURL.appendingPathComponent("soul.md")
+        if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
+        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
+        return preferred
     }
 
     private func stringValue(_ dictionary: [String: Any], keys: [String]) -> String? {

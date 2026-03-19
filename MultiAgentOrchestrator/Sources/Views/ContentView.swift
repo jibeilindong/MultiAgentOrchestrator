@@ -54,7 +54,7 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(Color(.windowBackgroundColor).opacity(0.3))
+                    .background(Color(.windowBackgroundColor).opacity(0.8))
 
                     Divider()
 
@@ -233,7 +233,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Color(.windowBackgroundColor).opacity(0.3))
+                .background(Color(.windowBackgroundColor).opacity(0.8))
     }
 
     private var statusBadge: some View {

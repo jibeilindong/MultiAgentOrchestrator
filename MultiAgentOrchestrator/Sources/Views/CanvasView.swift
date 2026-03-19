@@ -37,6 +37,7 @@ struct CanvasView: View {
     var onNodeSelected: ((WorkflowNode) -> Void)?
     var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
+    var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
 
     init(
@@ -48,6 +49,7 @@ struct CanvasView: View {
         onNodeSelected: ((WorkflowNode) -> Void)? = nil,
         onNodeSecondarySelected: ((WorkflowNode) -> Void)? = nil,
         onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
+        onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil,
         onDropAgent: ((String, CGPoint) -> Void)? = nil
     ) {
         self._zoomScale = zoomScale
@@ -58,6 +60,7 @@ struct CanvasView: View {
         self.onNodeSelected = onNodeSelected
         self.onNodeSecondarySelected = onNodeSecondarySelected
         self.onEdgeSelected = onEdgeSelected
+        self.onEdgeSecondarySelected = onEdgeSecondarySelected
         self.onDropAgent = onDropAgent
     }
 
@@ -90,6 +93,10 @@ struct CanvasView: View {
             onEdgeSelected: { edge in
                 suppressCanvasTapClear = true
                 onEdgeSelected?(edge)
+            },
+            onEdgeSecondarySelected: { edge in
+                suppressCanvasTapClear = true
+                onEdgeSecondarySelected?(edge)
             }
         )
         .onChange(of: selectedEdgeID) { _, newValue in
@@ -97,7 +104,7 @@ struct CanvasView: View {
                 suppressCanvasTapClear = true
             }
         }
-        .gesture(createCanvasGesture())
+        .highPriorityGesture(createCanvasGesture())
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                 if event.modifierFlags.contains(.command) {

@@ -27,6 +27,7 @@ struct CanvasContentView: View {
     var onNodeSelected: ((WorkflowNode) -> Void)?
     var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
+    var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
 
     @State private var isDraggingOverCanvas: Bool = false
     @State private var rightMouseLassoStart: CGPoint?
@@ -65,6 +66,13 @@ struct CanvasContentView: View {
                         selectedNodeIDs.removeAll()
                         selectedBoundaryIDs.removeAll()
                         onEdgeSelected?(edge)
+                    },
+                    onEdgeSecondarySelected: { edge in
+                        suppressCanvasTapClear = true
+                        selectedNodeID = nil
+                        selectedNodeIDs.removeAll()
+                        selectedBoundaryIDs.removeAll()
+                        onEdgeSecondarySelected?(edge)
                     }
                 )
 
@@ -132,7 +140,7 @@ struct CanvasContentView: View {
                 }
             }
             .contentShape(Rectangle())
-            .simultaneousGesture(lassoGesture(in: geometry))
+            .highPriorityGesture(lassoGesture(in: geometry))
             .background(
                 RightMouseDragMonitor(
                     onStart: { start in
@@ -161,6 +169,15 @@ struct CanvasContentView: View {
                         let distance = hypot(dx, dy)
 
                         if distance < 4 {
+                            if let edge = edge(at: location, geometry: geometry) {
+                                suppressCanvasTapClear = true
+                                selectedNodeID = nil
+                                selectedNodeIDs.removeAll()
+                                selectedBoundaryIDs.removeAll()
+                                selectedEdgeID = edge.id
+                                onEdgeSecondarySelected?(edge)
+                                return
+                            }
                             if let node = node(at: location, geometry: geometry) {
                                 suppressCanvasTapClear = true
                                 selectedNodeIDs = [node.id]
@@ -412,6 +429,77 @@ struct CanvasContentView: View {
         return workflow.nodes.reversed().first { node in
             nodeFrame(for: node, geometry: geometry).contains(location)
         }
+    }
+
+    private func edge(at location: CGPoint, geometry: GeometryProxy) -> WorkflowEdge? {
+        guard let workflow = currentWorkflow else { return nil }
+        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        return workflow.edges.reversed().first { edge in
+            guard let fromNode = nodesByID[edge.fromNodeID],
+                  let toNode = nodesByID[edge.toNodeID] else { return false }
+            let fromPos = adjustedPosition(fromNode.position, geometry: geometry)
+            let toPos = adjustedPosition(toNode.position, geometry: geometry)
+            let startPoint = edgePoint(from: fromPos, to: toPos)
+            let endPoint = edgePoint(from: toPos, to: fromPos)
+            let points = orthogonalRoute(from: startPoint, to: endPoint)
+            return isPoint(location, near: points, tolerance: 8)
+        }
+    }
+
+    private func edgePoint(from: CGPoint, to: CGPoint) -> CGPoint {
+        let dx = to.x - from.x
+        let dy = to.y - from.y
+        guard abs(dx) > 0.001 || abs(dy) > 0.001 else { return from }
+
+        let angle = atan2(dy, dx)
+        let buffer: CGFloat = 58
+        return CGPoint(
+            x: from.x + buffer * cos(angle),
+            y: from.y + buffer * sin(angle)
+        )
+    }
+
+    private func orthogonalRoute(from start: CGPoint, to end: CGPoint) -> [CGPoint] {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        if abs(dx) >= abs(dy) {
+            let midX = start.x + dx * 0.5
+            return [
+                start,
+                CGPoint(x: midX, y: start.y),
+                CGPoint(x: midX, y: end.y),
+                end
+            ]
+        }
+        let midY = start.y + dy * 0.5
+        return [
+            start,
+            CGPoint(x: start.x, y: midY),
+            CGPoint(x: end.x, y: midY),
+            end
+        ]
+    }
+
+    private func isPoint(_ point: CGPoint, near polyline: [CGPoint], tolerance: CGFloat) -> Bool {
+        guard polyline.count >= 2 else { return false }
+        for segment in zip(polyline, polyline.dropFirst()) {
+            if distance(point, to: segment.0, and: segment.1) <= tolerance {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func distance(_ point: CGPoint, to a: CGPoint, and b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        if abs(dx) < 0.001 && abs(dy) < 0.001 {
+            return hypot(point.x - a.x, point.y - a.y)
+        }
+
+        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)))
+        let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+        return hypot(point.x - projection.x, point.y - projection.y)
     }
 }
 

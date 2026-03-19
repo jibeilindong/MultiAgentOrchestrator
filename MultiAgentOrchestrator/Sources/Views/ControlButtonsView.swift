@@ -50,121 +50,13 @@ struct ControlButtonsView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                VStack(spacing: 0) {
-                    ScrollView {
-                        LazyVGrid(columns: gridColumns, spacing: 10) {
-                            controlCard(title: "连线", icon: "link") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 6) {
-                                        iconButton(
-                                            systemName: isConnectMode ? "link.circle.fill" : "link.circle",
-                                            action: toggleConnectMode,
-                                            prominent: true
-                                        )
-                                        .tint(isConnectMode ? .blue : .accentColor)
-                                        .help(isConnectMode ? "取消创建连线" : "准备创建连线")
-
-                                        iconButton(systemName: "link.badge.minus", action: onDeleteSelectedEdge)
-                                            .disabled(selectedEdgeID == nil)
-                                            .help("删除选中连接线")
-                                    }
-
-                                    if isConnectMode {
-                                        HStack(spacing: 6) {
-                                            connectionTypeButton(type: .unidirectional)
-                                            connectionTypeButton(type: .bidirectional)
-                                        }
-                                    }
-                                }
-                            }
-
-                            controlCard(title: "视图", icon: "viewfinder") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 6) {
-                                        iconButton(systemName: "minus.magnifyingglass", action: zoomOut)
-                                        iconButton(systemName: "plus.magnifyingglass", action: zoomIn)
-                                        iconButton(systemName: "arrow.counterclockwise", action: resetView)
-                                    }
-
-                                    Text("\(Int(scale * 100))%")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            controlCard(title: "选择", icon: "cursorarrow.motionlines") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 6) {
-                                        Button(action: toggleLassoMode) {
-                                            Image(systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed")
-                                                .frame(width: 28, height: 28)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .tint(isLassoMode ? .accentColor : nil)
-                                        .help("框选模式（也支持按住右键拖动）")
-                                        iconButton(systemName: "doc.on.doc", action: onCopySelection)
-                                            .disabled(!hasNodeSelection)
-                                        iconButton(systemName: "scissors", action: onCutSelection)
-                                            .disabled(!hasNodeSelection)
-                                        iconButton(systemName: "doc.on.clipboard", action: onPasteSelection)
-                                        iconButton(systemName: "trash", action: onDeleteSelection)
-                                            .disabled(!hasNodeSelection)
-                                    }
-
-                                    Text(hasNodeSelection ? "已选中 \(activeSelection.count) 个节点" : "当前未选中节点")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            controlCard(title: "构建", icon: "square.stack.3d.up") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Menu {
-                                        Button("New Agent Node") { addNode() }
-
-                                        if let agents = appState.currentProject?.agents, !agents.isEmpty {
-                                            Divider()
-                                            ForEach(agents) { agent in
-                                                Button(agent.name) {
-                                                    addAgentNode(agent)
-                                                }
-                                            }
-                                        }
-                                    } label: {
-                                        Label("添加节点", systemImage: "plus.circle")
-                                            .font(.caption)
-                                    }
-                                    .menuStyle(.borderlessButton)
-
-                                    HStack(spacing: 6) {
-                                        iconButton(systemName: "list.bullet.clipboard", action: generateTasksFromWorkflow)
-                                        iconButton(systemName: "square.dashed", action: createBoundaryFromSelection)
-                                            .disabled(activeSelection.isEmpty)
-                                        iconButton(systemName: "trash.square", action: deleteBoundaryFromSelection)
-                                            .disabled(activeSelection.isEmpty)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(12)
-                    }
-
-                    resizeHandle
+            Color.clear
+                .allowsHitTesting(false)
+                .overlay(alignment: .topLeading) {
+                    panelView
+                        .position(panelCenter)
+                        .allowsHitTesting(true)
                 }
-                .frame(width: panelSize.width, height: panelSize.height)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(.windowBackgroundColor).opacity(0.95))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-                )
-                .simultaneousGesture(edgeResizeGesture)
-                .simultaneousGesture(moveGesture)
-                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
-                .position(panelCenter)
                 .onAppear {
                     initializePanelPositionIfNeeded(in: geometry)
                 }
@@ -175,7 +67,124 @@ struct ControlButtonsView: View {
                         clampPanelPosition(to: newSize)
                     }
                 }
+        }
+    }
+
+    private var panelView: some View {
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVGrid(columns: gridColumns, spacing: 10) {
+                        controlCard(title: "连线", icon: "link") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    iconButton(
+                                        systemName: isConnectMode ? "link.circle.fill" : "link.circle",
+                                        action: toggleConnectMode,
+                                        prominent: true
+                                    )
+                                    .tint(isConnectMode ? .blue : .accentColor)
+                                    .help(isConnectMode ? "取消创建连线" : "准备创建连线")
+
+                                    iconButton(systemName: "link.badge.minus", action: onDeleteSelectedEdge)
+                                        .disabled(selectedEdgeID == nil)
+                                        .help("删除选中连接线")
+                                }
+
+                                if isConnectMode {
+                                    HStack(spacing: 6) {
+                                        connectionTypeButton(type: .unidirectional)
+                                        connectionTypeButton(type: .bidirectional)
+                                    }
+                                }
+                            }
+                        }
+
+                        controlCard(title: "视图", icon: "viewfinder") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    iconButton(systemName: "minus.magnifyingglass", action: zoomOut)
+                                    iconButton(systemName: "plus.magnifyingglass", action: zoomIn)
+                                    iconButton(systemName: "arrow.counterclockwise", action: resetView)
+                                }
+
+                                Text("\(Int(scale * 100))%")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        controlCard(title: "选择", icon: "cursorarrow.motionlines") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    Button(action: toggleLassoMode) {
+                                        Image(systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed")
+                                            .frame(width: 28, height: 28)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .tint(isLassoMode ? .accentColor : nil)
+                                    .help("框选模式（也支持按住右键拖动）")
+                                    iconButton(systemName: "doc.on.doc", action: onCopySelection)
+                                        .disabled(!hasNodeSelection)
+                                    iconButton(systemName: "scissors", action: onCutSelection)
+                                        .disabled(!hasNodeSelection)
+                                    iconButton(systemName: "doc.on.clipboard", action: onPasteSelection)
+                                    iconButton(systemName: "trash", action: onDeleteSelection)
+                                        .disabled(!hasNodeSelection)
+                                }
+
+                                Text(hasNodeSelection ? "已选中 \(activeSelection.count) 个节点" : "当前未选中节点")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        controlCard(title: "构建", icon: "square.stack.3d.up") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Menu {
+                                    Button("New Agent Node") { addNode() }
+
+                                    if let agents = appState.currentProject?.agents, !agents.isEmpty {
+                                        Divider()
+                                        ForEach(agents) { agent in
+                                            Button(agent.name) {
+                                                addAgentNode(agent)
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    Label("添加节点", systemImage: "plus.circle")
+                                        .font(.caption)
+                                }
+                                .menuStyle(.borderlessButton)
+
+                                HStack(spacing: 6) {
+                                    iconButton(systemName: "list.bullet.clipboard", action: generateTasksFromWorkflow)
+                                    iconButton(systemName: "square.dashed", action: createBoundaryFromSelection)
+                                        .disabled(activeSelection.isEmpty)
+                                    iconButton(systemName: "trash.square", action: deleteBoundaryFromSelection)
+                                        .disabled(activeSelection.isEmpty)
+                                }
+                            }
+                        }
+                    }
+                    .padding(12)
+                }
+
+                resizeHandle
             }
+            .frame(width: panelSize.width, height: panelSize.height)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(.windowBackgroundColor).opacity(0.95))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+            )
+            .simultaneousGesture(edgeResizeGesture)
+            .simultaneousGesture(moveGesture)
+            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
         }
     }
 

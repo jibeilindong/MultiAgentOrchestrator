@@ -15,6 +15,7 @@ struct ConnectionLinesView: View {
     let textColor: Color
     @Binding var selectedEdgeID: UUID?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
+    var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
 
     private let nodeWidth: CGFloat = 80
     private let nodeHeight: CGFloat = 60
@@ -28,7 +29,8 @@ struct ConnectionLinesView: View {
         textScale: CGFloat = 1,
         textColor: Color = .primary,
         selectedEdgeID: Binding<UUID?> = .constant(nil),
-        onEdgeSelected: ((WorkflowEdge) -> Void)? = nil
+        onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
+        onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil
     ) {
         self.currentWorkflow = currentWorkflow
         self._scale = scale
@@ -39,6 +41,7 @@ struct ConnectionLinesView: View {
         self.textColor = textColor
         self._selectedEdgeID = selectedEdgeID
         self.onEdgeSelected = onEdgeSelected
+        self.onEdgeSecondarySelected = onEdgeSecondarySelected
     }
 
     var body: some View {

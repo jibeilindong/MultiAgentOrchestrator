@@ -13,6 +13,7 @@ struct OpenClawAgentDefinition: Codable, Hashable {
     var modelIdentifier: String
     var runtimeProfile: String
     var memoryBackupPath: String?
+    var soulSourcePath: String?
     var environment: [String: String]
 
     init(
@@ -20,12 +21,14 @@ struct OpenClawAgentDefinition: Codable, Hashable {
         modelIdentifier: String = "MiniMax-M2.5",
         runtimeProfile: String = "default",
         memoryBackupPath: String? = nil,
+        soulSourcePath: String? = nil,
         environment: [String: String] = [:]
     ) {
         self.agentIdentifier = agentIdentifier
         self.modelIdentifier = modelIdentifier
         self.runtimeProfile = runtimeProfile
         self.memoryBackupPath = memoryBackupPath
+        self.soulSourcePath = soulSourcePath
         self.environment = environment
     }
 }

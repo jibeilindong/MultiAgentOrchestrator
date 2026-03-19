@@ -295,7 +295,7 @@ struct EditorToolbar: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color(.windowBackgroundColor).opacity(0.3))
+        .background(Color(.windowBackgroundColor).opacity(0.8))
     }
 }
 
@@ -314,7 +314,7 @@ private struct WorkflowToolbarGroup<Content: View>: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(.controlBackgroundColor).opacity(0.3))
+        .background(Color(.controlBackgroundColor).opacity(0.8))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
@@ -592,6 +592,12 @@ struct ArchitectureView: View {
                         showNodePropertyPanel = true
                     },
                     onEdgeSelected: { edge in
+                        selectedNodeForProperty = nil
+                        showNodePropertyPanel = false
+                        selectedEdgeForProperty = edge
+                        showEdgePropertyPanel = true
+                    },
+                    onEdgeSecondarySelected: { edge in
                         selectedNodeForProperty = nil
                         showNodePropertyPanel = false
                         selectedEdgeForProperty = edge
@@ -959,32 +965,40 @@ struct NodePropertyPanel: View {
                     if node.type == .agent, let agentID = node.agentID,
                        let agent = getAgent(id: agentID) {
                         GroupBox("Agent: \(agent.name)") {
-                            VStack(alignment: .leading, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 14) {
                                 TextField("Name", text: $nodeTitle)
                                     .textFieldStyle(.roundedBorder)
 
                                 TextField("Description", text: $agentDescription)
                                     .textFieldStyle(.roundedBorder)
 
-                                Text("Soul.md Configuration")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Soul.md Configuration")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
 
-                                if let soulSourcePath {
-                                    Text(soulSourcePath)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(2)
-                                } else {
-                                    Text("未定位到 SOUL.md 文件，当前显示项目缓存内容。")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                    if let soulSourcePath {
+                                        LabeledContent("Source file") {
+                                            Text(soulSourcePath)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .multilineTextAlignment(.trailing)
+                                                .textSelection(.enabled)
+                                        }
+                                    } else {
+                                        Text("未定位到 SOUL.md 文件，当前编辑的是项目缓存。")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
                                 }
 
                                 TextEditor(text: $soulConfig)
                                     .font(.system(.caption, design: .monospaced))
-                                    .frame(height: 150)
-                                    .border(Color.gray.opacity(0.3))
+                                    .frame(minHeight: 380, idealHeight: 440, maxHeight: 560)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                    )
 
                                 if let reloadStatus {
                                     Text(reloadStatus)
@@ -1012,15 +1026,15 @@ struct NodePropertyPanel: View {
                 Spacer()
                 
                 Button("Apply") {
-                    saveChanges()
-                    isPresented = false
+                saveChanges()
+                isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
             .padding()
         }
-        .frame(width: 320)
+        .frame(minWidth: 620, idealWidth: 760, maxWidth: 980, minHeight: 760, idealHeight: 920, maxHeight: .infinity)
         .background(Color(.windowBackgroundColor))
         .onAppear {
             loadNodeData()
@@ -1068,6 +1082,7 @@ struct NodePropertyPanel: View {
             agent.name = nodeTitle
             agent.description = agentDescription
             agent.soulMD = soulConfig
+            agent.openClawDefinition.soulSourcePath = soulSourcePath ?? agent.openClawDefinition.soulSourcePath
             agent.updatedAt = Date()
             appState.updateAgent(agent, reload: true)
             if fileResult.success {

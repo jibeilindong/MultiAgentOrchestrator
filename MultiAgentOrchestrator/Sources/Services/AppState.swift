@@ -1404,6 +1404,16 @@ class AppState: ObservableObject {
     }
 
     private func resolveAgentSoulFileURL(for agent: Agent) -> URL? {
+        if let directPath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
+            let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
+            if FileManager.default.fileExists(atPath: directURL.path) {
+                return directURL
+            }
+            if FileManager.default.fileExists(atPath: directURL.deletingLastPathComponent().path) {
+                return preferredSoulURL(in: directURL.deletingLastPathComponent())
+            }
+        }
+
         let keys = Set([
             normalizeAgentKey(agent.name),
             normalizeAgentKey(agent.openClawDefinition.agentIdentifier)
