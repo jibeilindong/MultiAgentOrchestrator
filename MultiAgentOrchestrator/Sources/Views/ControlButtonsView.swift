@@ -28,6 +28,7 @@ struct ControlButtonsView: View {
     @State private var panelSize = CGSize(width: 280, height: 244)
     @State private var panelSizeAtDragStart: CGSize?
     @State private var activeResizeEdges: PanelResizeEdges = []
+    private let edgeResizeThreshold: CGFloat = 12
 
     private var hasNodeSelection: Bool {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
@@ -94,11 +95,11 @@ struct ControlButtonsView: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack(spacing: 6) {
                                         Button(action: toggleLassoMode) {
-                                            Label("框选", systemImage: isLassoMode ? "selection.pin.in.out" : "selection.pin.out")
-                                                .font(.caption)
+                                            Image(systemName: isLassoMode ? "selection.pin.in.out" : "selection.pin.out")
+                                                .frame(width: 28, height: 28)
                                         }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(isLassoMode ? .accentColor : .secondary.opacity(0.4))
+                                        .buttonStyle(.bordered)
+                                        .tint(isLassoMode ? .accentColor : nil)
                                         .help("框选模式（也支持按住右键拖动）")
                                         iconButton(systemName: "doc.on.doc", action: onCopySelection)
                                             .disabled(!hasNodeSelection)
@@ -111,9 +112,6 @@ struct ControlButtonsView: View {
 
                                     Text(hasNodeSelection ? "已选中 \(activeSelection.count) 个节点" : "当前未选中节点")
                                         .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Text("按住右键拖动可快速框选")
-                                        .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
                             }
@@ -161,7 +159,7 @@ struct ControlButtonsView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
                 )
-                .overlay(resizeHandlesOverlay)
+                .simultaneousGesture(edgeResizeGesture)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
             }
             .padding(12)
@@ -184,40 +182,42 @@ struct ControlButtonsView: View {
                 .padding(10)
         }
         .contentShape(Rectangle())
-        .gesture(resizeGesture(for: [.right, .bottom]))
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if panelSizeAtDragStart == nil {
+                        panelSizeAtDragStart = panelSize
+                        activeResizeEdges = [.right, .bottom]
+                    }
+                    guard let startSize = panelSizeAtDragStart else { return }
+                    panelSize = resizedPanelSize(
+                        from: startSize,
+                        translation: value.translation,
+                        edges: activeResizeEdges
+                    )
+                }
+                .onEnded { _ in
+                    panelSizeAtDragStart = nil
+                    activeResizeEdges = []
+                }
+        )
     }
 
-    private var resizeHandlesOverlay: some View {
-        ZStack {
-            resizeEdgeHandle(width: nil, height: 8, alignment: .top, edges: [.top])
-            resizeEdgeHandle(width: nil, height: 8, alignment: .bottom, edges: [.bottom])
-            resizeEdgeHandle(width: 8, height: nil, alignment: .leading, edges: [.left])
-            resizeEdgeHandle(width: 8, height: nil, alignment: .trailing, edges: [.right])
-
-            resizeEdgeHandle(width: 16, height: 16, alignment: .topLeading, edges: [.top, .left])
-            resizeEdgeHandle(width: 16, height: 16, alignment: .topTrailing, edges: [.top, .right])
-            resizeEdgeHandle(width: 16, height: 16, alignment: .bottomLeading, edges: [.bottom, .left])
-            resizeEdgeHandle(width: 16, height: 16, alignment: .bottomTrailing, edges: [.bottom, .right])
-        }
+    private func resizeEdges(at location: CGPoint) -> PanelResizeEdges {
+        var edges: PanelResizeEdges = []
+        if location.x <= edgeResizeThreshold { edges.insert(.left) }
+        if location.x >= panelSize.width - edgeResizeThreshold { edges.insert(.right) }
+        if location.y <= edgeResizeThreshold { edges.insert(.top) }
+        if location.y >= panelSize.height - edgeResizeThreshold { edges.insert(.bottom) }
+        return edges
     }
 
-    private func resizeEdgeHandle(
-        width: CGFloat?,
-        height: CGFloat?,
-        alignment: Alignment,
-        edges: PanelResizeEdges
-    ) -> some View {
-        Color.clear
-            .frame(width: width, height: height)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
-            .contentShape(Rectangle())
-            .gesture(resizeGesture(for: edges))
-    }
-
-    private func resizeGesture(for edges: PanelResizeEdges) -> some Gesture {
+    private var edgeResizeGesture: some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
                 if panelSizeAtDragStart == nil {
+                    let edges = resizeEdges(at: value.startLocation)
+                    guard !edges.isEmpty else { return }
                     panelSizeAtDragStart = panelSize
                     activeResizeEdges = edges
                 }
@@ -323,13 +323,13 @@ struct ControlButtonsView: View {
 
     private func zoomIn() {
         withAnimation(.easeInOut(duration: 0.2)) {
-            scale = min(scale + 0.2, 5.0)
+            scale = min(scale + 0.2, 20.0)
         }
     }
 
     private func zoomOut() {
         withAnimation(.easeInOut(duration: 0.2)) {
-            scale = max(scale - 0.2, 0.1)
+            scale = max(scale - 0.2, 0.05)
         }
     }
 

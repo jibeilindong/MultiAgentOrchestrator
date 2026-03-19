@@ -130,13 +130,13 @@ struct ContentView: View {
             TopToolbarGroup {
                 Menu {
                     Button("Zoom Out") {
-                        zoomScale = max(zoomScale / 1.25, 0.25)
+                        zoomScale = max(zoomScale / 1.25, 0.05)
                     }
                     Button("Reset Zoom") {
                         zoomScale = 1.0
                     }
                     Button("Zoom In") {
-                        zoomScale = min(zoomScale * 1.25, 3.0)
+                        zoomScale = min(zoomScale * 1.25, 20.0)
                     }
                     Divider()
                     Button(appState.showLogs ? "Hide Logs" : "Show Logs") {
@@ -147,13 +147,13 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 4) {
-                    Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
+                    Button(action: { zoomScale = max(zoomScale / 1.25, 0.05) }) {
                         Image(systemName: "minus.magnifyingglass")
                     }
                     Text("\(Int(zoomScale * 100))%")
                         .font(.caption)
                         .frame(width: 44)
-                    Button(action: { zoomScale = min(zoomScale * 1.25, 3.0) }) {
+                    Button(action: { zoomScale = min(zoomScale * 1.25, 20.0) }) {
                         Image(systemName: "plus.magnifyingglass")
                     }
                 }

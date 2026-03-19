@@ -119,8 +119,9 @@ struct SidebarView: View {
                 .frame(maxWidth: .infinity)
 
                 Button(action: { appState.saveProject() }) {
-                    Image(systemName: "square.and.arrow.down")
-                        .frame(width: 30, height: 30)
+                    Label("保存", systemImage: "square.and.arrow.down")
+                        .font(.caption)
+                        .padding(.horizontal, 6)
                 }
                 .buttonStyle(.bordered)
                 .help("保存项目")
@@ -128,8 +129,9 @@ struct SidebarView: View {
 
                 if appState.currentProject != nil {
                     Button(action: { appState.closeProject() }) {
-                        Image(systemName: "xmark.circle")
-                            .frame(width: 30, height: 30)
+                        Label("关闭", systemImage: "xmark.circle")
+                            .font(.caption)
+                            .padding(.horizontal, 6)
                     }
                     .buttonStyle(.bordered)
                     .help("关闭项目")

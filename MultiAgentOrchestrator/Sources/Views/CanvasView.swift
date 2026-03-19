@@ -70,6 +70,7 @@ struct CanvasView: View {
             selectedNodeIDs: $selectedNodeIDs,
             selectedEdgeID: $selectedEdgeID,
             selectedBoundaryIDs: $selectedBoundaryIDs,
+            suppressCanvasTapClear: $suppressCanvasTapClear,
             isLassoMode: $isLassoMode,
             isTransientLassoMode: $isTransientLassoMode,
             lassoRect: $lassoRect,
@@ -78,8 +79,14 @@ struct CanvasView: View {
             isConnectMode: isConnectMode,
             connectFromAgentID: connectFromAgentID,
             onNodeClick: onNodeClickInConnectMode,
-            onNodeSelected: onNodeSelected,
-            onEdgeSelected: onEdgeSelected,
+            onNodeSelected: { node in
+                suppressCanvasTapClear = true
+                onNodeSelected?(node)
+            },
+            onEdgeSelected: { edge in
+                suppressCanvasTapClear = true
+                onEdgeSelected?(edge)
+            },
             onSubflowEdit: handleSubflowEdit
         )
         .onChange(of: selectedEdgeID) { _, newValue in
@@ -92,7 +99,7 @@ struct CanvasView: View {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                 if event.modifierFlags.contains(.command) {
                     let delta = event.scrollingDeltaY * 0.01
-                    let newScale = max(0.1, min(2.0, self.scale + delta))
+                    let newScale = max(0.05, min(20.0, self.scale + delta))
                     self.scale = newScale
                     self.zoomScale = newScale
                     return nil
@@ -266,7 +273,7 @@ struct CanvasView: View {
             MagnificationGesture()
                 .onChanged { value in
                     scale = lastOffset == .zero ? value.magnitude : scale
-                    scale = max(0.1, min(scale, 2.0))
+                    scale = max(0.05, min(scale, 20.0))
                 }
                 .onEnded { _ in
                     lastOffset = offset

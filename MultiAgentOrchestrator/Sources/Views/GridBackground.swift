@@ -9,24 +9,40 @@ import SwiftUI
 
 struct GridBackground: View {
     let gridSize: CGFloat = 20
+    let majorStep: Int = 5
     
     var body: some View {
         Canvas { context, size in
-            // 绘制网格
-            for x in stride(from: 0, through: size.width, by: gridSize) {
+            let verticalCount = Int(ceil(size.width / gridSize))
+            let horizontalCount = Int(ceil(size.height / gridSize))
+
+            // 绘制网格（主网格线更明显）
+            for index in 0...verticalCount {
+                let x = CGFloat(index) * gridSize
                 let path = Path { p in
                     p.move(to: CGPoint(x: x, y: 0))
                     p.addLine(to: CGPoint(x: x, y: size.height))
                 }
-                context.stroke(path, with: .color(Color.gray.opacity(0.3)), lineWidth: 1)
+                let isMajor = index.isMultiple(of: majorStep)
+                context.stroke(
+                    path,
+                    with: .color(Color.gray.opacity(isMajor ? 0.36 : 0.24)),
+                    lineWidth: isMajor ? 1.1 : 0.8
+                )
             }
             
-            for y in stride(from: 0, through: size.height, by: gridSize) {
+            for index in 0...horizontalCount {
+                let y = CGFloat(index) * gridSize
                 let path = Path { p in
                     p.move(to: CGPoint(x: 0, y: y))
                     p.addLine(to: CGPoint(x: size.width, y: y))
                 }
-                context.stroke(path, with: .color(Color.gray.opacity(0.3)), lineWidth: 1)
+                let isMajor = index.isMultiple(of: majorStep)
+                context.stroke(
+                    path,
+                    with: .color(Color.gray.opacity(isMajor ? 0.36 : 0.24)),
+                    lineWidth: isMajor ? 1.1 : 0.8
+                )
             }
             
             // 绘制坐标轴

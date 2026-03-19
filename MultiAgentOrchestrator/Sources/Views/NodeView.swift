@@ -12,7 +12,6 @@ struct NodeView: View {
     let node: WorkflowNode
     let isSelected: Bool
     let agent: Agent?
-    let taskStatus: TaskStatus?
     
     // 连接模式状态
     var isConnectingMode: Bool = false
@@ -34,19 +33,6 @@ struct NodeView: View {
             // 嵌套层级指示器
             if node.nestingLevel > 0 {
                 NestingLevelBadge(level: node.nestingLevel)
-            }
-            
-            // 状态指示器
-            if let status = taskStatus {
-                Circle()
-                    .fill(status.color)
-                    .frame(width: 10, height: 10)
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white, lineWidth: 2)
-                    )
-                    .shadow(color: status.color.opacity(0.5), radius: isHovered ? 4 : 2)
-                    .offset(x: 35, y: -35)
             }
             
             // 节点图标和标题

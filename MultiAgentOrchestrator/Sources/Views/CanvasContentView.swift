@@ -15,6 +15,7 @@ struct CanvasContentView: View {
     @Binding var selectedNodeIDs: Set<UUID>
     @Binding var selectedEdgeID: UUID?
     @Binding var selectedBoundaryIDs: Set<UUID>
+    @Binding var suppressCanvasTapClear: Bool
     @Binding var isLassoMode: Bool
     @Binding var isTransientLassoMode: Bool
     @Binding var lassoRect: CGRect?
@@ -28,6 +29,7 @@ struct CanvasContentView: View {
     var onSubflowEdit: ((WorkflowNode) -> Void)?
 
     @State private var isDraggingOverCanvas: Bool = false
+    @State private var rightMouseLassoStart: CGPoint?
 
     private var currentWorkflow: Workflow? {
         appState.currentProject?.workflows.first
@@ -37,6 +39,8 @@ struct CanvasContentView: View {
         GeometryReader { geometry in
             ZStack {
                 GridBackground()
+                    .frame(width: geometry.size.width * 10, height: geometry.size.height * 10)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                     .scaleEffect(scale)
                     .offset(offset)
                     .opacity(isDraggingOverCanvas ? 0.6 : 1.0)
@@ -44,24 +48,6 @@ struct CanvasContentView: View {
                 if isDraggingOverCanvas {
                     DropIndicatorView(geometry: geometry)
                 }
-
-                WorkflowBoundaryOverlay(
-                    groups: explicitBoundaryRects(in: geometry),
-                    fallbackGroups: collaborationGroups(in: geometry),
-                    selectedBoundaryIDs: selectedBoundaryIDs,
-                    onBoundaryTap: { boundaryID in
-                        guard let workflow = currentWorkflow,
-                              let boundary = workflow.boundaries.first(where: { $0.id == boundaryID }) else {
-                            return
-                        }
-                        selectedBoundaryIDs = [boundaryID]
-                        selectedNodeIDs = Set(boundary.memberNodeIDs)
-                        selectedNodeID = nil
-                        selectedEdgeID = nil
-                        connectingFromNode = nil
-                        tempConnectionEnd = nil
-                    }
-                )
 
                 ConnectionLinesView(
                     currentWorkflow: currentWorkflow,
@@ -73,10 +59,30 @@ struct CanvasContentView: View {
                     textColor: appState.canvasDisplaySettings.textColor.color,
                     selectedEdgeID: $selectedEdgeID,
                     onEdgeSelected: { edge in
+                        suppressCanvasTapClear = true
                         selectedNodeID = nil
                         selectedNodeIDs.removeAll()
                         selectedBoundaryIDs.removeAll()
                         onEdgeSelected?(edge)
+                    }
+                )
+
+                WorkflowBoundaryOverlay(
+                    groups: explicitBoundaryRects(in: geometry),
+                    fallbackGroups: collaborationGroups(in: geometry),
+                    selectedBoundaryIDs: selectedBoundaryIDs,
+                    onBoundaryTap: { boundaryID in
+                        guard let workflow = currentWorkflow,
+                              let boundary = workflow.boundaries.first(where: { $0.id == boundaryID }) else {
+                            return
+                        }
+                        suppressCanvasTapClear = true
+                        selectedBoundaryIDs = [boundaryID]
+                        selectedNodeIDs = Set(boundary.memberNodeIDs)
+                        selectedNodeID = nil
+                        selectedEdgeID = nil
+                        connectingFromNode = nil
+                        tempConnectionEnd = nil
                     }
                 )
 
@@ -121,6 +127,39 @@ struct CanvasContentView: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(lassoGesture(in: geometry))
+            .background(
+                RightMouseDragMonitor(
+                    onStart: { start in
+                        isTransientLassoMode = true
+                        rightMouseLassoStart = start
+                        lassoRect = CGRect(origin: start, size: .zero)
+                    },
+                    onDrag: { location in
+                        guard isTransientLassoMode, let start = rightMouseLassoStart else { return }
+                        lassoRect = CGRect(
+                            x: min(start.x, location.x),
+                            y: min(start.y, location.y),
+                            width: abs(location.x - start.x),
+                            height: abs(location.y - start.y)
+                        )
+                    },
+                    onEnd: { location in
+                        defer {
+                            rightMouseLassoStart = nil
+                            lassoRect = nil
+                            isTransientLassoMode = false
+                        }
+                        guard let start = rightMouseLassoStart else { return }
+                        let rect = CGRect(
+                            x: min(start.x, location.x),
+                            y: min(start.y, location.y),
+                            width: abs(location.x - start.x),
+                            height: abs(location.y - start.y)
+                        )
+                        applyLassoSelection(with: rect, geometry: geometry)
+                    }
+                )
+            )
             .onDrop(of: [.text], isTargeted: $isDraggingOverCanvas) { providers, location in
                 handleDrop(providers: providers, location: location, geometry: geometry)
             }
@@ -180,11 +219,6 @@ struct CanvasContentView: View {
     private func lassoGesture(in geometry: GeometryProxy) -> some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { value in
-                let rightMousePressed = (NSEvent.pressedMouseButtons & 0x2) != 0
-                if rightMousePressed {
-                    isTransientLassoMode = true
-                }
-
                 let lassoEnabled = isLassoMode || isTransientLassoMode
                 guard lassoEnabled else { return }
 
@@ -205,27 +239,33 @@ struct CanvasContentView: View {
                     return
                 }
 
-                let workflow = currentWorkflow
-                let selectedNodesInRect = Set((workflow?.nodes ?? []).compactMap { node -> UUID? in
-                    nodeFrame(for: node, geometry: geometry).intersects(lassoRect) ? node.id : nil
-                })
-
-                let selectedBoundaries = Set((workflow?.boundaries ?? []).compactMap { boundary -> UUID? in
-                    boundaryFrame(for: boundary, geometry: geometry).intersects(lassoRect) ? boundary.id : nil
-                })
-
-                let boundaryMemberNodes = Set((workflow?.boundaries ?? [])
-                    .filter { selectedBoundaries.contains($0.id) }
-                    .flatMap(\.memberNodeIDs))
-
-                let selected = selectedNodesInRect.union(boundaryMemberNodes)
-                selectedBoundaryIDs = selectedBoundaries
-                selectedNodeIDs = selected
-                selectedNodeID = selected.count == 1 && selectedBoundaries.isEmpty ? selected.first : nil
-                selectedEdgeID = nil
+                applyLassoSelection(with: lassoRect, geometry: geometry)
                 self.lassoRect = nil
-                isTransientLassoMode = false
+                if !isLassoMode {
+                    isTransientLassoMode = false
+                }
             }
+    }
+
+    private func applyLassoSelection(with rect: CGRect, geometry: GeometryProxy) {
+        let workflow = currentWorkflow
+        let selectedNodesInRect = Set((workflow?.nodes ?? []).compactMap { node -> UUID? in
+            nodeFrame(for: node, geometry: geometry).intersects(rect) ? node.id : nil
+        })
+
+        let selectedBoundaries = Set((workflow?.boundaries ?? []).compactMap { boundary -> UUID? in
+            boundaryFrame(for: boundary, geometry: geometry).intersects(rect) ? boundary.id : nil
+        })
+
+        let boundaryMemberNodes = Set((workflow?.boundaries ?? [])
+            .filter { selectedBoundaries.contains($0.id) }
+            .flatMap(\.memberNodeIDs))
+
+        let selected = selectedNodesInRect.union(boundaryMemberNodes)
+        selectedBoundaryIDs = selectedBoundaries
+        selectedNodeIDs = selected
+        selectedNodeID = selected.count == 1 && selectedBoundaries.isEmpty ? selected.first : nil
+        selectedEdgeID = nil
     }
 
     private func collaborationGroups(in geometry: GeometryProxy) -> [CGRect] {
@@ -393,6 +433,88 @@ struct DropIndicatorView: View {
                         .position(x: geometry.size.width - 70, y: geometry.size.height - 40)
                 }
             }
+        }
+    }
+}
+
+private struct RightMouseDragMonitor: NSViewRepresentable {
+    var onStart: (CGPoint) -> Void
+    var onDrag: (CGPoint) -> Void
+    var onEnd: (CGPoint) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onStart: onStart, onDrag: onDrag, onEnd: onEnd)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onStart = onStart
+        context.coordinator.onDrag = onDrag
+        context.coordinator.onEnd = onEnd
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator {
+        var onStart: (CGPoint) -> Void
+        var onDrag: (CGPoint) -> Void
+        var onEnd: (CGPoint) -> Void
+
+        private weak var view: NSView?
+        private var monitor: Any?
+        private var tracking = false
+
+        init(onStart: @escaping (CGPoint) -> Void, onDrag: @escaping (CGPoint) -> Void, onEnd: @escaping (CGPoint) -> Void) {
+            self.onStart = onStart
+            self.onDrag = onDrag
+            self.onEnd = onEnd
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .rightMouseDragged, .rightMouseUp]) { [weak self] event in
+                guard let self, let view = self.view, view.window != nil else { return event }
+                let converted = view.convert(event.locationInWindow, from: nil)
+                let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
+                let inside = view.bounds.contains(location)
+
+                switch event.type {
+                case .rightMouseDown:
+                    guard inside else { return event }
+                    tracking = true
+                    onStart(location)
+                    return nil
+                case .rightMouseDragged:
+                    guard tracking else { return event }
+                    onDrag(location)
+                    return nil
+                case .rightMouseUp:
+                    guard tracking else { return event }
+                    tracking = false
+                    onEnd(location)
+                    return nil
+                default:
+                    return event
+                }
+            }
+        }
+
+        func detach() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+            tracking = false
         }
     }
 }

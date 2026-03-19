@@ -32,7 +32,6 @@ struct NodesView: View {
                 node: node,
                 isSelected: selectedNodeIDs.contains(node.id) || node.id == selectedNodeID,
                 agent: appState.getAgent(for: node),
-                taskStatus: getTaskStatus(for: node),
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
                 onTap: { handleSingleTap(node) },
@@ -46,13 +45,6 @@ struct NodesView: View {
             .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
             .gesture(createNodeGesture(for: node))
         }
-    }
-
-    private func getTaskStatus(for node: WorkflowNode) -> TaskStatus? {
-        guard let task = appState.taskManager.tasks.first(where: { $0.workflowNodeID == node.id }) else {
-            return nil
-        }
-        return task.status
     }
 
     private func adjustedPosition(_ position: CGPoint) -> CGPoint {

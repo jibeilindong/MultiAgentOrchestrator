@@ -43,11 +43,11 @@ struct ConnectionLinesView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let layouts = buildEdgeLayouts(in: geo)
-
             ZStack {
-                ForEach(layouts, id: \.edge.id) { layout in
-                    OrthogonalConnectionShape(points: layout.points)
+                ForEach(buildEdgeLayouts(in: geo), id: \.edge.id) { layout in
+                    let points = layout.points
+
+                    OrthogonalConnectionShape(points: points)
                         .stroke(
                             layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.78),
                             style: StrokeStyle(
@@ -58,8 +58,22 @@ struct ConnectionLinesView: View {
                             )
                         )
 
-                    if layout.points.count >= 2 {
-                        ArrowShape(from: layout.points[layout.points.count - 2], to: layout.points[layout.points.count - 1])
+                    OrthogonalConnectionShape(points: points)
+                        .stroke(
+                            Color.clear,
+                            style: StrokeStyle(
+                                lineWidth: max(14, lineWidth + 10),
+                                lineCap: .round,
+                                lineJoin: .round
+                            )
+                        )
+                        .onTapGesture {
+                            selectedEdgeID = layout.edge.id
+                            onEdgeSelected?(layout.edge)
+                        }
+
+                    if points.count >= 2 {
+                        ArrowShape(from: points[points.count - 2], to: points[points.count - 1])
                             .stroke(
                                 layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.9),
                                 style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
@@ -74,11 +88,10 @@ struct ConnectionLinesView: View {
                             textScale: textScale,
                             textColor: textColor
                         )
-                        .position(midPoint(for: layout.points))
+                        .position(midPoint(for: points))
                     }
                 }
             }
-            .overlay(hitTestOverlay(layouts: layouts))
         }
     }
 
@@ -105,61 +118,6 @@ struct ConnectionLinesView: View {
                 baseColor: baseColor
             )
         }
-    }
-
-    private func hitTestOverlay(layouts: [EdgeLayout]) -> some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onEnded { value in
-                        let movement = hypot(value.translation.width, value.translation.height)
-                        guard movement < 4 else { return }
-                        guard let matchedEdge = nearestEdge(to: value.location, from: layouts) else { return }
-                        selectedEdgeID = matchedEdge.id
-                        onEdgeSelected?(matchedEdge)
-                    }
-            )
-    }
-
-    private func nearestEdge(to point: CGPoint, from layouts: [EdgeLayout]) -> WorkflowEdge? {
-        let tolerance = max(14, lineWidth + 10)
-        var nearest: (edge: WorkflowEdge, distance: CGFloat)?
-
-        for layout in layouts {
-            let distance = distance(from: point, toPolyline: layout.points)
-            guard distance <= tolerance else { continue }
-
-            if let currentNearest = nearest {
-                if distance < currentNearest.distance {
-                    nearest = (layout.edge, distance)
-                }
-            } else {
-                nearest = (layout.edge, distance)
-            }
-        }
-
-        return nearest?.edge
-    }
-
-    private func distance(from point: CGPoint, toPolyline points: [CGPoint]) -> CGFloat {
-        guard points.count >= 2 else { return .greatestFiniteMagnitude }
-        return zip(points, points.dropFirst()).reduce(CGFloat.greatestFiniteMagnitude) { currentMin, segment in
-            min(currentMin, distance(from: point, toSegmentFrom: segment.0, to: segment.1))
-        }
-    }
-
-    private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        let lengthSquared = dx * dx + dy * dy
-        guard lengthSquared > 0 else {
-            return hypot(point.x - start.x, point.y - start.y)
-        }
-
-        let t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
-        let projection = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
-        return hypot(point.x - projection.x, point.y - projection.y)
     }
 
     private func getNodeCenter(_ position: CGPoint, geometry: GeometryProxy) -> CGPoint {

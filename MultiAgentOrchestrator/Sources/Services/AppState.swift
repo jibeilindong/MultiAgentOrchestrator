@@ -921,9 +921,9 @@ class AppState: ObservableObject {
         gridSize: CGFloat = 20,
         threshold: CGFloat = 8
     ) -> CGPoint {
+        _ = threshold
         func snap(_ value: CGFloat) -> CGFloat {
-            let snapped = (value / gridSize).rounded() * gridSize
-            return abs(snapped - value) <= threshold ? snapped : value
+            (value / gridSize).rounded() * gridSize
         }
 
         return CGPoint(x: snap(point.x), y: snap(point.y))
