@@ -19,6 +19,7 @@ struct ControlButtonsView: View {
 
     var onDeleteSelectedEdge: () -> Void
     var onCopySelection: () -> Void
+    var onCutSelection: () -> Void
     var onPasteSelection: () -> Void
     var onDeleteSelection: () -> Void
 
@@ -95,6 +96,8 @@ struct ControlButtonsView: View {
                                             .tint(isLassoMode ? .accentColor : nil)
                                         iconButton(systemName: "doc.on.doc", action: onCopySelection)
                                             .disabled(!hasNodeSelection)
+                                        iconButton(systemName: "scissors", action: onCutSelection)
+                                            .disabled(!hasNodeSelection)
                                         iconButton(systemName: "doc.on.clipboard", action: onPasteSelection)
                                         iconButton(systemName: "trash", action: onDeleteSelection)
                                             .disabled(!hasNodeSelection)
@@ -109,18 +112,13 @@ struct ControlButtonsView: View {
                             controlCard(title: "构建", icon: "square.stack.3d.up") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Menu {
-                                        Button("Start Node") { addNode(type: .start) }
-                                        Button("End Node") { addNode(type: .end) }
-                                        Button("Branch Node") { addNode(type: .branch) }
-                                        Button("Subflow Node") { addNode(type: .subflow) }
+                                        Button("New Agent Node") { addNode() }
 
                                         if let agents = appState.currentProject?.agents, !agents.isEmpty {
                                             Divider()
-                                            Menu("Agent Nodes") {
-                                                ForEach(agents) { agent in
-                                                    Button(agent.name) {
-                                                        addAgentNode(agent)
-                                                    }
+                                            ForEach(agents) { agent in
+                                                Button(agent.name) {
+                                                    addAgentNode(agent)
                                                 }
                                             }
                                         }
@@ -133,6 +131,8 @@ struct ControlButtonsView: View {
                                     HStack(spacing: 6) {
                                         iconButton(systemName: "list.bullet.clipboard", action: generateTasksFromWorkflow)
                                         iconButton(systemName: "square.dashed", action: createBoundaryFromSelection)
+                                            .disabled(activeSelection.isEmpty)
+                                        iconButton(systemName: "trash.square", action: deleteBoundaryFromSelection)
                                             .disabled(activeSelection.isEmpty)
                                     }
                                 }
@@ -293,8 +293,10 @@ struct ControlButtonsView: View {
         }
     }
 
-    private func addNode(type: WorkflowNode.NodeType) {
-        appState.addNode(type: type, position: CGPoint(x: 300, y: 200))
+    private func addNode() {
+        let agent = appState.addNewAgent()
+        guard let agent else { return }
+        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
     }
 
     private func addAgentNode(_ agent: Agent) {
@@ -303,5 +305,9 @@ struct ControlButtonsView: View {
 
     private func createBoundaryFromSelection() {
         appState.addBoundary(around: activeSelection)
+    }
+
+    private func deleteBoundaryFromSelection() {
+        appState.removeBoundary(around: activeSelection)
     }
 }

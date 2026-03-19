@@ -622,6 +622,8 @@ struct ArchitectureView: View {
     
     // 处理连接模式下的节点点击
     private func handleNodeClickInConnectMode(node: WorkflowNode) {
+        guard node.type == .agent else { return }
+
         if isConnectMode {
             if let fromID = connectFromAgentID {
                 // Create connection from source to this node
@@ -746,10 +748,8 @@ struct AgentLibrarySidebar: View {
                     .padding(.horizontal)
                 
                 HStack(spacing: 8) {
-                    NodeTypeButton(icon: "play.circle", label: LocalizedString.startNode, type: .start)
                     NodeTypeButton(icon: "circle", label: LocalizedString.agentNode, type: .agent)
-                    NodeTypeButton(icon: "arrow.triangle.branch", label: "Branch", type: .branch)
-                    NodeTypeButton(icon: "stop.circle", label: LocalizedString.endNode, type: .end)
+                    NodeTypeButton(icon: "arrow.down.doc.fill", label: LocalizedString.subflow, type: .subflow)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 8)
@@ -867,6 +867,7 @@ struct NodePropertyPanel: View {
     @Binding var isPresented: Bool
     
     @State private var nodeTitle: String = ""
+    @State private var agentDescription: String = ""
     @State private var soulConfig: String = ""
     @State private var conditionExpression: String = ""
     @State private var loopEnabled: Bool = false
@@ -925,11 +926,14 @@ struct NodePropertyPanel: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 TextField("Name", text: $nodeTitle)
                                     .textFieldStyle(.roundedBorder)
-                                
+
+                                TextField("Description", text: $agentDescription)
+                                    .textFieldStyle(.roundedBorder)
+
                                 Text("Soul.md Configuration")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                
+
                                 TextEditor(text: $soulConfig)
                                     .font(.system(.caption, design: .monospaced))
                                     .frame(height: 150)
@@ -939,56 +943,6 @@ struct NodePropertyPanel: View {
                                     Text(reloadStatus)
                                         .font(.caption)
                                         .foregroundColor(.secondary)
-                                }
-                            }
-                            .padding(8)
-                        }
-                    }
-                    
-                    if node.type == .branch {
-                        GroupBox("Branch Logic") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Condition expression")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                
-                                TextField("workflow.hasAgents == true", text: $conditionExpression)
-                                    .textFieldStyle(.roundedBorder)
-                                
-                                Text("Available variables:")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                
-                                Text("workflow.hasAgents, workflow.agentCount, workflow.nodeCount, workflow.edgeCount, time.hour, time.weekday")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(8)
-                        }
-                    }
-                    
-                    GroupBox("Loop Settings") {
-                        Toggle("Enable Loop", isOn: $loopEnabled)
-                        HStack {
-                            Text("Max Iterations")
-                            Slider(value: $maxIterations, in: 1...10, step: 1)
-                            Text("\(Int(maxIterations))")
-                                .font(.caption)
-                                .monospacedDigit()
-                        }
-                        .disabled(!loopEnabled)
-                        .padding(8)
-                    }
-
-                    if !outgoingEdges.isEmpty {
-                        GroupBox("Outgoing Routes") {
-                            VStack(alignment: .leading, spacing: 12) {
-                                ForEach(outgoingEdges) { edge in
-                                    RouteEditorRow(
-                                        edge: binding(for: edge),
-                                        targetName: targetName(for: edge),
-                                        isBranchNode: node.type == .branch
-                                    )
                                 }
                             }
                             .padding(8)
@@ -1030,6 +984,7 @@ struct NodePropertyPanel: View {
     
     private func loadNodeData() {
         nodeTitle = node.title
+        agentDescription = ""
         conditionExpression = node.conditionExpression
         loopEnabled = node.loopEnabled
         maxIterations = Double(max(1, node.maxIterations))
@@ -1037,37 +992,24 @@ struct NodePropertyPanel: View {
         if let agentID = node.agentID,
            let agent = getAgent(id: agentID) {
             nodeTitle = agent.name
+            agentDescription = agent.description
             soulConfig = agent.soulMD
         }
-
-        outgoingEdgeDrafts = Dictionary(uniqueKeysWithValues: outgoingEdges.map {
-            ($0.id, EdgeDraft(edge: $0))
-        })
     }
     
     private func saveChanges() {
         var updatedNode = node
         updatedNode.title = node.type == .agent ? "" : nodeTitle
-        updatedNode.conditionExpression = conditionExpression
-        updatedNode.loopEnabled = loopEnabled
-        updatedNode.maxIterations = loopEnabled ? max(1, Int(maxIterations)) : 1
         appState.updateNode(updatedNode)
 
         if let agentID = node.agentID,
            var agent = getAgent(id: agentID) {
             agent.name = nodeTitle
+            agent.description = agentDescription
             agent.soulMD = soulConfig
             agent.updatedAt = Date()
             appState.updateAgent(agent, reload: true)
             reloadStatus = "Reload requested at \(Date.now.formatted(date: .omitted, time: .shortened))"
-        }
-
-        for draft in outgoingEdgeDrafts.values {
-            var updatedEdge = draft.edge
-            updatedEdge.label = draft.label
-            updatedEdge.conditionExpression = draft.conditionExpression
-            updatedEdge.requiresApproval = draft.requiresApproval
-            appState.updateEdge(updatedEdge)
         }
     }
 
@@ -1117,7 +1059,6 @@ struct NodePropertyPanel: View {
 struct RouteEditorRow: View {
     @Binding var edge: NodePropertyPanel.EdgeDraft
     let targetName: String
-    let isBranchNode: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1133,7 +1074,7 @@ struct RouteEditorRow: View {
                     .labelsHidden()
             }
 
-            TextField(isBranchNode ? "Route label, e.g. true / false" : "Condition label", text: $edge.label)
+            TextField("Condition label", text: $edge.label)
                 .textFieldStyle(.roundedBorder)
 
             TextField("Condition expression", text: $edge.conditionExpression)
@@ -1214,36 +1155,6 @@ struct EdgePropertyPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                     }
-
-                    GroupBox("Route Settings") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            TextField("Route label", text: $label)
-                                .textFieldStyle(.roundedBorder)
-
-                            TextField("Condition expression", text: $conditionExpression)
-                                .textFieldStyle(.roundedBorder)
-
-                            Toggle("Requires approval", isOn: $requiresApproval)
-                        }
-                        .padding(8)
-                    }
-
-                    GroupBox("Data Mapping") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("One mapping per line using source=target.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
-                            TextEditor(text: $dataMappingText)
-                                .font(.system(.caption, design: .monospaced))
-                                .frame(height: 110)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color.gray.opacity(0.25), lineWidth: 1)
-                                )
-                        }
-                        .padding(8)
-                    }
                 }
                 .padding()
             }
@@ -1259,13 +1170,7 @@ struct EdgePropertyPanel: View {
 
                 Spacer()
 
-                Button("Apply") {
-                    var updatedEdge = edge
-                    updatedEdge.label = label
-                    updatedEdge.conditionExpression = conditionExpression
-                    updatedEdge.requiresApproval = requiresApproval
-                    updatedEdge.dataMapping = parseDataMapping()
-                    appState.updateEdge(updatedEdge)
+                Button("Close") {
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
@@ -1344,7 +1249,6 @@ struct AgentContextMenu: View {
     @State private var showSkillsSheet = false
     @State private var showPermissionsSheet = false
     @State private var showDeleteAlert = false
-    @State private var copiedAgent: Agent?
     
     // 点击反馈状态
     @State private var showToast = false
@@ -1365,11 +1269,14 @@ struct AgentContextMenu: View {
         Button(action: { copyAgent() }) {
             Label("Copy", systemImage: "doc.on.doc")
         }
-        
+
+        Button(action: { cutAgent() }) {
+            Label("Cut", systemImage: "scissors")
+        }
+
         Button(action: { pasteAgent() }) {
             Label("Paste", systemImage: "doc.on.clipboard")
         }
-        .disabled(copiedAgent == nil)
         
         Divider()
         
@@ -1461,55 +1368,35 @@ struct AgentContextMenu: View {
     }
     
     private func copyAgent() {
-        copiedAgent = agent
-        // Copy to pasteboard
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        // Store as JSON string for cross-app compatibility
-        if let data = try? JSONEncoder().encode(agent),
-           let jsonString = String(data: data, encoding: .utf8) {
-            pasteboard.setString(jsonString, forType: .string)
+        if appState.copyAgent(agent) {
             showToastMessage("Copied: \(agent.name)", type: .success)
         } else {
             showToastMessage("Copy failed", type: .error)
         }
     }
-    
-    private func pasteAgent() {
-        guard let project = appState.currentProject,
-              let copied = copiedAgent else {
-            showToastMessage("No agent to paste", type: .error)
-            return
+
+    private func cutAgent() {
+        if appState.cutAgent(agent.id) {
+            showToastMessage("Cut: \(agent.name)", type: .success)
+        } else {
+            showToastMessage("Cut failed", type: .error)
         }
-        
-        // Create a new agent with copied properties but new ID
-        var newAgent = Agent(name: copied.name + " (Copy)")
-        newAgent.description = copied.description
-        newAgent.soulMD = copied.soulMD
-        newAgent.capabilities = copied.capabilities
-        newAgent.position = CGPoint(x: copied.position.x + 50, y: copied.position.y + 50)
-        
-        var updatedProject = project
-        updatedProject.agents.append(newAgent)
-        appState.currentProject = updatedProject
-        showToastMessage("Pasted: \(newAgent.name)", type: .success)
+    }
+
+    private func pasteAgent() {
+        if let newAgent = appState.pasteAgentFromPasteboard() {
+            showToastMessage("Pasted: \(newAgent.name)", type: .success)
+        } else {
+            showToastMessage("Paste failed", type: .error)
+        }
     }
     
     private func duplicateAgent() {
-        guard var project = appState.currentProject else {
-            showToastMessage("No project", type: .error)
-            return
+        if let newAgent = appState.duplicateAgent(agent.id, suffix: "Duplicate", offset: CGPoint(x: 50, y: 50)) {
+            showToastMessage("Duplicated: \(newAgent.name)", type: .success)
+        } else {
+            showToastMessage("Duplicate failed", type: .error)
         }
-        
-        var newAgent = Agent(name: agent.name + " (Duplicate)")
-        newAgent.description = agent.description
-        newAgent.soulMD = agent.soulMD
-        newAgent.capabilities = agent.capabilities
-        newAgent.position = CGPoint(x: agent.position.x + 50, y: agent.position.y + 50)
-        
-        project.agents.append(newAgent)
-        appState.currentProject = project
-        showToastMessage("Duplicated: \(newAgent.name)", type: .success)
     }
     
     private func exportAgent() {
@@ -1531,18 +1418,9 @@ struct AgentContextMenu: View {
     }
     
     private func resetAgent() {
-        guard var project = appState.currentProject,
-              let index = project.agents.firstIndex(where: { $0.id == agent.id }) else {
-            showToastMessage("Reset failed", type: .error)
-            return
-        }
-        
-        // Reset agent to default state
-        var updatedAgent = project.agents[index]
+        var updatedAgent = agent
         updatedAgent.updatedAt = Date()
-        
-        project.agents[index] = updatedAgent
-        appState.currentProject = project
+        appState.updateAgent(updatedAgent, reload: true)
         showToastMessage("Reset: \(agent.name)", type: .success)
     }
 }
@@ -1646,15 +1524,12 @@ struct AgentEditSheet: View {
     }
     
     private func saveChanges() {
-        guard var project = appState.currentProject,
-              let index = project.agents.firstIndex(where: { $0.id == agent.id }) else { return }
-        
-        project.agents[index].name = name
-        project.agents[index].description = description
-        project.agents[index].soulMD = soulMD
-        project.agents[index].updatedAt = Date()
-        
-        appState.currentProject = project
+        var updatedAgent = agent
+        updatedAgent.name = name
+        updatedAgent.description = description
+        updatedAgent.soulMD = soulMD
+        updatedAgent.updatedAt = Date()
+        appState.updateAgent(updatedAgent, reload: true)
     }
 }
 
@@ -1865,20 +1740,7 @@ struct DeleteConfirmation: View {
     }
     
     private func deleteAgent() {
-        guard var project = appState.currentProject else { return }
-        
-        // Remove agent
-        project.agents.removeAll { $0.id == agent.id }
-        
-        // Remove related permissions
-        project.permissions.removeAll { $0.fromAgentID == agent.id || $0.toAgentID == agent.id }
-        
-        // Remove related workflow nodes
-        for i in 0..<project.workflows.count {
-            project.workflows[i].nodes.removeAll { $0.agentID == agent.id }
-        }
-        
-        appState.currentProject = project
+        appState.deleteAgent(agent.id)
     }
 }
 

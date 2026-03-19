@@ -205,17 +205,13 @@ struct SubflowEditorView: View {
     private func createSubflow() {
         var newSubflow = Workflow(name: newSubflowName)
         newSubflow.parentNodeID = parentNode.id
-        
-        // 添加默认的Start和End节点
-        var startNode = WorkflowNode(type: .start)
-        startNode.position = CGPoint(x: 100, y: 100)
-        startNode.nestingLevel = parentNode.nestingLevel + 1
-        
-        var endNode = WorkflowNode(type: .end)
-        endNode.position = CGPoint(x: 300, y: 100)
-        endNode.nestingLevel = parentNode.nestingLevel + 1
-        
-        newSubflow.nodes = [startNode, endNode]
+
+        var entryNode = WorkflowNode(type: .agent)
+        entryNode.title = "Subflow Agent"
+        entryNode.position = CGPoint(x: 200, y: 100)
+        entryNode.nestingLevel = parentNode.nestingLevel + 1
+
+        newSubflow.nodes = [entryNode]
         
         // 添加到项目
         appState.currentProject?.workflows.append(newSubflow)
@@ -254,9 +250,6 @@ struct SubflowEditorView: View {
     private func nodeIcon(for type: WorkflowNode.NodeType) -> String {
         switch type {
         case .agent: return "person.circle.fill"
-        case .branch: return "arrow.triangle.branch"
-        case .start: return "play.circle.fill"
-        case .end: return "stop.circle.fill"
         case .subflow: return "arrow.down.doc.fill"
         }
     }
@@ -264,19 +257,13 @@ struct SubflowEditorView: View {
     private func nodeColor(for type: WorkflowNode.NodeType) -> Color {
         switch type {
         case .agent: return .blue
-        case .branch: return .orange
-        case .start: return .green
-        case .end: return .red
         case .subflow: return .purple
         }
     }
     
     private func nodeTitle(for node: WorkflowNode) -> String {
         switch node.type {
-        case .start: return "Start"
-        case .end: return "End"
         case .agent: return "Agent Node"
-        case .branch: return "Branch"
         case .subflow: return "Subflow"
         }
     }

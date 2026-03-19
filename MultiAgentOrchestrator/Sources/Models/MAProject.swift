@@ -337,14 +337,12 @@ struct MAProject: Codable, Identifiable {
         if from.id == to.id {
             return .allow  // 自身总是允许
         }
-        
-        if let permission = permissions.first(where: {
-            $0.fromAgentID == from.id && $0.toAgentID == to.id
-        }) {
-            return permission.permissionType
+
+        if isConversationAllowed(from: from.id, to: to.id) {
+            return .allow
         }
-        
-        return .allow  // 默认允许
+
+        return .deny
     }
     
     // 设置权限
@@ -372,5 +370,51 @@ struct MAProject: Codable, Identifiable {
             )
             permissions.append(permission)
         }
+    }
+
+    mutating func removePermission(fromAgentID: UUID, toAgentID: UUID) {
+        permissions.removeAll {
+            $0.fromAgentID == fromAgentID && $0.toAgentID == toAgentID
+        }
+    }
+
+    func isConversationAllowed(from fromAgentID: UUID, to toAgentID: UUID) -> Bool {
+        guard fromAgentID != toAgentID else { return true }
+
+        for workflow in workflows {
+            guard let fromNode = workflow.nodes.first(where: { $0.agentID == fromAgentID && $0.type == .agent }),
+                  let toNode = workflow.nodes.first(where: { $0.agentID == toAgentID && $0.type == .agent }) else {
+                continue
+            }
+
+            if workflow.edges.contains(where: {
+                $0.fromNodeID == fromNode.id && $0.toNodeID == toNode.id
+            }) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    func fileAccessAllowed(from fromAgentID: UUID, to toAgentID: UUID) -> Bool {
+        guard fromAgentID != toAgentID else { return true }
+
+        for workflow in workflows {
+            guard let fromNode = workflow.nodes.first(where: { $0.agentID == fromAgentID && $0.type == .agent }),
+                  let toNode = workflow.nodes.first(where: { $0.agentID == toAgentID && $0.type == .agent }) else {
+                continue
+            }
+
+            if let sourceBoundary = workflow.boundary(containing: fromNode.id) {
+                return sourceBoundary.contains(toNode.id)
+            }
+
+            if workflow.boundary(containing: toNode.id) != nil {
+                return true
+            }
+        }
+
+        return true
     }
 }

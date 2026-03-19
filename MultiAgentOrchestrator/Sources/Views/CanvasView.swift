@@ -27,6 +27,7 @@ struct CanvasView: View {
 
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
+    @State private var copiedBoundaries: [WorkflowBoundary] = []
 
     @State private var showingSubflowEditor: Bool = false
     @State private var editingSubflowNode: WorkflowNode?
@@ -103,6 +104,7 @@ struct CanvasView: View {
                 isLassoMode: $isLassoMode,
                 onDeleteSelectedEdge: deleteSelectedEdge,
                 onCopySelection: copySelection,
+                onCutSelection: cutSelection,
                 onPasteSelection: pasteSelection,
                 onDeleteSelection: deleteSelection,
                 appState: appState
@@ -156,6 +158,9 @@ struct CanvasView: View {
 
         copiedNodes = workflow.nodes.filter { selection.contains($0.id) }
         copiedEdges = workflow.edges.filter { selection.contains($0.fromNodeID) && selection.contains($0.toNodeID) }
+        copiedBoundaries = workflow.boundaries.filter { boundary in
+            boundary.memberNodeIDs.allSatisfy { selection.contains($0) }
+        }
     }
 
     private func pasteSelection() {
@@ -191,7 +196,26 @@ struct CanvasView: View {
                 newEdge.dataMapping = sourceEdge.dataMapping
                 workflow.edges.append(newEdge)
             }
+
+            for boundary in copiedBoundaries {
+                let remappedMembers = boundary.memberNodeIDs.compactMap { nodeIDMapping[$0] }
+                guard !remappedMembers.isEmpty else { continue }
+
+                var newBoundary = WorkflowBoundary(
+                    title: boundary.title,
+                    rect: boundary.rect.offsetBy(dx: 60, dy: 60),
+                    memberNodeIDs: remappedMembers
+                )
+                newBoundary.createdAt = Date()
+                newBoundary.updatedAt = Date()
+                workflow.boundaries.append(newBoundary)
+            }
         }
+    }
+
+    private func cutSelection() {
+        copySelection()
+        deleteSelection()
     }
 
     private func deleteSelection() {
@@ -252,16 +276,6 @@ struct CanvasView: View {
     }
 
     private func setupDefaultNodes() {
-        guard let workflow = appState.ensureMainWorkflow(), workflow.nodes.isEmpty else { return }
-
-        appState.updateMainWorkflow { workflow in
-            var startNode = WorkflowNode(type: .start)
-            startNode.position = CGPoint(x: 100, y: 100)
-
-            var endNode = WorkflowNode(type: .end)
-            endNode.position = CGPoint(x: 500, y: 100)
-
-            workflow.nodes = [startNode, endNode]
-        }
+        _ = appState.ensureMainWorkflow()
     }
 }

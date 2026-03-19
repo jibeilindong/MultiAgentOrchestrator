@@ -338,6 +338,41 @@ class AppState: ObservableObject {
         project.runtimeState.lastUpdated = Date()
         currentProject = project
     }
+
+    private func syncConversationPermissions(for workflows: [Workflow], in project: inout MAProject) {
+        let permissions = conversationPermissions(for: workflows)
+        project.permissions = permissions
+    }
+
+    private func conversationPermissions(for workflows: [Workflow]) -> [Permission] {
+        var permissions: [Permission] = []
+        var seenPairs = Set<String>()
+
+        for workflow in workflows {
+            let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+
+            for edge in workflow.edges {
+                guard let fromNode = nodeByID[edge.fromNodeID],
+                      let toNode = nodeByID[edge.toNodeID],
+                      let fromAgentID = fromNode.agentID,
+                      let toAgentID = toNode.agentID,
+                      fromAgentID != toAgentID else {
+                    continue
+                }
+
+                let key = "\(fromAgentID.uuidString)->\(toAgentID.uuidString)"
+                guard seenPairs.insert(key).inserted else { continue }
+
+                permissions.append(Permission(fromAgentID: fromAgentID, toAgentID: toAgentID, permissionType: .allow))
+            }
+        }
+
+        return permissions.sorted { lhs, rhs in
+            let leftKey = "\(lhs.fromAgentID.uuidString)->\(lhs.toAgentID.uuidString)"
+            let rightKey = "\(rhs.fromAgentID.uuidString)->\(rhs.toAgentID.uuidString)"
+            return leftKey < rightKey
+        }
+    }
     
     private func performAutoSave() {
         guard autoSaveEnabled, let project = snapshotCurrentProject() else { return }
@@ -536,6 +571,9 @@ class AppState: ObservableObject {
             tasks: project.tasks,
             existing: project.workspaceIndex
         )
+        if !hydratedProject.workflows.isEmpty {
+            hydratedProject.permissions = conversationPermissions(for: hydratedProject.workflows)
+        }
         currentProject = hydratedProject
     }
 
@@ -544,7 +582,7 @@ class AppState: ObservableObject {
         let agents = makeOfflineTemplateAgents()
         project.agents = agents
         project.workflows = [makeOfflineTemplateWorkflow(agents: agents)]
-        project.permissions = makeOfflineTemplatePermissions(for: agents)
+        project.permissions = conversationPermissions(for: project.workflows)
         return project
     }
 
@@ -780,6 +818,22 @@ class AppState: ObservableObject {
         }
     }
 
+    func removeBoundary(around nodeIDs: Set<UUID>) {
+        guard !nodeIDs.isEmpty else { return }
+
+        updateMainWorkflow { workflow in
+            workflow.boundaries.removeAll { boundary in
+                boundary.matchesSelection(nodeIDs)
+            }
+        }
+    }
+
+    func removeBoundary(containing nodeID: UUID) {
+        updateMainWorkflow { workflow in
+            workflow.boundaries.removeAll { $0.contains(nodeID) }
+        }
+    }
+
     func boundary(for nodeID: UUID) -> WorkflowBoundary? {
         currentProject?.workflows.first?.boundary(containing: nodeID)
     }
@@ -865,6 +919,7 @@ class AppState: ObservableObject {
               let index = project.workflows.indices.first else { return }
 
         updates(&project.workflows[index])
+        syncConversationPermissions(for: project.workflows, in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
@@ -901,15 +956,13 @@ class AppState: ObservableObject {
     }
 
     func addNode(type: WorkflowNode.NodeType, position: CGPoint) {
-        updateMainWorkflow { workflow in
-            var node = WorkflowNode(type: type)
-            node.position = position
-            if type == .branch {
-                node.title = "Branch"
-                node.conditionExpression = "workflow.hasAgents == true"
-                node.maxIterations = 2
+        switch type {
+        case .agent, .subflow:
+            updateMainWorkflow { workflow in
+                var node = WorkflowNode(type: type)
+                node.position = position
+                workflow.nodes.append(node)
             }
-            workflow.nodes.append(node)
         }
     }
 
@@ -929,7 +982,8 @@ class AppState: ObservableObject {
     func removeNodes(_ nodeIDs: Set<UUID>) {
         guard !nodeIDs.isEmpty else { return }
 
-        let removedAgentIDs = Set((currentProject?.workflows.first?.nodes ?? [])
+        let workflowSnapshot = currentProject?.workflows.first
+        let removedAgentIDs = Set((workflowSnapshot?.nodes ?? [])
             .filter { nodeIDs.contains($0.id) }
             .compactMap(\.agentID))
 
@@ -952,9 +1006,13 @@ class AppState: ObservableObject {
     }
 
     func removeEdge(_ edgeID: UUID) {
+        guard let workflow = currentProject?.workflows.first,
+              workflow.edges.contains(where: { $0.id == edgeID }) else { return }
+
         updateMainWorkflow { workflow in
             workflow.edges.removeAll { $0.id == edgeID }
         }
+
     }
 
     func addEdge(
@@ -967,19 +1025,22 @@ class AppState: ObservableObject {
     ) {
         guard fromNodeID != toNodeID else { return }
 
+        var createdPairs: [(UUID, UUID)] = []
+
         updateMainWorkflow { workflow in
-            var edge = WorkflowEdge(from: fromNodeID, to: toNodeID)
-            edge.label = label
-            edge.conditionExpression = conditionExpression
-            edge.requiresApproval = requiresApproval
-            workflow.edges.append(edge)
+            appendEdgeIfNeeded(from: fromNodeID, to: toNodeID, workflow: &workflow)
+            createdPairs.append((fromNodeID, toNodeID))
 
             if bidirectional {
-                var reverse = WorkflowEdge(from: toNodeID, to: fromNodeID)
-                reverse.label = label
-                reverse.conditionExpression = conditionExpression
-                reverse.requiresApproval = requiresApproval
-                workflow.edges.append(reverse)
+                appendEdgeIfNeeded(from: toNodeID, to: fromNodeID, workflow: &workflow)
+                createdPairs.append((toNodeID, fromNodeID))
+            }
+        }
+
+        for (sourceNodeID, targetNodeID) in createdPairs {
+            if let sourceAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == sourceNodeID })?.agentID,
+               let targetAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == targetNodeID })?.agentID {
+                setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
             }
         }
     }
@@ -1014,6 +1075,10 @@ class AppState: ObservableObject {
               let workflow = project.workflows.first,
               let sourceNode = workflow.nodes.first(where: { $0.id == sourceNodeID }),
               let targetNode = workflow.nodes.first(where: { $0.id == targetNodeID }) else { return }
+
+        if sourceNode.type != .agent || targetNode.type != .agent {
+            return
+        }
 
         updateMainWorkflow { workflow in
             appendEdgeIfNeeded(from: sourceNodeID, to: targetNodeID, workflow: &workflow)
@@ -1087,6 +1152,8 @@ class AppState: ObservableObject {
             project.workflows.append(workflow)
         }
 
+        project.permissions = conversationPermissions(for: project.workflows)
+
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
@@ -1125,10 +1192,21 @@ class AppState: ObservableObject {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == updatedAgent.id }) else { return }
 
+        let previousAgent = project.agents[index]
         project.agents[index] = updatedAgent
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
+
+        openClawManager.updateAgentSoulMD(
+            matching: [previousAgent.name, previousAgent.openClawDefinition.agentIdentifier, updatedAgent.name, updatedAgent.openClawDefinition.agentIdentifier],
+            soulMD: updatedAgent.soulMD
+        ) { [weak self] success, message in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.openClawService.addLog(success ? .success : .warning, message)
+            }
+        }
 
         if reload {
             reloadAgent(updatedAgent.id)
@@ -1382,15 +1460,120 @@ class AppState: ObservableObject {
     }
     
     // 添加新 Agent
-    func addNewAgent() {
-        guard var project = currentProject else { return }
-        var newAgent = Agent(name: "New Agent")
+    @discardableResult
+    func addNewAgent(named name: String = "New Agent") -> Agent? {
+        guard var project = currentProject else { return nil }
+        let resolvedName = uniqueAgentName(baseName: name, suffix: "")
+        var newAgent = Agent(name: resolvedName)
         newAgent.description = "Description"
         project.agents.append(newAgent)
+        project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
+        return newAgent
     }
-    
+
+    func copyAgent(_ agent: Agent) -> Bool {
+        guard let data = try? JSONEncoder().encode(agent),
+              let jsonString = String(data: data, encoding: .utf8) else {
+            return false
+        }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(jsonString, forType: .string)
+    }
+
+    @discardableResult
+    func pasteAgentFromPasteboard(offset: CGPoint = CGPoint(x: 40, y: 40)) -> Agent? {
+        guard let jsonString = NSPasteboard.general.string(forType: .string),
+              let data = jsonString.data(using: .utf8),
+              var sourceAgent = try? JSONDecoder().decode(Agent.self, from: data) else {
+            return nil
+        }
+
+        sourceAgent = makeCopiedAgent(from: sourceAgent, suffix: "Copy", offset: offset)
+        guard var project = currentProject else { return nil }
+
+        project.agents.append(sourceAgent)
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        return sourceAgent
+    }
+
+    @discardableResult
+    func duplicateAgent(_ agentID: UUID, suffix: String = "Copy", offset: CGPoint = CGPoint(x: 40, y: 40)) -> Agent? {
+        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }),
+              var project = currentProject else { return nil }
+
+        let duplicated = makeCopiedAgent(from: agent, suffix: suffix, offset: offset)
+        project.agents.append(duplicated)
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        return duplicated
+    }
+
+    func cutAgent(_ agentID: UUID) -> Bool {
+        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return false }
+        guard copyAgent(agent) else { return false }
+        deleteAgent(agentID)
+        return true
+    }
+
+    func deleteAgent(_ agentID: UUID) {
+        guard var project = currentProject else { return }
+
+        project.agents.removeAll { $0.id == agentID }
+        project.permissions.removeAll { $0.fromAgentID == agentID || $0.toAgentID == agentID }
+
+        for index in project.workflows.indices {
+            project.workflows[index].nodes.removeAll { $0.agentID == agentID }
+            let remainingNodeIDs = Set(project.workflows[index].nodes.map(\.id))
+            project.workflows[index].edges.removeAll { edge in
+                !remainingNodeIDs.contains(edge.fromNodeID) || !remainingNodeIDs.contains(edge.toNodeID)
+            }
+            project.workflows[index].boundaries = project.workflows[index].boundaries.compactMap { boundary in
+                var updated = boundary
+                updated.memberNodeIDs.removeAll { !remainingNodeIDs.contains($0) }
+                updated.updatedAt = Date()
+                return updated.memberNodeIDs.isEmpty ? nil : updated
+            }
+        }
+
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        openClawManager.terminateAgent(agentID)
+    }
+
+    private func makeCopiedAgent(from agent: Agent, suffix: String, offset: CGPoint) -> Agent {
+        var copied = Agent(name: uniqueAgentName(baseName: agent.name, suffix: suffix))
+        copied.identity = agent.identity
+        copied.description = agent.description
+        copied.soulMD = agent.soulMD
+        copied.position = CGPoint(x: agent.position.x + offset.x, y: agent.position.y + offset.y)
+        copied.capabilities = agent.capabilities
+        copied.colorHex = agent.colorHex
+        copied.openClawDefinition = agent.openClawDefinition
+        copied.openClawDefinition.agentIdentifier = copied.name
+        copied.updatedAt = Date()
+        return copied
+    }
+
+    private func uniqueAgentName(baseName: String, suffix: String) -> String {
+        guard let project = currentProject else { return suffix.isEmpty ? baseName : "\(baseName) \(suffix)" }
+        let existingNames = Set(project.agents.map(\.name))
+        var candidate = suffix.isEmpty ? baseName : "\(baseName) \(suffix)"
+        var counter = 2
+        while existingNames.contains(candidate) {
+            candidate = suffix.isEmpty ? "\(baseName) \(counter)" : "\(baseName) \(suffix) \(counter)"
+            counter += 1
+        }
+        return candidate
+    }
+
     // 添加新节点
     func addNewNode() {
         guard var project = currentProject,

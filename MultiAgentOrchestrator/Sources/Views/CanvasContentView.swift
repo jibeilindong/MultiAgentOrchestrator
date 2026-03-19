@@ -224,12 +224,10 @@ struct CanvasContentView: View {
         let center = adjustedPosition(node.position, geometry: geometry)
         let size: CGSize
         switch node.type {
-        case .agent, .branch:
+        case .agent:
             size = CGSize(width: 110, height: 65)
         case .subflow:
             size = CGSize(width: 130, height: 75)
-        case .start, .end:
-            size = CGSize(width: 90, height: 65)
         }
         return CGRect(
             x: center.x - size.width / 2,

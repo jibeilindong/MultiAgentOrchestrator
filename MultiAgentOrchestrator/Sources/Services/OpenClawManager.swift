@@ -670,6 +670,47 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    func updateAgentSoulMD(
+        matching candidateNames: [String],
+        soulMD: String,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
+        guard !normalizedNames.isEmpty else {
+            completion(false, "未提供可定位的 OpenClaw agent 标识。")
+            return
+        }
+
+        guard let record = discoveryResults.first(where: {
+            normalizedNames.contains(normalizeAgentKey($0.name))
+        }) else {
+            completion(false, "未找到对应的 OpenClaw 目录，仅更新了项目缓存。")
+            return
+        }
+
+        guard let rootPath = record.directoryPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty else {
+            completion(false, "未找到 OpenClaw 根目录，仅更新了项目缓存。")
+            return
+        }
+
+        let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
+        let preferredSoulURL = rootURL.appendingPathComponent("SOUL.md")
+        let fallbackSoulURL = rootURL.appendingPathComponent("soul.md")
+
+        do {
+            if FileManager.default.fileExists(atPath: preferredSoulURL.path) {
+                try soulMD.write(to: preferredSoulURL, atomically: true, encoding: .utf8)
+            } else if FileManager.default.fileExists(atPath: fallbackSoulURL.path) {
+                try soulMD.write(to: fallbackSoulURL, atomically: true, encoding: .utf8)
+            } else {
+                try soulMD.write(to: preferredSoulURL, atomically: true, encoding: .utf8)
+            }
+            completion(true, "SOUL.md 已同步到 OpenClaw。")
+        } catch {
+            completion(false, "同步 SOUL.md 失败: \(error.localizedDescription)")
+        }
+    }
+
     private func parseManagedAgents(from data: Data, using config: OpenClawConfig) -> [ManagedAgentRecord] {
         guard
             let jsonObject = try? JSONSerialization.jsonObject(with: data),

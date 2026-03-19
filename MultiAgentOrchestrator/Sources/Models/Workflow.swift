@@ -25,6 +25,14 @@ struct WorkflowBoundary: Identifiable, Codable, Hashable {
         self.createdAt = Date()
         self.updatedAt = Date()
     }
+
+    func contains(_ nodeID: UUID) -> Bool {
+        memberNodeIDs.contains(nodeID)
+    }
+
+    func matchesSelection(_ nodeIDs: Set<UUID>) -> Bool {
+        !memberNodeIDs.isEmpty && Set(memberNodeIDs).isSubset(of: nodeIDs)
+    }
 }
 
 // 子流程数据参数
@@ -163,9 +171,6 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
     
     enum NodeType: String, Codable, Hashable {
         case agent
-        case branch
-        case start
-        case end
         case subflow  // 子流程节点
     }
 
@@ -198,7 +203,8 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         agentID = try container.decodeIfPresent(UUID.self, forKey: .agentID)
-        type = try container.decode(NodeType.self, forKey: .type)
+        let rawType = try container.decodeIfPresent(String.self, forKey: .type) ?? NodeType.agent.rawValue
+        type = WorkflowNode.NodeType(rawValue: rawType) ?? .agent
         position = try container.decode(CGPoint.self, forKey: .position)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
@@ -208,6 +214,22 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         nestingLevel = try container.decodeIfPresent(Int.self, forKey: .nestingLevel) ?? 0
         inputParameters = try container.decodeIfPresent([SubflowParameter].self, forKey: .inputParameters) ?? []
         outputParameters = try container.decodeIfPresent([SubflowParameter].self, forKey: .outputParameters) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(agentID, forKey: .agentID)
+        try container.encode(type.rawValue, forKey: .type)
+        try container.encode(position, forKey: .position)
+        try container.encode(title, forKey: .title)
+        try container.encode(conditionExpression, forKey: .conditionExpression)
+        try container.encode(loopEnabled, forKey: .loopEnabled)
+        try container.encode(maxIterations, forKey: .maxIterations)
+        try container.encodeIfPresent(subflowID, forKey: .subflowID)
+        try container.encode(nestingLevel, forKey: .nestingLevel)
+        try container.encode(inputParameters, forKey: .inputParameters)
+        try container.encode(outputParameters, forKey: .outputParameters)
     }
 }
 

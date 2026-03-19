@@ -69,14 +69,6 @@ struct NodeView: View {
                 }
             }
 
-            if node.type == .branch, let condition = optionalText(node.conditionExpression) {
-                Text(condition)
-                    .font(.system(size: 10 * textScale))
-                    .lineLimit(1)
-                    .foregroundColor(textColor.opacity(0.75))
-                    .padding(.horizontal, 8)
-            }
-            
             // 连接指示器（连接模式下显示）
             if isConnectingMode && !isConnectSource {
                 HStack(spacing: 2) {
@@ -167,9 +159,6 @@ struct NodeView: View {
     private var nodeTypeIcon: String {
         switch node.type {
         case .agent: return "person.circle.fill"
-        case .branch: return "arrow.triangle.branch"
-        case .start: return "play.circle.fill"
-        case .end: return "stop.circle.fill"
         case .subflow: return "arrow.down.doc.fill"
         }
     }
@@ -184,9 +173,6 @@ struct NodeView: View {
         
         switch node.type {
         case .agent: return "Agent"
-        case .branch: return "Branch"
-        case .start: return "Start"
-        case .end: return "End"
         case .subflow: return "Subflow"
         }
     }
@@ -197,9 +183,6 @@ struct NodeView: View {
         }
         switch node.type {
         case .agent: return accentColor ?? .blue
-        case .branch: return .orange
-        case .start: return .green
-        case .end: return .red
         case .subflow: return .purple
         }
     }
@@ -210,9 +193,6 @@ struct NodeView: View {
         }
         switch node.type {
         case .agent: return nodeColor.opacity(0.1)
-        case .branch: return Color.orange.opacity(0.1)
-        case .start: return Color.green.opacity(0.08)
-        case .end: return Color.red.opacity(0.08)
         case .subflow: return Color.purple.opacity(0.08)
         }
     }
@@ -233,16 +213,14 @@ struct NodeView: View {
     private var nodeWidth: CGFloat {
         switch node.type {
         case .agent: return 110
-        case .branch: return 110
         case .subflow: return 130
-        default: return 90
         }
     }
-    
+
     private var nodeHeight: CGFloat {
         switch node.type {
         case .subflow: return 75
-        default: return 65
+        case .agent: return 65
         }
     }
 

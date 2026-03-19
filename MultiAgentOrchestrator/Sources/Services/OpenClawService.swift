@@ -416,15 +416,11 @@ class OpenClawService: ObservableObject {
         }
         let outgoingEdges = Dictionary(grouping: orderedEdges, by: \.fromNodeID)
 
-        let startNodes = workflow.nodes
-            .filter { $0.type == .start }
-            .sorted(by: nodeSort)
-
-        let entryNodes = startNodes.isEmpty
-            ? workflow.nodes.filter { node in
+        let entryNodes = workflow.nodes
+            .filter { node in
                 !workflow.edges.contains(where: { $0.toNodeID == node.id })
-              }.sorted(by: nodeSort)
-            : startNodes
+            }
+            .sorted(by: nodeSort)
 
         var routedAgents: [WorkflowNode] = []
         var appendedAgents = Set<UUID>()
@@ -468,7 +464,7 @@ class OpenClawService: ObservableObject {
             .sorted(by: nodeSort)
 
         if !missingAgents.isEmpty {
-            addLog(.warning, "Some agent nodes are unreachable under current branch conditions and were skipped.")
+            addLog(.warning, "Some agent nodes are unreachable from the current workflow routes and were skipped.")
         }
 
         return routedAgents
@@ -767,7 +763,7 @@ class OpenClawService: ObservableObject {
             let remaining = executableNodes
                 .filter { !visited.contains($0.id) }
                 .sorted(by: nodeSort)
-            addLog(.warning, "Workflow contains cycles or disconnected branches. Falling back to stable node order for remaining nodes.")
+            addLog(.warning, "Workflow contains cycles or disconnected components. Falling back to stable node order for remaining nodes.")
             ordered.append(contentsOf: remaining)
         }
 
@@ -777,39 +773,11 @@ class OpenClawService: ObservableObject {
     private func selectOutgoingEdges(for node: WorkflowNode, edges: [WorkflowEdge], workflow: Workflow) -> [WorkflowEdge] {
         guard !edges.isEmpty else { return [] }
 
-        let routableEdges = edges.filter { edge in
+        return edges.filter { edge in
             if edge.requiresApproval {
                 addLog(.warning, "Skipping edge \(edge.id.uuidString.prefix(8)) because it requires approval.", nodeID: node.id)
                 return false
             }
-            return true
-        }
-
-        if node.type == .branch {
-            if !node.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let result = evaluateExpression(node.conditionExpression, workflow: workflow)
-                let expectedLabel = result ? "true" : "false"
-                let matchingByLabel = routableEdges.filter {
-                    $0.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expectedLabel
-                }
-                if !matchingByLabel.isEmpty {
-                    return matchingByLabel
-                }
-            }
-
-            let matchingByCondition = routableEdges.filter { edge in
-                let condition = edge.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
-                return condition.isEmpty || evaluateExpression(condition, workflow: workflow)
-            }
-
-            if !matchingByCondition.isEmpty {
-                return matchingByCondition
-            }
-
-            return Array(routableEdges.prefix(1))
-        }
-
-        return routableEdges.filter { edge in
             let condition = edge.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
             return condition.isEmpty || evaluateExpression(condition, workflow: workflow)
         }

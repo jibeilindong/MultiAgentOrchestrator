@@ -161,9 +161,6 @@ struct NodePropertiesView: View {
     private func nodeTypeIcon(_ type: WorkflowNode.NodeType) -> String {
         switch type {
         case .agent: return "person.circle.fill"
-        case .branch: return "arrow.triangle.branch"
-        case .start: return "play.circle.fill"
-        case .end: return "stop.circle.fill"
         case .subflow: return "square.stack.3d.up"
         }
     }
@@ -171,9 +168,6 @@ struct NodePropertiesView: View {
     private func nodeTypeColor(_ type: WorkflowNode.NodeType) -> Color {
         switch type {
         case .agent: return .blue
-        case .branch: return .orange
-        case .start: return .green
-        case .end: return .red
         case .subflow: return .purple
         }
     }
@@ -181,9 +175,6 @@ struct NodePropertiesView: View {
     private func nodeTypeName(_ type: WorkflowNode.NodeType) -> String {
         switch type {
         case .agent: return "Agent Node"
-        case .branch: return "Branch Node"
-        case .start: return "Start Node"
-        case .end: return "End Node"
         case .subflow: return "Subflow Node"
         }
     }
@@ -469,8 +460,7 @@ struct AgentPropertiesView: View {
     }
     
     private func saveAgentChanges() {
-        guard let agent = selectedAgent,
-              let index = appState.currentProject?.agents.firstIndex(where: { $0.id == agent.id }) else { return }
+        guard let agent = selectedAgent else { return }
         
         var updatedAgent = agent
         updatedAgent.name = agentName
@@ -485,22 +475,20 @@ struct AgentPropertiesView: View {
         updatedAgent.openClawDefinition.memoryBackupPath = openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.updatedAt = Date()
         
-        appState.currentProject?.agents[index] = updatedAgent
-        appState.reloadAgent(agent.id)
+        appState.updateAgent(updatedAgent, reload: true)
     }
     
     private func deleteAgent() {
         guard let agent = selectedAgent,
-              let index = appState.currentProject?.agents.firstIndex(where: { $0.id == agent.id }) else { return }
-        
-        appState.currentProject?.agents.remove(at: index)
+              appState.currentProject?.agents.contains(where: { $0.id == agent.id }) == true else { return }
+
+        appState.deleteAgent(agent.id)
         resetForm()
         selectedAgentID = nil
     }
     
     private func createNewAgent() {
-        let newAgent = Agent(name: "New Agent")
-        appState.currentProject?.agents.append(newAgent)
+        guard let newAgent = appState.addNewAgent() else { return }
         selectedAgentID = newAgent.id
         agentName = newAgent.name
         agentIdentity = newAgent.identity
