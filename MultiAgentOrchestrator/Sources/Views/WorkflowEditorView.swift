@@ -913,6 +913,7 @@ struct NodePropertyPanel: View {
     @State private var loopEnabled: Bool = false
     @State private var maxIterations: Double = 1
     @State private var reloadStatus: String?
+    @State private var soulSourcePath: String?
     @State private var outgoingEdgeDrafts: [UUID: EdgeDraft] = [:]
     
     var body: some View {
@@ -951,11 +952,6 @@ struct NodePropertyPanel: View {
                                     .textFieldStyle(.roundedBorder)
                             }
 
-                            LabeledContent("Position") {
-                                Text("(\(Int(node.position.x)), \(Int(node.position.y)))")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
                         }
                         .padding(8)
                     }
@@ -973,6 +969,17 @@ struct NodePropertyPanel: View {
                                 Text("Soul.md Configuration")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
+
+                                if let soulSourcePath {
+                                    Text(soulSourcePath)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(2)
+                                } else {
+                                    Text("未定位到 SOUL.md 文件，当前显示项目缓存内容。")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
 
                                 TextEditor(text: $soulConfig)
                                     .font(.system(.caption, design: .monospaced))
@@ -1035,7 +1042,13 @@ struct NodePropertyPanel: View {
            let agent = getAgent(id: agentID) {
             nodeTitle = agent.name
             agentDescription = agent.description
-            soulConfig = agent.soulMD
+            if let loaded = appState.loadAgentSoulMDFromSource(agentID: agentID) {
+                soulConfig = loaded.content
+                soulSourcePath = loaded.sourcePath
+            } else {
+                soulConfig = agent.soulMD
+                soulSourcePath = nil
+            }
         }
     }
     
@@ -1046,12 +1059,20 @@ struct NodePropertyPanel: View {
 
         if let agentID = node.agentID,
            var agent = getAgent(id: agentID) {
+            let fileResult = appState.persistAgentSoulMDToSource(agentID: agentID, soulMD: soulConfig)
+            if !fileResult.success {
+                reloadStatus = fileResult.message
+            } else {
+                soulSourcePath = fileResult.message.replacingOccurrences(of: "已写入 ", with: "")
+            }
             agent.name = nodeTitle
             agent.description = agentDescription
             agent.soulMD = soulConfig
             agent.updatedAt = Date()
             appState.updateAgent(agent, reload: true)
-            reloadStatus = "Reload requested at \(Date.now.formatted(date: .omitted, time: .shortened))"
+            if fileResult.success {
+                reloadStatus = "Reload requested at \(Date.now.formatted(date: .omitted, time: .shortened))"
+            }
         }
     }
 

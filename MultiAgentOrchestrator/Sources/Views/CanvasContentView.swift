@@ -27,7 +27,6 @@ struct CanvasContentView: View {
     var onNodeSelected: ((WorkflowNode) -> Void)?
     var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
-    var onSubflowEdit: ((WorkflowNode) -> Void)?
 
     @State private var isDraggingOverCanvas: Bool = false
     @State private var rightMouseLassoStart: CGPoint?
@@ -117,8 +116,7 @@ struct CanvasContentView: View {
                     isConnectMode: isConnectMode,
                     connectFromAgentID: connectFromAgentID,
                     onNodeClick: onNodeClick,
-                    onNodeSelected: onNodeSelected,
-                    onSubflowEdit: onSubflowEdit
+                    onNodeSelected: onNodeSelected
                 )
                 .environmentObject(appState)
 

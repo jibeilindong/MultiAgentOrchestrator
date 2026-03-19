@@ -33,10 +33,6 @@ struct CanvasView: View {
     @State private var copiedEdges: [WorkflowEdge] = []
     @State private var copiedBoundaries: [WorkflowBoundary] = []
 
-    @State private var showingSubflowEditor: Bool = false
-    @State private var editingSubflowNode: WorkflowNode?
-    @State private var currentWorkflowForSubflow: Workflow?
-
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
     var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
@@ -94,8 +90,7 @@ struct CanvasView: View {
             onEdgeSelected: { edge in
                 suppressCanvasTapClear = true
                 onEdgeSelected?(edge)
-            },
-            onSubflowEdit: handleSubflowEdit
+            }
         )
         .onChange(of: selectedEdgeID) { _, newValue in
             if newValue != nil {
@@ -135,16 +130,6 @@ struct CanvasView: View {
                 appState: appState
             )
         )
-        .sheet(isPresented: $showingSubflowEditor) {
-            if let node = editingSubflowNode, let workflow = currentWorkflowForSubflow {
-                SubflowEditorView(
-                    parentNode: node,
-                    parentWorkflow: workflow,
-                    isPresented: $showingSubflowEditor
-                )
-                .environmentObject(appState)
-            }
-        }
         .onAppear {
             setupDefaultNodes()
         }
@@ -173,14 +158,6 @@ struct CanvasView: View {
             return [selectedNodeID]
         }
         return []
-    }
-
-    private func handleSubflowEdit(_ node: WorkflowNode) {
-        if let workflow = appState.currentProject?.workflows.first {
-            editingSubflowNode = node
-            currentWorkflowForSubflow = workflow
-            showingSubflowEditor = true
-        }
     }
 
     private func copySelection() {

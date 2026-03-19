@@ -1348,6 +1348,46 @@ class AppState: ObservableObject {
         }
     }
 
+    func loadAgentSoulMDFromSource(agentID: UUID) -> (content: String, sourcePath: String?)? {
+        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
+        guard let soulURL = resolveAgentSoulFileURL(for: agent) else {
+            return (agent.soulMD, nil)
+        }
+
+        if let content = try? String(contentsOf: soulURL, encoding: .utf8) {
+            return (content, soulURL.path)
+        }
+        return (agent.soulMD, soulURL.path)
+    }
+
+    func persistAgentSoulMDToSource(agentID: UUID, soulMD: String) -> (success: Bool, message: String) {
+        guard var project = currentProject,
+              let index = project.agents.firstIndex(where: { $0.id == agentID }) else {
+            return (false, "未找到目标 Agent。")
+        }
+
+        let agent = project.agents[index]
+        guard let soulURL = resolveAgentSoulFileURL(for: agent) else {
+            return (false, "未找到可写入的 SOUL.md 路径。")
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+
+            project.agents[index].soulMD = soulMD
+            project.agents[index].updatedAt = Date()
+            project.updatedAt = Date()
+            currentProject = project
+            objectWillChange.send()
+            persistCurrentProjectSilently()
+
+            return (true, "已写入 \(soulURL.path)")
+        } catch {
+            return (false, "写入 SOUL.md 失败: \(error.localizedDescription)")
+        }
+    }
+
     func updateAgentOpenClawDefinition(
         for agentID: UUID,
         mutate: (inout OpenClawAgentDefinition) -> Void
@@ -1361,6 +1401,54 @@ class AppState: ObservableObject {
         currentProject = project
         objectWillChange.send()
         persistCurrentProjectSilently()
+    }
+
+    private func resolveAgentSoulFileURL(for agent: Agent) -> URL? {
+        let keys = Set([
+            normalizeAgentKey(agent.name),
+            normalizeAgentKey(agent.openClawDefinition.agentIdentifier)
+        ].filter { !$0.isEmpty })
+
+        if !keys.isEmpty {
+            if let record = openClawManager.discoveryResults.first(where: { keys.contains(normalizeAgentKey($0.name)) }) {
+                if let copied = firstNonEmptyPath(record.copiedToProjectPath) {
+                    return preferredSoulURL(in: URL(fileURLWithPath: copied, isDirectory: true))
+                }
+                if let directory = firstNonEmptyPath(record.directoryPath) {
+                    return preferredSoulURL(in: URL(fileURLWithPath: directory, isDirectory: true))
+                }
+            }
+        }
+
+        if let memoryBackupPath = firstNonEmptyPath(agent.openClawDefinition.memoryBackupPath) {
+            let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
+            let rootURL = privateURL.lastPathComponent == "private" ? privateURL.deletingLastPathComponent() : privateURL
+            return preferredSoulURL(in: rootURL)
+        }
+
+        return nil
+    }
+
+    private func preferredSoulURL(in rootURL: URL) -> URL {
+        let preferred = rootURL.appendingPathComponent("SOUL.md")
+        let fallback = rootURL.appendingPathComponent("soul.md")
+        if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
+        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
+        return preferred
+    }
+
+    private func firstNonEmptyPath(_ candidates: String?...) -> String? {
+        for candidate in candidates {
+            guard let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+                continue
+            }
+            return trimmed
+        }
+        return nil
+    }
+
+    private func normalizeAgentKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     func reloadAgent(_ agentID: UUID) {

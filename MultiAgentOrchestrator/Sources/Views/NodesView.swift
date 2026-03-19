@@ -21,7 +21,6 @@ struct NodesView: View {
     var connectFromAgentID: UUID?
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
-    var onSubflowEdit: ((WorkflowNode) -> Void)?
 
     @State private var draggingNode: WorkflowNode?
     @State private var dragOriginPositions: [UUID: CGPoint] = [:]
@@ -35,8 +34,6 @@ struct NodesView: View {
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
                 onTap: { handleSingleTap(node) },
-                onDoubleTap: { handleDoubleTap(node) },
-                onLongPress: { handleLongPress(node) },
                 accentColor: displayColor(for: node),
                 textScale: appState.canvasDisplaySettings.textScale,
                 textColor: appState.canvasDisplaySettings.textColor.color
@@ -91,12 +88,6 @@ struct NodesView: View {
         }
     }
 
-    private func handleDoubleTap(_ node: WorkflowNode) {
-        if node.type == .agent {
-            onSubflowEdit?(node)
-        }
-    }
-
     private func handleSingleTap(_ node: WorkflowNode) {
         if NSEvent.modifierFlags.contains(.command) {
             if selectedNodeIDs.contains(node.id) {
@@ -118,12 +109,6 @@ struct NodesView: View {
             connectingFromNode = nil
             tempConnectionEnd = nil
             onNodeSelected?(node)
-        }
-    }
-
-    private func handleLongPress(_ node: WorkflowNode) {
-        if node.type == .agent {
-            onSubflowEdit?(node)
         }
     }
 

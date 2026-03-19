@@ -19,8 +19,6 @@ struct NodeView: View {
     
     // 回调函数
     var onTap: (() -> Void)?
-    var onDoubleTap: (() -> Void)?
-    var onLongPress: (() -> Void)?
     var accentColor: Color? = nil
     var textScale: CGFloat = 1
     var textColor: Color = .primary
@@ -95,14 +93,8 @@ struct NodeView: View {
                 )
         )
         // 点击手势
-        .onTapGesture(count: 2) {
-            onDoubleTap?()
-        }
         .onTapGesture(count: 1) {
             onTap?()
-        }
-        .onLongPressGesture(minimumDuration: 0.5) {
-            onLongPress?()
         }
         // 悬停状态
         .onHover { hovering in
