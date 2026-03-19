@@ -652,9 +652,11 @@ class AppState: ObservableObject {
     }
 
     @discardableResult
-    func importDetectedOpenClawAgents() -> [ProjectOpenClawDetectedAgentRecord] {
+    func importDetectedOpenClawAgents(selectedRecordIDs: Set<String>) -> [ProjectOpenClawDetectedAgentRecord] {
         guard var project = currentProject else { return [] }
-        let imported = openClawManager.importDetectedAgents(into: &project)
+        guard !selectedRecordIDs.isEmpty else { return [] }
+
+        let imported = openClawManager.importDetectedAgents(into: &project, selectedRecordIDs: selectedRecordIDs)
         guard !imported.isEmpty else { return [] }
 
         currentProject = project

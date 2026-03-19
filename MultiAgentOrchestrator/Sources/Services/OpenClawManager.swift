@@ -44,6 +44,7 @@ class OpenClawManager: ObservableObject {
     }
 
     private var sessionContext: SessionContext?
+    private var discoverySnapshotURL: URL?
 
     private static let possiblePaths = [
         "/Users/chenrongze/.local/bin/openclaw",
@@ -66,7 +67,7 @@ class OpenClawManager: ObservableObject {
         status = .connecting
         config.save()
 
-        if let projectID, config.deploymentKind == .local {
+        if let projectID, config.deploymentKind != .remoteServer {
             do {
                 try beginSession(for: projectID)
             } catch {
@@ -89,7 +90,7 @@ class OpenClawManager: ObservableObject {
         testConnection(using: config) { [weak self] success, message, agentNames in
             guard let self else { return }
             DispatchQueue.main.async {
-                self.agents = success ? agentNames : []
+                self.agents = success ? (self.discoveryResults.isEmpty ? agentNames : self.discoveryResults.map(\.name)) : []
                 self.isConnected = success
                 self.status = success ? .connected : .error(message)
                 completion(self.agents)
@@ -104,23 +105,7 @@ class OpenClawManager: ObservableObject {
             DispatchQueue.main.async {
                 self.config = config
                 self.config.save()
-                self.agents = success ? agentNames : []
-                if success {
-                    self.discoveryResults = self.inspectOpenClawAgents(using: config)
-                    if self.discoveryResults.isEmpty {
-                        self.discoveryResults = agentNames.map {
-                            ProjectOpenClawDetectedAgentRecord(
-                                id: $0,
-                                name: $0,
-                                directoryValidated: false,
-                                configValidated: false,
-                                issues: ["未发现可验证的 agent 文件，仅保留 CLI 结果。"]
-                            )
-                        }
-                    }
-                } else {
-                    self.discoveryResults = []
-                }
+                self.agents = success ? (self.discoveryResults.isEmpty ? agentNames : self.discoveryResults.map(\.name)) : []
                 self.isConnected = success
                 self.status = success ? .connected : .error(message)
                 if !success {
@@ -132,26 +117,41 @@ class OpenClawManager: ObservableObject {
     }
 
     func beginSession(for projectID: UUID) throws {
-        guard config.deploymentKind == .local else { return }
+        guard config.deploymentKind != .remoteServer else { return }
         guard sessionContext == nil else { return }
 
         let projectRoot = ProjectManager.shared.openClawProjectRoot(for: projectID)
         let backupURL = ProjectManager.shared.openClawBackupDirectory(for: projectID)
         let mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: projectID)
         let importedAgentsURL = ProjectManager.shared.openClawImportedAgentsDirectory(for: projectID)
-        let openClawRoot = localOpenClawRootURL()
 
         try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: backupURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: importedAgentsURL, withIntermediateDirectories: true)
 
-        _ = try replaceDirectoryContents(of: backupURL, withContentsOf: openClawRoot)
+        switch config.deploymentKind {
+        case .local:
+            let openClawRoot = localOpenClawRootURL()
+            _ = try replaceDirectoryContents(of: backupURL, withContentsOf: openClawRoot)
+            if directoryHasContent(mirrorURL) {
+                _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: mirrorURL)
+            } else {
+                _ = try replaceDirectoryContents(of: mirrorURL, withContentsOf: openClawRoot)
+            }
+        case .container:
+            guard let deploymentRootPath = containerOpenClawRootPath(for: config) else {
+                throw NSError(domain: "OpenClawManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"])
+            }
 
-        if directoryHasContent(mirrorURL) {
-            _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: mirrorURL)
-        } else {
-            _ = try replaceDirectoryContents(of: mirrorURL, withContentsOf: openClawRoot)
+            _ = try copyDeploymentContentsToLocal(backupURL, deploymentRootPath: deploymentRootPath, using: config)
+            if directoryHasContent(mirrorURL) {
+                try copyLocalContentsToDeployment(mirrorURL, deploymentRootPath: deploymentRootPath, using: config)
+            } else {
+                _ = try copyDeploymentContentsToLocal(mirrorURL, deploymentRootPath: deploymentRootPath, using: config)
+            }
+        case .remoteServer:
+            break
         }
 
         sessionContext = SessionContext(
@@ -165,14 +165,29 @@ class OpenClawManager: ObservableObject {
 
     func endSession(restoreOriginalState: Bool = true) {
         guard let context = sessionContext else { return }
-        let openClawRoot = localOpenClawRootURL()
 
         do {
             try FileManager.default.createDirectory(at: context.mirrorURL, withIntermediateDirectories: true)
-            _ = try replaceDirectoryContents(of: context.mirrorURL, withContentsOf: openClawRoot)
+            switch config.deploymentKind {
+            case .local:
+                let openClawRoot = localOpenClawRootURL()
+                _ = try replaceDirectoryContents(of: context.mirrorURL, withContentsOf: openClawRoot)
 
-            if restoreOriginalState {
-                _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: context.backupURL)
+                if restoreOriginalState {
+                    _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: context.backupURL)
+                }
+            case .container:
+                guard let deploymentRootPath = containerOpenClawRootPath(for: config) else {
+                    throw NSError(domain: "OpenClawManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"])
+                }
+
+                _ = try copyDeploymentContentsToLocal(context.mirrorURL, deploymentRootPath: deploymentRootPath, using: config)
+
+                if restoreOriginalState {
+                    try copyLocalContentsToDeployment(context.backupURL, deploymentRootPath: deploymentRootPath, using: config)
+                }
+            case .remoteServer:
+                break
             }
         } catch {
             print("OpenClaw session finalization failed: \(error)")
@@ -204,6 +219,7 @@ class OpenClawManager: ObservableObject {
         agents = []
         activeAgents.removeAll()
         discoveryResults = []
+        clearDiscoverySnapshot()
         status = .disconnected
     }
 
@@ -282,15 +298,17 @@ class OpenClawManager: ObservableObject {
     }
 
     @discardableResult
-    func importDetectedAgents(into project: inout MAProject) -> [ProjectOpenClawDetectedAgentRecord] {
-        guard config.deploymentKind == .local else { return [] }
-
+    func importDetectedAgents(into project: inout MAProject, selectedRecordIDs: Set<String>? = nil) -> [ProjectOpenClawDetectedAgentRecord] {
         let importRoot = ProjectManager.shared.openClawImportedAgentsDirectory(for: project.id)
         try? FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: true)
 
         var importedRecords: [ProjectOpenClawDetectedAgentRecord] = []
+        let selectedRecords = discoveryResults.filter { record in
+            guard let selectedRecordIDs else { return true }
+            return selectedRecordIDs.contains(record.id)
+        }
 
-        for record in discoveryResults {
+        for record in selectedRecords {
             guard record.directoryValidated,
                   let sourceDirectoryPath = record.directoryPath else {
                 continue
@@ -390,10 +408,6 @@ class OpenClawManager: ObservableObject {
             .appendingPathComponent(".openclaw", isDirectory: true)
     }
 
-    private func isLocalFileDeployment(_ config: OpenClawConfig) -> Bool {
-        config.deploymentKind == .local
-    }
-
     private struct DirectoryInspection {
         let name: String
         let path: String
@@ -409,10 +423,30 @@ class OpenClawManager: ObservableObject {
         let statePath: String?
     }
 
-    private func inspectOpenClawAgents(using config: OpenClawConfig) -> [ProjectOpenClawDetectedAgentRecord] {
-        guard isLocalFileDeployment(config) else { return [] }
+    private func inspectOpenClawAgents(using config: OpenClawConfig, fallbackAgentNames: [String] = []) -> [ProjectOpenClawDetectedAgentRecord] {
+        switch config.deploymentKind {
+        case .local:
+            clearDiscoverySnapshot()
+            return inspectOpenClawAgents(at: localOpenClawRootURL(), fallbackAgentNames: fallbackAgentNames)
+        case .container:
+            guard let snapshotURL = try? prepareDiscoverySnapshot(using: config) else {
+                return fallbackAgentNames.map {
+                    ProjectOpenClawDetectedAgentRecord(
+                        id: $0,
+                        name: $0,
+                        directoryValidated: false,
+                        configValidated: false,
+                        issues: ["无法读取容器中的 OpenClaw 文件，仅保留 CLI 结果。"]
+                    )
+                }
+            }
+            return inspectOpenClawAgents(at: snapshotURL, fallbackAgentNames: fallbackAgentNames)
+        case .remoteServer:
+            return []
+        }
+    }
 
-        let rootURL = localOpenClawRootURL()
+    private func inspectOpenClawAgents(at rootURL: URL, fallbackAgentNames: [String] = []) -> [ProjectOpenClawDetectedAgentRecord] {
         let agentsDirectory = rootURL.appendingPathComponent("agents", isDirectory: true)
         let configURL = rootURL.appendingPathComponent("openclaw.json")
 
@@ -423,7 +457,7 @@ class OpenClawManager: ObservableObject {
         let configMap = Dictionary(uniqueKeysWithValues: configInspections.map { (normalizeAgentKey($0.name), $0) })
         let mergedKeys = Set(directoryMap.keys).union(configMap.keys).sorted()
 
-        return mergedKeys.map { key in
+        let records = mergedKeys.map { key in
             let directory = directoryMap[key]
             let configCandidate = configMap[key]
             var issues: [String] = []
@@ -459,7 +493,30 @@ class OpenClawManager: ObservableObject {
                 issues: issues
             )
         }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        .sorted(by: { (lhs: ProjectOpenClawDetectedAgentRecord, rhs: ProjectOpenClawDetectedAgentRecord) in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        })
+
+        if !records.isEmpty {
+            return records
+        }
+
+        guard !fallbackAgentNames.isEmpty else {
+            return []
+        }
+
+        return fallbackAgentNames.map {
+            ProjectOpenClawDetectedAgentRecord(
+                id: $0,
+                name: $0,
+                directoryValidated: false,
+                configValidated: false,
+                issues: ["未发现可验证的 agent 文件，仅保留 CLI 结果。"]
+            )
+        }
+        .sorted(by: { (lhs: ProjectOpenClawDetectedAgentRecord, rhs: ProjectOpenClawDetectedAgentRecord) in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        })
     }
 
     private func inspectAgentDirectories(at agentsDirectory: URL) -> [DirectoryInspection] {
@@ -600,6 +657,200 @@ class OpenClawManager: ObservableObject {
         return copiedItemCount
     }
 
+    private func prepareDiscoverySnapshot(using config: OpenClawConfig) throws -> URL {
+        guard let deploymentRootPath = containerOpenClawRootPath(for: config) else {
+            throw NSError(domain: "OpenClawManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"])
+        }
+
+        clearDiscoverySnapshot()
+
+        let snapshotURL = backupDirectory.appendingPathComponent("discovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshotURL, withIntermediateDirectories: true)
+        _ = try copyDeploymentContentsToLocal(snapshotURL, deploymentRootPath: deploymentRootPath, using: config)
+        discoverySnapshotURL = snapshotURL
+        return snapshotURL
+    }
+
+    private func clearDiscoverySnapshot() {
+        guard let discoverySnapshotURL else { return }
+        try? FileManager.default.removeItem(at: discoverySnapshotURL)
+        self.discoverySnapshotURL = nil
+    }
+
+    private func containerEngine(for config: OpenClawConfig) -> String {
+        let trimmed = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "docker" : trimmed
+    }
+
+    private func containerName(for config: OpenClawConfig) -> String? {
+        let trimmed = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func containerOpenClawRootPath(for config: OpenClawConfig) -> String? {
+        if let homeDirectory = queryContainerHomeDirectory(using: config) {
+            let trimmed = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return URL(fileURLWithPath: trimmed, isDirectory: true)
+                    .appendingPathComponent(".openclaw", isDirectory: true)
+                    .path
+            }
+        }
+
+        let fallbackMount = config.container.workspaceMountPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fallbackMount.isEmpty else { return nil }
+        return URL(fileURLWithPath: fallbackMount, isDirectory: true)
+            .appendingPathComponent(".openclaw", isDirectory: true)
+            .path
+    }
+
+    private func queryContainerHomeDirectory(using config: OpenClawConfig) -> String? {
+        guard let containerName = containerName(for: config) else { return nil }
+
+        let result = try? runDeploymentCommand(
+            using: config,
+            arguments: ["exec", containerName, "sh", "-lc", "printf %s \"$HOME\""]
+        )
+
+        guard let result, result.terminationStatus == 0 else { return nil }
+
+        let output = String(data: result.standardOutput, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return output.isEmpty ? nil : output
+    }
+
+    private func runDeploymentCommand(
+        using config: OpenClawConfig,
+        arguments: [String],
+        standardInput: FileHandle? = nil
+    ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [containerEngine(for: config)] + arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = standardInput
+
+        try process.run()
+        process.waitUntilExit()
+
+        let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        return (process.terminationStatus, stdout, stderr)
+    }
+
+    private func copyDeploymentContentsToLocal(
+        _ localDestination: URL,
+        deploymentRootPath: String,
+        using config: OpenClawConfig
+    ) throws -> Int {
+        switch config.deploymentKind {
+        case .local:
+            let source = URL(fileURLWithPath: deploymentRootPath, isDirectory: true)
+            return try replaceDirectoryContents(of: localDestination, withContentsOf: source)
+        case .container:
+            try FileManager.default.createDirectory(at: localDestination, withIntermediateDirectories: true)
+            try removeDirectoryContents(at: localDestination)
+
+            guard let containerName = containerName(for: config) else { return 0 }
+
+            let command = "cd \(shellQuoted(deploymentRootPath)) && tar -cf - ."
+            let result = try runDeploymentCommand(
+                using: config,
+                arguments: ["exec", containerName, "sh", "-lc", command]
+            )
+
+            guard result.terminationStatus == 0, !result.standardOutput.isEmpty else {
+                return 0
+            }
+
+            let archiveURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("openclaw-snapshot-\(UUID().uuidString).tar", isDirectory: false)
+            try result.standardOutput.write(to: archiveURL, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: archiveURL) }
+
+            let extract = Process()
+            extract.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            extract.arguments = ["tar", "-xf", archiveURL.path, "-C", localDestination.path]
+            try extract.run()
+            extract.waitUntilExit()
+
+            guard extract.terminationStatus == 0 else {
+                let message = String(data: result.standardError, encoding: .utf8) ?? "容器快照同步失败"
+                throw NSError(domain: "OpenClawManager", code: Int(extract.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+            }
+
+            let contents = try? FileManager.default.contentsOfDirectory(at: localDestination, includingPropertiesForKeys: nil)
+            return contents?.count ?? 0
+        case .remoteServer:
+            return 0
+        }
+    }
+
+    private func copyLocalContentsToDeployment(
+        _ localSource: URL,
+        deploymentRootPath: String,
+        using config: OpenClawConfig
+    ) throws {
+        switch config.deploymentKind {
+        case .local:
+            let destination = URL(fileURLWithPath: deploymentRootPath, isDirectory: true)
+            _ = try replaceDirectoryContents(of: destination, withContentsOf: localSource)
+        case .container:
+            guard let containerName = containerName(for: config) else { return }
+            guard FileManager.default.fileExists(atPath: localSource.path) else { return }
+
+            let archiveURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("openclaw-upload-\(UUID().uuidString).tar", isDirectory: false)
+            let createArchive = Process()
+            createArchive.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            createArchive.arguments = ["tar", "-cf", archiveURL.path, "-C", localSource.path, "."]
+            try createArchive.run()
+            createArchive.waitUntilExit()
+
+            guard createArchive.terminationStatus == 0 else {
+                try? FileManager.default.removeItem(at: archiveURL)
+                throw NSError(domain: "OpenClawManager", code: Int(createArchive.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "本地快照打包失败"])
+            }
+
+            defer { try? FileManager.default.removeItem(at: archiveURL) }
+
+            let clearCommand = "mkdir -p \(shellQuoted(deploymentRootPath)) && find \(shellQuoted(deploymentRootPath)) -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
+            let clearResult = try runDeploymentCommand(
+                using: config,
+                arguments: ["exec", containerName, "sh", "-lc", clearCommand]
+            )
+            guard clearResult.terminationStatus == 0 else {
+                let message = String(data: clearResult.standardError, encoding: .utf8) ?? "容器目录清理失败"
+                throw NSError(domain: "OpenClawManager", code: Int(clearResult.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+            }
+
+            let input = try FileHandle(forReadingFrom: archiveURL)
+            defer { input.closeFile() }
+
+            let extractCommand = "mkdir -p \(shellQuoted(deploymentRootPath)) && tar -xf - -C \(shellQuoted(deploymentRootPath))"
+            let extractResult = try runDeploymentCommand(
+                using: config,
+                arguments: ["exec", "-i", containerName, "sh", "-lc", extractCommand],
+                standardInput: input
+            )
+
+            guard extractResult.terminationStatus == 0 else {
+                let message = String(data: extractResult.standardError, encoding: .utf8) ?? "容器文件同步失败"
+                throw NSError(domain: "OpenClawManager", code: Int(extractResult.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+            }
+        case .remoteServer:
+            return
+        }
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     private func resolveOpenClawPath(for config: OpenClawConfig) -> String {
         if FileManager.default.fileExists(atPath: config.localBinaryPath) {
             return config.localBinaryPath
@@ -657,7 +908,7 @@ class OpenClawManager: ObservableObject {
 
                 DispatchQueue.main.async {
                     if success {
-                        self.discoveryResults = self.inspectOpenClawAgents(using: .default)
+                        self.discoveryResults = self.inspectOpenClawAgents(using: .default, fallbackAgentNames: agentNames)
                         if self.discoveryResults.isEmpty {
                             self.discoveryResults = agentNames.map {
                                 ProjectOpenClawDetectedAgentRecord(
@@ -726,6 +977,13 @@ class OpenClawManager: ObservableObject {
                 }
 
                 DispatchQueue.main.async {
+                    if success {
+                        self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: agentNames)
+                        self.agents = self.discoveryResults.map(\.name)
+                    } else {
+                        self.discoveryResults = []
+                        self.agents = []
+                    }
                     completion(success, message, agentNames)
                 }
             } catch {

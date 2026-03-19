@@ -6,6 +6,7 @@ struct ContentView: View {
     @Binding var zoomScale: CGFloat
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
+    @State private var isPresentingOpenClawImportSheet = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -94,6 +95,20 @@ struct ContentView: View {
         } message: {
             Text(openClawMessage ?? "")
         }
+        .sheet(isPresented: $isPresentingOpenClawImportSheet) {
+            OpenClawAgentImportSheet(
+                records: appState.openClawManager.discoveryResults,
+                actionTitle: "导入这些 Agents",
+                onImport: { selectedIDs in
+                    let imported = appState.importDetectedOpenClawAgents(selectedRecordIDs: selectedIDs)
+                    if imported.isEmpty {
+                        openClawMessage = "没有选中可导入的 Agents。"
+                    } else {
+                        openClawMessage = "已导入 \(imported.count) 个 Agents。"
+                    }
+                }
+            )
+        }
     }
 
     @ViewBuilder
@@ -173,8 +188,13 @@ struct ContentView: View {
                 }
 
                 StatusBarButton(title: "导入 Agents", icon: "person.badge.plus") {
-                    addOpenClawAgentsToProject()
+                    if appState.openClawManager.discoveryResults.isEmpty {
+                        openClawMessage = "请先自动识别 OpenClaw agents。"
+                        return
+                    }
+                    isPresentingOpenClawImportSheet = true
                 }
+                .disabled(appState.openClawManager.discoveryResults.isEmpty)
             } else {
                 StatusBarButton(title: "自动识别", icon: "dot.radiowaves.left.and.right", prominent: true) {
                     autoDetectOpenClaw()
@@ -226,27 +246,6 @@ struct ContentView: View {
         }
     }
 
-    private func addOpenClawAgentsToProject() {
-        guard var project = appState.currentProject else {
-            openClawMessage = "Please create or open a project first."
-            return
-        }
-        let imported = appState.importDetectedOpenClawAgents()
-        if !imported.isEmpty {
-            openClawMessage = "Added \(imported.count) agents."
-            return
-        }
-
-        for name in appState.openClawManager.agents {
-            if !project.agents.contains(where: { $0.name == name }) {
-                var agent = Agent(name: name)
-                agent.description = "OpenClaw Agent: \(name)"
-                project.agents.append(agent)
-            }
-        }
-        appState.currentProject = project
-        openClawMessage = "Added \(appState.openClawManager.agents.count) agents."
-    }
 }
 
 private struct ProjectOnboardingView: View {

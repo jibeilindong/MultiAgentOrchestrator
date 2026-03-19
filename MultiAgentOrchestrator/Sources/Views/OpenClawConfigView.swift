@@ -15,6 +15,7 @@ struct OpenClawConfigView: View {
     @State private var statusTone: StatusTone = .neutral
     @State private var lastTestedFingerprint: String?
     @State private var lastTestSucceeded = false
+    @State private var isPresentingImportSheet = false
     
     var body: some View {
         ScrollView {
@@ -148,6 +149,24 @@ struct OpenClawConfigView: View {
             .padding(24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(isPresented: $isPresentingImportSheet) {
+            OpenClawAgentImportSheet(
+                records: appState.openClawManager.discoveryResults,
+                actionTitle: "导入这些 Agents",
+                onImport: { selectedIDs in
+                    let imported = appState.importDetectedOpenClawAgents(selectedRecordIDs: selectedIDs)
+                    if imported.isEmpty {
+                        testResult = "没有选中可导入的 Agents。"
+                        statusMessage = "未导入任何 Agents。"
+                        statusTone = .error
+                    } else {
+                        testResult = "已导入 \(imported.count) 个 Agents。"
+                        statusMessage = "已将选中的 Agents 导入到当前项目。"
+                        statusTone = .success
+                    }
+                }
+            )
+        }
         .onAppear {
             config = appState.openClawManager.config
             refreshStatusFromManager()
@@ -320,8 +339,8 @@ struct OpenClawConfigView: View {
 
                     HStack {
                         Spacer()
-                        Button("添加这些 Agents") {
-                            _ = appState.importDetectedOpenClawAgents()
+                        Button("导入这些 Agents") {
+                            isPresentingImportSheet = true
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!appState.openClawManager.isConnected || detectedAgents.isEmpty)
