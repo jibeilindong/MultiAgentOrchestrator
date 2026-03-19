@@ -107,6 +107,21 @@ struct OpenClawConfigView: View {
                     }
                 }
 
+                GroupBox("CLI Output") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("Quiet Mode (if supported)", isOn: $config.cliQuietMode)
+
+                        labeledField("Log Level") {
+                            Picker("Log Level", selection: $config.cliLogLevel) {
+                                ForEach(OpenClawCLILogLevel.allCases) { level in
+                                    Text(level.title).tag(level)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                    }
+                }
+
                 HStack(spacing: 12) {
                     Button(action: testConnection) {
                         HStack(spacing: 8) {
@@ -303,7 +318,9 @@ struct OpenClawConfigView: View {
             config.localBinaryPath,
             config.container.engine,
             config.container.containerName,
-            config.container.workspaceMountPath
+            config.container.workspaceMountPath,
+            config.cliQuietMode ? "quiet-on" : "quiet-off",
+            config.cliLogLevel.rawValue
         ].joined(separator: "|")
     }
 

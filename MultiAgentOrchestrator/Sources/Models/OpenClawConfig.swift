@@ -5,6 +5,26 @@
 
 import Foundation
 
+enum OpenClawCLILogLevel: String, Codable, CaseIterable, Identifiable {
+    case error
+    case warning
+    case info
+    case debug
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .error: return "Error"
+        case .warning: return "Warning"
+        case .info: return "Info"
+        case .debug: return "Debug"
+        }
+    }
+
+    var cliValue: String { rawValue }
+}
+
 enum OpenClawDeploymentKind: String, Codable, CaseIterable, Identifiable {
     case local
     case remoteServer
@@ -48,6 +68,8 @@ struct OpenClawConfig: Codable {
     var autoConnect: Bool
     var localBinaryPath: String
     var container: OpenClawContainerConfig
+    var cliQuietMode: Bool
+    var cliLogLevel: OpenClawCLILogLevel
 
     enum CodingKeys: String, CodingKey {
         case deploymentKind
@@ -60,6 +82,8 @@ struct OpenClawConfig: Codable {
         case autoConnect
         case localBinaryPath
         case container
+        case cliQuietMode
+        case cliLogLevel
     }
     
     static var `default`: OpenClawConfig {
@@ -73,7 +97,9 @@ struct OpenClawConfig: Codable {
             timeout: 30,
             autoConnect: true,
             localBinaryPath: "/Users/chenrongze/.local/bin/openclaw",
-            container: OpenClawContainerConfig()
+            container: OpenClawContainerConfig(),
+            cliQuietMode: true,
+            cliLogLevel: .warning
         )
     }
     
@@ -104,7 +130,9 @@ struct OpenClawConfig: Codable {
         timeout: Int,
         autoConnect: Bool,
         localBinaryPath: String,
-        container: OpenClawContainerConfig
+        container: OpenClawContainerConfig,
+        cliQuietMode: Bool,
+        cliLogLevel: OpenClawCLILogLevel
     ) {
         self.deploymentKind = deploymentKind
         self.host = host
@@ -116,6 +144,8 @@ struct OpenClawConfig: Codable {
         self.autoConnect = autoConnect
         self.localBinaryPath = localBinaryPath
         self.container = container
+        self.cliQuietMode = cliQuietMode
+        self.cliLogLevel = cliLogLevel
     }
 
     init(from decoder: Decoder) throws {
@@ -130,6 +160,8 @@ struct OpenClawConfig: Codable {
         autoConnect = try container.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
         localBinaryPath = try container.decodeIfPresent(String.self, forKey: .localBinaryPath) ?? "/Users/chenrongze/.local/bin/openclaw"
         self.container = try container.decodeIfPresent(OpenClawContainerConfig.self, forKey: .container) ?? OpenClawContainerConfig()
+        cliQuietMode = try container.decodeIfPresent(Bool.self, forKey: .cliQuietMode) ?? true
+        cliLogLevel = try container.decodeIfPresent(OpenClawCLILogLevel.self, forKey: .cliLogLevel) ?? .warning
     }
 }
 

@@ -186,6 +186,14 @@ class OpenClawService: ObservableObject {
     private var process: Process?
     private var timeoutTimer: Timer?
     private let logQueue = DispatchQueue(label: "com.openclaw.logs")
+    private var agentCLICapabilitiesCache: [String: AgentCLICapabilities] = [:]
+    private var loggedCapabilityKeys: Set<String> = []
+
+    private struct AgentCLICapabilities {
+        var supportsQuiet: Bool
+        var supportsLogLevel: Bool
+        var supportsJSONOnly: Bool
+    }
     
     // 初始化时检测连接状态
     init() {
@@ -692,6 +700,26 @@ class OpenClawService: ObservableObject {
             var args = ["agent"]
             args.append(contentsOf: ["--agent", resolvedAgent.identifier])
             args.append(contentsOf: ["--message", instruction])
+
+            let capabilityCacheKey = self.capabilityCacheKey(for: connectionConfig)
+            let capabilities = self.resolveAgentCLICapabilities(
+                manager: manager,
+                config: connectionConfig,
+                cacheKey: capabilityCacheKey
+            )
+            let enabledFlags = self.appendCLIOutputFlags(
+                to: &args,
+                capabilities: capabilities,
+                config: connectionConfig
+            )
+
+            if self.loggedCapabilityKeys.insert(capabilityCacheKey).inserted {
+                let flagText = enabledFlags.isEmpty ? "(none)" : enabledFlags.joined(separator: " ")
+                self.addLog(
+                    .info,
+                    "OpenClaw CLI 输出能力: quiet=\(capabilities.supportsQuiet), log-level=\(capabilities.supportsLogLevel), json-only=\(capabilities.supportsJSONOnly); 当前启用参数: \(flagText)."
+                )
+            }
             
             let shouldUseLocal = serviceConfig.useLocal
                 && !manager.isConnected
@@ -701,7 +729,6 @@ class OpenClawService: ObservableObject {
             }
             
             args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
-            args.append("--json")
 
             do {
                 let result = try manager.executeOpenClawCLI(arguments: args, using: connectionConfig)
@@ -734,6 +761,90 @@ class OpenClawService: ObservableObject {
                 }
             }
         }
+    }
+
+    private func capabilityCacheKey(for config: OpenClawConfig) -> String {
+        switch config.deploymentKind {
+        case .local:
+            return "local|\(config.localBinaryPath)"
+        case .container:
+            return "container|\(config.container.engine)|\(config.container.containerName)"
+        case .remoteServer:
+            return "remote|\(config.host)|\(config.port)"
+        }
+    }
+
+    private func resolveAgentCLICapabilities(
+        manager: OpenClawManager,
+        config: OpenClawConfig,
+        cacheKey: String
+    ) -> AgentCLICapabilities {
+        if let cached = agentCLICapabilitiesCache[cacheKey] {
+            return cached
+        }
+
+        let detected = detectAgentCLICapabilities(manager: manager, config: config)
+        agentCLICapabilitiesCache[cacheKey] = detected
+        return detected
+    }
+
+    private func detectAgentCLICapabilities(
+        manager: OpenClawManager,
+        config: OpenClawConfig
+    ) -> AgentCLICapabilities {
+        do {
+            let helpResult = try manager.executeOpenClawCLI(arguments: ["agent", "--help"], using: config)
+            let text = (
+                String(data: helpResult.standardOutput, encoding: .utf8) ?? ""
+            ) + "\n" + (
+                String(data: helpResult.standardError, encoding: .utf8) ?? ""
+            )
+            let normalized = text.lowercased()
+
+            let supportsQuiet = normalized.contains("--quiet") || normalized.contains("-q,")
+            let supportsLogLevel = normalized.contains("--log-level")
+            let supportsJSONOnly = normalized.contains("--json-only")
+
+            return AgentCLICapabilities(
+                supportsQuiet: supportsQuiet,
+                supportsLogLevel: supportsLogLevel,
+                supportsJSONOnly: supportsJSONOnly
+            )
+        } catch {
+            return AgentCLICapabilities(
+                supportsQuiet: false,
+                supportsLogLevel: false,
+                supportsJSONOnly: false
+            )
+        }
+    }
+
+    private func appendCLIOutputFlags(
+        to arguments: inout [String],
+        capabilities: AgentCLICapabilities,
+        config: OpenClawConfig
+    ) -> [String] {
+        var enabledFlags: [String] = []
+
+        if capabilities.supportsLogLevel {
+            arguments.append(contentsOf: ["--log-level", config.cliLogLevel.cliValue])
+            enabledFlags.append("--log-level \(config.cliLogLevel.cliValue)")
+        }
+
+        if config.cliQuietMode && capabilities.supportsQuiet {
+            arguments.append("--quiet")
+            enabledFlags.append("--quiet")
+        }
+
+        if capabilities.supportsJSONOnly {
+            arguments.append("--json-only")
+            enabledFlags.append("--json-only")
+        } else {
+            arguments.append("--json")
+            enabledFlags.append("--json")
+        }
+
+        return enabledFlags
     }
 
     private func resolvedAgentIdentifier(for agent: Agent) -> String {
