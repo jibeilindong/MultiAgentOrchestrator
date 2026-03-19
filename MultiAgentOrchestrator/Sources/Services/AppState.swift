@@ -850,38 +850,66 @@ class AppState: ObservableObject {
     }
 
     func generateArchitectureFromProjectAgents() {
-        guard var project = currentProject,
-              var workflow = project.workflows.first else { return }
+        guard var project = currentProject else { return }
 
-        workflow.nodes.removeAll()
-        workflow.edges.removeAll()
-
-        let agentPositions = calculateAgentPositions(agents: project.agents)
-        for (agent, position) in agentPositions {
-            var newNode = WorkflowNode(type: .agent)
-            newNode.agentID = agent.id
-            newNode.position = position
-            workflow.nodes.append(newNode)
+        if project.workflows.isEmpty {
+            project.workflows.append(Workflow(name: "Main Workflow"))
         }
 
-        let connections = analyzeAndGenerateConnections(agents: project.agents)
-        for (fromName, toName) in connections {
-            if let fromAgent = project.agents.first(where: { $0.name == fromName }),
-               let toAgent = project.agents.first(where: { $0.name == toName }),
-               let fromNode = workflow.nodes.first(where: { $0.agentID == fromAgent.id }),
-               let toNode = workflow.nodes.first(where: { $0.agentID == toAgent.id }) {
-                workflow.edges.append(WorkflowEdge(from: fromNode.id, to: toNode.id))
-                project.permissions.append(
-                    Permission(fromAgentID: fromAgent.id, toAgentID: toAgent.id, permissionType: .allow)
-                )
-            }
+        guard var workflow = project.workflows.first else { return }
+
+        let descriptors: [ArchitectureAgentDescriptor] = buildArchitectureDescriptors(for: project.agents)
+        let existingAgentNodes: [UUID: WorkflowNode] = Dictionary(uniqueKeysWithValues: workflow.nodes.compactMap { node -> (UUID, WorkflowNode)? in
+            guard node.type == .agent, let agentID = node.agentID else { return nil }
+            return (agentID, node)
+        })
+
+        let positionedAgents: [ArchitectureGeneratedNode] = calculateAgentPositions(
+            descriptors: descriptors,
+            existingNodesByAgentID: existingAgentNodes
+        )
+
+        let nonAgentNodes: [WorkflowNode] = workflow.nodes.filter { $0.type != .agent }
+        let generatedAgentNodes: [WorkflowNode] = positionedAgents.map { $0.node }
+        let generatedAgentNodeIDs: Set<UUID> = Set(generatedAgentNodes.map { $0.id })
+        let generatedNodeIDByAgentID: [UUID: UUID] = Dictionary(uniqueKeysWithValues: generatedAgentNodes.compactMap { node -> (UUID, UUID)? in
+            guard let agentID = node.agentID else { return nil }
+            return (agentID, node.id)
+        })
+
+        workflow.nodes = nonAgentNodes + generatedAgentNodes
+
+        let preservedEdges: [WorkflowEdge] = workflow.edges.filter { edge in
+            !(generatedAgentNodeIDs.contains(edge.fromNodeID) && generatedAgentNodeIDs.contains(edge.toNodeID))
         }
+        let generatedEdges: [WorkflowEdge] = buildArchitectureEdges(
+            descriptors: descriptors,
+            nodeIDByAgentID: generatedNodeIDByAgentID
+        )
+        workflow.edges = preservedEdges + generatedEdges
+
+        workflow.boundaries = mergeArchitectureBoundaries(
+            existing: workflow.boundaries,
+            generated: buildArchitectureBoundaries(from: positionedAgents)
+        )
+
+        project.permissions = mergeArchitecturePermissions(
+            existing: project.permissions,
+            descriptors: descriptors,
+            edges: generatedEdges,
+            nodeIDByAgentID: generatedNodeIDByAgentID
+        )
 
         if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
             project.workflows[index] = workflow
-            project.updatedAt = Date()
-            currentProject = project
+        } else {
+            project.workflows.append(workflow)
         }
+
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        generateTasksFromWorkflow()
     }
 
     func updateNode(_ nodeID: UUID, updates: (inout WorkflowNode) -> Void) {
@@ -1289,101 +1317,330 @@ class AppState: ObservableObject {
         return unique
     }
 
-    private func calculateAgentPositions(agents: [Agent]) -> [(Agent, CGPoint)] {
-        var positions: [(Agent, CGPoint)] = []
+    private func calculateAgentPositions(
+        descriptors: [ArchitectureAgentDescriptor],
+        existingNodesByAgentID: [UUID: WorkflowNode]
+    ) -> [ArchitectureGeneratedNode] {
+        let startX: CGFloat = 140
+        let startY: CGFloat = 110
+        let laneSpacing: CGFloat = 190
+        let nodeSpacing: CGFloat = 190
+        let executionRowSpacing: CGFloat = 110
+        let executionColumns = 4
 
-        let tier1 = ["taizi", "太子"]
-        let tier2 = ["zhongshu", "中书省"]
-        let tier3 = ["shangshu", "尚书省"]
-        let tier4 = ["menxia", "门下省"]
+        let groupedByLane = Dictionary(grouping: descriptors, by: \.lane)
+        var generated: [ArchitectureGeneratedNode] = []
 
-        var tier1Agents: [Agent] = []
-        var tier2Agents: [Agent] = []
-        var tier3Agents: [Agent] = []
-        var tier4Agents: [Agent] = []
-        var deptAgents: [Agent] = []
+        for lane in ArchitectureLane.allCases {
+            let laneDescriptors = (groupedByLane[lane] ?? []).sorted {
+                if $0.clusterKey == $1.clusterKey {
+                    return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                }
+                return $0.clusterKey.localizedCaseInsensitiveCompare($1.clusterKey) == .orderedAscending
+            }
 
-        for agent in agents {
-            let name = agent.name.lowercased()
-            if tier1.contains(where: { name.contains($0.lowercased()) }) {
-                tier1Agents.append(agent)
-            } else if tier2.contains(where: { name.contains($0.lowercased()) }) {
-                tier2Agents.append(agent)
-            } else if tier3.contains(where: { name.contains($0.lowercased()) }) {
-                tier3Agents.append(agent)
-            } else if tier4.contains(where: { name.contains($0.lowercased()) }) {
-                tier4Agents.append(agent)
-            } else {
-                deptAgents.append(agent)
+            guard !laneDescriptors.isEmpty else { continue }
+
+            for (index, descriptor) in laneDescriptors.enumerated() {
+                let proposedPosition: CGPoint
+
+                if lane == .execution {
+                    let row = index / executionColumns
+                    let column = index % executionColumns
+                    proposedPosition = CGPoint(
+                        x: startX + CGFloat(column) * nodeSpacing,
+                        y: startY + CGFloat(lane.rawValue) * laneSpacing + CGFloat(row) * executionRowSpacing
+                    )
+                } else {
+                    proposedPosition = CGPoint(
+                        x: startX + CGFloat(index) * nodeSpacing,
+                        y: startY + CGFloat(lane.rawValue) * laneSpacing
+                    )
+                }
+
+                var node = existingNodesByAgentID[descriptor.agent.id] ?? WorkflowNode(type: .agent)
+                node.agentID = descriptor.agent.id
+                node.title = descriptor.agent.name
+                if existingNodesByAgentID[descriptor.agent.id] == nil || node.position == .zero {
+                    node.position = proposedPosition
+                }
+
+                generated.append(
+                    ArchitectureGeneratedNode(
+                        node: node,
+                        descriptor: descriptor,
+                        proposedPosition: proposedPosition
+                    )
+                )
             }
         }
 
-        let startX: CGFloat = 100
-        let startY: CGFloat = 80
-        let tierSpacing: CGFloat = 200
-        let nodeSpacing: CGFloat = 160
-
-        for (index, agent) in tier1Agents.enumerated() {
-            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY)))
-        }
-        for (index, agent) in tier2Agents.enumerated() {
-            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY + tierSpacing)))
-        }
-        for (index, agent) in tier3Agents.enumerated() {
-            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY + tierSpacing * 2)))
-        }
-        for (index, agent) in tier4Agents.enumerated() {
-            positions.append((agent, CGPoint(x: startX + CGFloat(index) * nodeSpacing, y: startY + tierSpacing * 3)))
-        }
-
-        let columns = 4
-        for (index, agent) in deptAgents.enumerated() {
-            let col = index % columns
-            let row = index / columns
-            positions.append((agent, CGPoint(x: startX + CGFloat(col) * nodeSpacing, y: startY + tierSpacing * 4 + CGFloat(row) * 100)))
-        }
-
-        return positions
+        return generated
     }
 
-    private func analyzeAndGenerateConnections(agents: [Agent]) -> [(String, String)] {
-        var connections: [(String, String)] = []
+    private func buildArchitectureDescriptors(for agents: [Agent]) -> [ArchitectureAgentDescriptor] {
+        agents.map { agent in
+            let searchCorpus = [
+                agent.name,
+                agent.identity,
+                agent.description,
+                agent.soulMD,
+                agent.capabilities.joined(separator: " "),
+                agent.openClawDefinition.agentIdentifier,
+                agent.openClawDefinition.runtimeProfile
+            ]
+            .joined(separator: " ")
+            .lowercased()
 
-        if agents.contains(where: { $0.name == "taizi" || $0.name == "太子" }) &&
-            agents.contains(where: { $0.name == "zhongshu" || $0.name == "中书省" }) {
-            connections.append(("taizi", "zhongshu"))
-            connections.append(("太子", "中书省"))
+            let lane = architectureLane(for: searchCorpus)
+            let clusterKey = architectureClusterKey(for: agent, lane: lane, searchCorpus: searchCorpus)
+
+            return ArchitectureAgentDescriptor(
+                agent: agent,
+                lane: lane,
+                clusterKey: clusterKey,
+                searchCorpus: searchCorpus
+            )
+        }
+    }
+
+    private func architectureLane(for searchCorpus: String) -> ArchitectureLane {
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["taizi", "太子", "lead", "leader", "chief", "owner", "director", "战略", "决策"]) {
+            return .leadership
+        }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["zhongshu", "中书", "shangshu", "尚书", "coord", "coordinator", "manager", "router", "dispatcher", "planner", "orchestrator", "调度", "编排", "规划"]) {
+            return .coordination
+        }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["menxia", "门下", "review", "reviewer", "qa", "audit", "approver", "validator", "审批", "审查", "质检", "验证"]) {
+            return .review
+        }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["memory", "knowledge", "archive", "history", "记忆", "知识", "归档", "档案"]) {
+            return .memory
+        }
+        return .execution
+    }
+
+    private func architectureClusterKey(for agent: Agent, lane: ArchitectureLane, searchCorpus: String) -> String {
+        if lane != .execution {
+            return lane.title
         }
 
-        if agents.contains(where: { $0.name == "zhongshu" || $0.name == "中书省" }) &&
-            agents.contains(where: { $0.name == "shangshu" || $0.name == "尚书省" }) {
-            connections.append(("zhongshu", "shangshu"))
-            connections.append(("中书省", "尚书省"))
+        let identity = agent.identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !identity.isEmpty, identity != "generalist" {
+            return identity
         }
 
-        if agents.contains(where: { $0.name == "shangshu" || $0.name == "尚书省" }) &&
-            agents.contains(where: { $0.name == "taizi" || $0.name == "太子" }) {
-            connections.append(("shangshu", "taizi"))
-            connections.append(("尚书省", "太子"))
+        if let firstCapability = agent.capabilities.first, !firstCapability.isEmpty {
+            return firstCapability
         }
 
-        let departments = ["libu", "吏部", "hubu", "户部", "bingbu", "兵部", "xingbu", "刑部", "gongbu", "工部", "libu_hr", "menxia", "门下省"]
-        for dept in departments {
-            if agents.contains(where: { $0.name == "zhongshu" || $0.name == "中书省" }) &&
-                agents.contains(where: { $0.name == dept }) {
-                connections.append(("zhongshu", dept))
-                connections.append(("中书省", dept))
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["libu", "吏部"]) { return "吏部" }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["hubu", "户部"]) { return "户部" }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["bingbu", "兵部"]) { return "兵部" }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["xingbu", "刑部"]) { return "刑部" }
+        if matchesAnyKeyword(in: searchCorpus, keywords: ["gongbu", "工部"]) { return "工部" }
+
+        return lane.title
+    }
+
+    private func buildArchitectureEdges(
+        descriptors: [ArchitectureAgentDescriptor],
+        nodeIDByAgentID: [UUID: UUID]
+    ) -> [WorkflowEdge] {
+        var pairs = Set<ArchitectureEdgePair>()
+        let descriptorsByLane = Dictionary(grouping: descriptors, by: \.lane)
+
+        if let leadership = descriptorsByLane[.leadership], let coordination = descriptorsByLane[.coordination] {
+            pairs.formUnion(pairAdjacentDescriptors(from: leadership, to: coordination))
+        }
+        if let coordination = descriptorsByLane[.coordination], let execution = descriptorsByLane[.execution] {
+            pairs.formUnion(pairAdjacentDescriptors(from: coordination, to: execution))
+        }
+        if let execution = descriptorsByLane[.execution], let review = descriptorsByLane[.review] {
+            pairs.formUnion(pairAdjacentDescriptors(from: execution, to: review))
+        }
+        if let review = descriptorsByLane[.review], let memory = descriptorsByLane[.memory] {
+            pairs.formUnion(pairAdjacentDescriptors(from: review, to: memory))
+        } else if let execution = descriptorsByLane[.execution], let memory = descriptorsByLane[.memory] {
+            pairs.formUnion(pairAdjacentDescriptors(from: execution, to: memory))
+        }
+
+        if pairs.isEmpty {
+            let ordered = descriptors.sorted {
+                if $0.lane == $1.lane {
+                    return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                }
+                return $0.lane.rawValue < $1.lane.rawValue
+            }
+            for index in 0..<max(ordered.count - 1, 0) {
+                pairs.insert(ArchitectureEdgePair(fromAgentID: ordered[index].agent.id, toAgentID: ordered[index + 1].agent.id))
             }
         }
 
-        for dept in departments {
-            if agents.contains(where: { $0.name == "shangshu" || $0.name == "尚书省" }) &&
-                agents.contains(where: { $0.name == dept }) {
-                connections.append((dept, "shangshu"))
-                connections.append((dept, "尚书省"))
+        return pairs.compactMap { pair in
+            guard let sourceNodeID = nodeIDByAgentID[pair.fromAgentID],
+                  let targetNodeID = nodeIDByAgentID[pair.toAgentID] else { return nil }
+            return WorkflowEdge(from: sourceNodeID, to: targetNodeID)
+        }
+    }
+
+    private func pairAdjacentDescriptors(
+        from sources: [ArchitectureAgentDescriptor],
+        to targets: [ArchitectureAgentDescriptor]
+    ) -> Set<ArchitectureEdgePair> {
+        guard !sources.isEmpty, !targets.isEmpty else { return [] }
+
+        let orderedSources = sources.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        let orderedTargets = targets.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+
+        if orderedSources.count == 1 {
+            return Set(orderedTargets.map { ArchitectureEdgePair(fromAgentID: orderedSources[0].agent.id, toAgentID: $0.agent.id) })
+        }
+
+        if orderedTargets.count == 1 {
+            return Set(orderedSources.map { ArchitectureEdgePair(fromAgentID: $0.agent.id, toAgentID: orderedTargets[0].agent.id) })
+        }
+
+        let pairCount = max(orderedSources.count, orderedTargets.count)
+        return Set((0..<pairCount).map { index in
+            let source = orderedSources[min(index, orderedSources.count - 1)]
+            let target = orderedTargets[min(index, orderedTargets.count - 1)]
+            return ArchitectureEdgePair(fromAgentID: source.agent.id, toAgentID: target.agent.id)
+        })
+    }
+
+    private func buildArchitectureBoundaries(from generatedNodes: [ArchitectureGeneratedNode]) -> [WorkflowBoundary] {
+        let grouped = Dictionary(grouping: generatedNodes, by: \.descriptor.clusterKey)
+
+        return grouped.compactMap { clusterKey, members in
+            guard members.count > 1 else { return nil }
+
+            let xValues = members.map { $0.node.position.x }
+            let yValues = members.map { $0.node.position.y }
+            let minX = (xValues.min() ?? 0) - 110
+            let maxX = (xValues.max() ?? 0) + 110
+            let minY = (yValues.min() ?? 0) - 80
+            let maxY = (yValues.max() ?? 0) + 80
+
+            var boundary = WorkflowBoundary(
+                title: "\(architectureBoundaryPrefix) \(clusterKey)",
+                rect: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                memberNodeIDs: members.map { $0.node.id }
+            )
+            boundary.updatedAt = Date()
+            return boundary
+        }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    private func mergeArchitectureBoundaries(
+        existing: [WorkflowBoundary],
+        generated: [WorkflowBoundary]
+    ) -> [WorkflowBoundary] {
+        existing.filter { !$0.title.hasPrefix(architectureBoundaryPrefix) } + generated
+    }
+
+    private func mergeArchitecturePermissions(
+        existing: [Permission],
+        descriptors: [ArchitectureAgentDescriptor],
+        edges: [WorkflowEdge],
+        nodeIDByAgentID: [UUID: UUID]
+    ) -> [Permission] {
+        let agentIDByNodeID = Dictionary(uniqueKeysWithValues: nodeIDByAgentID.map { ($1, $0) })
+        var uniquePermissions: [String: Permission] = [:]
+
+        for permission in existing {
+            uniquePermissions[permissionKey(from: permission.fromAgentID, to: permission.toAgentID)] = permission
+        }
+
+        let descriptorLookup = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.agent.id, $0) })
+
+        for edge in edges {
+            guard let fromAgentID = agentIDByNodeID[edge.fromNodeID],
+                  let toAgentID = agentIDByNodeID[edge.toNodeID] else { continue }
+
+            let key = permissionKey(from: fromAgentID, to: toAgentID)
+            if uniquePermissions[key] == nil {
+                uniquePermissions[key] = Permission(
+                    fromAgentID: fromAgentID,
+                    toAgentID: toAgentID,
+                    permissionType: .allow
+                )
+            } else if uniquePermissions[key]?.permissionType == .allow {
+                uniquePermissions[key]?.updatedAt = Date()
+            }
+
+            if let fromDescriptor = descriptorLookup[fromAgentID],
+               let toDescriptor = descriptorLookup[toAgentID],
+               fromDescriptor.lane == .coordination,
+               toDescriptor.lane == .execution {
+                let reverseKey = permissionKey(from: toAgentID, to: fromAgentID)
+                if uniquePermissions[reverseKey] == nil {
+                    uniquePermissions[reverseKey] = Permission(
+                        fromAgentID: toAgentID,
+                        toAgentID: fromAgentID,
+                        permissionType: .allow
+                    )
+                }
             }
         }
 
-        return connections
+        return uniquePermissions.values.sorted { lhs, rhs in
+            let leftKey = permissionKey(from: lhs.fromAgentID, to: lhs.toAgentID)
+            let rightKey = permissionKey(from: rhs.fromAgentID, to: rhs.toAgentID)
+            return leftKey < rightKey
+        }
+    }
+
+    private func permissionKey(from: UUID, to: UUID) -> String {
+        "\(from.uuidString)->\(to.uuidString)"
+    }
+
+    private func matchesAnyKeyword(in searchCorpus: String, keywords: [String]) -> Bool {
+        keywords.contains { keyword in
+            searchCorpus.contains(keyword.lowercased())
+        }
+    }
+
+    private var architectureBoundaryPrefix: String {
+        "Auto Boundary:"
+    }
+
+    private enum ArchitectureLane: Int, CaseIterable {
+        case leadership
+        case coordination
+        case execution
+        case review
+        case memory
+
+        var title: String {
+            switch self {
+            case .leadership: return "Leadership"
+            case .coordination: return "Coordination"
+            case .execution: return "Execution"
+            case .review: return "Review"
+            case .memory: return "Memory"
+            }
+        }
+    }
+
+    private struct ArchitectureAgentDescriptor {
+        let agent: Agent
+        let lane: ArchitectureLane
+        let clusterKey: String
+        let searchCorpus: String
+
+        var displayName: String { agent.name }
+    }
+
+    private struct ArchitectureGeneratedNode {
+        let node: WorkflowNode
+        let descriptor: ArchitectureAgentDescriptor
+        let proposedPosition: CGPoint
+    }
+
+    private struct ArchitectureEdgePair: Hashable {
+        let fromAgentID: UUID
+        let toAgentID: UUID
     }
 }
