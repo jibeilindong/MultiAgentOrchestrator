@@ -51,9 +51,6 @@ struct WorkflowEditorView: View {
         VStack(spacing: 0) {
             EditorToolbar(
                 viewMode: $viewMode,
-                isConnectMode: $isConnectMode,
-                connectFromAgentID: $connectFromAgentID,
-                connectionType: $connectionType,
                 isRunning: isRunning,
                 onRunTest: runTest,
                 onStopTest: stopTest
@@ -234,9 +231,6 @@ struct WorkflowEditorView: View {
 struct EditorToolbar: View {
     @EnvironmentObject var appState: AppState
     @Binding var viewMode: WorkflowEditorView.EditorViewMode
-    @Binding var isConnectMode: Bool
-    @Binding var connectFromAgentID: UUID?
-    @Binding var connectionType: WorkflowEditorView.ConnectionType
     let isRunning: Bool
     var onRunTest: () -> Void
     var onStopTest: () -> Void
@@ -260,43 +254,6 @@ struct EditorToolbar: View {
                         .buttonStyle(.plain)
                         .foregroundColor(viewMode == mode ? .accentColor : .secondary)
                     }
-                }
-            }
-
-            WorkflowToolbarGroup(title: "Routing") {
-                HStack(spacing: 8) {
-                    Button(action: toggleConnectMode) {
-                        Label(isConnectMode ? "Cancel Link" : "Link Nodes", systemImage: isConnectMode ? "xmark.circle" : "point.3.connected.trianglepath.dotted")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(isConnectMode ? .orange : .blue)
-
-                    Menu {
-                        ForEach(WorkflowEditorView.ConnectionType.allCases, id: \.self) { type in
-                            Button(action: {
-                                connectionType = type
-                                isConnectMode = true
-                            }) {
-                                HStack {
-                                    Text("\(type.rawValue) \(type.description)")
-                                    if connectionType == type {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("\(connectionType.rawValue) \(connectionType.description)", systemImage: "arrow.left.and.right")
-                            .font(.caption)
-                    }
-                    .menuStyle(.borderlessButton)
-                }
-
-                if isConnectMode || connectFromAgentID != nil {
-                    Text(connectHint)
-                        .font(.caption)
-                        .foregroundColor(isConnectMode ? .blue : .secondary)
                 }
             }
 
@@ -364,22 +321,6 @@ struct EditorToolbar: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(Color(.windowBackgroundColor))
-    }
-
-    private var connectHint: String {
-        if connectFromAgentID != nil {
-            return "Source locked. Select the target node to finish the route."
-        }
-        return LocalizedString.selectTargetAgent
-    }
-
-    private func toggleConnectMode() {
-        if isConnectMode {
-            isConnectMode = false
-            connectFromAgentID = nil
-        } else {
-            isConnectMode = true
-        }
     }
 }
 

@@ -1,11 +1,38 @@
 import SwiftUI
 
+private enum ContentToolbarItem: String, CaseIterable, Identifiable {
+    case project
+    case file
+    case view
+    case display
+    case openClaw
+    case language
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .project: return "项目信息"
+        case .file: return "文件"
+        case .view: return "视图"
+        case .display: return "显示控制"
+        case .openClaw: return "OpenClaw"
+        case .language: return "语言"
+        }
+    }
+
+    static let defaultOrder: [ContentToolbarItem] = [.project, .file, .view, .display, .openClaw, .language]
+}
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
     @Binding var zoomScale: CGFloat
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
+    @State private var orderedToolbarItems = ContentToolbarItem.defaultOrder
+    @State private var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
+    @State private var showingToolbarCustomizer = false
     
     var body: some View {
         HStack(spacing: 0) {
@@ -18,193 +45,27 @@ struct ContentView: View {
             // 中间：主内容区
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(appState.currentProject?.name ?? LocalizedString.appName)
-                            .font(.headline)
-                        Text(projectSummary)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(minWidth: 190, alignment: .leading)
-
-                    TopToolbarGroup {
-                        Menu {
-                            Button(action: { appState.createNewProject() }) {
-                                Label(LocalizedString.new, systemImage: "plus")
-                            }
-                            Button(action: { appState.saveProject() }) {
-                                Label(LocalizedString.save, systemImage: "square.and.arrow.down")
-                            }
-                            Divider()
-                            Button(action: { appState.importData() }) {
-                                Label("Import", systemImage: "square.and.arrow.down.on.square")
-                            }
-                            Button(action: { appState.exportData() }) {
-                                Label("Export", systemImage: "square.and.arrow.up")
-                            }
-                            if appState.currentProject != nil {
-                                Divider()
-                                Button(action: { appState.closeProject() }) {
-                                    Label("Close Project", systemImage: "xmark.circle")
-                                }
-                            }
-                        } label: {
-                            Label("File", systemImage: "doc")
-                        }
-
-                        Button(action: { appState.saveProject() }) {
-                            Label(LocalizedString.save, systemImage: "square.and.arrow.down")
-                        }
-                    }
-
-                    TopToolbarGroup {
-                        Menu {
-                            Button("Zoom Out") {
-                                zoomScale = max(zoomScale / 1.25, 0.25)
-                            }
-                            Button("Reset Zoom") {
-                                zoomScale = 1.0
-                            }
-                            Button("Zoom In") {
-                                zoomScale = min(zoomScale * 1.25, 3.0)
-                            }
-                            Divider()
-                            Button(appState.showLogs ? "Hide Logs" : "Show Logs") {
-                                appState.showLogs.toggle()
-                            }
-                        } label: {
-                            Label("View", systemImage: "eye")
-                        }
-
-                        Menu {
-                            Section("线条粗细") {
-                                ForEach([1.0, 2.0, 3.0, 4.0, 6.0], id: \.self) { width in
-                                    Button(action: { appState.canvasDisplaySettings.lineWidth = width }) {
-                                        HStack {
-                                            Text("\(Int(width)) px")
-                                            if appState.canvasDisplaySettings.lineWidth == width {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Section("文字大小") {
-                                ForEach([0.85, 1.0, 1.15, 1.3, 1.5], id: \.self) { scale in
-                                    Button(action: { appState.canvasDisplaySettings.textScale = scale }) {
-                                        HStack {
-                                            Text(String(format: "%.0f%%", scale * 100))
-                                            if appState.canvasDisplaySettings.textScale == scale {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Section("线条颜色") {
-                                ForEach(CanvasColorPreset.allCases) { preset in
-                                    Button(action: { appState.canvasDisplaySettings.lineColor = preset }) {
-                                        HStack {
-                                            Circle()
-                                                .fill(preset.color)
-                                                .frame(width: 8, height: 8)
-                                            Text(preset.title)
-                                            if appState.canvasDisplaySettings.lineColor == preset {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Section("文字颜色") {
-                                ForEach(CanvasColorPreset.allCases) { preset in
-                                    Button(action: { appState.canvasDisplaySettings.textColor = preset }) {
-                                        HStack {
-                                            Circle()
-                                                .fill(preset.color)
-                                                .frame(width: 8, height: 8)
-                                            Text(preset.title)
-                                            if appState.canvasDisplaySettings.textColor == preset {
-                                                Image(systemName: "checkmark")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label("显示", systemImage: "slider.horizontal.3")
-                        }
-
-                        HStack(spacing: 4) {
-                            Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
-                                Image(systemName: "minus.magnifyingglass")
-                            }
-                            Text("\(Int(zoomScale * 100))%")
-                                .font(.caption)
-                                .frame(width: 44)
-                            Button(action: { zoomScale = min(zoomScale * 1.25, 3.0) }) {
-                                Image(systemName: "plus.magnifyingglass")
-                            }
-                        }
-                    }
-
-                    TopToolbarGroup {
-                        Menu {
-                            statusMenuRow
-                            Divider()
-                            if appState.openClawManager.isConnected {
-                                Button(action: { appState.openClawManager.disconnect() }) {
-                                    Label("Disconnect", systemImage: "link.badge.minus")
-                                }
-                                Button(action: { addOpenClawAgentsToProject() }) {
-                                    Label("Add Agents to Project", systemImage: "person.badge.plus")
-                                }
-                            } else {
-                                Button(action: { autoDetectAndConnect() }) {
-                                    Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
-                                }
-                            }
-                            Divider()
-                            Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
-                                Label(LocalizedString.settings, systemImage: "gear")
-                            }
-                        } label: {
-                            Label("OpenClaw", systemImage: "bolt.horizontal.circle")
-                        }
-
-                        Menu {
-                            ForEach(AppLanguage.allCases) { language in
-                                Button(action: { appState.localizationManager.setLanguage(language) }) {
-                                    HStack {
-                                        Text(language.displayName)
-                                        if appState.localizationManager.currentLanguage == language {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "globe")
-                                Text(appState.localizationManager.currentLanguage == .simplifiedChinese ? "简体" : "EN")
-                            }
-                        }
+                    ForEach(toolbarItemsInDisplayOrder) { item in
+                        toolbarContent(for: item)
                     }
 
                     Spacer(minLength: 12)
+
+                    ToolbarCustomizerButton(
+                        orderedItems: $orderedToolbarItems,
+                        visibleItems: $visibleToolbarItems,
+                        isPresented: $showingToolbarCustomizer
+                    )
 
                     Picker("", selection: $selectedTab) {
                         Label(LocalizedString.workflow, systemImage: "square.grid.2x2").tag(0)
                         Label(LocalizedString.tasks, systemImage: "square.stack.3d.up").tag(1)
                         Label(LocalizedString.dashboard, systemImage: "chart.bar").tag(2)
-                        Label(LocalizedString.controlPanel, systemImage: "gearshape.2").tag(3)
+                        Label(LocalizedString.messages, systemImage: "message").tag(3)
                         Label(LocalizedString.permissions, systemImage: "lock.shield").tag(4)
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 500)
+                    .frame(width: 520)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
@@ -218,7 +79,7 @@ struct ContentView: View {
                     case 0: WorkflowEditorView(zoomScale: $zoomScale)
                     case 1: KanbanView()
                     case 2: TaskDashboardView(taskManager: appState.taskManager)
-                    case 3: ControlPanelView()
+                    case 3: MessagesView(messageManager: appState.messageManager)
                     case 4: PermissionsView()
                     default: WorkflowEditorView(zoomScale: $zoomScale)
                     }
@@ -253,6 +114,11 @@ struct ContentView: View {
         } message: {
             Text(openClawMessage ?? "")
         }
+        .onAppear(perform: loadToolbarPreferences)
+    }
+
+    private var toolbarItemsInDisplayOrder: [ContentToolbarItem] {
+        orderedToolbarItems.filter { visibleToolbarItems.contains($0) }
     }
 
     private var projectSummary: String {
@@ -260,6 +126,133 @@ struct ContentView: View {
         let workflowCount = appState.currentProject?.workflows.count ?? 0
         let edgeCount = appState.currentProject?.workflows.first?.edges.count ?? 0
         return "\(agentCount) agents • \(workflowCount) workflows • \(edgeCount) routes"
+    }
+
+    @ViewBuilder
+    private func toolbarContent(for item: ContentToolbarItem) -> some View {
+        switch item {
+        case .project:
+            TopToolbarGroup {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.currentProject?.name ?? LocalizedString.appName)
+                        .font(.headline)
+                    Text(projectSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(minWidth: 190, alignment: .leading)
+            }
+        case .file:
+            TopToolbarGroup {
+                Menu {
+                    Button(action: { appState.createNewProject() }) {
+                        Label(LocalizedString.new, systemImage: "plus")
+                    }
+                    Button(action: { appState.saveProject() }) {
+                        Label(LocalizedString.save, systemImage: "square.and.arrow.down")
+                    }
+                    Divider()
+                    Button(action: { appState.importData() }) {
+                        Label("Import", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    Button(action: { appState.exportData() }) {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    if appState.currentProject != nil {
+                        Divider()
+                        Button(action: { appState.closeProject() }) {
+                            Label("Close Project", systemImage: "xmark.circle")
+                        }
+                    }
+                } label: {
+                    Label("File", systemImage: "doc")
+                }
+
+                Button(action: { appState.saveProject() }) {
+                    Label(LocalizedString.save, systemImage: "square.and.arrow.down")
+                }
+            }
+        case .view:
+            TopToolbarGroup {
+                Menu {
+                    Button("Zoom Out") {
+                        zoomScale = max(zoomScale / 1.25, 0.25)
+                    }
+                    Button("Reset Zoom") {
+                        zoomScale = 1.0
+                    }
+                    Button("Zoom In") {
+                        zoomScale = min(zoomScale * 1.25, 3.0)
+                    }
+                    Divider()
+                    Button(appState.showLogs ? "Hide Logs" : "Show Logs") {
+                        appState.showLogs.toggle()
+                    }
+                } label: {
+                    Label("View", systemImage: "eye")
+                }
+
+                HStack(spacing: 4) {
+                    Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
+                        Image(systemName: "minus.magnifyingglass")
+                    }
+                    Text("\(Int(zoomScale * 100))%")
+                        .font(.caption)
+                        .frame(width: 44)
+                    Button(action: { zoomScale = min(zoomScale * 1.25, 3.0) }) {
+                        Image(systemName: "plus.magnifyingglass")
+                    }
+                }
+            }
+        case .display:
+            CanvasDisplayToolbar()
+                .environmentObject(appState)
+        case .openClaw:
+            TopToolbarGroup {
+                Menu {
+                    statusMenuRow
+                    Divider()
+                    if appState.openClawManager.isConnected {
+                        Button(action: { appState.openClawManager.disconnect() }) {
+                            Label("Disconnect", systemImage: "link.badge.minus")
+                        }
+                        Button(action: { addOpenClawAgentsToProject() }) {
+                            Label("Add Agents to Project", systemImage: "person.badge.plus")
+                        }
+                    } else {
+                        Button(action: { autoDetectAndConnect() }) {
+                            Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
+                        }
+                    }
+                    Divider()
+                    Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
+                        Label(LocalizedString.settings, systemImage: "gear")
+                    }
+                } label: {
+                    Label("OpenClaw", systemImage: "bolt.horizontal.circle")
+                }
+            }
+        case .language:
+            TopToolbarGroup {
+                Menu {
+                    ForEach(AppLanguage.allCases) { language in
+                        Button(action: { appState.localizationManager.setLanguage(language) }) {
+                            HStack {
+                                Text(language.displayName)
+                                if appState.localizationManager.currentLanguage == language {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                        Text(appState.localizationManager.currentLanguage == .simplifiedChinese ? "简体" : "EN")
+                    }
+                }
+            }
+        }
     }
 
     private var statusMenuRow: some View {
@@ -309,6 +302,36 @@ struct ContentView: View {
         appState.currentProject = project
         openClawMessage = "Added \(appState.openClawManager.agents.count) agents."
     }
+
+    private func loadToolbarPreferences() {
+        let defaults = UserDefaults.standard
+        if let orderRaw = defaults.string(forKey: "content.toolbar.order"), !orderRaw.isEmpty {
+            let parsed = orderRaw
+                .split(separator: ",")
+                .compactMap { ContentToolbarItem(rawValue: String($0)) }
+            orderedToolbarItems = normalizedOrder(parsed)
+        }
+
+        if let visibleRaw = defaults.string(forKey: "content.toolbar.visible"), !visibleRaw.isEmpty {
+            let parsed = Set(
+                visibleRaw
+                    .split(separator: ",")
+                    .compactMap { ContentToolbarItem(rawValue: String($0)) }
+            )
+            visibleToolbarItems = parsed.isEmpty ? Set(ContentToolbarItem.defaultOrder) : parsed
+        }
+    }
+
+    private func normalizedOrder(_ items: [ContentToolbarItem]) -> [ContentToolbarItem] {
+        var unique: [ContentToolbarItem] = []
+        for item in items where !unique.contains(item) {
+            unique.append(item)
+        }
+        for item in ContentToolbarItem.defaultOrder where !unique.contains(item) {
+            unique.append(item)
+        }
+        return unique
+    }
 }
 
 private struct TopToolbarGroup<Content: View>: View {
@@ -322,6 +345,218 @@ private struct TopToolbarGroup<Content: View>: View {
         .padding(.vertical, 6)
         .background(Color(.controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct CanvasDisplayToolbar: View {
+    @EnvironmentObject var appState: AppState
+
+    private let lineWidthValues: [CGFloat] = [1, 2, 3, 4, 6]
+    private let textScaleValues: [CGFloat] = [0.85, 1.0, 1.15, 1.3, 1.5]
+
+    var body: some View {
+        TopToolbarGroup {
+            HStack(spacing: 10) {
+                ToolbarStepper(
+                    title: "线宽",
+                    valueText: "\(Int(appState.canvasDisplaySettings.lineWidth))px",
+                    canDecrease: selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth) > 0,
+                    canIncrease: selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth) < lineWidthValues.count - 1,
+                    onDecrease: { shiftLineWidth(by: -1) },
+                    onIncrease: { shiftLineWidth(by: 1) }
+                )
+
+                ToolbarStepper(
+                    title: "字号",
+                    valueText: "\(Int(appState.canvasDisplaySettings.textScale * 100))%",
+                    canDecrease: selectedIndex(in: textScaleValues, for: appState.canvasDisplaySettings.textScale) > 0,
+                    canIncrease: selectedIndex(in: textScaleValues, for: appState.canvasDisplaySettings.textScale) < textScaleValues.count - 1,
+                    onDecrease: { shiftTextScale(by: -1) },
+                    onIncrease: { shiftTextScale(by: 1) }
+                )
+
+                ToolbarColorSelector(
+                    title: "线色",
+                    selection: appState.canvasDisplaySettings.lineColor,
+                    onSelect: { appState.canvasDisplaySettings.lineColor = $0 }
+                )
+
+                ToolbarColorSelector(
+                    title: "字色",
+                    selection: appState.canvasDisplaySettings.textColor,
+                    onSelect: { appState.canvasDisplaySettings.textColor = $0 }
+                )
+            }
+        }
+    }
+
+    private func selectedIndex(in values: [CGFloat], for current: CGFloat) -> Int {
+        values.firstIndex(where: { abs($0 - current) < 0.001 }) ?? 0
+    }
+
+    private func shiftLineWidth(by offset: Int) {
+        let currentIndex = selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth)
+        let nextIndex = min(max(currentIndex + offset, 0), lineWidthValues.count - 1)
+        appState.canvasDisplaySettings.lineWidth = lineWidthValues[nextIndex]
+    }
+
+    private func shiftTextScale(by offset: Int) {
+        let currentIndex = selectedIndex(in: textScaleValues, for: appState.canvasDisplaySettings.textScale)
+        let nextIndex = min(max(currentIndex + offset, 0), textScaleValues.count - 1)
+        appState.canvasDisplaySettings.textScale = textScaleValues[nextIndex]
+    }
+}
+
+private struct ToolbarStepper: View {
+    let title: String
+    let valueText: String
+    let canDecrease: Bool
+    let canIncrease: Bool
+    let onDecrease: () -> Void
+    let onIncrease: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            HStack(spacing: 4) {
+                Button(action: onDecrease) {
+                    Image(systemName: "minus")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canDecrease)
+
+                Text(valueText)
+                    .font(.caption)
+                    .frame(minWidth: 42)
+
+                Button(action: onIncrease) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canIncrease)
+            }
+        }
+    }
+}
+
+private struct ToolbarColorSelector: View {
+    let title: String
+    let selection: CanvasColorPreset
+    let onSelect: (CanvasColorPreset) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            HStack(spacing: 4) {
+                ForEach(CanvasColorPreset.allCases) { preset in
+                    Button(action: { onSelect(preset) }) {
+                        Circle()
+                            .fill(preset.color)
+                            .frame(width: 12, height: 12)
+                            .overlay {
+                                Circle()
+                                    .stroke(selection == preset ? Color.primary : Color.clear, lineWidth: 2)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+private struct ToolbarCustomizerButton: View {
+    @Binding var orderedItems: [ContentToolbarItem]
+    @Binding var visibleItems: Set<ContentToolbarItem>
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        Button(action: { isPresented.toggle() }) {
+            Label("工具栏", systemImage: "slider.horizontal.3")
+        }
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            ToolbarCustomizationPanel(
+                orderedItems: $orderedItems,
+                visibleItems: $visibleItems
+            )
+            .frame(width: 320)
+            .padding()
+        }
+    }
+}
+
+private struct ToolbarCustomizationPanel: View {
+    @Binding var orderedItems: [ContentToolbarItem]
+    @Binding var visibleItems: Set<ContentToolbarItem>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("工具栏显示与顺序")
+                .font(.headline)
+
+            ForEach(Array(orderedItems.enumerated()), id: \.element) { index, item in
+                HStack(spacing: 10) {
+                    Toggle(isOn: visibilityBinding(for: item)) {
+                        Text(item.title)
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.checkbox)
+
+                    Spacer()
+
+                    Button(action: { moveItem(from: index, offset: -1) }) {
+                        Image(systemName: "arrow.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == 0)
+
+                    Button(action: { moveItem(from: index, offset: 1) }) {
+                        Image(systemName: "arrow.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == orderedItems.count - 1)
+                }
+            }
+        }
+        .onChange(of: orderedItems) { _, _ in
+            persistPreferences()
+        }
+        .onChange(of: visibleItems) { _, _ in
+            persistPreferences()
+        }
+    }
+
+    private func visibilityBinding(for item: ContentToolbarItem) -> Binding<Bool> {
+        Binding(
+            get: { visibleItems.contains(item) },
+            set: { isVisible in
+                if isVisible {
+                    visibleItems.insert(item)
+                } else {
+                    visibleItems.remove(item)
+                }
+            }
+        )
+    }
+
+    private func moveItem(from index: Int, offset: Int) {
+        let targetIndex = index + offset
+        guard orderedItems.indices.contains(targetIndex) else { return }
+        let item = orderedItems.remove(at: index)
+        orderedItems.insert(item, at: targetIndex)
+    }
+
+    private func persistPreferences() {
+        let defaults = UserDefaults.standard
+        defaults.set(orderedItems.map(\.rawValue).joined(separator: ","), forKey: "content.toolbar.order")
+        defaults.set(
+            orderedItems.filter { visibleItems.contains($0) }.map(\.rawValue).joined(separator: ","),
+            forKey: "content.toolbar.visible"
+        )
     }
 }
 
