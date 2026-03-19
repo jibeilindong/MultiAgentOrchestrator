@@ -19,6 +19,7 @@ struct WorkbenchConversationView: View {
 
     @State private var selectedWorkflowID: UUID?
     @State private var dashboardLayout: WorkbenchDashboardLayout = .sideBySide
+    @State private var lastCombinedLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var prompt = ""
     @State private var errorText: String?
 
@@ -170,6 +171,11 @@ struct WorkbenchConversationView: View {
                 selectedWorkflowID = firstID
             }
         }
+        .onChange(of: dashboardLayout) { _, newValue in
+            if newValue != .dashboardOnly {
+                lastCombinedLayout = newValue
+            }
+        }
     }
 
     private var content: some View {
@@ -214,6 +220,24 @@ struct WorkbenchConversationView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 170)
+
+                HStack(spacing: 4) {
+                    Button(action: shrinkDashboard) {
+                        Image(systemName: "minus.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("与工作台共同展示仪表盘")
+                    .disabled(dashboardLayout != .dashboardOnly)
+
+                    Button(action: expandDashboard) {
+                        Image(systemName: "plus.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("仅显示仪表盘")
+                    .disabled(dashboardLayout == .dashboardOnly)
+                }
 
                 statusBadge(
                     title: appState.openClawService.isExecuting ? "执行中" : "待命",
@@ -277,6 +301,9 @@ struct WorkbenchConversationView: View {
                     .frame(minHeight: 280, idealHeight: 420)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        case .dashboardOnly:
+            MonitoringDashboardView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -563,11 +590,23 @@ struct WorkbenchConversationView: View {
             .foregroundColor(color)
             .clipShape(Capsule())
     }
+
+    private func expandDashboard() {
+        if dashboardLayout != .dashboardOnly {
+            lastCombinedLayout = dashboardLayout
+        }
+        dashboardLayout = .dashboardOnly
+    }
+
+    private func shrinkDashboard() {
+        dashboardLayout = lastCombinedLayout
+    }
 }
 
 private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
     case sideBySide
     case topBottom
+    case dashboardOnly
 
     var id: String { rawValue }
 
@@ -577,6 +616,8 @@ private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
             return "左右分栏"
         case .topBottom:
             return "上下分栏"
+        case .dashboardOnly:
+            return "仅仪表盘"
         }
     }
 }

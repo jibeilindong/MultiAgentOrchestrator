@@ -14,7 +14,9 @@ struct CanvasContentView: View {
     @Binding var selectedNodeID: UUID?
     @Binding var selectedNodeIDs: Set<UUID>
     @Binding var selectedEdgeID: UUID?
+    @Binding var selectedBoundaryIDs: Set<UUID>
     @Binding var isLassoMode: Bool
+    @Binding var isTransientLassoMode: Bool
     @Binding var lassoRect: CGRect?
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
@@ -45,7 +47,20 @@ struct CanvasContentView: View {
 
                 WorkflowBoundaryOverlay(
                     groups: explicitBoundaryRects(in: geometry),
-                    fallbackGroups: collaborationGroups(in: geometry)
+                    fallbackGroups: collaborationGroups(in: geometry),
+                    selectedBoundaryIDs: selectedBoundaryIDs,
+                    onBoundaryTap: { boundaryID in
+                        guard let workflow = currentWorkflow,
+                              let boundary = workflow.boundaries.first(where: { $0.id == boundaryID }) else {
+                            return
+                        }
+                        selectedBoundaryIDs = [boundaryID]
+                        selectedNodeIDs = Set(boundary.memberNodeIDs)
+                        selectedNodeID = nil
+                        selectedEdgeID = nil
+                        connectingFromNode = nil
+                        tempConnectionEnd = nil
+                    }
                 )
 
                 ConnectionLinesView(
@@ -60,6 +75,7 @@ struct CanvasContentView: View {
                     onEdgeSelected: { edge in
                         selectedNodeID = nil
                         selectedNodeIDs.removeAll()
+                        selectedBoundaryIDs.removeAll()
                         onEdgeSelected?(edge)
                     }
                 )
@@ -78,6 +94,7 @@ struct CanvasContentView: View {
                     selectedNodeID: $selectedNodeID,
                     selectedNodeIDs: $selectedNodeIDs,
                     selectedEdgeID: $selectedEdgeID,
+                    selectedBoundaryIDs: $selectedBoundaryIDs,
                     connectingFromNode: $connectingFromNode,
                     tempConnectionEnd: $tempConnectionEnd,
                     scale: scale,
@@ -90,8 +107,6 @@ struct CanvasContentView: View {
                     onSubflowEdit: onSubflowEdit
                 )
                 .environmentObject(appState)
-
-                HintViews(geometry: geometry)
 
                 if let lassoRect {
                     Rectangle()
@@ -143,27 +158,36 @@ struct CanvasContentView: View {
     private func addWorkflowNodeToCanvas(type: WorkflowNode.NodeType, at location: CGPoint, geometry: GeometryProxy) {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
-        let position = CGPoint(
+        let rawPosition = CGPoint(
             x: (location.x - centerX - offset.width) / scale,
             y: (location.y - centerY - offset.height) / scale
         )
+        let position = appState.snapPointToGrid(rawPosition)
         appState.addNode(type: type, position: position)
     }
 
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint, geometry: GeometryProxy) {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
-        let position = CGPoint(
+        let rawPosition = CGPoint(
             x: (location.x - centerX - offset.width) / scale,
             y: (location.y - centerY - offset.height) / scale
         )
+        let position = appState.snapPointToGrid(rawPosition)
         appState.addAgentNode(agentName: agentName, position: position)
     }
 
     private func lassoGesture(in geometry: GeometryProxy) -> some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { value in
-                guard isLassoMode else { return }
+                let rightMousePressed = (NSEvent.pressedMouseButtons & 0x2) != 0
+                if rightMousePressed {
+                    isTransientLassoMode = true
+                }
+
+                let lassoEnabled = isLassoMode || isTransientLassoMode
+                guard lassoEnabled else { return }
+
                 let start = value.startLocation
                 let current = value.location
                 lassoRect = CGRect(
@@ -174,14 +198,33 @@ struct CanvasContentView: View {
                 )
             }
             .onEnded { _ in
-                guard isLassoMode, let lassoRect else { return }
-                let selected = Set((currentWorkflow?.nodes ?? []).compactMap { node -> UUID? in
+                let lassoEnabled = isLassoMode || isTransientLassoMode
+                guard lassoEnabled, let lassoRect else {
+                    lassoRect = nil
+                    isTransientLassoMode = false
+                    return
+                }
+
+                let workflow = currentWorkflow
+                let selectedNodesInRect = Set((workflow?.nodes ?? []).compactMap { node -> UUID? in
                     nodeFrame(for: node, geometry: geometry).intersects(lassoRect) ? node.id : nil
                 })
+
+                let selectedBoundaries = Set((workflow?.boundaries ?? []).compactMap { boundary -> UUID? in
+                    boundaryFrame(for: boundary, geometry: geometry).intersects(lassoRect) ? boundary.id : nil
+                })
+
+                let boundaryMemberNodes = Set((workflow?.boundaries ?? [])
+                    .filter { selectedBoundaries.contains($0.id) }
+                    .flatMap(\.memberNodeIDs))
+
+                let selected = selectedNodesInRect.union(boundaryMemberNodes)
+                selectedBoundaryIDs = selectedBoundaries
                 selectedNodeIDs = selected
-                selectedNodeID = selected.count == 1 ? selected.first : nil
+                selectedNodeID = selected.count == 1 && selectedBoundaries.isEmpty ? selected.first : nil
                 selectedEdgeID = nil
                 self.lassoRect = nil
+                isTransientLassoMode = false
             }
     }
 
@@ -224,16 +267,20 @@ struct CanvasContentView: View {
         guard let workflow = currentWorkflow else { return [] }
 
         return workflow.boundaries.map { boundary in
-            let origin = adjustedPosition(CGPoint(x: boundary.rect.minX, y: boundary.rect.minY), geometry: geometry)
-            let opposite = adjustedPosition(CGPoint(x: boundary.rect.maxX, y: boundary.rect.maxY), geometry: geometry)
-            let rect = CGRect(
-                x: min(origin.x, opposite.x),
-                y: min(origin.y, opposite.y),
-                width: abs(opposite.x - origin.x),
-                height: abs(opposite.y - origin.y)
-            )
+            let rect = boundaryFrame(for: boundary, geometry: geometry)
             return WorkflowBoundaryDisplayGroup(id: boundary.id, title: boundary.title, rect: rect)
         }
+    }
+
+    private func boundaryFrame(for boundary: WorkflowBoundary, geometry: GeometryProxy) -> CGRect {
+        let origin = adjustedPosition(CGPoint(x: boundary.rect.minX, y: boundary.rect.minY), geometry: geometry)
+        let opposite = adjustedPosition(CGPoint(x: boundary.rect.maxX, y: boundary.rect.maxY), geometry: geometry)
+        return CGRect(
+            x: min(origin.x, opposite.x),
+            y: min(origin.y, opposite.y),
+            width: abs(opposite.x - origin.x),
+            height: abs(opposite.y - origin.y)
+        )
     }
 
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
@@ -263,25 +310,35 @@ struct WorkflowBoundaryDisplayGroup: Identifiable {
 struct WorkflowBoundaryOverlay: View {
     let groups: [WorkflowBoundaryDisplayGroup]
     let fallbackGroups: [CGRect]
+    let selectedBoundaryIDs: Set<UUID>
+    var onBoundaryTap: ((UUID) -> Void)?
 
     var body: some View {
         ZStack {
             ForEach(groups) { group in
                 let rect = group.rect
+                let isSelected = selectedBoundaryIDs.contains(group.id)
                 Rectangle()
-                    .fill(Color.orange.opacity(0.04))
+                    .fill((isSelected ? Color.accentColor : Color.orange).opacity(isSelected ? 0.09 : 0.04))
                     .overlay(
                         Rectangle()
-                            .stroke(Color.orange.opacity(0.85), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                            .stroke(
+                                isSelected ? Color.accentColor : Color.orange.opacity(0.85),
+                                style: StrokeStyle(lineWidth: isSelected ? 2.5 : 2, dash: [8, 4])
+                            )
                     )
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        onBoundaryTap?(group.id)
+                    }
 
                 Text(group.title)
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(Color.orange.opacity(0.95))
+                    .background((isSelected ? Color.accentColor : Color.orange).opacity(0.95))
                     .foregroundColor(.white)
                     .position(x: rect.minX + 42, y: rect.minY + 12)
             }

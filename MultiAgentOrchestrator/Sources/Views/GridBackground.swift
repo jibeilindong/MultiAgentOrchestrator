@@ -47,11 +47,6 @@ struct GridBackground: View {
             }
             context.stroke(yAxis, with: .color(Color.gray.opacity(0.5)), lineWidth: 1)
             
-            // 原点标记
-            let origin = Path { p in
-                p.addEllipse(in: CGRect(x: centerX - 2, y: centerY - 2, width: 4, height: 4))
-            }
-            context.fill(origin, with: .color(Color.red))
         }
     }
 }

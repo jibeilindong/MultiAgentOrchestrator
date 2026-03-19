@@ -664,6 +664,8 @@ struct AgentLibrarySidebar: View {
     var onAddAll: () -> Void
     var isOpenClawConnected: Bool = false
     var openClawAgents: [String] = []
+    @State private var openClawExpanded: Bool = true
+    @State private var projectExpanded: Bool = true
     
     var body: some View {
         VStack(spacing: 0) {
@@ -681,8 +683,10 @@ struct AgentLibrarySidebar: View {
             if isOpenClawConnected {
                 Button(action: onAddAll) {
                     HStack {
+                        Spacer(minLength: 0)
                         Image(systemName: "plus.square.on.square")
                         Text("Generate Architecture")
+                        Spacer(minLength: 0)
                     }
                     .font(.caption)
                     .frame(maxWidth: .infinity)
@@ -700,54 +704,69 @@ struct AgentLibrarySidebar: View {
                 LazyVStack(spacing: 8) {
                     // OpenClaw Agents 组（仅在连接时显示）
                     if isOpenClawConnected && !openClawAgents.isEmpty {
-                        // 组标题
+                        Button(action: { openClawExpanded.toggle() }) {
+                            HStack {
+                                Image(systemName: "network")
+                                Text(LocalizedString.openclawAgents)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Text("\(openClawAgents.count)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.2))
+                                    .cornerRadius(4)
+                                Image(systemName: openClawExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                        }
+                        .buttonStyle(.plain)
+
+                        if openClawExpanded {
+                            ForEach(openClawAgents, id: \.self) { agentName in
+                                DraggableAgentItem(name: agentName)
+                                    .padding(.horizontal, 4)
+                            }
+                        }
+                            
+                        Divider()
+                            .padding(.vertical, 8)
+                    }
+                    
+                    // 项目中的Agents
+                    let projectAgents = appState.currentProject?.agents ?? []
+                    Button(action: { projectExpanded.toggle() }) {
                         HStack {
-                            Image(systemName: "network")
-                            Text(LocalizedString.openclawAgents)
+                            Image(systemName: "folder")
+                            Text(LocalizedString.projectAgents)
                                 .font(.caption)
                                 .fontWeight(.semibold)
                             Spacer()
-                            Text("\(openClawAgents.count)")
+                            Text("\(projectAgents.count)")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Color.secondary.opacity(0.2))
                                 .cornerRadius(4)
+                            Image(systemName: projectExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
                         }
                         .padding(.horizontal)
-                        .padding(.top, 8)
-                        
-                        ForEach(openClawAgents, id: \.self) { agentName in
-                            DraggableAgentItem(name: agentName)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    if projectExpanded {
+                        ForEach(projectAgents) { agent in
+                            DraggableAgentItem(name: agent.name, agent: agent)
                                 .padding(.horizontal, 4)
                         }
-                            
-                            Divider()
-                                .padding(.vertical, 8)
-                    }
-                    
-                    // 项目中的Agents
-                    let projectAgents = appState.currentProject?.agents ?? []
-                    HStack {
-                        Image(systemName: "folder")
-                        Text(LocalizedString.projectAgents)
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                        Spacer()
-                        Text("\(projectAgents.count)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.2))
-                            .cornerRadius(4)
-                    }
-                    .padding(.horizontal)
-                    
-                    ForEach(projectAgents) { agent in
-                        DraggableAgentItem(name: agent.name, agent: agent)
-                            .padding(.horizontal, 4)
                     }
                 }
                 .padding()

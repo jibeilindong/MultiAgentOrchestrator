@@ -19,11 +19,14 @@ struct CanvasView: View {
     @State private var selectedNodeID: UUID?
     @State private var selectedNodeIDs: Set<UUID> = []
     @State private var selectedEdgeID: UUID?
+    @State private var selectedBoundaryIDs: Set<UUID> = []
     @State private var connectingFromNode: WorkflowNode?
     @State private var tempConnectionEnd: CGPoint?
     @State private var isDraggingCanvas: Bool = false
     @State private var isLassoMode: Bool = false
+    @State private var isTransientLassoMode: Bool = false
     @State private var lassoRect: CGRect?
+    @State private var suppressCanvasTapClear: Bool = false
 
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
@@ -66,7 +69,9 @@ struct CanvasView: View {
             selectedNodeID: $selectedNodeID,
             selectedNodeIDs: $selectedNodeIDs,
             selectedEdgeID: $selectedEdgeID,
+            selectedBoundaryIDs: $selectedBoundaryIDs,
             isLassoMode: $isLassoMode,
+            isTransientLassoMode: $isTransientLassoMode,
             lassoRect: $lassoRect,
             connectingFromNode: $connectingFromNode,
             tempConnectionEnd: $tempConnectionEnd,
@@ -77,6 +82,11 @@ struct CanvasView: View {
             onEdgeSelected: onEdgeSelected,
             onSubflowEdit: handleSubflowEdit
         )
+        .onChange(of: selectedEdgeID) { _, newValue in
+            if newValue != nil {
+                suppressCanvasTapClear = true
+            }
+        }
         .gesture(createCanvasGesture())
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
@@ -214,7 +224,7 @@ struct CanvasView: View {
 
                 var newBoundary = WorkflowBoundary(
                     title: boundary.title,
-                    rect: boundary.rect.offsetBy(dx: 60, dy: 60),
+                    rect: appState.snapRectToGrid(boundary.rect.offsetBy(dx: 60, dy: 60)),
                     memberNodeIDs: remappedMembers
                 )
                 newBoundary.createdAt = Date()
@@ -231,11 +241,18 @@ struct CanvasView: View {
 
     private func deleteSelection() {
         let selection = activeSelection
-        guard !selection.isEmpty else { return }
-        appState.removeNodes(selection)
+        if !selection.isEmpty {
+            appState.removeNodes(selection)
+        }
+        if !selectedBoundaryIDs.isEmpty {
+            appState.removeBoundaries(selectedBoundaryIDs)
+        }
+
+        guard !selection.isEmpty || !selectedBoundaryIDs.isEmpty else { return }
         selectedNodeID = nil
         selectedNodeIDs.removeAll()
         selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
     }
 
     private func deleteSelectedEdge() {
@@ -258,7 +275,7 @@ struct CanvasView: View {
             SimultaneousGesture(
                 DragGesture(minimumDistance: 5)
                     .onChanged { value in
-                        guard !isLassoMode, connectingFromNode == nil else { return }
+                        guard !isLassoMode, !isTransientLassoMode, connectingFromNode == nil else { return }
                         isDraggingCanvas = true
                         offset = CGSize(
                             width: lastOffset.width + value.translation.width,
@@ -266,7 +283,7 @@ struct CanvasView: View {
                         )
                     }
                     .onEnded { _ in
-                        guard !isLassoMode else { return }
+                        guard !isLassoMode, !isTransientLassoMode else { return }
                         if isDraggingCanvas {
                             lastOffset = offset
                             isDraggingCanvas = false
@@ -274,10 +291,15 @@ struct CanvasView: View {
                     },
                 TapGesture(count: 1)
                     .onEnded {
-                        guard !isLassoMode else { return }
+                        guard !isLassoMode, !isTransientLassoMode else { return }
+                        if suppressCanvasTapClear {
+                            suppressCanvasTapClear = false
+                            return
+                        }
                         selectedNodeID = nil
                         selectedNodeIDs.removeAll()
                         selectedEdgeID = nil
+                        selectedBoundaryIDs.removeAll()
                         connectingFromNode = nil
                         tempConnectionEnd = nil
                         if !isConnectMode {

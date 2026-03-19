@@ -32,13 +32,25 @@ struct ContentView: View {
 
                         Spacer(minLength: 12)
 
-                        Picker("", selection: $selectedTab) {
-                            Label("编辑器", systemImage: "square.grid.2x2").tag(0)
-                            Label("工作台", systemImage: "message.badge.waveform").tag(1)
-                            Label("仪表盘", systemImage: "gauge.with.dots.needle.33percent").tag(2)
+                        if selectedTab == 2 {
+                            HStack(spacing: 8) {
+                                Label("仪表盘（通过左侧导航）", systemImage: "gauge.with.dots.needle.33percent")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Button("切回工作台") {
+                                    selectedTab = 1
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        } else {
+                            Picker("", selection: toolbarTabSelection) {
+                                Label("编辑器", systemImage: "square.grid.2x2").tag(0)
+                                Label("工作台", systemImage: "message.badge.waveform").tag(1)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 230)
                         }
-                        .pickerStyle(.segmented)
-                        .frame(width: 320)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -244,6 +256,13 @@ struct ContentView: View {
                 self.openClawMessage = message
             }
         }
+    }
+
+    private var toolbarTabSelection: Binding<Int> {
+        Binding(
+            get: { selectedTab == 0 ? 0 : 1 },
+            set: { selectedTab = $0 }
+        )
     }
 
 }

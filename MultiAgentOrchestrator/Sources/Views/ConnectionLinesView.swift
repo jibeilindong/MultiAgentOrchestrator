@@ -43,59 +43,123 @@ struct ConnectionLinesView: View {
 
     var body: some View {
         GeometryReader { geo in
+            let layouts = buildEdgeLayouts(in: geo)
+
             ZStack {
-                ForEach(currentWorkflow?.edges ?? []) { edge in
-                    if let fromNode = currentWorkflow?.nodes.first(where: { $0.id == edge.fromNodeID }),
-                       let toNode = currentWorkflow?.nodes.first(where: { $0.id == edge.toNodeID }) {
-                        let fromPos = getNodeCenter(fromNode.position, geometry: geo)
-                        let toPos = getNodeCenter(toNode.position, geometry: geo)
-                        let startPoint = calculateEdgePoint(from: fromPos, to: toPos)
-                        let endPoint = calculateEdgePoint(from: toPos, to: fromPos)
-                        let points = orthogonalRoute(from: startPoint, to: endPoint)
-                        let isSelected = selectedEdgeID == edge.id
-                        let baseColor = edge.requiresApproval ? Color.orange : lineColor
+                ForEach(layouts, id: \.edge.id) { layout in
+                    OrthogonalConnectionShape(points: layout.points)
+                        .stroke(
+                            layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.78),
+                            style: StrokeStyle(
+                                lineWidth: max(1, lineWidth + (layout.isSelected ? 1 : 0)),
+                                lineCap: .round,
+                                lineJoin: .round,
+                                dash: layout.edge.requiresApproval ? [8, 4] : []
+                            )
+                        )
 
-                        OrthogonalConnectionShape(points: points)
+                    if layout.points.count >= 2 {
+                        ArrowShape(from: layout.points[layout.points.count - 2], to: layout.points[layout.points.count - 1])
                             .stroke(
-                                isSelected ? Color.accentColor : baseColor.opacity(0.78),
-                                style: StrokeStyle(
-                                    lineWidth: max(1, lineWidth + (isSelected ? 1 : 0)),
-                                    lineCap: .round,
-                                    lineJoin: .round,
-                                    dash: edge.requiresApproval ? [8, 4] : []
-                                )
+                                layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.9),
+                                style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                             )
+                    }
 
-                        OrthogonalConnectionShape(points: points)
-                            .stroke(Color.clear, lineWidth: max(12, lineWidth + 10))
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedEdgeID = edge.id
-                                onEdgeSelected?(edge)
-                            }
-
-                        if points.count >= 2 {
-                            ArrowShape(from: points[points.count - 2], to: points[points.count - 1])
-                                .stroke(
-                                    isSelected ? Color.accentColor : baseColor.opacity(0.9),
-                                    style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
-                                )
-                        }
-
-                        let displayText = edgeDisplayText(edge)
-                        if !displayText.isEmpty {
-                            EdgeLabelView(
-                                text: displayText,
-                                requiresApproval: edge.requiresApproval,
-                                textScale: textScale,
-                                textColor: textColor
-                            )
-                            .position(midPoint(for: points))
-                        }
+                    let displayText = edgeDisplayText(layout.edge)
+                    if !displayText.isEmpty {
+                        EdgeLabelView(
+                            text: displayText,
+                            requiresApproval: layout.edge.requiresApproval,
+                            textScale: textScale,
+                            textColor: textColor
+                        )
+                        .position(midPoint(for: layout.points))
                     }
                 }
             }
+            .overlay(hitTestOverlay(layouts: layouts))
         }
+    }
+
+    private func buildEdgeLayouts(in geometry: GeometryProxy) -> [EdgeLayout] {
+        guard let workflow = currentWorkflow else { return [] }
+        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+
+        return workflow.edges.compactMap { edge in
+            guard let fromNode = nodesByID[edge.fromNodeID],
+                  let toNode = nodesByID[edge.toNodeID] else {
+                return nil
+            }
+
+            let fromPos = getNodeCenter(fromNode.position, geometry: geometry)
+            let toPos = getNodeCenter(toNode.position, geometry: geometry)
+            let startPoint = calculateEdgePoint(from: fromPos, to: toPos)
+            let endPoint = calculateEdgePoint(from: toPos, to: fromPos)
+            let points = orthogonalRoute(from: startPoint, to: endPoint)
+            let baseColor = edge.requiresApproval ? Color.orange : lineColor
+            return EdgeLayout(
+                edge: edge,
+                points: points,
+                isSelected: selectedEdgeID == edge.id,
+                baseColor: baseColor
+            )
+        }
+    }
+
+    private func hitTestOverlay(layouts: [EdgeLayout]) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        let movement = hypot(value.translation.width, value.translation.height)
+                        guard movement < 4 else { return }
+                        guard let matchedEdge = nearestEdge(to: value.location, from: layouts) else { return }
+                        selectedEdgeID = matchedEdge.id
+                        onEdgeSelected?(matchedEdge)
+                    }
+            )
+    }
+
+    private func nearestEdge(to point: CGPoint, from layouts: [EdgeLayout]) -> WorkflowEdge? {
+        let tolerance = max(14, lineWidth + 10)
+        var nearest: (edge: WorkflowEdge, distance: CGFloat)?
+
+        for layout in layouts {
+            let distance = distance(from: point, toPolyline: layout.points)
+            guard distance <= tolerance else { continue }
+
+            if let currentNearest = nearest {
+                if distance < currentNearest.distance {
+                    nearest = (layout.edge, distance)
+                }
+            } else {
+                nearest = (layout.edge, distance)
+            }
+        }
+
+        return nearest?.edge
+    }
+
+    private func distance(from point: CGPoint, toPolyline points: [CGPoint]) -> CGFloat {
+        guard points.count >= 2 else { return .greatestFiniteMagnitude }
+        return zip(points, points.dropFirst()).reduce(CGFloat.greatestFiniteMagnitude) { currentMin, segment in
+            min(currentMin, distance(from: point, toSegmentFrom: segment.0, to: segment.1))
+        }
+    }
+
+    private func distance(from point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else {
+            return hypot(point.x - start.x, point.y - start.y)
+        }
+
+        let t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+        let projection = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        return hypot(point.x - projection.x, point.y - projection.y)
     }
 
     private func getNodeCenter(_ position: CGPoint, geometry: GeometryProxy) -> CGPoint {
@@ -185,6 +249,13 @@ struct ConnectionLinesView: View {
 
         return points[points.count / 2]
     }
+}
+
+private struct EdgeLayout {
+    let edge: WorkflowEdge
+    let points: [CGPoint]
+    let isSelected: Bool
+    let baseColor: Color
 }
 
 struct OrthogonalConnectionShape: Shape {

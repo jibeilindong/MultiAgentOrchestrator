@@ -11,6 +11,7 @@ struct NodesView: View {
     @Binding var selectedNodeID: UUID?
     @Binding var selectedNodeIDs: Set<UUID>
     @Binding var selectedEdgeID: UUID?
+    @Binding var selectedBoundaryIDs: Set<UUID>
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     let scale: CGFloat
@@ -92,7 +93,8 @@ struct NodesView: View {
         appState.updateMainWorkflow { workflow in
             for index in workflow.nodes.indices where selection.contains(workflow.nodes[index].id) {
                 guard let origin = dragOriginPositions[workflow.nodes[index].id] else { continue }
-                workflow.nodes[index].position = CGPoint(x: origin.x + dx, y: origin.y + dy)
+                let tentative = CGPoint(x: origin.x + dx, y: origin.y + dy)
+                workflow.nodes[index].position = appState.snapPointToGrid(tentative)
             }
         }
     }
@@ -116,6 +118,7 @@ struct NodesView: View {
             selectedNodeID = node.id
         }
         selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
 
         if isConnectMode, let onNodeClick {
             onNodeClick(node)

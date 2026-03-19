@@ -874,11 +874,14 @@ class AppState: ObservableObject {
         let maxX = (xValues.max() ?? 0) + 110
         let minY = (yValues.min() ?? 0) - 80
         let maxY = (yValues.max() ?? 0) + 80
+        let snappedRect = snapRectToGrid(
+            CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        )
 
         updateMainWorkflow { workflow in
             var boundary = WorkflowBoundary(
                 title: "Boundary \(workflow.boundaries.count + 1)",
-                rect: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                rect: snappedRect,
                 memberNodeIDs: nodes.map(\.id)
             )
             boundary.updatedAt = Date()
@@ -902,8 +905,46 @@ class AppState: ObservableObject {
         }
     }
 
+    func removeBoundaries(_ boundaryIDs: Set<UUID>) {
+        guard !boundaryIDs.isEmpty else { return }
+        updateMainWorkflow { workflow in
+            workflow.boundaries.removeAll { boundaryIDs.contains($0.id) }
+        }
+    }
+
     func boundary(for nodeID: UUID) -> WorkflowBoundary? {
         currentProject?.workflows.first?.boundary(containing: nodeID)
+    }
+
+    func snapPointToGrid(
+        _ point: CGPoint,
+        gridSize: CGFloat = 20,
+        threshold: CGFloat = 8
+    ) -> CGPoint {
+        func snap(_ value: CGFloat) -> CGFloat {
+            let snapped = (value / gridSize).rounded() * gridSize
+            return abs(snapped - value) <= threshold ? snapped : value
+        }
+
+        return CGPoint(x: snap(point.x), y: snap(point.y))
+    }
+
+    func snapRectToGrid(
+        _ rect: CGRect,
+        gridSize: CGFloat = 20,
+        threshold: CGFloat = 8
+    ) -> CGRect {
+        let snappedMinX = snapPointToGrid(CGPoint(x: rect.minX, y: 0), gridSize: gridSize, threshold: threshold).x
+        let snappedMinY = snapPointToGrid(CGPoint(x: 0, y: rect.minY), gridSize: gridSize, threshold: threshold).y
+        let snappedMaxX = snapPointToGrid(CGPoint(x: rect.maxX, y: 0), gridSize: gridSize, threshold: threshold).x
+        let snappedMaxY = snapPointToGrid(CGPoint(x: 0, y: rect.maxY), gridSize: gridSize, threshold: threshold).y
+
+        return CGRect(
+            x: min(snappedMinX, snappedMaxX),
+            y: min(snappedMinY, snappedMaxY),
+            width: abs(snappedMaxX - snappedMinX),
+            height: abs(snappedMaxY - snappedMinY)
+        )
     }
 
     private func buildMemoryData(project: MAProject) -> ProjectMemoryData {
@@ -1043,18 +1084,19 @@ class AppState: ObservableObject {
     }
 
     func addNode(type: WorkflowNode.NodeType, position: CGPoint) {
+        let snappedPosition = snapPointToGrid(position)
         switch type {
         case .start:
             updateMainWorkflow { workflow in
                 guard !workflow.nodes.contains(where: { $0.type == .start }) else { return }
                 var node = WorkflowNode(type: .start)
-                node.position = position
+                node.position = snappedPosition
                 workflow.nodes.insert(node, at: 0)
             }
         case .agent:
             updateMainWorkflow { workflow in
                 var node = WorkflowNode(type: type)
-                node.position = position
+                node.position = snappedPosition
                 workflow.nodes.append(node)
             }
         }
@@ -1063,7 +1105,7 @@ class AppState: ObservableObject {
     func addAgentNode(agentName: String, position: CGPoint) {
         guard let agent = ensureAgent(named: agentName, description: "OpenClaw Agent: \(agentName)") else { return }
 
-        _ = ensureAgentNode(agentID: agent.id, suggestedPosition: position)
+        _ = ensureAgentNode(agentID: agent.id, suggestedPosition: snapPointToGrid(position))
         openClawManager.activateAgent(agent)
     }
 
@@ -2028,6 +2070,7 @@ class AppState: ObservableObject {
 
         let groupedByLane = Dictionary(grouping: descriptors, by: \.lane)
         var generated: [ArchitectureGeneratedNode] = []
+        var proposedPositionsByAgentID: [UUID: CGPoint] = [:]
 
         for lane in ArchitectureLane.allCases {
             let laneDescriptors = (groupedByLane[lane] ?? []).sorted {
@@ -2056,21 +2099,39 @@ class AppState: ObservableObject {
                     )
                 }
 
-                var node = existingNodesByAgentID[descriptor.agent.id] ?? WorkflowNode(type: .agent)
-                node.agentID = descriptor.agent.id
-                node.title = descriptor.agent.name
-                if existingNodesByAgentID[descriptor.agent.id] == nil || node.position == .zero {
-                    node.position = proposedPosition
-                }
-
-                generated.append(
-                    ArchitectureGeneratedNode(
-                        node: node,
-                        descriptor: descriptor,
-                        proposedPosition: proposedPosition
-                    )
-                )
+                proposedPositionsByAgentID[descriptor.agent.id] = proposedPosition
             }
+        }
+
+        guard !proposedPositionsByAgentID.isEmpty else {
+            return []
+        }
+
+        let allProposed = Array(proposedPositionsByAgentID.values)
+        let minX = allProposed.map(\.x).min() ?? 0
+        let maxX = allProposed.map(\.x).max() ?? 0
+        let minY = allProposed.map(\.y).min() ?? 0
+        let maxY = allProposed.map(\.y).max() ?? 0
+        let center = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
+
+        for descriptor in descriptors {
+            guard let proposedPosition = proposedPositionsByAgentID[descriptor.agent.id] else { continue }
+            let centeredPosition = snapPointToGrid(
+                CGPoint(x: proposedPosition.x - center.x, y: proposedPosition.y - center.y)
+            )
+
+            var node = existingNodesByAgentID[descriptor.agent.id] ?? WorkflowNode(type: .agent)
+            node.agentID = descriptor.agent.id
+            node.title = descriptor.agent.name
+            node.position = centeredPosition
+
+            generated.append(
+                ArchitectureGeneratedNode(
+                    node: node,
+                    descriptor: descriptor,
+                    proposedPosition: centeredPosition
+                )
+            )
         }
 
         return generated
@@ -2219,10 +2280,13 @@ class AppState: ObservableObject {
             let maxX = (xValues.max() ?? 0) + 110
             let minY = (yValues.min() ?? 0) - 80
             let maxY = (yValues.max() ?? 0) + 80
+            let snappedRect = snapRectToGrid(
+                CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+            )
 
             var boundary = WorkflowBoundary(
                 title: "\(architectureBoundaryPrefix) \(clusterKey)",
-                rect: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                rect: snappedRect,
                 memberNodeIDs: members.map { $0.node.id }
             )
             boundary.updatedAt = Date()

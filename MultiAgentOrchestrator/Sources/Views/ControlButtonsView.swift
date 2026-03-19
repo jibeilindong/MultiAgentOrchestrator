@@ -27,6 +27,7 @@ struct ControlButtonsView: View {
 
     @State private var panelSize = CGSize(width: 280, height: 244)
     @State private var panelSizeAtDragStart: CGSize?
+    @State private var activeResizeEdges: PanelResizeEdges = []
 
     private var hasNodeSelection: Bool {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
@@ -92,8 +93,13 @@ struct ControlButtonsView: View {
                             controlCard(title: "选择", icon: "cursorarrow.motionlines") {
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack(spacing: 6) {
-                                        iconButton(systemName: isLassoMode ? "selection.pin.in.out" : "selection.pin.out", action: toggleLassoMode)
-                                            .tint(isLassoMode ? .accentColor : nil)
+                                        Button(action: toggleLassoMode) {
+                                            Label("框选", systemImage: isLassoMode ? "selection.pin.in.out" : "selection.pin.out")
+                                                .font(.caption)
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(isLassoMode ? .accentColor : .secondary.opacity(0.4))
+                                        .help("框选模式（也支持按住右键拖动）")
                                         iconButton(systemName: "doc.on.doc", action: onCopySelection)
                                             .disabled(!hasNodeSelection)
                                         iconButton(systemName: "scissors", action: onCutSelection)
@@ -105,6 +111,9 @@ struct ControlButtonsView: View {
 
                                     Text(hasNodeSelection ? "已选中 \(activeSelection.count) 个节点" : "当前未选中节点")
                                         .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text("按住右键拖动可快速框选")
+                                        .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
                             }
@@ -152,6 +161,7 @@ struct ControlButtonsView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
                 )
+                .overlay(resizeHandlesOverlay)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
             }
             .padding(12)
@@ -174,21 +184,81 @@ struct ControlButtonsView: View {
                 .padding(10)
         }
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 2)
-                .onChanged { value in
-                    let startSize = panelSizeAtDragStart ?? panelSize
-                    if panelSizeAtDragStart == nil {
-                        panelSizeAtDragStart = panelSize
-                    }
-                    panelSize = CGSize(
-                        width: min(max(startSize.width + value.translation.width, 190), 520),
-                        height: min(max(startSize.height + value.translation.height, 170), 420)
-                    )
+        .gesture(resizeGesture(for: [.right, .bottom]))
+    }
+
+    private var resizeHandlesOverlay: some View {
+        ZStack {
+            resizeEdgeHandle(width: nil, height: 8, alignment: .top, edges: [.top])
+            resizeEdgeHandle(width: nil, height: 8, alignment: .bottom, edges: [.bottom])
+            resizeEdgeHandle(width: 8, height: nil, alignment: .leading, edges: [.left])
+            resizeEdgeHandle(width: 8, height: nil, alignment: .trailing, edges: [.right])
+
+            resizeEdgeHandle(width: 16, height: 16, alignment: .topLeading, edges: [.top, .left])
+            resizeEdgeHandle(width: 16, height: 16, alignment: .topTrailing, edges: [.top, .right])
+            resizeEdgeHandle(width: 16, height: 16, alignment: .bottomLeading, edges: [.bottom, .left])
+            resizeEdgeHandle(width: 16, height: 16, alignment: .bottomTrailing, edges: [.bottom, .right])
+        }
+    }
+
+    private func resizeEdgeHandle(
+        width: CGFloat?,
+        height: CGFloat?,
+        alignment: Alignment,
+        edges: PanelResizeEdges
+    ) -> some View {
+        Color.clear
+            .frame(width: width, height: height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+            .contentShape(Rectangle())
+            .gesture(resizeGesture(for: edges))
+    }
+
+    private func resizeGesture(for edges: PanelResizeEdges) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                if panelSizeAtDragStart == nil {
+                    panelSizeAtDragStart = panelSize
+                    activeResizeEdges = edges
                 }
-                .onEnded { _ in
-                    panelSizeAtDragStart = nil
-                }
+
+                guard let startSize = panelSizeAtDragStart else { return }
+                panelSize = resizedPanelSize(
+                    from: startSize,
+                    translation: value.translation,
+                    edges: activeResizeEdges
+                )
+            }
+            .onEnded { _ in
+                panelSizeAtDragStart = nil
+                activeResizeEdges = []
+            }
+    }
+
+    private func resizedPanelSize(
+        from startSize: CGSize,
+        translation: CGSize,
+        edges: PanelResizeEdges
+    ) -> CGSize {
+        var width = startSize.width
+        var height = startSize.height
+
+        if edges.contains(.right) {
+            width += translation.width
+        }
+        if edges.contains(.left) {
+            width -= translation.width
+        }
+        if edges.contains(.bottom) {
+            height += translation.height
+        }
+        if edges.contains(.top) {
+            height -= translation.height
+        }
+
+        return CGSize(
+            width: min(max(width, 190), 520),
+            height: min(max(height, 170), 420)
         )
     }
 
@@ -310,4 +380,13 @@ struct ControlButtonsView: View {
     private func deleteBoundaryFromSelection() {
         appState.removeBoundary(around: activeSelection)
     }
+}
+
+private struct PanelResizeEdges: OptionSet {
+    let rawValue: Int
+
+    static let left = PanelResizeEdges(rawValue: 1 << 0)
+    static let right = PanelResizeEdges(rawValue: 1 << 1)
+    static let top = PanelResizeEdges(rawValue: 1 << 2)
+    static let bottom = PanelResizeEdges(rawValue: 1 << 3)
 }

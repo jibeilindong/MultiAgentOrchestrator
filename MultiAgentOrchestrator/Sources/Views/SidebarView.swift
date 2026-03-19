@@ -26,7 +26,7 @@ struct SidebarView: View {
                 AgentLibrarySidebar(
                     onAddAll: { appState.generateArchitectureFromProjectAgents() },
                     isOpenClawConnected: appState.openClawManager.isConnected,
-                    openClawAgents: appState.openClawManager.agents
+                    openClawAgents: filteredOpenClawAgents
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -42,79 +42,99 @@ struct SidebarView: View {
 
     private var projectFileSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Menu {
-                Section("当前项目") {
-                    Button(action: { showingProjectPicker = true }) {
-                        Label("切换或管理项目", systemImage: "rectangle.stack")
-                    }
+            HStack(spacing: 8) {
+                Menu {
+                    Section("当前项目") {
+                        Button(action: { showingProjectPicker = true }) {
+                            Label("切换或管理项目", systemImage: "rectangle.stack")
+                        }
 
-                    ForEach(appState.projectManager.projects.prefix(8)) { project in
-                        Button(action: { appState.openProject(at: project.url) }) {
-                            Label(project.name, systemImage: project.url == appState.currentProjectFileURL ? "checkmark.circle.fill" : "folder")
+                        ForEach(appState.projectManager.projects.prefix(8)) { project in
+                            Button(action: { appState.openProject(at: project.url) }) {
+                                Label(project.name, systemImage: project.url == appState.currentProjectFileURL ? "checkmark.circle.fill" : "folder")
+                            }
                         }
                     }
-                }
 
-                Divider()
-
-                Button(action: { appState.createNewProject() }) {
-                    Label(LocalizedString.new, systemImage: "plus")
-                }
-                Button(action: { appState.openProject() }) {
-                    Label(LocalizedString.openProject, systemImage: "folder")
-                }
-                Button(action: { appState.saveProject() }) {
-                    Label(LocalizedString.save, systemImage: "square.and.arrow.down")
-                }
-                Button(action: { appState.saveProjectAs() }) {
-                    Label("另存为", systemImage: "square.and.arrow.down.on.square")
-                }
-
-                Divider()
-
-                Button(action: { appState.importData() }) {
-                    Label("导入架构", systemImage: "square.and.arrow.down.on.square")
-                }
-                Button(action: { appState.exportData() }) {
-                    Label("导出架构", systemImage: "square.and.arrow.up")
-                }
-
-                if appState.currentProject != nil {
                     Divider()
 
-                    Button(action: { appState.deleteCurrentProject() }) {
-                        Label("删除项目", systemImage: "trash")
+                    Button(action: { appState.createNewProject() }) {
+                        Label(LocalizedString.new, systemImage: "plus")
+                    }
+                    Button(action: { appState.openProject() }) {
+                        Label(LocalizedString.openProject, systemImage: "folder")
+                    }
+                    Button(action: { appState.saveProject() }) {
+                        Label(LocalizedString.save, systemImage: "square.and.arrow.down")
+                    }
+                    Button(action: { appState.saveProjectAs() }) {
+                        Label("另存为", systemImage: "square.and.arrow.down.on.square")
                     }
 
-                    Button(action: { appState.closeProject() }) {
-                        Label("关闭项目", systemImage: "xmark.circle")
+                    Divider()
+
+                    Button(action: { appState.importData() }) {
+                        Label("导入架构", systemImage: "square.and.arrow.down.on.square")
                     }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "folder")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(appState.currentProject?.name ?? "项目")
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text(projectSummary)
+                    Button(action: { appState.exportData() }) {
+                        Label("导出架构", systemImage: "square.and.arrow.up")
+                    }
+
+                    if appState.currentProject != nil {
+                        Divider()
+
+                        Button(action: { appState.deleteCurrentProject() }) {
+                            Label("删除项目", systemImage: "trash")
+                        }
+
+                        Button(action: { appState.closeProject() }) {
+                            Label("关闭项目", systemImage: "xmark.circle")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(appState.currentProject?.name ?? "项目")
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(projectSummary)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 6)
+                        Image(systemName: "chevron.down")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                            .lineLimit(1)
                     }
-                    Spacer(minLength: 6)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Color(.controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity)
+
+                Button(action: { appState.saveProject() }) {
+                    Image(systemName: "square.and.arrow.down")
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.bordered)
+                .help("保存项目")
+                .disabled(appState.currentProject == nil)
+
+                if appState.currentProject != nil {
+                    Button(action: { appState.closeProject() }) {
+                        Image(systemName: "xmark.circle")
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("关闭项目")
+                }
             }
-            .menuStyle(.borderlessButton)
-            .buttonStyle(.plain)
-            .contentShape(Rectangle())
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)
@@ -162,6 +182,16 @@ struct SidebarView: View {
             NavigationItem(tag: 1, title: "工作台对话", icon: "message.badge.waveform"),
             NavigationItem(tag: 2, title: "监控仪表盘", icon: "gauge.with.dots.needle.33percent")
         ]
+    }
+
+    private var filteredOpenClawAgents: [String] {
+        let projectAgentNames = Set(
+            (appState.currentProject?.agents ?? [])
+                .map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        )
+        return appState.openClawManager.agents.filter { agentName in
+            !projectAgentNames.contains(agentName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
     }
 }
 
