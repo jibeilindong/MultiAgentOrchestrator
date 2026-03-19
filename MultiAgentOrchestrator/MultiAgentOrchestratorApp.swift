@@ -13,6 +13,7 @@ extension Notification.Name {
 struct MultiAgentOrchestratorApp: App {
     @StateObject private var appState = AppState()
     @State private var showingSettings = false
+    @State private var showingToolbarCustomization = false
     @State private var selectedTab = 0
     @State private var zoomScale: CGFloat = 1.0
     
@@ -22,6 +23,10 @@ struct MultiAgentOrchestratorApp: App {
                 .environmentObject(appState)
                 .sheet(isPresented: $showingSettings) {
                     SettingsView()
+                        .environmentObject(appState)
+                }
+                .sheet(isPresented: $showingToolbarCustomization) {
+                    ToolbarCustomizationSheet()
                         .environmentObject(appState)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
@@ -45,6 +50,32 @@ struct MultiAgentOrchestratorApp: App {
                     showingSettings = true
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+
+            CommandGroup(after: .appSettings) {
+                Divider()
+
+                Button("Customize Toolbar…") {
+                    showingToolbarCustomization = true
+                }
+
+                Button("Reset Toolbar Layout") {
+                    appState.resetToolbarLayout()
+                }
+
+                Divider()
+
+                Button(languageMenuTitle(for: .simplifiedChinese)) {
+                    appState.localizationManager.setLanguage(.simplifiedChinese)
+                }
+
+                Button(languageMenuTitle(for: .traditionalChinese)) {
+                    appState.localizationManager.setLanguage(.traditionalChinese)
+                }
+
+                Button(languageMenuTitle(for: .english)) {
+                    appState.localizationManager.setLanguage(.english)
+                }
             }
 
             CommandMenu(LocalizedString.file) {
@@ -76,6 +107,15 @@ struct MultiAgentOrchestratorApp: App {
                     appState.exportData()
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                if appState.currentProject != nil {
+                    Divider()
+
+                    Button("Close Project") {
+                        appState.closeProject()
+                    }
+                    .keyboardShortcut("w", modifiers: [.command, .shift])
+                }
             }
 
             CommandMenu(LocalizedString.edit) {
@@ -189,45 +229,6 @@ struct MultiAgentOrchestratorApp: App {
                 .keyboardShortcut("t", modifiers: [.command, .shift])
             }
 
-            CommandMenu("OpenClaw") {
-                Button("Refresh Status") {
-                    appState.openClawService.checkConnection()
-                }
-
-                Button(LocalizedString.autoDetectConnect) {
-                    appState.openClawManager.connect()
-                }
-
-                Button(LocalizedString.disconnect) {
-                    appState.openClawManager.disconnect()
-                }
-
-                Button(LocalizedString.addAgentsToProject) {
-                    addOpenClawAgentsToProject()
-                }
-
-                Divider()
-
-                Button(LocalizedString.settings) {
-                    showingSettings = true
-                }
-            }
-
-            CommandMenu(LocalizedString.language) {
-                ForEach(AppLanguage.allCases) { language in
-                    Button(action: {
-                        appState.localizationManager.setLanguage(language)
-                    }) {
-                        HStack {
-                            Text(language.displayName)
-                            if appState.localizationManager.currentLanguage == language {
-                                Image(systemName: "checkmark")
-                            }
-                        }
-                    }
-                }
-            }
-
             CommandMenu(LocalizedString.window) {
                 Button(LocalizedString.minimize) {
                     NSApp.keyWindow?.miniaturize(nil)
@@ -289,5 +290,10 @@ struct MultiAgentOrchestratorApp: App {
 
         project.updatedAt = Date()
         appState.currentProject = project
+    }
+
+    private func languageMenuTitle(for language: AppLanguage) -> String {
+        let prefix = appState.localizationManager.currentLanguage == language ? "✓ " : ""
+        return prefix + language.displayName
     }
 }

@@ -623,3 +623,107 @@ struct RealtimeInfoPanel: View {
         }
     }
 }
+
+struct ToolbarCustomizationSheet: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Customize Toolbar")
+                    .font(.headline)
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding()
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Choose which toolbar groups are visible and adjust their order.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                VStack(spacing: 10) {
+                    ForEach(appState.orderedToolbarItems) { item in
+                        HStack(spacing: 12) {
+                            Toggle(isOn: Binding(
+                                get: { appState.visibleToolbarItems.contains(item) },
+                                set: { appState.setToolbarItem(item, visible: $0) }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title)
+                                    Text(toolbarItemDescription(for: item))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+
+                            Spacer()
+
+                            HStack(spacing: 6) {
+                                Button(action: { appState.moveToolbarItem(item, by: -1) }) {
+                                    Image(systemName: "arrow.up")
+                                }
+                                .disabled(isFirst(item))
+
+                                Button(action: { appState.moveToolbarItem(item, by: 1) }) {
+                                    Image(systemName: "arrow.down")
+                                }
+                                .disabled(isLast(item))
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color(.controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+
+                HStack {
+                    Button("Reset to Default") {
+                        appState.resetToolbarLayout()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer()
+                }
+            }
+            .padding()
+
+            Spacer(minLength: 0)
+        }
+        .frame(width: 520, height: 420)
+    }
+
+    private func isFirst(_ item: ContentToolbarItem) -> Bool {
+        appState.orderedToolbarItems.first == item
+    }
+
+    private func isLast(_ item: ContentToolbarItem) -> Bool {
+        appState.orderedToolbarItems.last == item
+    }
+
+    private func toolbarItemDescription(for item: ContentToolbarItem) -> String {
+        switch item {
+        case .project:
+            return "Project name and workflow summary"
+        case .file:
+            return "New, save, import and export actions"
+        case .view:
+            return "Zoom controls and log visibility"
+        case .display:
+            return "Line width, text size and color controls"
+        case .openClaw:
+            return "OpenClaw status, connect and agent import"
+        case .language:
+            return "Language switcher"
+        }
+    }
+}
