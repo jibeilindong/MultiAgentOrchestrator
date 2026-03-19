@@ -8,7 +8,6 @@
 import Foundation
 import CoreGraphics
 import Combine
-import Combine
 
 // 子流程数据参数
 struct SubflowParameter: Codable, Identifiable, Hashable {
@@ -186,7 +185,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
         loopEnabled = try container.decodeIfPresent(Bool.self, forKey: .loopEnabled) ?? false
-        maxIterations = try container.decodeIfPresent(Int.self, forKey: .maxIterations) ?? 1
+        maxIterations = max(1, try container.decodeIfPresent(Int.self, forKey: .maxIterations) ?? 1)
         subflowID = try container.decodeIfPresent(UUID.self, forKey: .subflowID)
         nestingLevel = try container.decodeIfPresent(Int.self, forKey: .nestingLevel) ?? 0
         inputParameters = try container.decodeIfPresent([SubflowParameter].self, forKey: .inputParameters) ?? []

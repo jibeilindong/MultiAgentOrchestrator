@@ -17,6 +17,7 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
     var createdAt: Date
     var updatedAt: Date
     var capabilities: [String]
+    var colorHex: String?
     
     // 不需要为 CGPoint 定义 Codable，因为我们有单独的扩展文件
     
@@ -29,6 +30,7 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
         self.createdAt = Date()
         self.updatedAt = Date()
         self.capabilities = ["basic"]
+        self.colorHex = nil
     }
     
     // 自动合成 Equatable 和 Hashable

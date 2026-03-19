@@ -9,11 +9,13 @@ struct ContentView: View {
     
     var body: some View {
         HStack(spacing: 0) {
+            // 左侧：导航栏
             SidebarView()
                 .frame(width: 250)
             
             Divider()
             
+            // 中间：主内容区
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -74,6 +76,68 @@ struct ContentView: View {
                             Label("View", systemImage: "eye")
                         }
 
+                        Menu {
+                            Section("线条粗细") {
+                                ForEach([1.0, 2.0, 3.0, 4.0, 6.0], id: \.self) { width in
+                                    Button(action: { appState.canvasDisplaySettings.lineWidth = width }) {
+                                        HStack {
+                                            Text("\(Int(width)) px")
+                                            if appState.canvasDisplaySettings.lineWidth == width {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Section("文字大小") {
+                                ForEach([0.85, 1.0, 1.15, 1.3, 1.5], id: \.self) { scale in
+                                    Button(action: { appState.canvasDisplaySettings.textScale = scale }) {
+                                        HStack {
+                                            Text(String(format: "%.0f%%", scale * 100))
+                                            if appState.canvasDisplaySettings.textScale == scale {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Section("线条颜色") {
+                                ForEach(CanvasColorPreset.allCases) { preset in
+                                    Button(action: { appState.canvasDisplaySettings.lineColor = preset }) {
+                                        HStack {
+                                            Circle()
+                                                .fill(preset.color)
+                                                .frame(width: 8, height: 8)
+                                            Text(preset.title)
+                                            if appState.canvasDisplaySettings.lineColor == preset {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Section("文字颜色") {
+                                ForEach(CanvasColorPreset.allCases) { preset in
+                                    Button(action: { appState.canvasDisplaySettings.textColor = preset }) {
+                                        HStack {
+                                            Circle()
+                                                .fill(preset.color)
+                                                .frame(width: 8, height: 8)
+                                            Text(preset.title)
+                                            if appState.canvasDisplaySettings.textColor == preset {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label("显示", systemImage: "slider.horizontal.3")
+                        }
+
                         HStack(spacing: 4) {
                             Button(action: { zoomScale = max(zoomScale / 1.25, 0.25) }) {
                                 Image(systemName: "minus.magnifyingglass")
@@ -90,9 +154,7 @@ struct ContentView: View {
                     TopToolbarGroup {
                         Menu {
                             statusMenuRow
-
                             Divider()
-
                             if appState.openClawManager.isConnected {
                                 Button(action: { appState.openClawManager.disconnect() }) {
                                     Label("Disconnect", systemImage: "link.badge.minus")
@@ -105,18 +167,14 @@ struct ContentView: View {
                                     Label("Auto Detect & Connect", systemImage: "antenna.radiowaves.left.and.right")
                                 }
                             }
-
                             Divider()
-
                             Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
                                 Label(LocalizedString.settings, systemImage: "gear")
                             }
                         } label: {
                             Label("OpenClaw", systemImage: "bolt.horizontal.circle")
                         }
-                    }
 
-                    TopToolbarGroup {
                         Menu {
                             ForEach(AppLanguage.allCases) { language in
                                 Button(action: { appState.localizationManager.setLanguage(language) }) {
@@ -154,6 +212,7 @@ struct ContentView: View {
                 
                 Divider()
                 
+                // 主内容
                 Group {
                     switch selectedTab {
                     case 0: WorkflowEditorView(zoomScale: $zoomScale)
@@ -169,8 +228,9 @@ struct ContentView: View {
             
             Divider()
             
-            PropertiesPanelView()
-                .frame(width: 250)
+            // 右侧：实时信息面板
+            RealtimeInfoPanel()
+                .frame(width: 320)
         }
         .overlay(alignment: .bottom) {
             if isConnectingOpenClaw {
@@ -262,5 +322,226 @@ private struct TopToolbarGroup<Content: View>: View {
         .padding(.vertical, 6)
         .background(Color(.controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct RealtimeInfoPanel: View {
+    @EnvironmentObject var appState: AppState
+
+    @State private var showPermissionSummary = true
+    @State private var showPendingApprovals = true
+    @State private var showExecutionLogs = true
+
+    private var project: MAProject? { appState.currentProject }
+    private var permissions: [Permission] { project?.permissions ?? [] }
+    private var pendingApprovals: [Message] { appState.messageManager.pendingApprovals }
+    private var executionLogs: [ExecutionLogEntry] { appState.openClawService.executionLogs }
+
+    private var agentNameMap: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: (project?.agents ?? []).map { ($0.id, $0.name) })
+    }
+
+    private var allowCount: Int {
+        permissions.filter { $0.permissionType == .allow }.count
+    }
+
+    private var denyCount: Int {
+        permissions.filter { $0.permissionType == .deny }.count
+    }
+
+    private var approvalCount: Int {
+        permissions.filter { $0.permissionType == .requireApproval }.count
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("实时信息")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    DisclosureGroup(
+                        isExpanded: $showPermissionSummary,
+                        content: permissionSummaryContent,
+                        label: {
+                            sectionTitle("权限矩阵摘要", count: permissions.count)
+                        }
+                    )
+
+                    DisclosureGroup(
+                        isExpanded: $showPendingApprovals,
+                        content: pendingApprovalContent,
+                        label: {
+                            sectionTitle("待审批消息", count: pendingApprovals.count)
+                        }
+                    )
+
+                    DisclosureGroup(
+                        isExpanded: $showExecutionLogs,
+                        content: executionLogsContent,
+                        label: {
+                            sectionTitle("执行日志", count: executionLogs.count)
+                        }
+                    )
+                }
+                .padding()
+            }
+        }
+        .background(Color(.windowBackgroundColor))
+    }
+
+    private func sectionTitle(_ title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Spacer()
+            Text("\(count)")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.18))
+                .cornerRadius(4)
+        }
+    }
+
+    private func permissionSummaryContent() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                summaryPill("Allow", value: allowCount, color: .green)
+                summaryPill("Deny", value: denyCount, color: .red)
+                summaryPill("审批", value: approvalCount, color: .orange)
+            }
+
+            if permissions.isEmpty {
+                Text("暂无权限规则")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(Array(permissions.prefix(8))) { permission in
+                    HStack(spacing: 6) {
+                        Text("\(agentName(for: permission.fromAgentID)) → \(agentName(for: permission.toAgentID))")
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        Label(permission.permissionType.rawValue, systemImage: permission.permissionType.icon)
+                            .font(.caption2)
+                            .foregroundColor(permission.permissionType.color)
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                if permissions.count > 8 {
+                    Text("还有 \(permissions.count - 8) 条规则")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private func pendingApprovalContent() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if pendingApprovals.isEmpty {
+                Text("当前没有待审批消息")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(Array(pendingApprovals.prefix(20))) { message in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("\(agentName(for: message.fromAgentID)) → \(agentName(for: message.toAgentID))")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(message.timestamp.formatted(date: .omitted, time: .shortened))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Text(message.content)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+                    .padding(8)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(6)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private func executionLogsContent() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if executionLogs.isEmpty {
+                Text("暂无执行日志")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(Array(executionLogs.suffix(80).reversed())) { entry in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(entry.timestamp.formatted(date: .omitted, time: .standard))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .frame(width: 70, alignment: .leading)
+                        Text(entry.level.rawValue)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(logLevelColor(entry.level))
+                            .frame(width: 52, alignment: .leading)
+                        Text(entry.message)
+                            .font(.caption2)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private func summaryPill(_ title: String, value: Int, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text("\(title): \(value)")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.08))
+        .cornerRadius(6)
+    }
+
+    private func agentName(for id: UUID) -> String {
+        agentNameMap[id] ?? String(id.uuidString.prefix(8))
+    }
+
+    private func logLevelColor(_ level: ExecutionLogEntry.LogLevel) -> Color {
+        switch level {
+        case .info: return .blue
+        case .warning: return .orange
+        case .error: return .red
+        case .success: return .green
+        }
     }
 }

@@ -21,14 +21,6 @@ struct WorkflowEditorView: View {
     @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
     
-    // 同步加载OpenClaw agents
-    private func loadOpenClawAgentsIfNeeded() {
-        guard appState.openClawManager.agents.isEmpty else { return }
-        appState.openClawManager.refreshAgents { _ in
-            refreshKey += 1
-        }
-    }
-    
     enum ConnectionType: String, CaseIterable {
         case unidirectional = "→"
         case bidirectional = "⇄"
@@ -57,7 +49,6 @@ struct WorkflowEditorView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // 工具栏
             EditorToolbar(
                 viewMode: $viewMode,
                 isConnectMode: $isConnectMode,
@@ -68,13 +59,9 @@ struct WorkflowEditorView: View {
                 onStopTest: stopTest
             )
             .zIndex(1000)
-            .onAppear {
-                loadOpenClawAgentsIfNeeded()
-            }
             
             Divider()
             
-            // 主内容区
             ZStack {
                 switch viewMode {
                 case .list:
@@ -94,9 +81,9 @@ struct WorkflowEditorView: View {
                 case .architecture:
                     ArchitectureView(
                         zoomScale: $zoomScale,
-                        isConnectMode: isConnectMode,
+                        isConnectMode: $isConnectMode,
                         connectFromAgentID: $connectFromAgentID,
-                        connectionType: connectionType,
+                        connectionType: $connectionType,
                         onConnect: handleAgentConnection,
                         testExecution: testExecution
                     )
@@ -107,6 +94,12 @@ struct WorkflowEditorView: View {
             if let execution = testExecution {
                 Divider()
                 TestExecutionPanel(execution: execution)
+            }
+        }
+        .onChange(of: viewMode) { _, newValue in
+            if newValue != .architecture {
+                isConnectMode = false
+                connectFromAgentID = nil
             }
         }
     }
@@ -154,7 +147,6 @@ struct WorkflowEditorView: View {
     private func simulateWorkflowExecution(workflow: Workflow, agents: [Agent]) {
         guard var execution = testExecution else { return }
         
-        // 按拓扑顺序执行节点
         let agentNodes = appState.openClawService.executionPlan(for: workflow)
         
         for (index, node) in agentNodes.enumerated() {
@@ -650,9 +642,9 @@ struct AgentGridCard: View {
 struct ArchitectureView: View {
     @EnvironmentObject var appState: AppState
     @Binding var zoomScale: CGFloat
-    var isConnectMode: Bool
+    @Binding var isConnectMode: Bool
     @Binding var connectFromAgentID: UUID?
-    var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var connectionType: WorkflowEditorView.ConnectionType
     var onConnect: (UUID, UUID) -> Void
     var testExecution: WorkflowTestExecution?
     
@@ -669,16 +661,18 @@ struct ArchitectureView: View {
                 isOpenClawConnected: appState.openClawManager.isConnected,
                 openClawAgents: appState.openClawManager.agents
             )
-                .frame(width: 200)
+            .frame(width: 200)
             
             Divider()
             
             // 画布区域
-            GeometryReader { geometry in
+            GeometryReader { _ in
                 ZStack {
                     CanvasView(
                         zoomScale: $zoomScale,
-                        isConnectMode: isConnectMode,
+                        isConnectMode: $isConnectMode,
+                        connectionType: $connectionType,
+                        connectFromAgentID: $connectFromAgentID,
                         onNodeClickInConnectMode: { node in
                             self.handleNodeClickInConnectMode(node: node)
                         },
@@ -698,7 +692,7 @@ struct ArchitectureView: View {
                             self.addAgentNodeToCanvas(agentName: agentName, at: location)
                         }
                     )
-                    
+
                     // 节点属性面板（从右侧滑入）
                     if showNodePropertyPanel, let node = selectedNodeForProperty {
                         NodePropertyPanel(
@@ -720,17 +714,18 @@ struct ArchitectureView: View {
         }
     }
     
-    private func addAgentNodeToCanvas(agentName: String, at location: CGPoint) {
-        appState.addAgentNode(agentName: agentName, position: location)
+    private func addAgentNodeToCanvas(agentName: String, at _: CGPoint) {
+        appState.addAgentNode(agentName: agentName, position: CGPoint(x: 300, y: 200))
     }
     
     // 添加所有OpenClaw agents到画布
     private func addAllAgentsToCanvas() {
-        guard var project = appState.currentProject else { return }
-
-        appState.ensureMainWorkflow()
-
-        var rebuiltWorkflow = Workflow(name: project.workflows.first?.name ?? "Main Workflow")
+        guard var project = appState.currentProject,
+              var workflow = project.workflows.first else { return }
+        
+        // 清除现有节点
+        workflow.nodes.removeAll()
+        workflow.edges.removeAll()
         
         // 计算布局 - 根据角色分组
         let agentPositions = calculateAgentPositions(agents: project.agents)
@@ -739,7 +734,7 @@ struct ArchitectureView: View {
             var newNode = WorkflowNode(type: .agent)
             newNode.agentID = agent.id
             newNode.position = position
-            rebuiltWorkflow.nodes.append(newNode)
+            workflow.nodes.append(newNode)
         }
         
         // 自动生成连接
@@ -747,31 +742,22 @@ struct ArchitectureView: View {
         for (fromName, toName) in connections {
             if let fromAgent = project.agents.first(where: { $0.name == fromName }),
                let toAgent = project.agents.first(where: { $0.name == toName }),
-               let fromNode = rebuiltWorkflow.nodes.first(where: { $0.agentID == fromAgent.id }),
-               let toNode = rebuiltWorkflow.nodes.first(where: { $0.agentID == toAgent.id }) {
+               let fromNode = workflow.nodes.first(where: { $0.agentID == fromAgent.id }),
+               let toNode = workflow.nodes.first(where: { $0.agentID == toAgent.id }) {
                 let edge = WorkflowEdge(from: fromNode.id, to: toNode.id)
-                if !rebuiltWorkflow.edges.contains(where: { $0.fromNodeID == edge.fromNodeID && $0.toNodeID == edge.toNodeID }) {
-                    rebuiltWorkflow.edges.append(edge)
-                }
+                workflow.edges.append(edge)
+                
+                // 添加权限
+                let perm = Permission(fromAgentID: fromAgent.id, toAgentID: toAgent.id, permissionType: .allow)
+                project.permissions.append(perm)
             }
         }
-
-        project.permissions.removeAll()
-        for edge in rebuiltWorkflow.edges {
-            guard let fromAgentID = rebuiltWorkflow.nodes.first(where: { $0.id == edge.fromNodeID })?.agentID,
-                  let toAgentID = rebuiltWorkflow.nodes.first(where: { $0.id == edge.toNodeID })?.agentID else { continue }
-            project.permissions.append(
-                Permission(fromAgentID: fromAgentID, toAgentID: toAgentID, permissionType: .allow)
-            )
+        
+        // 更新项目
+        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
+            project.workflows[index] = workflow
+            appState.currentProject = project
         }
-
-        if project.workflows.isEmpty {
-            project.workflows = [rebuiltWorkflow]
-        } else {
-            project.workflows[0] = rebuiltWorkflow
-        }
-
-        appState.currentProject = project
     }
     
     // 计算agent位置（基于角色层级）
@@ -783,7 +769,6 @@ struct ArchitectureView: View {
         let tier2 = ["zhongshu", "中书省"]  // 处理任务
         let tier3 = ["shangshu", "尚书省"]  // 结果汇总
         let tier4 = ["menxia", "门下省"]  // 审核
-        let departments = ["libu", "吏部", "hubu", "户部", "bingbu", "兵部", "xingbu", "刑部", "gongbu", "工部", "libu_hr", "吏部HR", "zaochao", "早朝"]
         
         var tier1Agents: [Agent] = []
         var tier2Agents: [Agent] = []
@@ -1032,6 +1017,62 @@ struct AgentLibrarySidebar: View {
             .background(Color(.controlBackgroundColor))
         }
     }
+    
+    private func loadOpenClawAgents() -> [String] {
+        // 使用OpenClaw CLI获取agents列表
+        let possiblePaths = [
+            "/Users/chenrongze/.local/bin/openclaw",
+            "/usr/local/bin/openclaw",
+            "/opt/homebrew/bin/openclaw"
+        ]
+        
+        var openclawPath = "/Users/chenrongze/.local/bin/openclaw"
+        for path in possiblePaths {
+            if FileManager.default.fileExists(atPath: path) {
+                openclawPath = path
+                break
+            }
+        }
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: openclawPath)
+        process.arguments = ["agents", "list"]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                // 解析输出，提取agent名称
+                var agents: [String] = []
+                let lines = output.components(separatedBy: "\n")
+                for line in lines {
+                    // 匹配 "- agentName (default)" 格式
+                    if line.hasPrefix("- ") {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        // 去掉 "- " 前缀和可能的 " (default)" 后缀
+                        var name = String(trimmed.dropFirst(2))
+                        if name.contains(" (") {
+                            name = name.components(separatedBy: " (").first ?? name
+                        }
+                        if !name.isEmpty {
+                            agents.append(name)
+                        }
+                    }
+                }
+                return agents.sorted()
+            }
+        } catch {
+            print("Failed to run openclaw agents list: \(error)")
+        }
+        
+        return []
+    }
 }
 
 struct DraggableAgentItem: View {
@@ -1094,7 +1135,6 @@ struct NodePropertyPanel: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // 标题栏
             HStack {
                 Text("Node Properties")
                     .font(.headline)
@@ -1112,7 +1152,6 @@ struct NodePropertyPanel: View {
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // 节点信息
                     GroupBox("Node Info") {
                         VStack(alignment: .leading, spacing: 8) {
                             LabeledContent("ID") {
@@ -1129,7 +1168,7 @@ struct NodePropertyPanel: View {
                                 TextField("Title", text: $nodeTitle)
                                     .textFieldStyle(.roundedBorder)
                             }
-                            
+
                             LabeledContent("Position") {
                                 Text("(\(Int(node.position.x)), \(Int(node.position.y)))")
                                     .font(.caption)
@@ -1139,7 +1178,6 @@ struct NodePropertyPanel: View {
                         .padding(8)
                     }
                     
-                    // Agent配置（如果是Agent节点）
                     if node.type == .agent, let agentID = node.agentID,
                        let agent = getAgent(id: agentID) {
                         GroupBox("Agent: \(agent.name)") {
@@ -1674,7 +1712,7 @@ struct AgentContextMenu: View {
     private func openAgent() {
         // Select the agent in the editor
         if let project = appState.currentProject,
-           let index = project.agents.firstIndex(where: { $0.id == agent.id }) {
+           project.agents.contains(where: { $0.id == agent.id }) {
             // Show agent details in properties panel
             appState.selectedNodeID = agent.id
             showToastMessage("Opened: \(agent.name)", type: .info)

@@ -22,6 +22,9 @@ struct NodeView: View {
     var onTap: (() -> Void)?
     var onDoubleTap: (() -> Void)?
     var onLongPress: (() -> Void)?
+    var accentColor: Color? = nil
+    var textScale: CGFloat = 1
+    var textColor: Color = .primary
 
     @State private var isHovered: Bool = false
     @State private var pulseAnimation: Bool = false
@@ -54,22 +57,32 @@ struct NodeView: View {
                 
                 if let subflowName = subflowName {
                     Text(subflowName)
-                        .font(.caption2)
+                        .font(.system(size: 10 * textScale))
                         .lineLimit(1)
+                        .foregroundColor(textColor)
                 } else {
                     Text(nodeTitle)
-                        .font(.caption)
+                        .font(.system(size: 12 * textScale))
                         .lineLimit(1)
+                        .foregroundColor(textColor)
                 }
+            }
+
+            if node.type == .branch, let condition = optionalText(node.conditionExpression) {
+                Text(condition)
+                    .font(.system(size: 10 * textScale))
+                    .lineLimit(1)
+                    .foregroundColor(textColor.opacity(0.75))
+                    .padding(.horizontal, 8)
             }
             
             // 连接指示器（连接模式下显示）
             if isConnectingMode && !isConnectSource {
                 HStack(spacing: 2) {
                     Image(systemName: "link")
-                        .font(.caption2)
+                        .font(.system(size: 10 * textScale))
                     Text("点击连接")
-                        .font(.system(size: 8))
+                        .font(.system(size: 8 * textScale))
                 }
                 .foregroundColor(.orange)
                 .padding(.horizontal, 6)
@@ -82,18 +95,11 @@ struct NodeView: View {
             if node.type == .subflow {
                 HStack(spacing: 2) {
                     Image(systemName: "arrow.down.doc")
-                        .font(.caption2)
+                        .font(.system(size: 10 * textScale))
                     Text(LocalizedString.subflow)
-                        .font(.caption2)
+                        .font(.system(size: 10 * textScale))
                 }
                 .foregroundColor(.purple)
-            }
-
-            if node.type == .branch, !node.conditionExpression.isEmpty {
-                Text(node.conditionExpression)
-                    .font(.system(size: 8))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
             }
         }
         .frame(width: nodeWidth, height: nodeHeight)
@@ -168,11 +174,11 @@ struct NodeView: View {
     }
     
     private var nodeTitle: String {
+        if let title = optionalText(node.title) {
+            return title
+        }
         if node.type == .agent, let agent = agent {
             return agent.name
-        }
-        if !node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return node.title
         }
         
         switch node.type {
@@ -189,7 +195,7 @@ struct NodeView: View {
             return .accentColor
         }
         switch node.type {
-        case .agent: return .blue
+        case .agent: return accentColor ?? .blue
         case .branch: return .orange
         case .start: return .green
         case .end: return .red
@@ -202,8 +208,8 @@ struct NodeView: View {
             return nodeColor.opacity(0.15)
         }
         switch node.type {
-        case .agent: return Color.blue.opacity(0.08)
-        case .branch: return Color.orange.opacity(0.12)
+        case .agent: return nodeColor.opacity(0.1)
+        case .branch: return Color.orange.opacity(0.1)
         case .start: return Color.green.opacity(0.08)
         case .end: return Color.red.opacity(0.08)
         case .subflow: return Color.purple.opacity(0.08)
@@ -223,7 +229,7 @@ struct NodeView: View {
     private var nodeWidth: CGFloat {
         switch node.type {
         case .agent: return 110
-        case .branch: return 130
+        case .branch: return 110
         case .subflow: return 130
         default: return 90
         }
@@ -231,10 +237,14 @@ struct NodeView: View {
     
     private var nodeHeight: CGFloat {
         switch node.type {
-        case .branch: return 78
         case .subflow: return 75
         default: return 65
         }
+    }
+
+    private func optionalText(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

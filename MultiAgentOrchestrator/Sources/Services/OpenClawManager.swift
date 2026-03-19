@@ -27,16 +27,11 @@ class OpenClawManager: ObservableObject {
         case error(String)
     }
 
-    struct ActiveAgentRuntime: Codable {
+    struct ActiveAgentRuntime: Codable, Hashable {
         var agentID: UUID
         var name: String
         var status: String
         var lastReloadedAt: Date?
-    }
-    
-    private init() {
-        // 创建备份目录
-        try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
     }
 
     private static let possiblePaths = [
@@ -45,6 +40,11 @@ class OpenClawManager: ObservableObject {
         "/opt/homebrew/bin/openclaw",
         "/usr/bin/openclaw"
     ]
+    
+    private init() {
+        // 创建备份目录
+        try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
+    }
     
     // 连接OpenClaw - 使用配置
     func connect() {
@@ -123,10 +123,25 @@ class OpenClawManager: ObservableObject {
         activeAgents[agent.id] = runtime
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            var updatedRuntime = runtime
-            updatedRuntime.status = "active"
-            self.activeAgents[agent.id] = updatedRuntime
+            var updated = runtime
+            updated.status = "active"
+            self.activeAgents[agent.id] = updated
         }
+    }
+
+    private func resolveOpenClawPath() -> String {
+        Self.possiblePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/Users/chenrongze/.local/bin/openclaw"
+    }
+
+    private static func parseAgentNames(from output: String) -> [String] {
+        output
+            .components(separatedBy: .newlines)
+            .compactMap { line in
+                guard line.hasPrefix("- ") else { return nil }
+                let raw = String(line.dropFirst(2))
+                return raw.components(separatedBy: " (").first?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
     }
     
     // 备份当前OpenClaw配置
@@ -223,26 +238,5 @@ class OpenClawManager: ObservableObject {
         // 目前只是占位实现
         print("Applying configuration for \(agents.count) agents")
         return true
-    }
-
-    private func resolveOpenClawPath() -> String {
-        for path in Self.possiblePaths where FileManager.default.fileExists(atPath: path) {
-            return path
-        }
-        return Self.possiblePaths[0]
-    }
-
-    private static func parseAgentNames(from output: String) -> [String] {
-        let parsed = output
-            .split(separator: "\n")
-            .compactMap { line -> String? in
-                guard line.hasPrefix("- ") else { return nil }
-                let rawName = line.dropFirst(2)
-                let name = rawName.split(separator: "(", maxSplits: 1).first?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return name.isEmpty ? nil : name
-            }
-
-        return Array(NSOrderedSet(array: parsed)) as? [String] ?? parsed
     }
 }

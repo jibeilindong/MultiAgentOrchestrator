@@ -9,35 +9,48 @@ import UniformTypeIdentifiers
 struct CanvasView: View {
     @EnvironmentObject var appState: AppState
     @Binding var zoomScale: CGFloat
-    @State private var scale: CGFloat = 1.0
+    @Binding var isConnectMode: Bool
+    @Binding var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var connectFromAgentID: UUID?
+
+    @State private var scale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var selectedNodeID: UUID?
+    @State private var selectedNodeIDs: Set<UUID> = []
     @State private var selectedEdgeID: UUID?
     @State private var connectingFromNode: WorkflowNode?
     @State private var tempConnectionEnd: CGPoint?
     @State private var isDraggingCanvas: Bool = false
+    @State private var isLassoMode: Bool = false
+    @State private var lassoRect: CGRect?
+
+    @State private var copiedNodes: [WorkflowNode] = []
+    @State private var copiedEdges: [WorkflowEdge] = []
 
     @State private var showingSubflowEditor: Bool = false
     @State private var editingSubflowNode: WorkflowNode?
     @State private var currentWorkflowForSubflow: Workflow?
 
-    var isConnectMode: Bool = false
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
 
     init(
-        zoomScale: Binding<CGFloat> = .constant(1.0),
-        isConnectMode: Bool = false,
+        zoomScale: Binding<CGFloat> = .constant(1),
+        isConnectMode: Binding<Bool> = .constant(false),
+        connectionType: Binding<WorkflowEditorView.ConnectionType> = .constant(.unidirectional),
+        connectFromAgentID: Binding<UUID?> = .constant(nil),
         onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil,
         onNodeSelected: ((WorkflowNode) -> Void)? = nil,
         onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
         onDropAgent: ((String, CGPoint) -> Void)? = nil
     ) {
         self._zoomScale = zoomScale
-        self.isConnectMode = isConnectMode
+        self._isConnectMode = isConnectMode
+        self._connectionType = connectionType
+        self._connectFromAgentID = connectFromAgentID
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
         self.onNodeSelected = onNodeSelected
         self.onEdgeSelected = onEdgeSelected
@@ -50,26 +63,19 @@ struct CanvasView: View {
             offset: $offset,
             lastOffset: $lastOffset,
             selectedNodeID: $selectedNodeID,
+            selectedNodeIDs: $selectedNodeIDs,
             selectedEdgeID: $selectedEdgeID,
+            isLassoMode: $isLassoMode,
+            lassoRect: $lassoRect,
             connectingFromNode: $connectingFromNode,
             tempConnectionEnd: $tempConnectionEnd,
+            isConnectMode: isConnectMode,
+            connectFromAgentID: connectFromAgentID,
             onNodeClick: onNodeClickInConnectMode,
             onNodeSelected: onNodeSelected,
             onEdgeSelected: onEdgeSelected,
             onSubflowEdit: handleSubflowEdit
         )
-        .onDrop(of: [.text], isTargeted: nil) { providers, location in
-            for provider in providers {
-                provider.loadObject(ofClass: NSString.self) { item, _ in
-                    if let agentName = item as? String {
-                        DispatchQueue.main.async {
-                            self.onDropAgent?(agentName, location)
-                        }
-                    }
-                }
-            }
-            return true
-        }
         .gesture(createCanvasGesture())
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
@@ -89,7 +95,16 @@ struct CanvasView: View {
                 offset: $offset,
                 lastOffset: $lastOffset,
                 selectedNodeID: $selectedNodeID,
+                selectedNodeIDs: $selectedNodeIDs,
                 selectedEdgeID: $selectedEdgeID,
+                isConnectMode: $isConnectMode,
+                connectionType: $connectionType,
+                connectFromAgentID: $connectFromAgentID,
+                isLassoMode: $isLassoMode,
+                onDeleteSelectedEdge: deleteSelectedEdge,
+                onCopySelection: copySelection,
+                onPasteSelection: pasteSelection,
+                onDeleteSelection: deleteSelection,
                 appState: appState
             )
         )
@@ -109,6 +124,21 @@ struct CanvasView: View {
         .onChange(of: zoomScale) { _, newValue in
             scale = newValue
         }
+        .onChange(of: isConnectMode) { _, newValue in
+            if !newValue {
+                connectFromAgentID = nil
+            }
+        }
+    }
+
+    private var activeSelection: Set<UUID> {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs
+        }
+        if let selectedNodeID {
+            return [selectedNodeID]
+        }
+        return []
     }
 
     private func handleSubflowEdit(_ node: WorkflowNode) {
@@ -117,6 +147,66 @@ struct CanvasView: View {
             currentWorkflowForSubflow = workflow
             showingSubflowEditor = true
         }
+    }
+
+    private func copySelection() {
+        guard let workflow = appState.currentProject?.workflows.first else { return }
+        let selection = activeSelection
+        guard !selection.isEmpty else { return }
+
+        copiedNodes = workflow.nodes.filter { selection.contains($0.id) }
+        copiedEdges = workflow.edges.filter { selection.contains($0.fromNodeID) && selection.contains($0.toNodeID) }
+    }
+
+    private func pasteSelection() {
+        guard !copiedNodes.isEmpty else { return }
+
+        appState.updateMainWorkflow { workflow in
+            var nodeIDMapping: [UUID: UUID] = [:]
+
+            for sourceNode in copiedNodes {
+                var newNode = WorkflowNode(type: sourceNode.type)
+                newNode.agentID = sourceNode.agentID
+                newNode.position = CGPoint(x: sourceNode.position.x + 60, y: sourceNode.position.y + 60)
+                newNode.title = sourceNode.title
+                newNode.conditionExpression = sourceNode.conditionExpression
+                newNode.loopEnabled = sourceNode.loopEnabled
+                newNode.maxIterations = sourceNode.maxIterations
+                newNode.subflowID = sourceNode.subflowID
+                newNode.nestingLevel = sourceNode.nestingLevel
+                newNode.inputParameters = sourceNode.inputParameters
+                newNode.outputParameters = sourceNode.outputParameters
+                workflow.nodes.append(newNode)
+                nodeIDMapping[sourceNode.id] = newNode.id
+            }
+
+            for sourceEdge in copiedEdges {
+                guard let fromNodeID = nodeIDMapping[sourceEdge.fromNodeID],
+                      let toNodeID = nodeIDMapping[sourceEdge.toNodeID] else { continue }
+
+                var newEdge = WorkflowEdge(from: fromNodeID, to: toNodeID)
+                newEdge.label = sourceEdge.label
+                newEdge.conditionExpression = sourceEdge.conditionExpression
+                newEdge.requiresApproval = sourceEdge.requiresApproval
+                newEdge.dataMapping = sourceEdge.dataMapping
+                workflow.edges.append(newEdge)
+            }
+        }
+    }
+
+    private func deleteSelection() {
+        let selection = activeSelection
+        guard !selection.isEmpty else { return }
+        appState.removeNodes(selection)
+        selectedNodeID = nil
+        selectedNodeIDs.removeAll()
+        selectedEdgeID = nil
+    }
+
+    private func deleteSelectedEdge() {
+        guard let selectedEdgeID else { return }
+        appState.removeEdge(selectedEdgeID)
+        self.selectedEdgeID = nil
     }
 
     private func createCanvasGesture() -> some Gesture {
@@ -133,15 +223,15 @@ struct CanvasView: View {
             SimultaneousGesture(
                 DragGesture(minimumDistance: 5)
                     .onChanged { value in
-                        if connectingFromNode == nil {
-                            isDraggingCanvas = true
-                            offset = CGSize(
-                                width: lastOffset.width + value.translation.width,
-                                height: lastOffset.height + value.translation.height
-                            )
-                        }
+                        guard !isLassoMode, connectingFromNode == nil else { return }
+                        isDraggingCanvas = true
+                        offset = CGSize(
+                            width: lastOffset.width + value.translation.width,
+                            height: lastOffset.height + value.translation.height
+                        )
                     }
                     .onEnded { _ in
+                        guard !isLassoMode else { return }
                         if isDraggingCanvas {
                             lastOffset = offset
                             isDraggingCanvas = false
@@ -149,18 +239,20 @@ struct CanvasView: View {
                     },
                 TapGesture(count: 1)
                     .onEnded {
+                        guard !isLassoMode else { return }
                         selectedNodeID = nil
+                        selectedNodeIDs.removeAll()
                         selectedEdgeID = nil
                         connectingFromNode = nil
                         tempConnectionEnd = nil
+                        connectFromAgentID = nil
                     }
             )
         )
     }
 
     private func setupDefaultNodes() {
-        guard let workflow = appState.ensureMainWorkflow(),
-              workflow.nodes.isEmpty else { return }
+        guard let workflow = appState.ensureMainWorkflow(), workflow.nodes.isEmpty else { return }
 
         appState.updateMainWorkflow { workflow in
             var startNode = WorkflowNode(type: .start)
