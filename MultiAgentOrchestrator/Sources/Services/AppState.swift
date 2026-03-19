@@ -34,6 +34,10 @@ class ProjectManager: ObservableObject {
         return projectsDirectory.appendingPathComponent("backups", isDirectory: true)
     }
 
+    var openClawSessionRootDirectory: URL {
+        return projectsDirectory.appendingPathComponent("openclaw-sessions", isDirectory: true)
+    }
+
     var defaultWorkspaceRootDirectory: URL {
         let appSupportPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupportPath.appendingPathComponent("MultiAgentOrchestrator/Workspaces", isDirectory: true)
@@ -47,6 +51,7 @@ class ProjectManager: ObservableObject {
     func createDirectoriesIfNeeded() {
         try? FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: openClawSessionRootDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
     }
     
@@ -113,8 +118,27 @@ class ProjectManager: ObservableObject {
             try? FileManager.default.removeItem(
                 at: defaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
+            try? FileManager.default.removeItem(
+                at: openClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+            )
         }
         loadProjectList()
+    }
+
+    func openClawProjectRoot(for projectID: UUID) -> URL {
+        openClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+    }
+
+    func openClawBackupDirectory(for projectID: UUID) -> URL {
+        openClawProjectRoot(for: projectID).appendingPathComponent("backup", isDirectory: true)
+    }
+
+    func openClawMirrorDirectory(for projectID: UUID) -> URL {
+        openClawProjectRoot(for: projectID).appendingPathComponent("mirror", isDirectory: true)
+    }
+
+    func openClawImportedAgentsDirectory(for projectID: UUID) -> URL {
+        openClawProjectRoot(for: projectID).appendingPathComponent("agents", isDirectory: true)
     }
 }
 
@@ -281,6 +305,12 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        openClawManager.$discoveryResults
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
         openClawManager.$activeAgents
             .sink { [weak self] _ in
                 self?.syncCurrentProjectFromManagers()
@@ -377,7 +407,9 @@ class AppState: ObservableObject {
             resolvedName = projectName
         }
 
-        let project = MAProject(name: resolvedName)
+        let project = openClawManager.isConnected
+            ? MAProject(name: resolvedName)
+            : makeOfflineTemplateProject(named: resolvedName)
         taskManager.reset()
         messageManager.reset()
         openClawService.resetExecutionSnapshot()
@@ -426,9 +458,23 @@ class AppState: ObservableObject {
             print("保存项目失败: \(error)")
         }
     }
+
+    private func persistCurrentProjectSilently() {
+        guard let project = snapshotCurrentProject() else { return }
+
+        do {
+            let destinationURL = currentProjectFileURL ?? projectManager.projectURL(for: project.name)
+            currentProjectFileURL = try projectManager.saveProject(project, to: destinationURL)
+            currentProject = project
+        } catch {
+            print("静默保存项目失败: \(error)")
+        }
+    }
     
     // 关闭当前项目
     func closeProject() {
+        persistCurrentProjectSilently()
+
         currentProjectFileURL = nil
         taskManager.reset()
         messageManager.reset()
@@ -441,6 +487,15 @@ class AppState: ObservableObject {
         guard let project = currentProject, let currentProjectFileURL else { return }
         projectManager.deleteProject(at: currentProjectFileURL, projectID: project.id)
         closeProject()
+    }
+
+    func shutdown() {
+        if currentProject != nil {
+            persistCurrentProjectSilently()
+        }
+
+        openClawManager.disconnect()
+        stopAutoSave()
     }
 
     func openProject() {
@@ -482,6 +537,130 @@ class AppState: ObservableObject {
             existing: project.workspaceIndex
         )
         currentProject = hydratedProject
+    }
+
+    private func makeOfflineTemplateProject(named projectName: String) -> MAProject {
+        var project = MAProject(name: projectName)
+        let agents = makeOfflineTemplateAgents()
+        project.agents = agents
+        project.workflows = [makeOfflineTemplateWorkflow(agents: agents)]
+        project.permissions = makeOfflineTemplatePermissions(for: agents)
+        return project
+    }
+
+    private func makeOfflineTemplateAgents() -> [Agent] {
+        let templates: [(String, String, [String])] = [
+            ("Coordinator", "负责拆解目标、分配任务并跟踪进度。", ["planning", "coordination"]),
+            ("Researcher", "负责收集背景信息、验证假设并输出摘要。", ["research", "analysis"]),
+            ("Implementer", "负责把计划落实为实现细节和可执行结果。", ["implementation", "delivery"]),
+            ("Reviewer", "负责审查输出、发现风险并提出修正意见。", ["review", "quality"])
+        ]
+
+        return templates.enumerated().map { index, entry in
+            var agent = Agent(name: entry.0)
+            agent.description = entry.1
+            agent.soulMD = """
+            # \(entry.0)
+
+            \(entry.1)
+            """
+            agent.position = CGPoint(x: CGFloat(180 + (index * 220)), y: CGFloat(180 + ((index % 2) * 130)))
+            agent.capabilities = entry.2
+            agent.openClawDefinition.agentIdentifier = entry.0
+            return agent
+        }
+    }
+
+    private func makeOfflineTemplateWorkflow(agents: [Agent]) -> Workflow {
+        var workflow = Workflow(name: "Offline Template Workflow")
+        var x: CGFloat = 160
+        let y: CGFloat = 220
+        var previousNodeID: UUID?
+
+        for agent in agents {
+            var node = WorkflowNode(type: .agent)
+            node.agentID = agent.id
+            node.title = agent.name
+            node.position = CGPoint(x: x, y: y)
+            workflow.nodes.append(node)
+
+            if let previousNodeID {
+                workflow.edges.append(WorkflowEdge(from: previousNodeID, to: node.id))
+            }
+
+            previousNodeID = node.id
+            x += 220
+        }
+
+        return workflow
+    }
+
+    private func makeOfflineTemplatePermissions(for agents: [Agent]) -> [Permission] {
+        guard agents.count > 1 else { return [] }
+
+        var permissions: [Permission] = []
+        for source in agents {
+            for target in agents where source.id != target.id {
+                permissions.append(Permission(fromAgentID: source.id, toAgentID: target.id, permissionType: .allow))
+            }
+        }
+        return permissions
+    }
+
+    func detectOpenClawAgents(using config: OpenClawConfig? = nil, completion: ((Bool, String, [String]) -> Void)? = nil) {
+        let resolvedConfig = config ?? openClawManager.config
+        openClawManager.testConnection(using: resolvedConfig) { [weak self] success, message, names in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.syncCurrentProjectFromManagers()
+                completion?(success, message, names)
+            }
+        }
+    }
+
+    func connectOpenClaw(using config: OpenClawConfig? = nil, completion: ((Bool, String) -> Void)? = nil) {
+        guard let projectID = currentProject?.id else {
+            completion?(false, "请先创建或打开项目，再确认连接 OpenClaw。")
+            return
+        }
+
+        if let config {
+            openClawManager.config = config
+            openClawManager.config.save()
+        }
+
+        openClawManager.connect(for: projectID) { [weak self] success, message in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.syncCurrentProjectFromManagers()
+                if success {
+                    self.persistCurrentProjectSilently()
+                }
+                completion?(success, message)
+            }
+        }
+    }
+
+    func disconnectOpenClaw(completion: ((Bool, String) -> Void)? = nil) {
+        if currentProject != nil {
+            persistCurrentProjectSilently()
+        }
+
+        openClawManager.disconnect()
+        syncCurrentProjectFromManagers()
+        completion?(true, "OpenClaw 已断开并恢复到连接前状态。")
+    }
+
+    @discardableResult
+    func importDetectedOpenClawAgents() -> [ProjectOpenClawDetectedAgentRecord] {
+        guard var project = currentProject else { return [] }
+        let imported = openClawManager.importDetectedAgents(into: &project)
+        guard !imported.isEmpty else { return [] }
+
+        currentProject = project
+        syncCurrentProjectFromManagers()
+        persistCurrentProjectSilently()
+        return imported
     }
 
     private func snapshotCurrentProject() -> MAProject? {

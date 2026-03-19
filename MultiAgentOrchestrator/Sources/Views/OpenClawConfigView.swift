@@ -113,7 +113,7 @@ struct OpenClawConfigView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Text(isTesting ? "Testing..." : "Test Connection")
+                            Text(isTesting ? "识别中..." : "自动识别")
                         }
                     }
                     .disabled(isTesting || isSaving || !canTestConnection)
@@ -124,11 +124,16 @@ struct OpenClawConfigView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Text(isSaving ? "Saving..." : "Save")
+                            Text(isSaving ? "保存中..." : "保存配置")
                         }
                     }
-                    .buttonStyle(.borderedProminent)
                     .disabled(isTesting || isSaving)
+
+                    Button(action: connectNow) {
+                        Text("手动连接")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isTesting || isSaving || !canTestConnection)
                 }
 
                 if let testResult {
@@ -137,6 +142,8 @@ struct OpenClawConfigView: View {
                         .foregroundColor(lastTestSucceeded ? .green : .red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                detectedAgentsSection
             }
             .padding(24)
         }
@@ -218,36 +225,33 @@ struct OpenClawConfigView: View {
         isTesting = true
         testResult = nil
 
-        appState.openClawManager.testConnection(using: config) { success, message, _ in
+        appState.detectOpenClawAgents(using: config) { success, message, _ in
             isTesting = false
             testResult = message
             lastTestedFingerprint = configFingerprint(config)
             lastTestSucceeded = success
             statusMessage = success
-                ? "测试通过。点击 Save 后将把这套配置作为当前确认连接。"
-                : "测试未通过。请调整配置后重新测试。"
+                ? "识别完成。请确认结果后再手动连接。"
+                : "识别未通过。请调整配置后重新识别。"
             statusTone = success ? .success : .error
         }
     }
     
     private func saveConfig() {
-        let matchesLastSuccessfulTest = lastTestSucceeded && lastTestedFingerprint == configFingerprint(config)
-
-        guard matchesLastSuccessfulTest else {
-            appState.openClawManager.config = config
-            config.save()
-            statusMessage = "配置已保存，但尚未确认连接。请先测试通过，再点击 Save。"
-            statusTone = .neutral
-            return
-        }
-
         isSaving = true
-        appState.openClawManager.confirmConnection(using: config) { success, message in
+        appState.openClawManager.config = config
+        config.save()
+        isSaving = false
+        statusMessage = "配置已保存。识别后点击手动连接即可进入会话。"
+        statusTone = .neutral
+    }
+
+    private func connectNow() {
+        isSaving = true
+        appState.connectOpenClaw(using: config) { success, message in
             isSaving = false
             testResult = message
-            statusMessage = success
-                ? "配置已保存并确认连接。底部状态栏会同步显示当前 OpenClaw 状态。"
-                : "保存已完成，但连接确认失败：\(message)"
+            statusMessage = success ? "连接已确认，OpenClaw 文件已经进入会话同步。" : "连接失败：\(message)"
             statusTone = success ? .success : .error
         }
     }
@@ -255,13 +259,13 @@ struct OpenClawConfigView: View {
     private func refreshStatusFromManager() {
         switch appState.openClawManager.status {
         case .connected:
-            statusMessage = "当前配置已连接到 OpenClaw。"
+            statusMessage = "当前配置已连接到 OpenClaw，会话文件已同步。"
             statusTone = .success
         case .connecting:
-            statusMessage = "正在连接 OpenClaw。"
+            statusMessage = "正在处理 OpenClaw 会话。"
             statusTone = .neutral
         case .disconnected:
-            statusMessage = "当前尚未确认连接。"
+            statusMessage = "当前尚未确认连接。可先自动识别，再手动连接。"
             statusTone = .neutral
         case .error(let message):
             statusMessage = message
@@ -282,6 +286,49 @@ struct OpenClawConfigView: View {
             config.container.containerName,
             config.container.workspaceMountPath
         ].joined(separator: "|")
+    }
+
+    @ViewBuilder
+    private var detectedAgentsSection: some View {
+        let detectedAgents = appState.openClawManager.discoveryResults
+
+        if !detectedAgents.isEmpty {
+            GroupBox("识别结果") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(detectedAgents) { agent in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: agent.directoryValidated && agent.configValidated ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(agent.directoryValidated && agent.configValidated ? .green : .orange)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(agent.name)
+                                    .font(.headline)
+                                Text(agent.issues.isEmpty ? "目录与 openclaw.json 都已校验。" : agent.issues.joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                if let path = agent.copiedToProjectPath {
+                                    Text(path)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("添加这些 Agents") {
+                            _ = appState.importDetectedOpenClawAgents()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!appState.openClawManager.isConnected || detectedAgents.isEmpty)
+                    }
+                }
+            }
+        }
     }
 
     private enum StatusTone {

@@ -169,15 +169,25 @@ struct ContentView: View {
 
             if appState.openClawManager.isConnected {
                 StatusBarButton(title: "断开", icon: "link.badge.minus") {
-                    appState.openClawManager.disconnect()
+                    appState.disconnectOpenClaw()
                 }
 
                 StatusBarButton(title: "导入 Agents", icon: "person.badge.plus") {
                     addOpenClawAgentsToProject()
                 }
             } else {
-                StatusBarButton(title: "自动连接", icon: "antenna.radiowaves.left.and.right", prominent: true) {
-                    autoDetectAndConnect()
+                StatusBarButton(title: "自动识别", icon: "dot.radiowaves.left.and.right", prominent: true) {
+                    autoDetectOpenClaw()
+                }
+
+                StatusBarButton(title: "连接", icon: "link.badge.plus") {
+                    appState.connectOpenClaw { success, message in
+                        openClawMessage = message
+                        if !success {
+                            return
+                        }
+                        openClawMessage = "已连接并同步 \(appState.openClawManager.agents.count) 个 agents。"
+                    }
                 }
             }
 
@@ -204,33 +214,29 @@ struct ContentView: View {
         .padding(.vertical, 4)
     }
     
-    private func autoDetectAndConnect() {
-        let paths = ["/Users/chenrongze/.local/bin/openclaw", "/usr/local/bin/openclaw"]
-        var found = false
-        for p in paths {
-            if FileManager.default.fileExists(atPath: p) { found = true; break }
-        }
-        if !found {
-            openClawMessage = "OpenClaw not found!"
-            return
-        }
+    private func autoDetectOpenClaw() {
         isConnectingOpenClaw = true
-        appState.openClawManager.connect()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        appState.detectOpenClawAgents { success, message, agentNames in
             self.isConnectingOpenClaw = false
-            if self.appState.openClawManager.isConnected {
-                self.openClawMessage = "Connected! Found \(self.appState.openClawManager.agents.count) agents."
+            if success {
+                self.openClawMessage = "已识别 \(agentNames.count) 个 agents。请在设置或底部栏手动确认连接。"
             } else {
-                self.openClawMessage = "Connection failed."
+                self.openClawMessage = message
             }
         }
     }
-    
+
     private func addOpenClawAgentsToProject() {
         guard var project = appState.currentProject else {
             openClawMessage = "Please create or open a project first."
             return
         }
+        let imported = appState.importDetectedOpenClawAgents()
+        if !imported.isEmpty {
+            openClawMessage = "Added \(imported.count) agents."
+            return
+        }
+
         for name in appState.openClawManager.agents {
             if !project.agents.contains(where: { $0.name == name }) {
                 var agent = Agent(name: name)

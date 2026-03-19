@@ -126,9 +126,9 @@ struct MonitoringDashboardView: View {
             HStack(spacing: 10) {
                 Button(appState.openClawManager.isConnected ? "断开 OpenClaw" : "连接 OpenClaw") {
                     if appState.openClawManager.isConnected {
-                        appState.openClawManager.disconnect()
+                        appState.disconnectOpenClaw()
                     } else {
-                        appState.openClawManager.connect()
+                        appState.connectOpenClaw()
                     }
                 }
                 .buttonStyle(.borderedProminent)

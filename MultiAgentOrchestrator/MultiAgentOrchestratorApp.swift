@@ -3,15 +3,25 @@
 //
 
 import SwiftUI
+import AppKit
 
 // 通知名称扩展
 extension Notification.Name {
     static let openSettings = Notification.Name("openSettings")
 }
 
+final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+    var onWillTerminate: (() -> Void)?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        onWillTerminate?()
+    }
+}
+
 @main
 struct MultiAgentOrchestratorApp: App {
     @StateObject private var appState = AppState()
+    @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var appDelegate
     @State private var showingSettings = false
     @State private var showingToolbarCustomization = false
     @State private var selectedTab = 0
@@ -21,6 +31,11 @@ struct MultiAgentOrchestratorApp: App {
         WindowGroup {
             ContentView(selectedTab: $selectedTab, zoomScale: $zoomScale)
                 .environmentObject(appState)
+                .onAppear {
+                    appDelegate.onWillTerminate = {
+                        appState.shutdown()
+                    }
+                }
                 .sheet(isPresented: $showingSettings) {
                     SettingsView()
                         .environmentObject(appState)

@@ -54,25 +54,112 @@ struct ProjectOpenClawAgentRecord: Codable, Identifiable, Hashable {
     var lastReloadedAt: Date?
 }
 
+struct ProjectOpenClawDetectedAgentRecord: Codable, Identifiable, Hashable {
+    let id: String
+    var name: String
+    var directoryPath: String?
+    var configPath: String?
+    var workspacePath: String?
+    var statePath: String?
+    var directoryValidated: Bool
+    var configValidated: Bool
+    var copiedToProjectPath: String?
+    var copiedFileCount: Int
+    var issues: [String]
+    var importedAt: Date?
+
+    init(
+        id: String,
+        name: String,
+        directoryPath: String? = nil,
+        configPath: String? = nil,
+        workspacePath: String? = nil,
+        statePath: String? = nil,
+        directoryValidated: Bool = false,
+        configValidated: Bool = false,
+        copiedToProjectPath: String? = nil,
+        copiedFileCount: Int = 0,
+        issues: [String] = [],
+        importedAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.directoryPath = directoryPath
+        self.configPath = configPath
+        self.workspacePath = workspacePath
+        self.statePath = statePath
+        self.directoryValidated = directoryValidated
+        self.configValidated = configValidated
+        self.copiedToProjectPath = copiedToProjectPath
+        self.copiedFileCount = copiedFileCount
+        self.issues = issues
+        self.importedAt = importedAt
+    }
+}
+
 struct ProjectOpenClawSnapshot: Codable {
     var config: OpenClawConfig
     var isConnected: Bool
     var availableAgents: [String]
     var activeAgents: [ProjectOpenClawAgentRecord]
+    var detectedAgents: [ProjectOpenClawDetectedAgentRecord]
+    var sessionBackupPath: String?
+    var sessionMirrorPath: String?
     var lastSyncedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case config
+        case isConnected
+        case availableAgents
+        case activeAgents
+        case detectedAgents
+        case sessionBackupPath
+        case sessionMirrorPath
+        case lastSyncedAt
+    }
 
     init(
         config: OpenClawConfig = .default,
         isConnected: Bool = false,
         availableAgents: [String] = [],
         activeAgents: [ProjectOpenClawAgentRecord] = [],
+        detectedAgents: [ProjectOpenClawDetectedAgentRecord] = [],
+        sessionBackupPath: String? = nil,
+        sessionMirrorPath: String? = nil,
         lastSyncedAt: Date = Date()
     ) {
         self.config = config
         self.isConnected = isConnected
         self.availableAgents = availableAgents
         self.activeAgents = activeAgents
+        self.detectedAgents = detectedAgents
+        self.sessionBackupPath = sessionBackupPath
+        self.sessionMirrorPath = sessionMirrorPath
         self.lastSyncedAt = lastSyncedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        config = try container.decodeIfPresent(OpenClawConfig.self, forKey: .config) ?? .default
+        isConnected = try container.decodeIfPresent(Bool.self, forKey: .isConnected) ?? false
+        availableAgents = try container.decodeIfPresent([String].self, forKey: .availableAgents) ?? []
+        activeAgents = try container.decodeIfPresent([ProjectOpenClawAgentRecord].self, forKey: .activeAgents) ?? []
+        detectedAgents = try container.decodeIfPresent([ProjectOpenClawDetectedAgentRecord].self, forKey: .detectedAgents) ?? []
+        sessionBackupPath = try container.decodeIfPresent(String.self, forKey: .sessionBackupPath)
+        sessionMirrorPath = try container.decodeIfPresent(String.self, forKey: .sessionMirrorPath)
+        lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt) ?? Date()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(config, forKey: .config)
+        try container.encode(isConnected, forKey: .isConnected)
+        try container.encode(availableAgents, forKey: .availableAgents)
+        try container.encode(activeAgents, forKey: .activeAgents)
+        try container.encode(detectedAgents, forKey: .detectedAgents)
+        try container.encodeIfPresent(sessionBackupPath, forKey: .sessionBackupPath)
+        try container.encodeIfPresent(sessionMirrorPath, forKey: .sessionMirrorPath)
+        try container.encode(lastSyncedAt, forKey: .lastSyncedAt)
     }
 }
 
