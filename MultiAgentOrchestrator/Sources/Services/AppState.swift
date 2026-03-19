@@ -1382,7 +1382,7 @@ class AppState: ObservableObject {
             currentProject = mutableProject
         }
 
-        openClawService.executeWorkflow(workflow, agents: project.agents) { [weak self] results in
+        openClawService.executeWorkflow(workflow, agents: project.agents, prompt: trimmedPrompt) { [weak self] results in
             guard let self else { return }
 
             let completedCount = results.filter { $0.status == .completed }.count

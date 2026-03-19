@@ -359,9 +359,15 @@ class OpenClawService: ObservableObject {
     }
     
     // 执行工作流 - 真正调用OpenClaw
-    func executeWorkflow(_ workflow: Workflow, agents: [Agent], completion: @escaping ([ExecutionResult]) -> Void) {
+    func executeWorkflow(
+        _ workflow: Workflow,
+        agents: [Agent],
+        prompt: String? = nil,
+        completion: @escaping ([ExecutionResult]) -> Void
+    ) {
         // 检查连接状态
-        guard isConnected || agentConfig.useLocal else {
+        let managerConnected = OpenClawManager.shared.isConnected
+        guard managerConnected || isConnected || agentConfig.useLocal else {
             lastError = "Not connected to OpenClaw Gateway"
             addLog(.error, "Cannot execute: Not connected to OpenClaw Gateway")
             completion([])
@@ -389,7 +395,7 @@ class OpenClawService: ObservableObject {
         }
         
         // 按连接顺序执行
-        executeNodesSequentially(agentNodes, workflow: workflow, agents: agents) { nodeResults in
+        executeNodesSequentially(agentNodes, workflow: workflow, agents: agents, prompt: prompt) { nodeResults in
             results = nodeResults
             self.executionResults = results
             self.isExecuting = false
@@ -470,7 +476,13 @@ class OpenClawService: ObservableObject {
         return routedAgents
     }
     
-    private func executeNodesSequentially(_ nodes: [WorkflowNode], workflow: Workflow, agents: [Agent], completion: @escaping ([ExecutionResult]) -> Void) {
+    private func executeNodesSequentially(
+        _ nodes: [WorkflowNode],
+        workflow: Workflow,
+        agents: [Agent],
+        prompt: String?,
+        completion: @escaping ([ExecutionResult]) -> Void
+    ) {
         var results: [ExecutionResult] = []
         var remainingNodes = nodes
         
@@ -512,7 +524,7 @@ class OpenClawService: ObservableObject {
             }
             
             // 调用OpenClaw执行节点
-            executeNodeOnOpenClaw(node: node, agent: agent) { result in
+            executeNodeOnOpenClaw(node: node, agent: agent, prompt: prompt) { result in
                 results.append(result)
                 self.executionResults.append(result)
                 
@@ -534,12 +546,18 @@ class OpenClawService: ObservableObject {
     }
     
     // 在OpenClaw上执行单个节点
-    private func executeNodeOnOpenClaw(node: WorkflowNode, agent: Agent, completion: @escaping (ExecutionResult) -> Void) {
+    private func executeNodeOnOpenClaw(
+        node: WorkflowNode,
+        agent: Agent,
+        prompt: String?,
+        completion: @escaping (ExecutionResult) -> Void
+    ) {
         // 构建执行指令
-        let instruction = buildInstruction(for: node, agent: agent)
+        let instruction = buildInstruction(for: node, agent: agent, prompt: prompt)
+        let targetAgentID = resolvedAgentIdentifier(for: agent)
         
         // 调用openclaw agent命令
-        callOpenClawAgent(instruction: instruction) { success, output in
+        callOpenClawAgent(instruction: instruction, agentIdentifier: targetAgentID) { success, output in
             let status: ExecutionStatus = success ? .completed : .failed
             let result = ExecutionResult(
                 nodeID: node.id,
@@ -552,7 +570,7 @@ class OpenClawService: ObservableObject {
     }
     
     // 构建Agent指令
-    private func buildInstruction(for node: WorkflowNode, agent: Agent) -> String {
+    private func buildInstruction(for node: WorkflowNode, agent: Agent, prompt: String?) -> String {
         var instruction = "Execute agent task:\n"
         instruction += "Agent: \(agent.name)\n"
         instruction += "Node ID: \(node.id.uuidString)\n"
@@ -561,58 +579,76 @@ class OpenClawService: ObservableObject {
         // 添加节点位置信息
         instruction += "Position: (\(Int(node.position.x)), \(Int(node.position.y)))\n"
         
+        let normalizedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedPrompt.isEmpty {
+            instruction += "\nUser Task:\n\(normalizedPrompt)\n"
+        }
+        
         return instruction
     }
     
     // 调用OpenClaw Agent
-    private func callOpenClawAgent(instruction: String, completion: @escaping (Bool, String) -> Void) {
+    private func callOpenClawAgent(
+        instruction: String,
+        agentIdentifier: String,
+        completion: @escaping (Bool, String) -> Void
+    ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            let config = self.agentConfig
+            let serviceConfig = self.agentConfig
+            let manager = OpenClawManager.shared
+            let connectionConfig = manager.config
+
+            if connectionConfig.deploymentKind == .remoteServer {
+                DispatchQueue.main.async {
+                    completion(false, "当前连接模式为远程网关，工作台对话暂不支持直接执行 agent CLI。")
+                }
+                return
+            }
             
             // 构建命令
-            var args = ["openclaw", "agent"]
-            args.append(contentsOf: ["--agent", config.agentID])
+            let resolvedAgent = self.resolveRuntimeAgentIdentifier(
+                preferred: agentIdentifier,
+                manager: manager,
+                config: connectionConfig
+            )
+            if let message = resolvedAgent.message {
+                self.addLog(.warning, message)
+            }
+
+            var args = ["agent"]
+            args.append(contentsOf: ["--agent", resolvedAgent.identifier])
             args.append(contentsOf: ["--message", instruction])
             
-            if config.useLocal {
+            let shouldUseLocal = serviceConfig.useLocal
+                && !manager.isConnected
+                && connectionConfig.deploymentKind == .local
+            if shouldUseLocal {
                 args.append("--local")
             }
             
-            args.append(contentsOf: ["--timeout", String(config.timeout)])
+            args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
             args.append("--json")
-            
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = args
-            
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            
+
             do {
-                try process.run()
-                process.waitUntilExit()
-                
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                
-                let success = process.terminationStatus == 0
-                
-                // 解析JSON输出
-                var parsedOutput = output
-                if let jsonData = output.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                   let content = json["content"] as? String {
-                    parsedOutput = content
-                }
-                
+                let result = try manager.executeOpenClawCLI(arguments: args, using: connectionConfig)
+                let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""
+                let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
+                let combinedOutput = [stdout, stderr]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                let parsedOutput = self.extractAgentResponse(from: stdout)
+
                 DispatchQueue.main.async {
-                    if !success && output.isEmpty {
-                        completion(false, "OpenClaw agent execution failed")
+                    if result.terminationStatus == 0 {
+                        let message = parsedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        completion(true, message.isEmpty ? combinedOutput : message)
                     } else {
-                        completion(success, parsedOutput)
+                        let message = parsedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let fallback = combinedOutput.isEmpty ? "OpenClaw agent execution failed" : combinedOutput
+                        completion(false, message.isEmpty ? fallback : message)
                     }
                 }
             } catch {
@@ -621,6 +657,178 @@ class OpenClawService: ObservableObject {
                 }
             }
         }
+    }
+
+    private func resolvedAgentIdentifier(for agent: Agent) -> String {
+        let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !identifier.isEmpty {
+            return identifier
+        }
+
+        let name = agent.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty {
+            return name
+        }
+
+        let configured = agentConfig.agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configured.isEmpty {
+            return configured
+        }
+
+        let fallback = OpenClawManager.shared.config.defaultAgent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "default" : fallback
+    }
+
+    private func extractAgentResponse(from output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        if let payload = extractFirstJSONPayload(from: trimmed),
+           let data = payload.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["content", "message", "response", "output", "text"] {
+                if let value = json[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return value
+                }
+            }
+        }
+
+        return trimmed
+    }
+
+    private func resolveRuntimeAgentIdentifier(
+        preferred: String,
+        manager: OpenClawManager,
+        config: OpenClawConfig
+    ) -> (identifier: String, message: String?) {
+        let preferredID = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !preferredID.isEmpty else {
+            let fallback = preferredRuntimeAgentFallback(from: runtimeAgentIdentifiers(manager: manager, config: config))
+            if let fallback {
+                return (fallback, "目标 agent 未配置，已回退到 \(fallback)。")
+            }
+            return ("default", nil)
+        }
+
+        let available = runtimeAgentIdentifiers(manager: manager, config: config)
+        guard !available.isEmpty else {
+            return (preferredID, nil)
+        }
+
+        if let matched = firstCaseInsensitiveMatch(preferredID, in: available) {
+            return (matched, nil)
+        }
+
+        if let defaultMatch = firstCaseInsensitiveMatch(
+            config.defaultAgent.trimmingCharacters(in: .whitespacesAndNewlines),
+            in: available
+        ) {
+            return (defaultMatch, "目标 agent \(preferredID) 在当前运行态不存在，已回退到默认 agent \(defaultMatch)。")
+        }
+
+        if let mainMatch = firstCaseInsensitiveMatch("main", in: available) {
+            return (mainMatch, "目标 agent \(preferredID) 在当前运行态不存在，已回退到 \(mainMatch)。")
+        }
+
+        let first = available[0]
+        return (first, "目标 agent \(preferredID) 在当前运行态不存在，已回退到 \(first)。")
+    }
+
+    private func preferredRuntimeAgentFallback(from available: [String]) -> String? {
+        if let main = firstCaseInsensitiveMatch("main", in: available) {
+            return main
+        }
+        return available.first
+    }
+
+    private func firstCaseInsensitiveMatch(_ value: String, in candidates: [String]) -> String? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        return candidates.first { $0.lowercased() == normalized }
+    }
+
+    private func runtimeAgentIdentifiers(manager: OpenClawManager, config: OpenClawConfig) -> [String] {
+        do {
+            let result = try manager.executeOpenClawCLI(arguments: ["agents", "list", "--json"], using: config)
+            let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""
+            let payload = extractFirstJSONPayload(from: stdout) ?? stdout
+
+            guard let data = payload.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) else {
+                return []
+            }
+
+            var identifiers: [String] = []
+            if let array = object as? [[String: Any]] {
+                identifiers = array.compactMap { item in
+                    guard let id = item["id"] as? String else { return nil }
+                    let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+            } else if let dict = object as? [String: Any],
+                      let nested = dict["agents"] as? [[String: Any]] {
+                identifiers = nested.compactMap { item in
+                    guard let id = item["id"] as? String else { return nil }
+                    let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+            }
+
+            var seen = Set<String>()
+            return identifiers.filter { seen.insert($0.lowercased()).inserted }
+        } catch {
+            return []
+        }
+    }
+
+    private func extractFirstJSONPayload(from text: String) -> String? {
+        let chars = Array(text)
+
+        for startIndex in chars.indices {
+            let opening = chars[startIndex]
+            guard opening == "{" || opening == "[" else { continue }
+
+            var stack: [Character] = [opening]
+            var inString = false
+            var escaping = false
+
+            for index in chars.index(after: startIndex)..<chars.endIndex {
+                let char = chars[index]
+
+                if inString {
+                    if escaping {
+                        escaping = false
+                    } else if char == "\\" {
+                        escaping = true
+                    } else if char == "\"" {
+                        inString = false
+                    }
+                    continue
+                }
+
+                if char == "\"" {
+                    inString = true
+                    continue
+                }
+
+                if char == "{" || char == "[" {
+                    stack.append(char)
+                    continue
+                }
+
+                if char == "}" || char == "]" {
+                    guard let last = stack.last else { break }
+                    let matched = (last == "{" && char == "}") || (last == "[" && char == "]")
+                    guard matched else { break }
+                    stack.removeLast()
+                    if stack.isEmpty {
+                        return String(chars[startIndex...index])
+                    }
+                }
+            }
+        }
+
+        return nil
     }
     
     // 测试OpenClaw连接
@@ -684,7 +892,7 @@ class OpenClawService: ObservableObject {
     
     // 执行单个节点
     func executeNode(_ node: WorkflowNode, agent: Agent, completion: @escaping (ExecutionResult) -> Void) {
-        executeNodeOnOpenClaw(node: node, agent: agent, completion: completion)
+        executeNodeOnOpenClaw(node: node, agent: agent, prompt: nil, completion: completion)
     }
     
     // 获取节点的执行结果
