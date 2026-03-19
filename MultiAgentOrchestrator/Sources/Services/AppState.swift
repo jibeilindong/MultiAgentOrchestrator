@@ -9,11 +9,21 @@ import SwiftUI
 import Combine
 import UniformTypeIdentifiers
 
+extension UTType {
+    static let maoproject = UTType(filenameExtension: "maoproj") ?? .json
+}
+
+struct ProjectFileReference: Identifiable, Hashable {
+    var id: String { url.path }
+    let name: String
+    let url: URL
+}
+
 // 项目文件管理器
 class ProjectManager: ObservableObject {
     static let shared = ProjectManager()
     
-    @Published var projects: [String] = []  // 项目名称列表
+    @Published var projects: [ProjectFileReference] = []
     
     var projectsDirectory: URL {
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -22,6 +32,11 @@ class ProjectManager: ObservableObject {
     
     var backupsDirectory: URL {
         return projectsDirectory.appendingPathComponent("backups", isDirectory: true)
+    }
+
+    var workspaceRootDirectory: URL {
+        let appSupportPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupportPath.appendingPathComponent("MultiAgentOrchestrator/Workspaces", isDirectory: true)
     }
     
     private init() {
@@ -32,6 +47,7 @@ class ProjectManager: ObservableObject {
     func createDirectoriesIfNeeded() {
         try? FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: workspaceRootDirectory, withIntermediateDirectories: true)
     }
     
     func loadProjectList() {
@@ -41,53 +57,63 @@ class ProjectManager: ObservableObject {
         }
         projects = contents
             .filter { $0.pathExtension == "maoproj" }
-            .map { $0.deletingPathExtension().lastPathComponent }
-            .sorted()
+            .map { ProjectFileReference(name: $0.deletingPathExtension().lastPathComponent, url: $0) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
     
     func projectURL(for name: String) -> URL {
-        return projectsDirectory.appendingPathComponent("\(name).maoproj")
+        projectsDirectory.appendingPathComponent("\(name).maoproj")
     }
     
-    func createProject(name: String) -> MAProject {
-        var project = MAProject(name: name)
-        // 添加示例Agent
-        var agent1 = Agent(name: "Research Assistant")
-        agent1.description = "Helps with research tasks"
-        agent1.soulMD = "# Research Assistant\nYou are a research assistant."
-        var agent2 = Agent(name: "Writer Agent")
-        agent2.description = "Writes reports and documents"
-        agent2.soulMD = "# Writer Agent\nYou are a writer."
-        var agent3 = Agent(name: "Analyst Agent")
-        agent3.description = "Analyzes data and provides insights"
-        agent3.soulMD = "# Analyst Agent\nYou analyze data."
-        project.agents = [agent1, agent2, agent3]
-        
-        // 保存到文件
-        saveProject(project)
+    func saveProject(_ project: MAProject, to url: URL? = nil) throws -> URL {
+        let destinationURL = url ?? projectURL(for: project.name)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(project)
+        try data.write(to: destinationURL, options: .atomic)
         loadProjectList()
-        return project
+        return destinationURL
     }
     
-    func saveProject(_ project: MAProject) {
-        let url = projectURL(for: project.name)
-        do {
-            let data = try JSONEncoder().encode(project)
-            try data.write(to: url)
-        } catch {
-            print("保存项目失败: \(error)")
+    func loadProject(from url: URL) throws -> MAProject {
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(MAProject.self, from: data)
+    }
+    
+    func uniqueProjectName(baseName: String = "New Project") -> String {
+        var candidate = baseName
+        var counter = 2
+        let existingNames = Set(projects.map(\.name))
+
+        while existingNames.contains(candidate) {
+            candidate = "\(baseName) \(counter)"
+            counter += 1
         }
+
+        return candidate
     }
     
-    func loadProject(name: String) -> MAProject? {
-        let url = projectURL(for: name)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(MAProject.self, from: data)
+    func relativeWorkspacePath(projectID: UUID, taskID: UUID) -> String {
+        "\(projectID.uuidString)/\(taskID.uuidString)"
     }
-    
-    func deleteProject(name: String) {
-        let url = projectURL(for: name)
+
+    func workspaceURL(for relativePath: String) -> URL {
+        workspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
+    }
+
+    func ensureWorkspaceDirectory(relativePath: String) -> URL {
+        let url = workspaceURL(for: relativePath)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    func deleteProject(at url: URL, projectID: UUID? = nil) {
         try? FileManager.default.removeItem(at: url)
+        if let projectID {
+            try? FileManager.default.removeItem(
+                at: workspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+            )
+        }
         loadProjectList()
     }
 }
@@ -158,6 +184,7 @@ struct CanvasDisplaySettings: Codable {
 
 class AppState: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
+    private var cancellables = Set<AnyCancellable>()
     
     // 项目管理器
     let projectManager = ProjectManager.shared
@@ -173,6 +200,7 @@ class AppState: ObservableObject {
             objectWillChange.send()
         }
     }
+    @Published var currentProjectFileURL: URL?
     
     // 选中的节点ID
     @Published var selectedNodeID: UUID?
@@ -200,9 +228,8 @@ class AppState: ObservableObject {
     @Published var isAutoSaving: Bool = false
     
     init() {
-        // 不自动创建项目，让用户手动创建
-        // createNewProject()
         loadToolbarPreferences()
+        bindProjectState()
         startAutoSave()
     }
     
@@ -222,9 +249,72 @@ class AppState: ObservableObject {
         autoSaveTimer?.invalidate()
         autoSaveTimer = nil
     }
+
+    private func bindProjectState() {
+        taskManager.$tasks
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        messageManager.$messages
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawService.$executionResults
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawService.$executionLogs
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$config
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$agents
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$activeAgents
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$isConnected
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func syncCurrentProjectFromManagers() {
+        guard var project = currentProject else { return }
+
+        project.tasks = taskManager.tasks
+        project.messages = messageManager.messages
+        project.executionResults = openClawService.executionResults
+        project.executionLogs = openClawService.executionLogs
+        project.openClaw = openClawManager.snapshot()
+        project.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        project.runtimeState.lastUpdated = Date()
+        currentProject = project
+    }
     
     private func performAutoSave() {
-        guard autoSaveEnabled, currentProject != nil else { return }
+        guard autoSaveEnabled, let project = snapshotCurrentProject() else { return }
         
         isAutoSaving = true
         
@@ -236,10 +326,12 @@ class AppState: ObservableObject {
         do {
             try fileManager.createDirectory(at: projectDir, withIntermediateDirectories: true)
             
-            let fileName = "autosave_\(currentProject?.id.uuidString.prefix(8) ?? "project").maoproj"
+            let fileName = "autosave_\(project.id.uuidString.prefix(8)).maoproj"
             let fileURL = projectDir.appendingPathComponent(fileName)
             
-            let data = try JSONEncoder().encode(currentProject)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(project)
             try data.write(to: fileURL)
             
             lastAutoSaveTime = Date()
@@ -268,8 +360,7 @@ class AppState: ObservableObject {
                 .first
             
             if let latestFile = latestFile {
-                let data = try Data(contentsOf: latestFile)
-                return try JSONDecoder().decode(MAProject.self, from: data)
+                return try projectManager.loadProject(from: latestFile)
             }
         } catch {
             print("加载自动保存失败: \(error)")
@@ -279,53 +370,182 @@ class AppState: ObservableObject {
     }
     
     func createNewProject() {
-        // 生成新项目名称
-        let baseName = "New Project"
-        var projectName = baseName
-        var counter = 1
-        while projectManager.projects.contains(projectName) {
-            counter += 1
-            projectName = "\(baseName) \(counter)"
+        createNewProject(named: projectManager.uniqueProjectName())
+    }
+
+    func createNewProject(named projectName: String) {
+        let resolvedName: String
+        if FileManager.default.fileExists(atPath: projectManager.projectURL(for: projectName).path) {
+            resolvedName = projectManager.uniqueProjectName(baseName: projectName)
+        } else {
+            resolvedName = projectName
         }
-        
-        // 使用ProjectManager创建项目
-        currentProject = projectManager.createProject(name: projectName)
-        
-        // 从工作流生成示例任务
-        generateTasksFromWorkflow()
+
+        let project = MAProject(name: resolvedName)
+        taskManager.reset()
+        messageManager.reset()
+        openClawService.resetExecutionSnapshot()
+        openClawManager.restore(from: project.openClaw)
+        currentProject = project
+
+        do {
+            currentProjectFileURL = try projectManager.saveProject(project, to: projectManager.projectURL(for: resolvedName))
+        } catch {
+            print("创建项目失败: \(error)")
+            currentProjectFileURL = nil
+        }
     }
     
     func saveProject() {
-        guard let project = currentProject else { return }
-        
-        // 使用ProjectManager保存到Documents目录
-        projectManager.saveProject(project)
-        
-        // 刷新项目列表
-        projectManager.loadProjectList()
+        guard currentProject != nil else { return }
+
+        if let currentProjectFileURL {
+            saveProject(to: currentProjectFileURL)
+        } else {
+            saveProjectAs()
+        }
+    }
+
+    func saveProjectAs() {
+        guard let project = snapshotCurrentProject() else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.maoproject]
+        panel.directoryURL = currentProjectFileURL?.deletingLastPathComponent() ?? projectManager.projectsDirectory
+        panel.nameFieldStringValue = "\(project.name).maoproj"
+        panel.canCreateDirectories = true
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            self.saveProject(to: url)
+        }
+    }
+
+    private func saveProject(to url: URL) {
+        guard let project = snapshotCurrentProject() else { return }
+
+        do {
+            currentProjectFileURL = try projectManager.saveProject(project, to: url)
+            currentProject = project
+        } catch {
+            print("保存项目失败: \(error)")
+        }
     }
     
     // 关闭当前项目
     func closeProject() {
+        currentProjectFileURL = nil
+        taskManager.reset()
+        messageManager.reset()
+        openClawService.resetExecutionSnapshot()
+        openClawManager.disconnect()
         currentProject = nil
     }
     
-    func loadProject() {
-        // 显示项目选择菜单
-        // 这里可以显示一个Alert让用户选择项目
+    func deleteCurrentProject() {
+        guard let project = currentProject, let currentProjectFileURL else { return }
+        projectManager.deleteProject(at: currentProjectFileURL, projectID: project.id)
+        closeProject()
+    }
+
+    func openProject() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "maoproj") ?? .json]
+        panel.allowedContentTypes = [.maoproject]
         panel.directoryURL = projectManager.projectsDirectory
+        panel.allowsMultipleSelection = false
         panel.begin { response in
             if response == .OK, let url = panel.url {
-                do {
-                    let data = try Data(contentsOf: url)
-                    let project = try JSONDecoder().decode(MAProject.self, from: data)
-                    self.currentProject = project
-                } catch {
-                    print("加载失败: \(error)")
-                }
+                self.openProject(at: url)
             }
+        }
+    }
+
+    func openProject(at url: URL) {
+        do {
+            let project = try projectManager.loadProject(from: url)
+            restoreProject(project, from: url)
+        } catch {
+            print("加载失败: \(error)")
+        }
+    }
+
+    func loadProject() {
+        openProject()
+    }
+
+    private func restoreProject(_ project: MAProject, from url: URL?) {
+        currentProjectFileURL = url
+        taskManager.replaceTasks(project.tasks)
+        messageManager.replaceMessages(project.messages)
+        openClawService.restoreExecutionSnapshot(results: project.executionResults, logs: project.executionLogs)
+        openClawManager.restore(from: project.openClaw)
+
+        var hydratedProject = project
+        hydratedProject.workspaceIndex = ensureWorkspaceIndex(
+            for: hydratedProject.id,
+            tasks: project.tasks,
+            existing: project.workspaceIndex
+        )
+        currentProject = hydratedProject
+    }
+
+    private func snapshotCurrentProject() -> MAProject? {
+        guard var project = currentProject else { return nil }
+
+        project.fileVersion = "2.0"
+        project.tasks = taskManager.tasks
+        project.messages = messageManager.messages
+        project.executionResults = openClawService.executionResults
+        project.executionLogs = openClawService.executionLogs
+        project.openClaw = openClawManager.snapshot()
+        project.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        project.runtimeState.lastUpdated = Date()
+        project.updatedAt = Date()
+        return project
+    }
+
+    private func ensureWorkspaceIndex(
+        for projectID: UUID,
+        tasks: [Task],
+        existing: [ProjectWorkspaceRecord]
+    ) -> [ProjectWorkspaceRecord] {
+        let existingByTaskID = Dictionary(uniqueKeysWithValues: existing.map { ($0.taskID, $0) })
+
+        return tasks.map { task in
+            let relativePath = existingByTaskID[task.id]?.workspaceRelativePath
+                ?? projectManager.relativeWorkspacePath(projectID: projectID, taskID: task.id)
+            _ = projectManager.ensureWorkspaceDirectory(relativePath: relativePath)
+
+            var record = existingByTaskID[task.id] ?? ProjectWorkspaceRecord(
+                taskID: task.id,
+                workspaceRelativePath: relativePath,
+                workspaceName: task.title
+            )
+            record.workspaceName = task.title
+            record.updatedAt = Date()
+            return record
+        }
+        .sorted { $0.workspaceName.localizedCaseInsensitiveCompare($1.workspaceName) == .orderedAscending }
+    }
+
+    func absoluteWorkspaceURL(for taskID: UUID) -> URL? {
+        guard let project = currentProject else { return nil }
+
+        let workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        guard let record = workspaceIndex.first(where: { $0.taskID == taskID }) else {
+            return nil
+        }
+
+        return projectManager.workspaceURL(for: record.workspaceRelativePath)
+    }
+
+    func importProjectData(_ project: MAProject, tasks: [Task]) {
+        currentProjectFileURL = nil
+        taskManager.replaceTasks(tasks)
+        messageManager.reset()
+        openClawService.resetExecutionSnapshot()
+        currentProject = project
+        if let snapshot = snapshotCurrentProject() {
+            currentProject = snapshot
         }
     }
     
@@ -685,13 +905,9 @@ class AppState: ObservableObject {
         panel.message = "Select Multi-Agent Architecture file"
         panel.begin { response in
             if response == .OK, let url = panel.url {
-                if let data = self.importExportService.loadFromFile(url),
-                   let (project, tasks, openClawMapping) = self.importExportService.importProject(from: data) {
-                    self.currentProject = project
-                    // 导入任务
-                    for task in tasks {
-                        self.taskManager.addTask(task)
-                    }
+               if let data = self.importExportService.loadFromFile(url),
+                   let (project, tasks, _) = self.importExportService.importProject(from: data) {
+                    self.importProjectData(project, tasks: tasks)
                     print("导入成功: \(project.name), \(project.agents.count) agents, \(tasks.count) tasks")
                 } else {
                     print("导入失败: Invalid file format")

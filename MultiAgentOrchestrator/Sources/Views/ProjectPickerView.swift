@@ -28,18 +28,16 @@ struct ProjectPickerView: View {
             
             // 项目列表
             List {
-                ForEach(appState.projectManager.projects, id: \.self) { projectName in
+                ForEach(appState.projectManager.projects) { project in
                     Button(action: {
-                        if let project = appState.projectManager.loadProject(name: projectName) {
-                            appState.currentProject = project
-                        }
+                        appState.openProject(at: project.url)
                         dismiss()
                     }) {
                         HStack {
-                            Image(systemName: projectName == appState.currentProject?.name ? "folder.fill" : "folder")
-                            Text(projectName)
+                            Image(systemName: project.url == appState.currentProjectFileURL ? "folder.fill" : "folder")
+                            Text(project.name)
                             Spacer()
-                            if projectName == appState.currentProject?.name {
+                            if project.url == appState.currentProjectFileURL {
                                 Image(systemName: "checkmark")
                                     .foregroundColor(.blue)
                             }
@@ -49,8 +47,14 @@ struct ProjectPickerView: View {
                 }
                 .onDelete { indexSet in
                     for index in indexSet {
-                        let name = appState.projectManager.projects[index]
-                        appState.projectManager.deleteProject(name: name)
+                        let project = appState.projectManager.projects[index]
+                        appState.projectManager.deleteProject(
+                            at: project.url,
+                            projectID: appState.currentProjectFileURL == project.url ? appState.currentProject?.id : nil
+                        )
+                        if appState.currentProjectFileURL == project.url {
+                            appState.closeProject()
+                        }
                     }
                 }
             }
@@ -64,8 +68,7 @@ struct ProjectPickerView: View {
                         .textFieldStyle(.roundedBorder)
                     Button("Create") {
                         if !newProjectName.isEmpty {
-                            let project = appState.projectManager.createProject(name: newProjectName)
-                            appState.currentProject = project
+                            appState.createNewProject(named: newProjectName)
                             dismiss()
                         }
                     }

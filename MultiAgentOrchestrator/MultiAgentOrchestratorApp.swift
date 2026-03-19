@@ -85,7 +85,7 @@ struct MultiAgentOrchestratorApp: App {
                 .keyboardShortcut("n", modifiers: .command)
                 
                 Button(LocalizedString.openProject) {
-                    appState.loadProject()
+                    appState.openProject()
                 }
                 .keyboardShortcut("o", modifiers: .command)
                 
@@ -95,21 +95,30 @@ struct MultiAgentOrchestratorApp: App {
                     appState.saveProject()
                 }
                 .keyboardShortcut("s", modifiers: .command)
+
+                Button("Save Project As…") {
+                    appState.saveProjectAs()
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
                 
                 Divider()
                 
-                Button(LocalizedString.importText) {
+                Button("Import Architecture") {
                     appState.importData()
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 
-                Button(LocalizedString.export) {
+                Button("Export Architecture") {
                     appState.exportData()
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
 
                 if appState.currentProject != nil {
                     Divider()
+
+                    Button("Delete Project") {
+                        appState.deleteCurrentProject()
+                    }
 
                     Button("Close Project") {
                         appState.closeProject()

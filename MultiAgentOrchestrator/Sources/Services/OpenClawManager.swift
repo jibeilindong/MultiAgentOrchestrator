@@ -129,6 +129,49 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    func snapshot() -> ProjectOpenClawSnapshot {
+        ProjectOpenClawSnapshot(
+            config: config,
+            isConnected: isConnected,
+            availableAgents: agents,
+            activeAgents: activeAgents.values
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map {
+                    ProjectOpenClawAgentRecord(
+                        id: $0.agentID,
+                        name: $0.name,
+                        status: $0.status,
+                        lastReloadedAt: $0.lastReloadedAt
+                    )
+                },
+            lastSyncedAt: Date()
+        )
+    }
+
+    func restore(from snapshot: ProjectOpenClawSnapshot) {
+        config = snapshot.config
+        config.save()
+        agents = snapshot.availableAgents
+        activeAgents = Dictionary(uniqueKeysWithValues: snapshot.activeAgents.map {
+            (
+                $0.id,
+                ActiveAgentRuntime(
+                    agentID: $0.id,
+                    name: $0.name,
+                    status: $0.status,
+                    lastReloadedAt: $0.lastReloadedAt
+                )
+            )
+        })
+
+        if snapshot.config.autoConnect {
+            connect()
+        } else {
+            isConnected = false
+            status = .disconnected
+        }
+    }
+
     private func resolveOpenClawPath() -> String {
         Self.possiblePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/Users/chenrongze/.local/bin/openclaw"
     }

@@ -110,18 +110,27 @@ struct ContentView: View {
                     Button(action: { appState.createNewProject() }) {
                         Label(LocalizedString.new, systemImage: "plus")
                     }
+                    Button(action: { appState.openProject() }) {
+                        Label(LocalizedString.openProject, systemImage: "folder")
+                    }
                     Button(action: { appState.saveProject() }) {
                         Label(LocalizedString.save, systemImage: "square.and.arrow.down")
                     }
+                    Button(action: { appState.saveProjectAs() }) {
+                        Label("另存为", systemImage: "square.and.arrow.down.on.square")
+                    }
                     Divider()
                     Button(action: { appState.importData() }) {
-                        Label("Import", systemImage: "square.and.arrow.down.on.square")
+                        Label("导入架构", systemImage: "square.and.arrow.down.on.square")
                     }
                     Button(action: { appState.exportData() }) {
-                        Label("Export", systemImage: "square.and.arrow.up")
+                        Label("导出架构", systemImage: "square.and.arrow.up")
                     }
                     if appState.currentProject != nil {
                         Divider()
+                        Button(action: { appState.deleteCurrentProject() }) {
+                            Label("删除项目", systemImage: "trash")
+                        }
                         Button(action: { appState.closeProject() }) {
                             Label("Close Project", systemImage: "xmark.circle")
                         }

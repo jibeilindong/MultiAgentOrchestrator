@@ -139,6 +139,30 @@ class OpenClawService: ObservableObject {
         checkConnection()
         loadExecutionState()
     }
+
+    func restoreExecutionSnapshot(
+        results: [ExecutionResult],
+        logs: [ExecutionLogEntry],
+        state: ExecutionState? = nil
+    ) {
+        executionResults = results
+        executionLogs = logs
+        executionState = state
+        isExecuting = false
+        currentStep = 0
+        totalSteps = 0
+        lastError = nil
+    }
+
+    func resetExecutionSnapshot() {
+        executionResults.removeAll()
+        executionLogs.removeAll()
+        executionState = nil
+        isExecuting = false
+        currentStep = 0
+        totalSteps = 0
+        lastError = nil
+    }
     
     // MARK: - 日志方法
     

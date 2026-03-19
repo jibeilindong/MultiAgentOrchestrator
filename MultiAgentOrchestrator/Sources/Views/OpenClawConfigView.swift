@@ -7,7 +7,7 @@ import SwiftUI
 
 struct OpenClawConfigView: View {
     @EnvironmentObject var appState: AppState
-    @State private var config: OpenClawConfig = OpenClawConfig.load()
+    @State private var config: OpenClawConfig = .default
     @State private var isTesting = false
     @State private var testResult: String?
     @State private var showAlert = false
@@ -75,6 +75,9 @@ struct OpenClawConfigView: View {
         }
         .padding()
         .frame(width: 400, height: 350)
+        .onAppear {
+            config = appState.openClawManager.config
+        }
     }
     
     private func testConnection() {
@@ -88,6 +91,7 @@ struct OpenClawConfigView: View {
     }
     
     private func saveConfig() {
+        appState.openClawManager.config = config
         config.save()
         showAlert = true
     }

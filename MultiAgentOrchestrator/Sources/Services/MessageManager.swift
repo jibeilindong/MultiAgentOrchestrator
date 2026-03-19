@@ -13,6 +13,16 @@ class MessageManager: ObservableObject {
     @Published var pendingApprovals: [Message] = []
     
     private var cancellables = Set<AnyCancellable>()
+
+    func replaceMessages(_ newMessages: [Message]) {
+        messages = newMessages
+        pendingApprovals = newMessages.filter { $0.status == .waitingForApproval }
+    }
+
+    func reset() {
+        messages.removeAll()
+        pendingApprovals.removeAll()
+    }
     
     // 发送消息
     func sendMessage(_ message: Message, project: MAProject?) -> Bool {

@@ -14,8 +14,10 @@ class TaskManager: ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
     
-    init() {
-        setupSampleData()
+    init(seedSampleData: Bool = false) {
+        if seedSampleData {
+            setupSampleData()
+        }
         startStatisticsUpdate()
     }
     
@@ -23,6 +25,16 @@ class TaskManager: ObservableObject {
     
     func addTask(_ task: Task) {
         tasks.append(task)
+        updateStatistics()
+    }
+
+    func replaceTasks(_ newTasks: [Task]) {
+        tasks = newTasks
+        updateStatistics()
+    }
+
+    func reset() {
+        tasks.removeAll()
         updateStatistics()
     }
     
@@ -86,24 +98,45 @@ class TaskManager: ObservableObject {
     // MARK: - 从工作流生成任务
     
     func generateTasks(from workflow: Workflow, projectAgents: [Agent]) {
-        // 为每个Agent节点创建任务
-        for node in workflow.nodes where node.type == .agent {
-            if let agentID = node.agentID,
-               let agent = projectAgents.first(where: { $0.id == agentID }) {
-                
-                let task = Task(
-                    title: "Execute: \(agent.name)",
-                    description: "Execute workflow node for \(agent.name)",
-                    status: .todo,
-                    priority: .medium,
-                    assignedAgentID: agentID,
-                    workflowNodeID: node.id,
-                    createdBy: nil
+        let agentNodes = workflow.nodes.filter { $0.type == .agent }
+        let agentNodeIDs = Set(agentNodes.map(\.id))
+
+        let manualTasks = tasks.filter { task in
+            guard let workflowNodeID = task.workflowNodeID else {
+                return true
+            }
+            return !agentNodeIDs.contains(workflowNodeID)
+        }
+
+        var generatedTasks: [Task] = []
+        for node in agentNodes {
+            guard let agentID = node.agentID,
+                  let agent = projectAgents.first(where: { $0.id == agentID }) else {
+                continue
+            }
+
+            if var existingTask = tasks.first(where: { $0.workflowNodeID == node.id }) {
+                existingTask.title = "Execute: \(agent.name)"
+                existingTask.description = "Execute workflow node for \(agent.name)"
+                existingTask.assignedAgentID = agentID
+                generatedTasks.append(existingTask)
+            } else {
+                generatedTasks.append(
+                    Task(
+                        title: "Execute: \(agent.name)",
+                        description: "Execute workflow node for \(agent.name)",
+                        status: .todo,
+                        priority: .medium,
+                        assignedAgentID: agentID,
+                        workflowNodeID: node.id,
+                        createdBy: nil
+                    )
                 )
-                
-                addTask(task)
             }
         }
+
+        tasks = manualTasks + generatedTasks
+        updateStatistics()
     }
     
     // MARK: - 模拟执行
