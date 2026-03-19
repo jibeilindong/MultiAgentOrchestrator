@@ -91,6 +91,8 @@ class OpenClawManager: ObservableObject {
 
     private var sessionContext: SessionContext?
     private var discoverySnapshotURL: URL?
+    private var pluginStageCleanupPerformed = false
+    private let pluginStageCleanupLock = NSLock()
 
     private static let possiblePaths = [
         "/Users/chenrongze/.local/bin/openclaw",
@@ -113,6 +115,9 @@ class OpenClawManager: ObservableObject {
         status = .connecting
         config.save()
 
+        let cleanupResult = cleanupStalePluginInstallStageArtifactsIfNeeded(using: config)
+        let cleanupNote: String? = cleanupResult.success ? nil : cleanupResult.message
+
         if let projectID, config.deploymentKind != .remoteServer {
             do {
                 try beginSession(for: projectID)
@@ -128,7 +133,98 @@ class OpenClawManager: ObservableObject {
             if !success, projectID != nil {
                 self.endSession(restoreOriginalState: true)
             }
-            completion?(success, message)
+            let finalMessage: String
+            if let cleanupNote {
+                finalMessage = "\(message)（附加信息：\(cleanupNote)）"
+            } else {
+                finalMessage = message
+            }
+            completion?(success, finalMessage)
+        }
+    }
+
+    func cleanupStalePluginInstallStageArtifactsIfNeeded(
+        using config: OpenClawConfig? = nil
+    ) -> (success: Bool, message: String) {
+        let resolvedConfig = config ?? self.config
+
+        pluginStageCleanupLock.lock()
+        let alreadyCleaned = pluginStageCleanupPerformed
+        pluginStageCleanupLock.unlock()
+        if alreadyCleaned {
+            return (true, "")
+        }
+
+        switch resolvedConfig.deploymentKind {
+        case .remoteServer:
+            return (true, "")
+        case .local:
+            do {
+                let extensionsDirectory = localOpenClawRootURL().appendingPathComponent("extensions", isDirectory: true)
+                guard FileManager.default.fileExists(atPath: extensionsDirectory.path) else {
+                    pluginStageCleanupLock.lock()
+                    pluginStageCleanupPerformed = true
+                    pluginStageCleanupLock.unlock()
+                    return (true, "")
+                }
+
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: extensionsDirectory,
+                    includingPropertiesForKeys: [.isDirectoryKey]
+                )
+                let stagedDirectories = contents.filter { url in
+                    guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return false }
+                    return url.lastPathComponent.hasPrefix(".openclaw-install-stage-")
+                }
+
+                for directory in stagedDirectories {
+                    try? FileManager.default.removeItem(at: directory)
+                }
+
+                pluginStageCleanupLock.lock()
+                pluginStageCleanupPerformed = true
+                pluginStageCleanupLock.unlock()
+
+                if stagedDirectories.isEmpty {
+                    return (true, "")
+                }
+                return (true, "已清理 \(stagedDirectories.count) 个 OpenClaw 插件安装残留目录。")
+            } catch {
+                return (false, "清理 OpenClaw 插件安装残留目录失败：\(error.localizedDescription)")
+            }
+        case .container:
+            do {
+                guard let containerName = containerName(for: resolvedConfig),
+                      let deploymentRootPath = containerOpenClawRootPath(for: resolvedConfig) else {
+                    return (false, "容器模式下无法定位 OpenClaw 根目录，未完成插件残留清理。")
+                }
+
+                let cleanupCommand = """
+                shopt -s nullglob >/dev/null 2>&1 || true
+                for d in \(shellQuoted(deploymentRootPath))/extensions/.openclaw-install-stage-*; do
+                  [ -e "$d" ] || continue
+                  rm -rf "$d"
+                done
+                """
+
+                let result = try runDeploymentCommand(
+                    using: resolvedConfig,
+                    arguments: ["exec", containerName, "sh", "-lc", cleanupCommand]
+                )
+
+                guard result.terminationStatus == 0 else {
+                    let stderr = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    return (false, stderr.isEmpty ? "容器模式插件残留清理失败。" : stderr)
+                }
+
+                pluginStageCleanupLock.lock()
+                pluginStageCleanupPerformed = true
+                pluginStageCleanupLock.unlock()
+                return (true, "已执行容器内 OpenClaw 插件残留清理。")
+            } catch {
+                return (false, "容器模式插件残留清理失败：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -569,6 +665,117 @@ class OpenClawManager: ObservableObject {
 
                 DispatchQueue.main.async {
                     completion(true, "\(agent.name) 的 model 已更新为 \(trimmedModel)。建议重新连接或重启 OpenClaw 使其完全生效。")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func syncAgentCommunicationAllowLists(
+        from project: MAProject,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持同步 agent 通信白名单。")
+            return
+        }
+
+        let desiredAllowMap = desiredAllowAgentsMap(for: project)
+        guard !desiredAllowMap.isEmpty else {
+            completion(true, "当前项目未配置可同步的 agent 通信白名单。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let getResult = try self.runOpenClawCommand(
+                    using: resolvedConfig,
+                    arguments: ["config", "get", "agents.list"]
+                )
+                guard getResult.terminationStatus == 0 else {
+                    let fallback = String(data: getResult.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(getResult.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw agents.list 失败" : fallback]
+                    )
+                }
+
+                let payloadData = self.extractJSONPayload(from: getResult.standardOutput) ?? getResult.standardOutput
+                guard let jsonObject = try? JSONSerialization.jsonObject(with: payloadData),
+                      var runtimeAgents = jsonObject as? [[String: Any]] else {
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: 1010,
+                        userInfo: [NSLocalizedDescriptionKey: "解析 OpenClaw agents.list 失败"]
+                    )
+                }
+
+                var changedCount = 0
+                for index in runtimeAgents.indices {
+                    var entry = runtimeAgents[index]
+                    let runtimeID = (entry["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    guard !runtimeID.isEmpty else { continue }
+
+                    let key = self.normalizeAgentKey(runtimeID)
+                    guard let desiredAllowAgents = desiredAllowMap[key] else { continue }
+
+                    var subagents = (entry["subagents"] as? [String: Any]) ?? [:]
+                    let currentAllow = ((subagents["allowAgents"] as? [String]) ?? [])
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+                    if currentAllow == desiredAllowAgents {
+                        continue
+                    }
+
+                    subagents["allowAgents"] = desiredAllowAgents
+                    entry["subagents"] = subagents
+                    runtimeAgents[index] = entry
+                    changedCount += 1
+                }
+
+                guard changedCount > 0 else {
+                    DispatchQueue.main.async {
+                        completion(true, "OpenClaw 通信白名单已与当前项目一致。")
+                    }
+                    return
+                }
+
+                let updatedData = try JSONSerialization.data(withJSONObject: runtimeAgents, options: [])
+                guard let updatedJSON = String(data: updatedData, encoding: .utf8) else {
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: 1011,
+                        userInfo: [NSLocalizedDescriptionKey: "序列化更新后的 agents.list 失败"]
+                    )
+                }
+
+                let setResult = try self.runOpenClawCommand(
+                    using: resolvedConfig,
+                    arguments: ["config", "set", "agents.list", updatedJSON]
+                )
+
+                guard setResult.terminationStatus == 0 else {
+                    let fallback = String(data: setResult.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(setResult.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "写回 OpenClaw agents.list 失败" : fallback]
+                    )
+                }
+
+                DispatchQueue.main.async {
+                    completion(true, "已同步 \(changedCount) 个 agent 的通信白名单到 OpenClaw（建议重连 OpenClaw）。")
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1475,6 +1682,37 @@ class OpenClawManager: ObservableObject {
 
     private func normalizeAgentKey(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func desiredAllowAgentsMap(for project: MAProject) -> [String: [String]] {
+        var identifierByAgentID: [UUID: String] = [:]
+        var desiredSetBySourceKey: [String: Set<String>] = [:]
+
+        for agent in project.agents {
+            let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !identifier.isEmpty else { continue }
+            identifierByAgentID[agent.id] = identifier
+            desiredSetBySourceKey[normalizeAgentKey(identifier), default: []] = []
+        }
+
+        for permission in project.permissions where permission.permissionType == .allow {
+            guard let fromIdentifier = identifierByAgentID[permission.fromAgentID],
+                  let toIdentifier = identifierByAgentID[permission.toAgentID] else {
+                continue
+            }
+
+            let normalizedFrom = normalizeAgentKey(fromIdentifier)
+            let normalizedTo = normalizeAgentKey(toIdentifier)
+            guard !normalizedFrom.isEmpty, !normalizedTo.isEmpty, normalizedFrom != normalizedTo else { continue }
+
+            desiredSetBySourceKey[normalizedFrom, default: []].insert(toIdentifier)
+        }
+
+        return desiredSetBySourceKey.reduce(into: [String: [String]]()) { partial, entry in
+            partial[entry.key] = entry.value.sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
     }
 
     private func safePathComponent(_ value: String) -> String {

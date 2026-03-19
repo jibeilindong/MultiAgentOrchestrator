@@ -23,6 +23,11 @@ enum ExecutionOutputType: String, Codable {
     case empty = "empty"
 }
 
+enum AgentOutputMode {
+    case structuredJSON
+    case plainStreaming
+}
+
 struct ExecutionResult: Codable, Identifiable {
     let id: UUID
     let nodeID: UUID
@@ -430,6 +435,7 @@ class OpenClawService: ObservableObject {
         _ workflow: Workflow,
         agents: [Agent],
         prompt: String? = nil,
+        agentOutputMode: AgentOutputMode = .structuredJSON,
         onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
@@ -448,6 +454,7 @@ class OpenClawService: ObservableObject {
         lastError = nil
         
         let agentNodes = executionPlan(for: workflow)
+        let entryNodeIDs = entryAgentNodeIDs(in: workflow)
         totalSteps = agentNodes.count
         currentStep = 0
         
@@ -469,6 +476,8 @@ class OpenClawService: ObservableObject {
             workflow: workflow,
             agents: agents,
             prompt: prompt,
+            entryNodeIDs: entryNodeIDs,
+            agentOutputMode: agentOutputMode,
             onNodeStream: onNodeStream,
             onNodeCompleted: onNodeCompleted
         ) { nodeResults in
@@ -559,12 +568,29 @@ class OpenClawService: ObservableObject {
 
         return routedAgents
     }
+
+    private func entryAgentNodeIDs(in workflow: Workflow) -> Set<UUID> {
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        guard let startNode = workflow.nodes.first(where: { $0.type == .start }) else {
+            return []
+        }
+
+        let connectedNodeIDs = workflow.edges
+            .filter { $0.fromNodeID == startNode.id }
+            .compactMap { edge -> UUID? in
+                guard let node = nodeByID[edge.toNodeID], node.type == .agent else { return nil }
+                return node.id
+            }
+        return Set(connectedNodeIDs)
+    }
     
     private func executeNodesSequentially(
         _ nodes: [WorkflowNode],
         workflow: Workflow,
         agents: [Agent],
         prompt: String?,
+        entryNodeIDs: Set<UUID>,
+        agentOutputMode: AgentOutputMode,
         onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
@@ -615,6 +641,8 @@ class OpenClawService: ObservableObject {
                 node: node,
                 agent: agent,
                 prompt: prompt,
+                isEntryNode: entryNodeIDs.contains(node.id),
+                outputMode: agentOutputMode,
                 onStream: { chunk in
                     onNodeStream?(
                         NodeStreamUpdate(
@@ -651,17 +679,20 @@ class OpenClawService: ObservableObject {
         node: WorkflowNode,
         agent: Agent,
         prompt: String?,
+        isEntryNode: Bool = false,
+        outputMode: AgentOutputMode = .structuredJSON,
         onStream: ((String) -> Void)? = nil,
         completion: @escaping (ExecutionResult) -> Void
     ) {
         // 构建执行指令
-        let instruction = buildInstruction(for: node, agent: agent, prompt: prompt)
+        let instruction = buildInstruction(for: node, agent: agent, prompt: prompt, isEntryNode: isEntryNode)
         let targetAgentID = resolvedAgentIdentifier(for: agent)
         
         // 调用openclaw agent命令
         callOpenClawAgent(
             instruction: instruction,
             agentIdentifier: targetAgentID,
+            outputMode: outputMode,
             onPartial: onStream
         ) { success, output, outputType in
             let status: ExecutionStatus = success ? .completed : .failed
@@ -677,7 +708,7 @@ class OpenClawService: ObservableObject {
     }
     
     // 构建Agent指令
-    private func buildInstruction(for node: WorkflowNode, agent: Agent, prompt: String?) -> String {
+    private func buildInstruction(for node: WorkflowNode, agent: Agent, prompt: String?, isEntryNode: Bool) -> String {
         var instruction = "Execute agent task:\n"
         instruction += "Agent: \(agent.name)\n"
         instruction += "Node ID: \(node.id.uuidString)\n"
@@ -690,6 +721,18 @@ class OpenClawService: ObservableObject {
         if !normalizedPrompt.isEmpty {
             instruction += "\nUser Task:\n\(normalizedPrompt)\n"
         }
+
+        if isEntryNode {
+            instruction += """
+
+            Workbench Entry Policy:
+            - You are the entry agent facing the user directly.
+            - Reply to the user immediately with a direct answer first.
+            - Contact other agents only when strictly necessary.
+            - If cross-agent communication is limited, do not stall; continue with the best direct answer and clearly state constraints.
+            """
+            instruction += "\n"
+        }
         
         return instruction
     }
@@ -698,6 +741,7 @@ class OpenClawService: ObservableObject {
     private func callOpenClawAgent(
         instruction: String,
         agentIdentifier: String,
+        outputMode: AgentOutputMode = .structuredJSON,
         onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Bool, String, ExecutionOutputType) -> Void
     ) {
@@ -707,6 +751,12 @@ class OpenClawService: ObservableObject {
             let serviceConfig = self.agentConfig
             let manager = OpenClawManager.shared
             let connectionConfig = manager.config
+            let pluginCleanup = manager.cleanupStalePluginInstallStageArtifactsIfNeeded(using: connectionConfig)
+            if !pluginCleanup.success {
+                self.addLog(.warning, pluginCleanup.message)
+            } else if !pluginCleanup.message.isEmpty {
+                self.addLog(.info, pluginCleanup.message)
+            }
 
             if connectionConfig.deploymentKind == .remoteServer {
                 DispatchQueue.main.async {
@@ -738,7 +788,8 @@ class OpenClawService: ObservableObject {
             let enabledFlags = self.appendCLIOutputFlags(
                 to: &args,
                 capabilities: capabilities,
-                config: connectionConfig
+                config: connectionConfig,
+                outputMode: outputMode
             )
 
             if self.loggedCapabilityKeys.insert(capabilityCacheKey).inserted {
@@ -776,7 +827,17 @@ class OpenClawService: ObservableObject {
                 let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
                 let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
                 let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                let parsedOutput = self.extractAgentResponse(from: stdoutTrimmed)
+                let parsedOutput: (text: String, type: ExecutionOutputType)
+                switch outputMode {
+                case .structuredJSON:
+                    parsedOutput = self.extractAgentResponse(from: stdoutTrimmed)
+                case .plainStreaming:
+                    let text = self.extractVisiblePlainResponse(from: stdoutTrimmed)
+                    parsedOutput = (
+                        text,
+                        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .runtimeLog : .agentFinalResponse
+                    )
+                }
 
                 if !stderrTrimmed.isEmpty {
                     let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
@@ -862,7 +923,8 @@ class OpenClawService: ObservableObject {
     private func appendCLIOutputFlags(
         to arguments: inout [String],
         capabilities: AgentCLICapabilities,
-        config: OpenClawConfig
+        config: OpenClawConfig,
+        outputMode: AgentOutputMode
     ) -> [String] {
         var enabledFlags: [String] = []
 
@@ -876,12 +938,14 @@ class OpenClawService: ObservableObject {
             enabledFlags.append("--quiet")
         }
 
-        if capabilities.supportsJSONOnly {
-            arguments.append("--json-only")
-            enabledFlags.append("--json-only")
-        } else {
-            arguments.append("--json")
-            enabledFlags.append("--json")
+        if outputMode == .structuredJSON {
+            if capabilities.supportsJSONOnly {
+                arguments.append("--json-only")
+                enabledFlags.append("--json-only")
+            } else {
+                arguments.append("--json")
+                enabledFlags.append("--json")
+            }
         }
 
         return enabledFlags
@@ -1140,9 +1204,36 @@ class OpenClawService: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private func extractVisiblePlainResponse(from stdout: String) -> String {
+        let normalized = stdout.replacingOccurrences(of: "\r", with: "")
+        guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+
+        let keptLines = normalized
+            .components(separatedBy: .newlines)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return false }
+                if looksLikeRuntimeLog(trimmed) { return false }
+                if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return false }
+                return true
+            }
+
+        let joined = keptLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !joined.isEmpty {
+            return joined
+        }
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func looksLikeRuntimeLog(_ text: String) -> Bool {
         let lowercased = text.lowercased()
         if lowercased.hasPrefix("[plugins]") || lowercased.hasPrefix("[diagnostic]") || lowercased.hasPrefix("[model-fallback/decision]") {
+            return true
+        }
+        if lowercased.hasPrefix("config warnings:") || lowercased.hasPrefix("- plugins.entries.") {
+            return true
+        }
+        if lowercased.contains("duplicate plugin id detected") || lowercased.contains("config overwrite:") {
             return true
         }
         if lowercased.contains(" registered ") && lowercased.contains(" tool") {
