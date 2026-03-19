@@ -17,9 +17,6 @@ struct ConnectionLinesView: View {
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
 
-    private let nodeWidth: CGFloat = 80
-    private let nodeHeight: CGFloat = 60
-
     init(
         currentWorkflow: Workflow?,
         scale: Binding<CGFloat>,
@@ -61,15 +58,9 @@ struct ConnectionLinesView: View {
                             )
                         )
 
-                    OrthogonalConnectionShape(points: points)
-                        .stroke(
-                            Color.primary.opacity(0.001),
-                            style: StrokeStyle(
-                                lineWidth: max(18, lineWidth + 14),
-                                lineCap: .round,
-                                lineJoin: .round
-                            )
-                        )
+                    ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14))
+                        .fill(Color.clear)
+                        .contentShape(ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14)))
                         .onTapGesture {
                             selectedEdgeID = layout.edge.id
                             onEdgeSelected?(layout.edge)
@@ -83,7 +74,7 @@ struct ConnectionLinesView: View {
                             )
                     }
 
-                    let displayText = edgeDisplayText(layout.edge)
+                    let displayText = layout.displayText
                     if !displayText.isEmpty {
                         EdgeLabelView(
                             text: displayText,
@@ -101,26 +92,84 @@ struct ConnectionLinesView: View {
     private func buildEdgeLayouts(in geometry: GeometryProxy) -> [EdgeLayout] {
         guard let workflow = currentWorkflow else { return [] }
         let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-
-        return workflow.edges.compactMap { edge in
+        let candidates = workflow.edges.compactMap { edge -> RoutedEdgeCandidate? in
             guard let fromNode = nodesByID[edge.fromNodeID],
                   let toNode = nodesByID[edge.toNodeID] else {
                 return nil
             }
 
-            let fromPos = getNodeCenter(fromNode.position, geometry: geometry)
-            let toPos = getNodeCenter(toNode.position, geometry: geometry)
-            let startPoint = calculateEdgePoint(from: fromPos, to: toPos)
-            let endPoint = calculateEdgePoint(from: toPos, to: fromPos)
-            let points = orthogonalRoute(from: startPoint, to: endPoint)
-            let baseColor = edge.requiresApproval ? Color.orange : lineColor
-            return EdgeLayout(
+            let fromFrame = nodeFrame(for: fromNode, geometry: geometry)
+            let toFrame = nodeFrame(for: toNode, geometry: geometry)
+            let targetSide = WorkflowEdgeRoutePlanner.preferredIncomingSide(
+                for: toFrame,
+                toward: fromFrame.center
+            )
+            return RoutedEdgeCandidate(
                 edge: edge,
-                points: points,
-                isSelected: selectedEdgeID == edge.id,
-                baseColor: baseColor
+                fromFrame: fromFrame,
+                toFrame: toFrame,
+                targetSide: targetSide
             )
         }
+
+        let grouped = Dictionary(grouping: candidates, by: \.bundleKey)
+        var layouts: [EdgeLayout] = []
+
+        for bundle in grouped.values {
+            let sortedBundle = bundle.sorted { lhs, rhs in
+                let lhsAngle = angle(from: lhs.toFrame.center, to: lhs.fromFrame.center)
+                let rhsAngle = angle(from: rhs.toFrame.center, to: rhs.fromFrame.center)
+                return lhsAngle < rhsAngle
+            }
+            let laneOffsets = laneOffsets(for: sortedBundle.count)
+
+            for (index, candidate) in sortedBundle.enumerated() {
+                let obstacles = workflow.nodes
+                    .compactMap { node -> CGRect? in
+                        guard node.id != candidate.edge.fromNodeID,
+                              node.id != candidate.edge.toNodeID else { return nil }
+                        return nodeFrame(for: node, geometry: geometry)
+                    }
+
+                let path = WorkflowEdgeRoutePlanner.route(
+                    from: candidate.fromFrame,
+                    to: candidate.toFrame,
+                    avoiding: obstacles,
+                    preferredAxis: candidate.preferredAxis,
+                    laneOffset: laneOffsets[index]
+                )
+
+                layouts.append(
+                    EdgeLayout(
+                        edge: candidate.edge,
+                        points: path,
+                        isSelected: selectedEdgeID == candidate.edge.id,
+                        baseColor: candidate.edge.requiresApproval ? Color.orange : lineColor,
+                        displayText: edgeDisplayText(candidate.edge)
+                    )
+                )
+            }
+        }
+
+        return layouts
+    }
+
+    private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
+        let center = getNodeCenter(node.position, geometry: geometry)
+        let size: CGSize
+        switch node.type {
+        case .start:
+            size = CGSize(width: 100, height: 60)
+        case .agent:
+            size = CGSize(width: 110, height: 65)
+        }
+
+        return CGRect(
+            x: center.x - size.width / 2,
+            y: center.y - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
     }
 
     private func getNodeCenter(_ position: CGPoint, geometry: GeometryProxy) -> CGPoint {
@@ -132,41 +181,26 @@ struct ConnectionLinesView: View {
         )
     }
 
-    private func calculateEdgePoint(from: CGPoint, to: CGPoint) -> CGPoint {
-        let dx = to.x - from.x
-        let dy = to.y - from.y
-        guard abs(dx) > 0.001 || abs(dy) > 0.001 else {
-            return from
+    private func displayText(for edges: [WorkflowEdge]) -> String {
+        let labels = Set(edges.map(edgeDisplayText).filter { !$0.isEmpty })
+        if labels.count == 1 {
+            return labels.first ?? ""
         }
-
-        let angle = atan2(dy, dx)
-        let diagonal = sqrt(nodeWidth * nodeWidth + nodeHeight * nodeHeight)
-        let buffer: CGFloat = diagonal / 2 + 15
-        let t = buffer * scale
-        return CGPoint(x: from.x + t * cos(angle), y: from.y + t * sin(angle))
+        return edges.count == 1 ? edgeDisplayText(edges[0]) : ""
     }
 
-    private func orthogonalRoute(from start: CGPoint, to end: CGPoint) -> [CGPoint] {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
+    private func laneOffsets(for count: Int) -> [CGFloat] {
+        guard count > 1 else { return [0] }
 
-        if abs(dx) >= abs(dy) {
-            let midX = start.x + dx * 0.5
-            return [
-                start,
-                CGPoint(x: midX, y: start.y),
-                CGPoint(x: midX, y: end.y),
-                end
-            ]
+        let spacing: CGFloat = 14
+        let center = CGFloat(count - 1) / 2
+        return (0..<count).map { index in
+            (CGFloat(index) - center) * spacing
         }
+    }
 
-        let midY = start.y + dy * 0.5
-        return [
-            start,
-            CGPoint(x: start.x, y: midY),
-            CGPoint(x: end.x, y: midY),
-            end
-        ]
+    private func angle(from center: CGPoint, to point: CGPoint) -> CGFloat {
+        atan2(point.y - center.y, point.x - center.x)
     }
 
     private func edgeDisplayText(_ edge: WorkflowEdge) -> String {
@@ -217,6 +251,200 @@ private struct EdgeLayout {
     let points: [CGPoint]
     let isSelected: Bool
     let baseColor: Color
+    let displayText: String
+}
+
+private struct RoutedEdgeCandidate {
+    let edge: WorkflowEdge
+    let fromFrame: CGRect
+    let toFrame: CGRect
+    let targetSide: EdgeAnchorSide
+
+    var bundleKey: RoutedEdgeBundleKey {
+        RoutedEdgeBundleKey(targetNodeID: edge.toNodeID, incomingSide: targetSide)
+    }
+
+    var preferredAxis: EdgeRouteAxis {
+        let dx = toFrame.midX - fromFrame.midX
+        let dy = toFrame.midY - fromFrame.midY
+        return abs(dx) >= abs(dy) ? .horizontal : .vertical
+    }
+}
+
+private struct RoutedEdgeBundleKey: Hashable {
+    let targetNodeID: UUID
+    let incomingSide: EdgeAnchorSide
+}
+
+enum EdgeAnchorSide: String, Hashable {
+    case left
+    case right
+    case top
+    case bottom
+}
+
+struct WorkflowEdgeRoutePlanner {
+    private static let anchorClearance: CGFloat = 10
+    private static let obstaclePadding: CGFloat = 12
+    private static let candidateSpacing: CGFloat = 14
+
+    static func route(
+        from sourceFrame: CGRect,
+        to targetFrame: CGRect,
+        avoiding obstacles: [CGRect],
+        preferredAxis: EdgeRouteAxis,
+        laneOffset: CGFloat
+    ) -> [CGPoint] {
+        let sourceCenter = sourceFrame.center
+        let targetCenter = targetFrame.center
+        let sourceSide = preferredOutgoingSide(for: sourceFrame, toward: targetCenter)
+        let targetSide = preferredIncomingSide(for: targetFrame, toward: sourceCenter)
+
+        let start = anchorPoint(on: sourceFrame, side: sourceSide)
+        let end = anchorPoint(on: targetFrame, side: targetSide)
+        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
+
+        let candidates = candidatePaths(from: start, to: end, preferredAxis: preferredAxis, laneOffset: laneOffset)
+
+        for path in candidates {
+            if isClear(path, blockedRects: blockedRects) {
+                return simplify(path)
+            }
+        }
+
+        return simplify(candidates.first ?? [start, end])
+    }
+
+    private static func candidatePaths(
+        from start: CGPoint,
+        to end: CGPoint,
+        preferredAxis: EdgeRouteAxis,
+        laneOffset: CGFloat
+    ) -> [[CGPoint]] {
+        var paths: [[CGPoint]] = []
+
+        if abs(start.x - end.x) < 0.5 || abs(start.y - end.y) < 0.5 {
+            paths.append([start, end])
+        }
+
+        if preferredAxis == .horizontal {
+            paths.append([start, CGPoint(x: end.x, y: start.y), end])
+            paths.append([start, CGPoint(x: start.x, y: end.y), end])
+        } else {
+            paths.append([start, CGPoint(x: start.x, y: end.y), end])
+            paths.append([start, CGPoint(x: end.x, y: start.y), end])
+        }
+
+        let offsets = candidateOffsets(for: laneOffset)
+        for offset in offsets {
+            paths.append([
+                start,
+                CGPoint(x: start.x, y: start.y + offset),
+                CGPoint(x: end.x, y: start.y + offset),
+                end
+            ])
+            paths.append([
+                start,
+                CGPoint(x: start.x + offset, y: start.y),
+                CGPoint(x: start.x + offset, y: end.y),
+                end
+            ])
+        }
+
+        return paths
+    }
+
+    private static func candidateOffsets(for laneOffset: CGFloat) -> [CGFloat] {
+        let base = laneOffset
+        return [base, base + candidateSpacing, base - candidateSpacing, base + candidateSpacing * 2, base - candidateSpacing * 2]
+    }
+
+    static func preferredOutgoingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
+        preferredSide(for: rect, toward: point)
+    }
+
+    static func preferredIncomingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
+        preferredSide(for: rect, toward: point)
+    }
+
+    private static func preferredSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
+        let center = rect.center
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        if abs(dx) >= abs(dy) {
+            return dx >= 0 ? .right : .left
+        }
+        return dy >= 0 ? .bottom : .top
+    }
+
+    private static func anchorPoint(on rect: CGRect, side: EdgeAnchorSide) -> CGPoint {
+        switch side {
+        case .left: return CGPoint(x: rect.minX - anchorClearance, y: rect.midY)
+        case .right: return CGPoint(x: rect.maxX + anchorClearance, y: rect.midY)
+        case .top: return CGPoint(x: rect.midX, y: rect.minY - anchorClearance)
+        case .bottom: return CGPoint(x: rect.midX, y: rect.maxY + anchorClearance)
+        }
+    }
+
+    private static func isClear(_ path: [CGPoint], blockedRects: [CGRect]) -> Bool {
+        guard path.count >= 2 else { return false }
+        for (from, to) in zip(path, path.dropFirst()) {
+            if blockedRects.contains(where: { segment(from, to: to).intersects($0) }) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func simplify(_ path: [CGPoint]) -> [CGPoint] {
+        guard path.count > 2 else { return path }
+
+        var points: [CGPoint] = [path[0]]
+        for point in path.dropFirst() {
+            while points.count >= 2 {
+                let a = points[points.count - 2]
+                let b = points[points.count - 1]
+                if isCollinear(a, b, point) {
+                    points.removeLast()
+                } else {
+                    break
+                }
+            }
+            points.append(point)
+        }
+        return points
+    }
+
+    private static func isCollinear(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> Bool {
+        (abs(a.x - b.x) < 0.5 && abs(b.x - c.x) < 0.5) ||
+        (abs(a.y - b.y) < 0.5 && abs(b.y - c.y) < 0.5)
+    }
+
+    private static func segment(_ from: CGPoint, to: CGPoint) -> CGRect {
+        CGRect(
+            x: min(from.x, to.x),
+            y: min(from.y, to.y),
+            width: max(abs(to.x - from.x), 1),
+            height: max(abs(to.y - from.y), 1)
+        ).insetBy(dx: -1, dy: -1)
+    }
+}
+
+enum EdgeRouteAxis {
+    case horizontal
+    case vertical
+}
+
+private extension CGRect {
+    var center: CGPoint {
+        CGPoint(x: midX, y: midY)
+    }
+}
+
+private extension CGPoint {
+    func distance(to other: CGPoint) -> CGFloat {
+        hypot(x - other.x, y - other.y)
+    }
 }
 
 struct OrthogonalConnectionShape: Shape {
@@ -230,6 +458,23 @@ struct OrthogonalConnectionShape: Shape {
             path.addLine(to: point)
         }
         return path
+    }
+}
+
+struct ConnectionHitShape: Shape {
+    let points: [CGPoint]
+    let hitWidth: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        OrthogonalConnectionShape(points: points)
+            .path(in: rect)
+            .strokedPath(
+                StrokeStyle(
+                    lineWidth: hitWidth,
+                    lineCap: .round,
+                    lineJoin: .round
+                )
+            )
     }
 }
 

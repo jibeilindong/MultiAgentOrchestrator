@@ -406,11 +406,11 @@ struct MAProject: Codable, Identifiable {
                 continue
             }
 
-            if let sourceBoundary = workflow.boundary(containing: fromNode.id) {
-                return sourceBoundary.contains(toNode.id)
+            if let sourceBoundary = workflow.boundary(containing: fromNode.position) {
+                return sourceBoundary.contains(point: toNode.position)
             }
 
-            if workflow.boundary(containing: toNode.id) != nil {
+            if workflow.boundary(containing: toNode.position) != nil {
                 return true
             }
         }

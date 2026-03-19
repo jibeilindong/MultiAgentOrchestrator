@@ -32,6 +32,7 @@ struct CanvasContentView: View {
     @State private var isDraggingOverCanvas: Bool = false
     @State private var rightMouseLassoStart: CGPoint?
     @State private var boundaryDragSnapshots: [UUID: BoundaryDragSnapshot] = [:]
+    @State private var draggingBoundaryID: UUID?
 
     private var currentWorkflow: Workflow? {
         appState.currentProject?.workflows.first
@@ -80,14 +81,10 @@ struct CanvasContentView: View {
                     groups: explicitBoundaryRects(in: geometry),
                     fallbackGroups: collaborationGroups(in: geometry),
                     selectedBoundaryIDs: selectedBoundaryIDs,
+                    draggingBoundaryID: draggingBoundaryID,
                     onBoundaryTap: { boundaryID in
-                        guard let workflow = currentWorkflow,
-                              let boundary = workflow.boundaries.first(where: { $0.id == boundaryID }) else {
-                            return
-                        }
                         suppressCanvasTapClear = true
                         selectedBoundaryIDs = [boundaryID]
-                        selectedNodeIDs = Set(boundary.memberNodeIDs)
                         selectedNodeID = nil
                         selectedEdgeID = nil
                         connectingFromNode = nil
@@ -98,6 +95,9 @@ struct CanvasContentView: View {
                     },
                     onBoundaryDragEnded: { boundaryID in
                         boundaryDragSnapshots.removeValue(forKey: boundaryID)
+                        if draggingBoundaryID == boundaryID {
+                            draggingBoundaryID = nil
+                        }
                     }
                 )
 
@@ -153,6 +153,16 @@ struct CanvasContentView: View {
             .background(
                 BlankCanvasDragMonitor(
                     isEnabled: { !(isLassoMode || isTransientLassoMode) },
+                    onEdgeHit: { location in
+                        guard let edge = edge(at: location, geometry: geometry) else { return false }
+                        suppressCanvasTapClear = true
+                        selectedNodeID = nil
+                        selectedNodeIDs.removeAll()
+                        selectedBoundaryIDs.removeAll()
+                        selectedEdgeID = edge.id
+                        onEdgeSelected?(edge)
+                        return true
+                    },
                     isBlankLocation: { location in
                         isBlankCanvasLocation(location, geometry: geometry)
                     },
@@ -337,11 +347,15 @@ struct CanvasContentView: View {
             boundaryFrame(for: boundary, geometry: geometry).intersects(rect) ? boundary.id : nil
         })
 
-        let boundaryMemberNodes = Set((workflow?.boundaries ?? [])
+        let boundaryContainedNodes = Set((workflow?.boundaries ?? [])
             .filter { selectedBoundaries.contains($0.id) }
-            .flatMap(\.memberNodeIDs))
+            .flatMap { boundary in
+                (workflow?.nodes ?? []).compactMap { node in
+                    boundaryFrame(for: boundary, geometry: geometry).contains(adjustedPosition(node.position, geometry: geometry)) ? node.id : nil
+                }
+            })
 
-        let selected = selectedNodesInRect.union(boundaryMemberNodes)
+        let selected = selectedNodesInRect.union(boundaryContainedNodes)
         selectedBoundaryIDs = selectedBoundaries
         selectedNodeIDs = selected
         selectedNodeID = selected.count == 1 && selectedBoundaries.isEmpty ? selected.first : nil
@@ -353,13 +367,8 @@ struct CanvasContentView: View {
 
         if boundaryDragSnapshots[boundaryID] == nil,
            let boundary = workflow.boundaries.first(where: { $0.id == boundaryID }) {
-            let nodePositions = Dictionary(uniqueKeysWithValues: workflow.nodes
-                .filter { boundary.memberNodeIDs.contains($0.id) }
-                .map { ($0.id, $0.position) })
             boundaryDragSnapshots[boundaryID] = BoundaryDragSnapshot(
-                rect: boundary.rect,
-                memberNodeIDs: Set(boundary.memberNodeIDs),
-                nodePositions: nodePositions
+                rect: boundary.rect
             )
         }
 
@@ -368,8 +377,9 @@ struct CanvasContentView: View {
         let dy = translation.height / scale
 
         suppressCanvasTapClear = true
+        draggingBoundaryID = boundaryID
         selectedBoundaryIDs = [boundaryID]
-        selectedNodeIDs = snapshot.memberNodeIDs
+        selectedNodeIDs.removeAll()
         selectedNodeID = nil
         selectedEdgeID = nil
 
@@ -380,13 +390,6 @@ struct CanvasContentView: View {
                 snapshot.rect.offsetBy(dx: dx, dy: dy)
             )
             workflow.boundaries[boundaryIndex].updatedAt = Date()
-
-            for nodeIndex in workflow.nodes.indices {
-                let nodeID = workflow.nodes[nodeIndex].id
-                guard let originalPosition = snapshot.nodePositions[nodeID] else { continue }
-                let moved = CGPoint(x: originalPosition.x + dx, y: originalPosition.y + dy)
-                workflow.nodes[nodeIndex].position = appState.snapPointToGrid(moved)
-            }
         }
     }
 
@@ -490,17 +493,14 @@ struct CanvasContentView: View {
 
     private func edge(at location: CGPoint, geometry: GeometryProxy) -> WorkflowEdge? {
         guard let workflow = currentWorkflow else { return nil }
-        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-        return workflow.edges.reversed().first { edge in
-            guard let fromNode = nodesByID[edge.fromNodeID],
-                  let toNode = nodesByID[edge.toNodeID] else { return false }
-            let fromPos = adjustedPosition(fromNode.position, geometry: geometry)
-            let toPos = adjustedPosition(toNode.position, geometry: geometry)
-            let startPoint = edgePoint(from: fromPos, to: toPos)
-            let endPoint = edgePoint(from: toPos, to: fromPos)
-            let points = orthogonalRoute(from: startPoint, to: endPoint)
-            return isPoint(location, near: points, tolerance: 8)
-        }
+        let tolerance = max(10, appState.canvasDisplaySettings.lineWidth + 6)
+        return routedEdgeLayouts(in: geometry, workflow: workflow)
+            .compactMap { layout -> (WorkflowEdge, CGFloat)? in
+                guard let distance = layout.distance(to: location, tolerance: tolerance) else { return nil }
+                return (layout.edge, distance)
+            }
+            .min(by: { $0.1 < $1.1 })?
+            .0
     }
 
     private func isBlankCanvasLocation(_ location: CGPoint, geometry: GeometryProxy) -> Bool {
@@ -508,40 +508,6 @@ struct CanvasContentView: View {
         guard edge(at: location, geometry: geometry) == nil else { return false }
         guard boundary(at: location, geometry: geometry) == nil else { return false }
         return true
-    }
-
-    private func edgePoint(from: CGPoint, to: CGPoint) -> CGPoint {
-        let dx = to.x - from.x
-        let dy = to.y - from.y
-        guard abs(dx) > 0.001 || abs(dy) > 0.001 else { return from }
-
-        let angle = atan2(dy, dx)
-        let buffer: CGFloat = 58
-        return CGPoint(
-            x: from.x + buffer * cos(angle),
-            y: from.y + buffer * sin(angle)
-        )
-    }
-
-    private func orthogonalRoute(from start: CGPoint, to end: CGPoint) -> [CGPoint] {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        if abs(dx) >= abs(dy) {
-            let midX = start.x + dx * 0.5
-            return [
-                start,
-                CGPoint(x: midX, y: start.y),
-                CGPoint(x: midX, y: end.y),
-                end
-            ]
-        }
-        let midY = start.y + dy * 0.5
-        return [
-            start,
-            CGPoint(x: start.x, y: midY),
-            CGPoint(x: end.x, y: midY),
-            end
-        ]
     }
 
     private func isPoint(_ point: CGPoint, near polyline: [CGPoint], tolerance: CGFloat) -> Bool {
@@ -565,12 +531,127 @@ struct CanvasContentView: View {
         let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
         return hypot(point.x - projection.x, point.y - projection.y)
     }
+
+    private func routedEdgeLayouts(in geometry: GeometryProxy, workflow: Workflow) -> [RoutedEdgeHitLayout] {
+        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let candidates = workflow.edges.compactMap { edge -> RoutedEdgeHitCandidate? in
+            guard let fromNode = nodesByID[edge.fromNodeID],
+                  let toNode = nodesByID[edge.toNodeID] else {
+                return nil
+            }
+
+            let fromFrame = nodeFrame(for: fromNode, geometry: geometry)
+            let toFrame = nodeFrame(for: toNode, geometry: geometry)
+            let targetSide = WorkflowEdgeRoutePlanner.preferredIncomingSide(
+                for: toFrame,
+                toward: CGPoint(x: fromFrame.midX, y: fromFrame.midY)
+            )
+
+            return RoutedEdgeHitCandidate(
+                edge: edge,
+                fromFrame: fromFrame,
+                toFrame: toFrame,
+                targetSide: targetSide
+            )
+        }
+
+        let grouped = Dictionary(grouping: candidates) { $0.bundleKey }
+        var layouts: [RoutedEdgeHitLayout] = []
+
+        for bundle in grouped.values {
+            let sortedBundle = bundle.sorted { lhs, rhs in
+                let lhsAngle = atan2(lhs.fromFrame.midY - lhs.toFrame.midY, lhs.fromFrame.midX - lhs.toFrame.midX)
+                let rhsAngle = atan2(rhs.fromFrame.midY - rhs.toFrame.midY, rhs.fromFrame.midX - rhs.toFrame.midX)
+                return lhsAngle < rhsAngle
+            }
+            let laneOffsets = laneOffsets(for: sortedBundle.count)
+
+            for (index, candidate) in sortedBundle.enumerated() {
+                let obstacles = workflow.nodes.compactMap { node -> CGRect? in
+                    guard node.id != candidate.edge.fromNodeID,
+                          node.id != candidate.edge.toNodeID else { return nil }
+                    return nodeFrame(for: node, geometry: geometry)
+                }
+
+                let points = WorkflowEdgeRoutePlanner.route(
+                    from: candidate.fromFrame,
+                    to: candidate.toFrame,
+                    avoiding: obstacles,
+                    preferredAxis: candidate.preferredAxis,
+                    laneOffset: laneOffsets[index]
+                )
+
+                layouts.append(RoutedEdgeHitLayout(edge: candidate.edge, points: points))
+            }
+        }
+
+        return layouts
+    }
+
+    private func laneOffsets(for count: Int) -> [CGFloat] {
+        guard count > 1 else { return [0] }
+        let spacing: CGFloat = 14
+        let center = CGFloat(count - 1) / 2
+        return (0..<count).map { index in
+            (CGFloat(index) - center) * spacing
+        }
+    }
 }
 
 private struct BoundaryDragSnapshot {
     let rect: CGRect
-    let memberNodeIDs: Set<UUID>
-    let nodePositions: [UUID: CGPoint]
+}
+
+private struct RoutedEdgeHitCandidate {
+    let edge: WorkflowEdge
+    let fromFrame: CGRect
+    let toFrame: CGRect
+    let targetSide: EdgeAnchorSide
+
+    var bundleKey: RoutedEdgeBundleKey {
+        RoutedEdgeBundleKey(targetNodeID: edge.toNodeID, incomingSide: targetSide)
+    }
+
+    var preferredAxis: EdgeRouteAxis {
+        let dx = toFrame.midX - fromFrame.midX
+        let dy = toFrame.midY - fromFrame.midY
+        return abs(dx) >= abs(dy) ? .horizontal : .vertical
+    }
+}
+
+private struct RoutedEdgeBundleKey: Hashable {
+    let targetNodeID: UUID
+    let incomingSide: EdgeAnchorSide
+}
+
+private struct RoutedEdgeHitLayout {
+    let edge: WorkflowEdge
+    let points: [CGPoint]
+
+    func distance(to location: CGPoint, tolerance: CGFloat) -> CGFloat? {
+        guard points.count >= 2 else { return nil }
+        var best: CGFloat?
+        for segment in zip(points, points.dropFirst()) {
+            let segmentDistance = distance(from: location, to: segment.0, and: segment.1)
+            guard segmentDistance <= tolerance else { continue }
+            if best == nil || segmentDistance < best! {
+                best = segmentDistance
+            }
+        }
+        return best
+    }
+
+    private func distance(from point: CGPoint, to a: CGPoint, and b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        if abs(dx) < 0.001 && abs(dy) < 0.001 {
+            return hypot(point.x - a.x, point.y - a.y)
+        }
+
+        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)))
+        let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+        return hypot(point.x - projection.x, point.y - projection.y)
+    }
 }
 
 struct WorkflowBoundaryDisplayGroup: Identifiable {
@@ -583,6 +664,7 @@ struct WorkflowBoundaryOverlay: View {
     let groups: [WorkflowBoundaryDisplayGroup]
     let fallbackGroups: [CGRect]
     let selectedBoundaryIDs: Set<UUID>
+    let draggingBoundaryID: UUID?
     var onBoundaryTap: ((UUID) -> Void)?
     var onBoundaryDragChanged: ((UUID, CGSize) -> Void)?
     var onBoundaryDragEnded: ((UUID) -> Void)?
@@ -592,44 +674,65 @@ struct WorkflowBoundaryOverlay: View {
             ForEach(groups) { group in
                 let rect = group.rect
                 let isSelected = selectedBoundaryIDs.contains(group.id)
+                let isDragging = draggingBoundaryID == group.id
+                let boundaryDragGesture = LongPressGesture(minimumDuration: 0.2)
+                    .sequenced(before: DragGesture(minimumDistance: 0))
+                    .onChanged { value in
+                        switch value {
+                        case .second(true, let drag?):
+                            onBoundaryDragChanged?(group.id, drag.translation)
+                        default:
+                            break
+                        }
+                    }
+                    .onEnded { _ in
+                        onBoundaryDragEnded?(group.id)
+                    }
+
                 Rectangle()
-                    .fill((isSelected ? Color.accentColor : Color.orange).opacity(isSelected ? 0.09 : 0.04))
+                    .fill((isDragging ? Color.accentColor : (isSelected ? Color.accentColor : Color.orange)).opacity(isDragging ? 0.14 : (isSelected ? 0.09 : 0.04)))
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
                     .allowsHitTesting(false)
+                    .shadow(color: isDragging ? Color.accentColor.opacity(0.28) : .clear, radius: isDragging ? 10 : 0, x: 0, y: 3)
 
                 Rectangle()
                     .stroke(
-                        isSelected ? Color.accentColor : Color.orange.opacity(0.85),
-                        style: StrokeStyle(lineWidth: isSelected ? 2.5 : 2, dash: [8, 4])
+                        isDragging ? Color.accentColor : (isSelected ? Color.accentColor : Color.orange.opacity(0.85)),
+                        style: StrokeStyle(lineWidth: isDragging ? 3 : (isSelected ? 2.5 : 2), dash: isDragging ? [] : [8, 4])
                     )
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
+                    .shadow(color: isDragging ? Color.accentColor.opacity(0.35) : .clear, radius: isDragging ? 6 : 0, x: 0, y: 0)
 
                 Rectangle()
                     .stroke(Color.primary.opacity(0.001), lineWidth: 14)
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
+                    .contentShape(Rectangle())
                     .onTapGesture {
                         onBoundaryTap?(group.id)
                     }
-                    .gesture(
-                        DragGesture(minimumDistance: 2)
-                            .onChanged { value in
-                                onBoundaryDragChanged?(group.id, value.translation)
-                            }
-                            .onEnded { _ in
-                                onBoundaryDragEnded?(group.id)
-                            }
-                    )
+                    .simultaneousGesture(boundaryDragGesture)
 
                 Text(group.title)
                     .font(.caption2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background((isSelected ? Color.accentColor : Color.orange).opacity(0.95))
+                    .background((isDragging ? Color.accentColor : (isSelected ? Color.accentColor : Color.orange)).opacity(0.95))
                     .foregroundColor(.white)
                     .position(x: rect.minX + 42, y: rect.minY + 12)
+
+                if isDragging {
+                    Text("Dragging")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.accentColor.opacity(0.95))
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                        .position(x: rect.maxX - 44, y: rect.minY + 12)
+                }
             }
 
             ForEach(Array(fallbackGroups.indices), id: \.self) { index in
@@ -687,6 +790,7 @@ struct DropIndicatorView: View {
 
 private struct BlankCanvasDragMonitor: NSViewRepresentable {
     var isEnabled: () -> Bool
+    var onEdgeHit: (_ location: CGPoint) -> Bool
     var isBlankLocation: (CGPoint) -> Bool
     var currentOffset: () -> CGSize
     var onBlankClick: () -> Void
@@ -697,6 +801,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             isEnabled: isEnabled,
+            onEdgeHit: onEdgeHit,
             isBlankLocation: isBlankLocation,
             currentOffset: currentOffset,
             onBlankClick: onBlankClick,
@@ -714,6 +819,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.isEnabled = isEnabled
+        context.coordinator.onEdgeHit = onEdgeHit
         context.coordinator.isBlankLocation = isBlankLocation
         context.coordinator.currentOffset = currentOffset
         context.coordinator.onBlankClick = onBlankClick
@@ -729,6 +835,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
     final class Coordinator {
         var isEnabled: () -> Bool
+        var onEdgeHit: (_ location: CGPoint) -> Bool
         var isBlankLocation: (CGPoint) -> Bool
         var currentOffset: () -> CGSize
         var onBlankClick: () -> Void
@@ -746,6 +853,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
         init(
             isEnabled: @escaping () -> Bool,
+            onEdgeHit: @escaping (_ location: CGPoint) -> Bool,
             isBlankLocation: @escaping (CGPoint) -> Bool,
             currentOffset: @escaping () -> CGSize,
             onBlankClick: @escaping () -> Void,
@@ -754,6 +862,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
             onDragEnded: @escaping (_ didDrag: Bool, _ location: CGPoint) -> Void
         ) {
             self.isEnabled = isEnabled
+            self.onEdgeHit = onEdgeHit
             self.isBlankLocation = isBlankLocation
             self.currentOffset = currentOffset
             self.onBlankClick = onBlankClick
@@ -772,9 +881,13 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
+                guard view.bounds.contains(location) else { return event }
 
                 switch event.type {
                 case .leftMouseDown:
+                    if self.onEdgeHit(location) {
+                        return nil
+                    }
                     guard self.isBlankLocation(location) else { return event }
                     self.tracking = true
                     self.dragging = false

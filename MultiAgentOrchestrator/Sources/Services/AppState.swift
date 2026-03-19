@@ -892,16 +892,24 @@ class AppState: ObservableObject {
     func removeBoundary(around nodeIDs: Set<UUID>) {
         guard !nodeIDs.isEmpty else { return }
 
+        guard let workflow = currentProject?.workflows.first else { return }
+        let selectedNodePositions = workflow.nodes
+            .filter { nodeIDs.contains($0.id) }
+            .map(\.position)
+        guard !selectedNodePositions.isEmpty else { return }
+
         updateMainWorkflow { workflow in
             workflow.boundaries.removeAll { boundary in
-                boundary.matchesSelection(nodeIDs)
+                selectedNodePositions.allSatisfy { boundary.contains(point: $0) }
             }
         }
     }
 
     func removeBoundary(containing nodeID: UUID) {
+        guard let workflow = currentProject?.workflows.first,
+              let node = workflow.nodes.first(where: { $0.id == nodeID }) else { return }
         updateMainWorkflow { workflow in
-            workflow.boundaries.removeAll { $0.contains(nodeID) }
+            workflow.boundaries.removeAll { $0.contains(point: node.position) }
         }
     }
 
@@ -913,7 +921,11 @@ class AppState: ObservableObject {
     }
 
     func boundary(for nodeID: UUID) -> WorkflowBoundary? {
-        currentProject?.workflows.first?.boundary(containing: nodeID)
+        guard let workflow = currentProject?.workflows.first,
+              let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
+            return nil
+        }
+        return workflow.boundary(containing: node.position)
     }
 
     func snapPointToGrid(
@@ -1120,12 +1132,6 @@ class AppState: ObservableObject {
         updateMainWorkflow { workflow in
             workflow.nodes.removeAll { nodeIDs.contains($0.id) }
             workflow.edges.removeAll { nodeIDs.contains($0.fromNodeID) || nodeIDs.contains($0.toNodeID) }
-            workflow.boundaries = workflow.boundaries.compactMap { boundary in
-                var updated = boundary
-                updated.memberNodeIDs.removeAll { nodeIDs.contains($0) }
-                updated.updatedAt = Date()
-                return updated.memberNodeIDs.isEmpty ? nil : updated
-            }
         }
 
         removedAgentIDs.forEach(openClawManager.terminateAgent)
@@ -2024,12 +2030,6 @@ class AppState: ObservableObject {
             let remainingNodeIDs = Set(project.workflows[index].nodes.map(\.id))
             project.workflows[index].edges.removeAll { edge in
                 !remainingNodeIDs.contains(edge.fromNodeID) || !remainingNodeIDs.contains(edge.toNodeID)
-            }
-            project.workflows[index].boundaries = project.workflows[index].boundaries.compactMap { boundary in
-                var updated = boundary
-                updated.memberNodeIDs.removeAll { !remainingNodeIDs.contains($0) }
-                updated.updatedAt = Date()
-                return updated.memberNodeIDs.isEmpty ? nil : updated
             }
         }
 

@@ -30,6 +30,10 @@ struct WorkflowBoundary: Identifiable, Codable, Hashable {
         memberNodeIDs.contains(nodeID)
     }
 
+    func contains(point: CGPoint) -> Bool {
+        rect.contains(point)
+    }
+
     func matchesSelection(_ nodeIDs: Set<UUID>) -> Bool {
         !memberNodeIDs.isEmpty && Set(memberNodeIDs).isSubset(of: nodeIDs)
     }
@@ -343,5 +347,9 @@ struct Workflow: Codable, Identifiable, Hashable {
 
     func boundary(containing nodeID: UUID) -> WorkflowBoundary? {
         boundaries.first { $0.memberNodeIDs.contains(nodeID) }
+    }
+
+    func boundary(containing point: CGPoint) -> WorkflowBoundary? {
+        boundaries.reversed().first { $0.contains(point: point) }
     }
 }

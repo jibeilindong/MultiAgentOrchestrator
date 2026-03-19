@@ -13,9 +13,19 @@ struct WorkflowEditorView: View {
     @Binding var zoomScale: CGFloat
     
     @State private var viewMode: EditorViewMode = .architecture
+    @State private var selectedNodeID: UUID?
+    @State private var selectedNodeIDs: Set<UUID> = []
+    @State private var selectedEdgeID: UUID?
+    @State private var selectedBoundaryIDs: Set<UUID> = []
     @State private var selectedAgentID: UUID?
+    @State private var canvasOffset: CGSize = .zero
+    @State private var canvasLastOffset: CGSize = .zero
     @State private var isConnectMode: Bool = false
     @State private var connectFromAgentID: UUID?
+    @State private var isLassoMode: Bool = false
+    @State private var copiedNodes: [WorkflowNode] = []
+    @State private var copiedEdges: [WorkflowEdge] = []
+    @State private var copiedBoundaries: [WorkflowBoundary] = []
     @State private var connectionType: ConnectionType = .unidirectional
     @State private var testExecution: WorkflowTestExecution?
     @State private var isRunning: Bool = false
@@ -51,9 +61,30 @@ struct WorkflowEditorView: View {
         VStack(spacing: 0) {
             EditorToolbar(
                 viewMode: $viewMode,
+                scale: $zoomScale,
+                offset: $canvasOffset,
+                lastOffset: $canvasLastOffset,
+                selectedNodeID: $selectedNodeID,
+                selectedNodeIDs: $selectedNodeIDs,
+                selectedEdgeID: $selectedEdgeID,
+                selectedBoundaryIDs: $selectedBoundaryIDs,
                 isRunning: isRunning,
+                isConnectMode: $isConnectMode,
+                isLassoMode: $isLassoMode,
+                connectionType: $connectionType,
+                connectFromAgentID: $connectFromAgentID,
+                onAddNode: addNode,
+                onDeleteSelectedEdge: deleteSelectedEdge,
+                onCopySelection: copySelection,
+                onCutSelection: cutSelection,
+                onPasteSelection: pasteSelection,
+                onDeleteSelection: deleteSelection,
+                onAddBoundary: addBoundaryFromSelection,
+                onDeleteBoundary: deleteBoundaryFromSelection,
+                onGenerateTasks: generateTasksFromWorkflow,
                 onRunTest: runTest,
-                onStopTest: stopTest
+                onStopTest: stopTest,
+                onSave: { appState.saveProject() }
             )
             .zIndex(1000)
             
@@ -78,9 +109,16 @@ struct WorkflowEditorView: View {
                 case .architecture:
                     ArchitectureView(
                         zoomScale: $zoomScale,
+                        offset: $canvasOffset,
+                        lastOffset: $canvasLastOffset,
                         isConnectMode: $isConnectMode,
                         connectFromAgentID: $connectFromAgentID,
                         connectionType: $connectionType,
+                        selectedNodeID: $selectedNodeID,
+                        selectedNodeIDs: $selectedNodeIDs,
+                        selectedEdgeID: $selectedEdgeID,
+                        selectedBoundaryIDs: $selectedBoundaryIDs,
+                        isLassoMode: $isLassoMode,
                         onConnect: handleAgentConnection,
                         testExecution: testExecution
                     )
@@ -97,6 +135,7 @@ struct WorkflowEditorView: View {
             if newValue != .architecture {
                 isConnectMode = false
                 connectFromAgentID = nil
+                isLassoMode = false
             }
         }
     }
@@ -140,7 +179,151 @@ struct WorkflowEditorView: View {
         isRunning = false
         testExecution = nil
     }
-    
+
+    private func currentWorkflow() -> Workflow? {
+        appState.currentProject?.workflows.first
+    }
+
+    private func activeNodeSelection() -> Set<UUID> {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs
+        }
+        if let selectedNodeID {
+            return [selectedNodeID]
+        }
+        return []
+    }
+
+    private func boundarySelectionContainsNodeIDs(_ boundary: WorkflowBoundary, selection: Set<UUID>) -> Bool {
+        boundary.memberNodeIDs.allSatisfy { selection.contains($0) }
+    }
+
+    private func copySelection() {
+        guard let workflow = currentWorkflow() else { return }
+        let selection = activeNodeSelection()
+        guard !selection.isEmpty else { return }
+
+        copiedNodes = workflow.nodes.filter { selection.contains($0.id) }
+        copiedEdges = workflow.edges.filter { selection.contains($0.fromNodeID) && selection.contains($0.toNodeID) }
+        copiedBoundaries = workflow.boundaries.filter { selectedBoundaryIDs.contains($0.id) || boundarySelectionContainsNodeIDs($0, selection: selection) }
+    }
+
+    private func cutSelection() {
+        copySelection()
+        deleteSelection()
+    }
+
+    private func pasteSelection() {
+        guard !copiedNodes.isEmpty else { return }
+
+        let sourceAgentIDs = copiedNodes.compactMap(\.agentID)
+        let duplicatedAgentIDs = appState.duplicateAgentsForWorkflowPaste(sourceAgentIDs)
+
+        appState.updateMainWorkflow { workflow in
+            var nodeIDMapping: [UUID: UUID] = [:]
+
+            for sourceNode in copiedNodes {
+                var newNode = WorkflowNode(type: sourceNode.type)
+                if sourceNode.type == .agent {
+                    guard let sourceAgentID = sourceNode.agentID,
+                          let duplicatedAgentID = duplicatedAgentIDs[sourceAgentID] else {
+                        continue
+                    }
+                    newNode.agentID = duplicatedAgentID
+                } else {
+                    newNode.agentID = sourceNode.agentID
+                }
+                newNode.position = CGPoint(x: sourceNode.position.x + 60, y: sourceNode.position.y + 60)
+                newNode.title = sourceNode.title
+                newNode.conditionExpression = sourceNode.conditionExpression
+                newNode.loopEnabled = sourceNode.loopEnabled
+                newNode.maxIterations = sourceNode.maxIterations
+                newNode.subflowID = sourceNode.subflowID
+                newNode.nestingLevel = sourceNode.nestingLevel
+                newNode.inputParameters = sourceNode.inputParameters
+                newNode.outputParameters = sourceNode.outputParameters
+                workflow.nodes.append(newNode)
+                nodeIDMapping[sourceNode.id] = newNode.id
+            }
+
+            for sourceEdge in copiedEdges {
+                guard let fromNodeID = nodeIDMapping[sourceEdge.fromNodeID],
+                      let toNodeID = nodeIDMapping[sourceEdge.toNodeID] else { continue }
+
+                var newEdge = WorkflowEdge(from: fromNodeID, to: toNodeID)
+                newEdge.label = sourceEdge.label
+                newEdge.conditionExpression = sourceEdge.conditionExpression
+                newEdge.requiresApproval = sourceEdge.requiresApproval
+                newEdge.dataMapping = sourceEdge.dataMapping
+                workflow.edges.append(newEdge)
+            }
+
+            for boundary in copiedBoundaries {
+                let remappedMembers = boundary.memberNodeIDs.compactMap { nodeIDMapping[$0] }
+                var newBoundary = WorkflowBoundary(
+                    title: boundary.title,
+                    rect: appState.snapRectToGrid(boundary.rect.offsetBy(dx: 60, dy: 60)),
+                    memberNodeIDs: remappedMembers
+                )
+                newBoundary.createdAt = Date()
+                newBoundary.updatedAt = Date()
+                workflow.boundaries.append(newBoundary)
+            }
+        }
+    }
+
+    private func deleteSelection() {
+        let nodeSelection = activeNodeSelection()
+        if !nodeSelection.isEmpty {
+            appState.removeNodes(nodeSelection)
+        }
+        if !selectedBoundaryIDs.isEmpty {
+            appState.removeBoundaries(selectedBoundaryIDs)
+        }
+        if nodeSelection.isEmpty && selectedBoundaryIDs.isEmpty {
+            return
+        }
+        selectedNodeID = nil
+        selectedNodeIDs.removeAll()
+        selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
+    }
+
+    private func deleteSelectedEdge() {
+        guard let selectedEdgeID else { return }
+        appState.removeEdge(selectedEdgeID)
+        self.selectedEdgeID = nil
+    }
+
+    private func addNode() {
+        let agent = appState.addNewAgent()
+        guard let agent else { return }
+        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+    }
+
+    private func addBoundaryFromSelection() {
+        let selection = activeNodeSelection()
+        guard !selection.isEmpty else { return }
+        appState.addBoundary(around: selection)
+    }
+
+    private func deleteBoundaryFromSelection() {
+        if !selectedBoundaryIDs.isEmpty {
+            appState.removeBoundaries(selectedBoundaryIDs)
+            selectedBoundaryIDs.removeAll()
+            return
+        }
+        let selection = activeNodeSelection()
+        guard !selection.isEmpty else { return }
+        appState.removeBoundary(around: selection)
+    }
+
+    private func generateTasksFromWorkflow() {
+        guard let workflow = currentWorkflow(),
+              let agents = appState.currentProject?.agents else { return }
+        appState.taskManager.generateTasks(from: workflow, projectAgents: agents)
+    }
+
     private func simulateWorkflowExecution(workflow: Workflow, agents: [Agent]) {
         guard var execution = testExecution else { return }
         
@@ -231,45 +414,127 @@ struct WorkflowEditorView: View {
 struct EditorToolbar: View {
     @EnvironmentObject var appState: AppState
     @Binding var viewMode: WorkflowEditorView.EditorViewMode
+    @Binding var scale: CGFloat
+    @Binding var offset: CGSize
+    @Binding var lastOffset: CGSize
+    @Binding var selectedNodeID: UUID?
+    @Binding var selectedNodeIDs: Set<UUID>
+    @Binding var selectedEdgeID: UUID?
+    @Binding var selectedBoundaryIDs: Set<UUID>
     let isRunning: Bool
+    @Binding var isConnectMode: Bool
+    @Binding var isLassoMode: Bool
+    @Binding var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var connectFromAgentID: UUID?
+    var onAddNode: () -> Void
+    var onDeleteSelectedEdge: () -> Void
+    var onCopySelection: () -> Void
+    var onCutSelection: () -> Void
+    var onPasteSelection: () -> Void
+    var onDeleteSelection: () -> Void
+    var onAddBoundary: () -> Void
+    var onDeleteBoundary: () -> Void
+    var onGenerateTasks: () -> Void
     var onRunTest: () -> Void
     var onStopTest: () -> Void
-    
+    var onSave: () -> Void
+
+    private var hasNodeSelection: Bool {
+        selectedNodeID != nil || !selectedNodeIDs.isEmpty
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             WorkflowToolbarGroup(title: "View") {
-                HStack(spacing: 4) {
-                    ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
-                        Button(action: { viewMode = mode }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: mode.icon)
-                                Text(mode.rawValue)
-                                    .font(.caption)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(viewMode == mode ? Color.accentColor.opacity(0.18) : Color.clear)
-                            .cornerRadius(6)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
+                            toolbarModeButton(mode)
                         }
-                        .buttonStyle(.plain)
-                        .foregroundColor(viewMode == mode ? .accentColor : .secondary)
+
+                        Divider().frame(height: 18)
+
+                        toolbarActionButton(title: "Zoom Out", systemName: "minus.magnifyingglass", action: zoomOut)
+                        toolbarActionButton(title: "Zoom In", systemName: "plus.magnifyingglass", action: zoomIn)
+                        toolbarActionButton(title: "Reset", systemName: "arrow.counterclockwise", action: resetView)
+
+                        Divider().frame(height: 18)
+
+                        toolbarToggleButton(
+                            title: "Lasso",
+                            systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
+                            action: toggleLassoMode,
+                            isActive: isLassoMode,
+                            tooltip: "框选模式"
+                        )
+
+                        toolbarActionButton(title: "Copy", systemName: "doc.on.doc", action: onCopySelection)
+                            .disabled(!hasNodeSelection)
+                        toolbarActionButton(title: "Cut", systemName: "scissors", action: onCutSelection)
+                            .disabled(!hasNodeSelection)
+                        toolbarActionButton(title: "Paste", systemName: "doc.on.clipboard", action: onPasteSelection)
+                        toolbarActionButton(title: "Delete", systemName: "trash", action: onDeleteSelection)
+                            .disabled(!hasNodeSelection && selectedBoundaryIDs.isEmpty)
                     }
+                    .padding(.horizontal, 4)
                 }
             }
 
             WorkflowToolbarGroup(title: "Execution") {
-                HStack(spacing: 8) {
-                    Button(action: isRunning ? onStopTest : onRunTest) {
-                        Label(isRunning ? "Stop" : "Test", systemImage: isRunning ? "stop.circle" : "play.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderedProminent)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        toolbarToggleButton(
+                            title: "Connect",
+                            systemName: isConnectMode ? "link.circle.fill" : "link.circle",
+                            action: toggleConnectMode,
+                            isActive: isConnectMode,
+                            tooltip: isConnectMode ? "取消创建连线" : "准备创建连线",
+                            prominent: true
+                        )
 
-                    Button(action: { appState.saveProject() }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                            .font(.caption)
+                        if isConnectMode {
+                            connectionTypeButton(type: .unidirectional)
+                            connectionTypeButton(type: .bidirectional)
+                        }
+
+                        Divider().frame(height: 18)
+
+                        Menu {
+                            Button("New Agent Node") { onAddNode() }
+                            if let agents = appState.currentProject?.agents, !agents.isEmpty {
+                                Divider()
+                                ForEach(agents) { agent in
+                                    Button(agent.name) {
+                                        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+                                    }
+                                }
+                            }
+                        } label: {
+                            toolbarButtonLabel(title: "Add Node", systemName: "plus.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+
+                        toolbarActionButton(title: "Delete Edge", systemName: "link.badge.minus", action: onDeleteSelectedEdge)
+                            .disabled(selectedEdgeID == nil)
+
+                        toolbarActionButton(title: "Add Boundary", systemName: "square.dashed", action: onAddBoundary)
+                            .disabled(!hasNodeSelection)
+                        toolbarActionButton(title: "Remove Boundary", systemName: "square.dashed.badge.minus", action: onDeleteBoundary)
+                            .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
+
+                        toolbarActionButton(title: "Generate", systemName: "list.bullet.clipboard", action: onGenerateTasks)
+
+                        Divider().frame(height: 18)
+
+                        Button(action: isRunning ? onStopTest : onRunTest) {
+                            toolbarButtonLabel(title: isRunning ? "Stop" : "Test", systemName: isRunning ? "stop.circle" : "play.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .frame(width: 128, height: 32)
+
+                        toolbarActionButton(title: "Save", systemName: "square.and.arrow.down", action: onSave)
                     }
-                    .buttonStyle(.bordered)
+                    .padding(.horizontal, 4)
                 }
 
                 if appState.isAutoSaving {
@@ -291,11 +556,124 @@ struct EditorToolbar: View {
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.8))
+        .background(
+            LinearGradient(
+                colors: [Color.white.opacity(0.96), Color.white.opacity(0.84)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private func toolbarModeButton(_ mode: WorkflowEditorView.EditorViewMode) -> some View {
+        Button(action: { viewMode = mode }) {
+            toolbarButtonLabel(title: mode.rawValue, systemName: mode.icon)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(viewMode == mode ? .accentColor : .secondary)
+        .frame(width: 128, height: 32)
+        .background(viewMode == mode ? Color.accentColor.opacity(0.18) : Color.clear)
+        .cornerRadius(8)
+    }
+
+    private func toolbarButtonLabel(title: String, systemName: String) -> some View {
+        Label(title, systemImage: systemName)
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+    }
+
+    private func toolbarActionButton(title: String, systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            toolbarButtonLabel(title: title, systemName: systemName)
+                .frame(width: 128, height: 32)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func toolbarToggleButton(
+        title: String,
+        systemName: String,
+        action: @escaping () -> Void,
+        isActive: Bool,
+        tooltip: String,
+        prominent: Bool = false
+    ) -> some View {
+        Group {
+            if prominent {
+                Button(action: action) {
+                    toolbarButtonLabel(title: title, systemName: systemName)
+                        .frame(width: 128, height: 32)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button(action: action) {
+                    toolbarButtonLabel(title: title, systemName: systemName)
+                        .frame(width: 128, height: 32)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .tint(isActive ? .blue : nil)
+        .help(tooltip)
+    }
+
+    private func connectionTypeButton(type: WorkflowEditorView.ConnectionType) -> some View {
+        let icon = type == .unidirectional ? "arrow.right" : "arrow.left.arrow.right"
+        return Button(action: {
+            connectionType = type
+            isConnectMode = true
+        }) {
+            toolbarButtonLabel(title: type.description, systemName: icon)
+                .frame(width: 128, height: 32)
+        }
+        .buttonStyle(.bordered)
+        .tint(connectionType == type ? .blue : nil)
+        .help(type.description)
+    }
+
+    private func zoomIn() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scale = min(scale + 0.2, 20.0)
+        }
+    }
+
+    private func zoomOut() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scale = max(scale - 0.2, 0.05)
+        }
+    }
+
+    private func resetView() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            scale = 1.0
+            offset = .zero
+            lastOffset = .zero
+        }
+    }
+
+    private func toggleConnectMode() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isConnectMode.toggle()
+            if isConnectMode {
+                isLassoMode = false
+            } else {
+                connectFromAgentID = nil
+            }
+        }
+    }
+
+    private func toggleLassoMode() {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isLassoMode.toggle()
+            if isLassoMode {
+                isConnectMode = false
+                connectFromAgentID = nil
+            }
+        }
     }
 }
 
@@ -558,9 +936,16 @@ struct AgentGridCard: View {
 struct ArchitectureView: View {
     @EnvironmentObject var appState: AppState
     @Binding var zoomScale: CGFloat
+    @Binding var offset: CGSize
+    @Binding var lastOffset: CGSize
     @Binding var isConnectMode: Bool
     @Binding var connectFromAgentID: UUID?
     @Binding var connectionType: WorkflowEditorView.ConnectionType
+    @Binding var selectedNodeID: UUID?
+    @Binding var selectedNodeIDs: Set<UUID>
+    @Binding var selectedEdgeID: UUID?
+    @Binding var selectedBoundaryIDs: Set<UUID>
+    @Binding var isLassoMode: Bool
     var onConnect: (UUID, UUID) -> Void
     var testExecution: WorkflowTestExecution?
     
@@ -574,9 +959,16 @@ struct ArchitectureView: View {
             ZStack {
                 CanvasView(
                     zoomScale: $zoomScale,
+                    offset: $offset,
+                    lastOffset: $lastOffset,
+                    selectedNodeID: $selectedNodeID,
+                    selectedNodeIDs: $selectedNodeIDs,
+                    selectedEdgeID: $selectedEdgeID,
+                    selectedBoundaryIDs: $selectedBoundaryIDs,
                     isConnectMode: $isConnectMode,
                     connectionType: $connectionType,
                     connectFromAgentID: $connectFromAgentID,
+                    isLassoMode: $isLassoMode,
                     onNodeClickInConnectMode: { node in
                         self.handleNodeClickInConnectMode(node: node)
                     },
