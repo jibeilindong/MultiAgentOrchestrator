@@ -54,7 +54,7 @@ struct ContentView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(Color(.windowBackgroundColor).opacity(0.8))
+                    .background(Color.white.opacity(0.8))
 
                     Divider()
 
@@ -233,7 +233,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-                .background(Color(.windowBackgroundColor).opacity(0.8))
+                .background(Color.white.opacity(0.8))
     }
 
     private var statusBadge: some View {
@@ -352,7 +352,7 @@ private struct TopToolbarGroup<Content: View>: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color(.controlBackgroundColor).opacity(0.8))
+        .background(Color.white.opacity(0.8))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

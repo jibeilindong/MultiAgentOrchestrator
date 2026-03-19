@@ -295,7 +295,7 @@ struct EditorToolbar: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color(.windowBackgroundColor).opacity(0.8))
+        .background(Color.white.opacity(0.8))
     }
 }
 
@@ -314,7 +314,7 @@ private struct WorkflowToolbarGroup<Content: View>: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(.controlBackgroundColor).opacity(0.8))
+        .background(Color.white.opacity(0.8))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

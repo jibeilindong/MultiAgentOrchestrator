@@ -315,35 +315,81 @@ class ImportExportService {
         }
         
         for agentDir in contents {
-            let dirPath = agentsPath + "/" + agentDir
+            let dirURL = URL(fileURLWithPath: agentsPath, isDirectory: true)
+                .appendingPathComponent(agentDir, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: dirURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
+            }
+
             var soulMD = ""
             var skills: [String] = []
-            
-            // 读取soul.md
-            let soulPath = dirPath + "/SOUL.md"
-            if let content = try? String(contentsOfFile: soulPath, encoding: .utf8) {
+
+            let soulSourcePath = preferredSoulSourcePath(in: dirURL)
+            if let content = try? String(contentsOf: soulSourcePath, encoding: .utf8) {
                 soulMD = content
             }
-            
-            // 读取skills目录
-            let skillsPath = dirPath + "/skills"
-            if let skillContents = try? fileManager.contentsOfDirectory(atPath: skillsPath) {
+
+            let skillsPath = preferredSkillsDirectory(in: dirURL)
+            if let skillContents = try? fileManager.contentsOfDirectory(atPath: skillsPath.path) {
                 skills = skillContents.filter { $0.hasSuffix(".md") || $0.hasSuffix(".MD") }
             }
             
             configs[agentDir] = OpenClawAgentInfo(
                 agentID: agentDir,
                 soulMD: soulMD,
+                soulSourcePath: soulSourcePath.path,
                 skills: skills
             )
         }
         
         return configs
     }
+
+    private func preferredSoulSourcePath(in agentRoot: URL) -> URL {
+        let preferred = agentRoot.appendingPathComponent("SOUL.md")
+        if fileManager.fileExists(atPath: preferred.path) {
+            return preferred
+        }
+
+        let fallback = agentRoot.appendingPathComponent("soul.md")
+        if fileManager.fileExists(atPath: fallback.path) {
+            return fallback
+        }
+
+        let nestedRoot = agentRoot.appendingPathComponent("agent", isDirectory: true)
+        let nestedPreferred = nestedRoot.appendingPathComponent("SOUL.md")
+        if fileManager.fileExists(atPath: nestedPreferred.path) {
+            return nestedPreferred
+        }
+
+        let nestedFallback = nestedRoot.appendingPathComponent("soul.md")
+        if fileManager.fileExists(atPath: nestedFallback.path) {
+            return nestedFallback
+        }
+
+        return preferred
+    }
+
+    private func preferredSkillsDirectory(in agentRoot: URL) -> URL {
+        let preferred = agentRoot.appendingPathComponent("skills", isDirectory: true)
+        if fileManager.fileExists(atPath: preferred.path) {
+            return preferred
+        }
+
+        let nested = agentRoot.appendingPathComponent("agent", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+        if fileManager.fileExists(atPath: nested.path) {
+            return nested
+        }
+
+        return preferred
+    }
 }
 
 struct OpenClawAgentInfo {
     var agentID: String
     var soulMD: String
+    var soulSourcePath: String
     var skills: [String]
 }
