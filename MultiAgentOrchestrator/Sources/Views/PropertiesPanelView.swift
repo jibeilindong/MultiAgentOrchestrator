@@ -161,6 +161,7 @@ struct NodePropertiesView: View {
     private func nodeTypeIcon(_ type: WorkflowNode.NodeType) -> String {
         switch type {
         case .agent: return "person.circle.fill"
+        case .branch: return "arrow.triangle.branch"
         case .start: return "play.circle.fill"
         case .end: return "stop.circle.fill"
         case .subflow: return "square.stack.3d.up"
@@ -170,6 +171,7 @@ struct NodePropertiesView: View {
     private func nodeTypeColor(_ type: WorkflowNode.NodeType) -> Color {
         switch type {
         case .agent: return .blue
+        case .branch: return .orange
         case .start: return .green
         case .end: return .red
         case .subflow: return .purple
@@ -179,6 +181,7 @@ struct NodePropertiesView: View {
     private func nodeTypeName(_ type: WorkflowNode.NodeType) -> String {
         switch type {
         case .agent: return "Agent Node"
+        case .branch: return "Branch Node"
         case .start: return "Start Node"
         case .end: return "End Node"
         case .subflow: return "Subflow Node"

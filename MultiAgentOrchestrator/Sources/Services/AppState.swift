@@ -265,13 +265,37 @@ class AppState: ObservableObject {
     func getWorkflow(_ id: UUID) -> Workflow? {
         return currentProject?.workflows.first { $0.id == id }
     }
+
+    @discardableResult
+    func ensureMainWorkflow() -> Workflow? {
+        guard var project = currentProject else { return nil }
+        if project.workflows.isEmpty {
+            project.workflows.append(Workflow(name: "Main Workflow"))
+            project.updatedAt = Date()
+            currentProject = project
+        }
+        return currentProject?.workflows.first
+    }
     
     func updateWorkflow(_ workflow: Workflow) {
         guard let index = currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) else { return }
         currentProject?.workflows[index] = workflow
+        currentProject?.updatedAt = Date()
         objectWillChange.send()
         
         // 当工作流更新时，重新生成任务
+        generateTasksFromWorkflow()
+    }
+
+    func updateMainWorkflow(_ updates: (inout Workflow) -> Void) {
+        guard ensureMainWorkflow() != nil,
+              var project = currentProject,
+              let index = project.workflows.indices.first else { return }
+
+        updates(&project.workflows[index])
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
         generateTasksFromWorkflow()
     }
     
@@ -283,6 +307,105 @@ class AppState: ObservableObject {
     // 节点选择
     func selectNode(_ nodeID: UUID?) {
         selectedNodeID = nodeID
+    }
+
+    func addNode(type: WorkflowNode.NodeType, position: CGPoint) {
+        updateMainWorkflow { workflow in
+            var node = WorkflowNode(type: type)
+            node.position = position
+            workflow.nodes.append(node)
+        }
+    }
+
+    func addAgentNode(agentName: String, position: CGPoint) {
+        guard var project = currentProject else { return }
+
+        let agent: Agent
+        if let existing = project.agents.first(where: { $0.name == agentName }) {
+            agent = existing
+        } else {
+            var newAgent = Agent(name: agentName)
+            newAgent.description = "OpenClaw Agent: \(agentName)"
+            project.agents.append(newAgent)
+            currentProject = project
+            agent = newAgent
+        }
+
+        updateMainWorkflow { workflow in
+            var node = WorkflowNode(type: .agent)
+            node.agentID = agent.id
+            node.position = position
+            node.title = agent.name
+            workflow.nodes.append(node)
+        }
+        openClawManager.activateAgent(agent)
+    }
+
+    func removeNodes(_ nodeIDs: Set<UUID>) {
+        guard !nodeIDs.isEmpty else { return }
+
+        let removedAgentIDs = Set((currentProject?.workflows.first?.nodes ?? [])
+            .filter { nodeIDs.contains($0.id) }
+            .compactMap(\.agentID))
+
+        updateMainWorkflow { workflow in
+            workflow.nodes.removeAll { nodeIDs.contains($0.id) }
+            workflow.edges.removeAll { nodeIDs.contains($0.fromNodeID) || nodeIDs.contains($0.toNodeID) }
+        }
+
+        removedAgentIDs.forEach(openClawManager.terminateAgent)
+    }
+
+    func removeEdge(_ edgeID: UUID) {
+        updateMainWorkflow { workflow in
+            workflow.edges.removeAll { $0.id == edgeID }
+        }
+    }
+
+    func addEdge(
+        from fromNodeID: UUID,
+        to toNodeID: UUID,
+        label: String = "",
+        conditionExpression: String = "",
+        requiresApproval: Bool = false,
+        bidirectional: Bool = false
+    ) {
+        guard fromNodeID != toNodeID else { return }
+
+        updateMainWorkflow { workflow in
+            var edge = WorkflowEdge(from: fromNodeID, to: toNodeID)
+            edge.label = label
+            edge.conditionExpression = conditionExpression
+            edge.requiresApproval = requiresApproval
+            workflow.edges.append(edge)
+
+            if bidirectional {
+                var reverse = WorkflowEdge(from: toNodeID, to: fromNodeID)
+                reverse.label = label
+                reverse.conditionExpression = conditionExpression
+                reverse.requiresApproval = requiresApproval
+                workflow.edges.append(reverse)
+            }
+        }
+    }
+
+    func updateNode(_ nodeID: UUID, updates: (inout WorkflowNode) -> Void) {
+        updateMainWorkflow { workflow in
+            guard let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+            updates(&workflow.nodes[index])
+        }
+    }
+
+    func updateEdge(_ edgeID: UUID, updates: (inout WorkflowEdge) -> Void) {
+        updateMainWorkflow { workflow in
+            guard let index = workflow.edges.firstIndex(where: { $0.id == edgeID }) else { return }
+            updates(&workflow.edges[index])
+        }
+    }
+
+    func reloadAgent(_ agentID: UUID) {
+        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return }
+        openClawManager.reloadAgent(agent)
     }
     
     // 从工作流生成任务

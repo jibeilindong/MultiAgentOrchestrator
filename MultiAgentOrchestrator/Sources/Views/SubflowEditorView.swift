@@ -254,6 +254,7 @@ struct SubflowEditorView: View {
     private func nodeIcon(for type: WorkflowNode.NodeType) -> String {
         switch type {
         case .agent: return "person.circle.fill"
+        case .branch: return "arrow.triangle.branch"
         case .start: return "play.circle.fill"
         case .end: return "stop.circle.fill"
         case .subflow: return "arrow.down.doc.fill"
@@ -263,6 +264,7 @@ struct SubflowEditorView: View {
     private func nodeColor(for type: WorkflowNode.NodeType) -> Color {
         switch type {
         case .agent: return .blue
+        case .branch: return .orange
         case .start: return .green
         case .end: return .red
         case .subflow: return .purple
@@ -274,6 +276,7 @@ struct SubflowEditorView: View {
         case .start: return "Start"
         case .end: return "End"
         case .agent: return "Agent Node"
+        case .branch: return "Branch"
         case .subflow: return "Subflow"
         }
     }

@@ -348,14 +348,13 @@ class OpenClawService: ObservableObject {
         executionResults.removeAll()
         lastError = nil
         
-        // 过滤出Agent节点
-        let agentNodes = workflow.nodes.filter { $0.type == .agent }
-        totalSteps = agentNodes.count
+        let executionPlan = buildExecutionPlan(for: workflow)
+        totalSteps = executionPlan.count
         currentStep = 0
         
         // 初始化执行状态（用于回滚）
         executionState = ExecutionState(workflowID: workflow.id, totalSteps: totalSteps)
-        addLog(.info, "Starting workflow execution: \(workflow.name) with \(totalSteps) agent nodes")
+        addLog(.info, "Starting workflow execution: \(workflow.name) with \(totalSteps) executable nodes")
         
         var results: [ExecutionResult] = []
         
@@ -366,7 +365,7 @@ class OpenClawService: ObservableObject {
         }
         
         // 按连接顺序执行
-        executeNodesSequentially(agentNodes, workflow: workflow, agents: agents) { nodeResults in
+        executeNodesSequentially(executionPlan, workflow: workflow, agents: agents) { nodeResults in
             results = nodeResults
             self.executionResults = results
             self.isExecuting = false
@@ -381,6 +380,79 @@ class OpenClawService: ObservableObject {
             
             completion(results)
         }
+    }
+
+    private func buildExecutionPlan(for workflow: Workflow) -> [WorkflowNode] {
+        guard !workflow.nodes.isEmpty else { return [] }
+
+        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let outgoing = Dictionary(grouping: workflow.edges, by: \.fromNodeID)
+        let incomingIDs = Set(workflow.edges.map(\.toNodeID))
+        let startNodes = workflow.nodes
+            .filter { $0.type == .start || !incomingIDs.contains($0.id) }
+            .sorted { $0.position.x < $1.position.x }
+
+        var plan: [WorkflowNode] = []
+        var visitCounts: [UUID: Int] = [:]
+        var context: [String: String] = [:]
+
+        func traverse(from node: WorkflowNode) {
+            let allowedVisits = node.loopEnabled ? max(1, node.maxIterations) : 1
+            if visitCounts[node.id, default: 0] >= allowedVisits {
+                return
+            }
+            visitCounts[node.id, default: 0] += 1
+
+            switch node.type {
+            case .agent:
+                plan.append(node)
+                if let title = nonEmpty(node.title) {
+                    context["node.title"] = title
+                }
+                if let agentID = node.agentID?.uuidString as String? {
+                    context["node.agentID"] = agentID
+                }
+
+                for edge in sortedEdges(outgoing[node.id] ?? []) {
+                    if edge.requiresApproval {
+                        addLog(.warning, "Edge requires approval: \(edgeSummary(edge))", nodeID: node.id)
+                    }
+                    if let nextNode = nodesByID[edge.toNodeID] {
+                        traverse(from: nextNode)
+                    }
+                }
+
+            case .branch:
+                guard let selectedEdge = selectBranchEdge(
+                    from: node,
+                    outgoing: sortedEdges(outgoing[node.id] ?? []),
+                    context: context
+                ) else { return }
+
+                addLog(.info, "Branch '\(displayName(for: node))' routed via \(edgeSummary(selectedEdge))", nodeID: node.id)
+                if let nextNode = nodesByID[selectedEdge.toNodeID] {
+                    traverse(from: nextNode)
+                }
+
+            case .start, .subflow:
+                for edge in sortedEdges(outgoing[node.id] ?? []) {
+                    if let nextNode = nodesByID[edge.toNodeID] {
+                        traverse(from: nextNode)
+                    }
+                }
+
+            case .end:
+                return
+            }
+        }
+
+        if startNodes.isEmpty {
+            workflow.nodes.filter { $0.type == .agent }.forEach { plan.append($0) }
+            return plan
+        }
+
+        startNodes.forEach(traverse(from:))
+        return plan
     }
     
     private func executeNodesSequentially(_ nodes: [WorkflowNode], workflow: Workflow, agents: [Agent], completion: @escaping ([ExecutionResult]) -> Void) {
@@ -470,11 +542,84 @@ class OpenClawService: ObservableObject {
         instruction += "Agent: \(agent.name)\n"
         instruction += "Node ID: \(node.id.uuidString)\n"
         instruction += "Node Type: \(node.type.rawValue)\n"
-        
-        // 添加节点位置信息
+        if !node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            instruction += "Title: \(node.title)\n"
+        }
+        if !node.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            instruction += "Condition: \(node.conditionExpression)\n"
+        }
+        if node.loopEnabled {
+            instruction += "Loop Enabled: true\n"
+            instruction += "Max Iterations: \(node.maxIterations)\n"
+        }
         instruction += "Position: (\(Int(node.position.x)), \(Int(node.position.y)))\n"
         
         return instruction
+    }
+
+    private func sortedEdges(_ edges: [WorkflowEdge]) -> [WorkflowEdge] {
+        edges.sorted {
+            let lhs = nonEmpty($0.label) ?? nonEmpty($0.conditionExpression) ?? ""
+            let rhs = nonEmpty($1.label) ?? nonEmpty($1.conditionExpression) ?? ""
+            return lhs < rhs
+        }
+    }
+
+    private func selectBranchEdge(from node: WorkflowNode, outgoing: [WorkflowEdge], context: [String: String]) -> WorkflowEdge? {
+        if let matched = outgoing.first(where: { evaluateCondition($0.conditionExpression, context: context) }) {
+            return matched
+        }
+        return outgoing.first(where: { nonEmpty($0.conditionExpression) == nil }) ?? outgoing.first
+    }
+
+    private func evaluateCondition(_ expression: String, context: [String: String]) -> Bool {
+        guard let expression = nonEmpty(expression) else { return true }
+
+        let operators = ["==", "!=", "contains", ">=", "<=", ">", "<"]
+        guard let op = operators.first(where: { expression.contains($0) }) else {
+            return context[expression] != nil || expression.lowercased() == "true"
+        }
+
+        let parts = expression.components(separatedBy: op).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+        guard parts.count == 2 else { return false }
+
+        let lhs = context[parts[0]] ?? parts[0]
+        let rhs = context[parts[1]] ?? parts[1]
+
+        switch op {
+        case "==": return lhs.caseInsensitiveCompare(rhs) == .orderedSame
+        case "!=": return lhs.caseInsensitiveCompare(rhs) != .orderedSame
+        case "contains": return lhs.localizedCaseInsensitiveContains(rhs)
+        case ">", ">=", "<", "<=":
+            if let lhsNumber = Double(lhs), let rhsNumber = Double(rhs) {
+                switch op {
+                case ">": return lhsNumber > rhsNumber
+                case ">=": return lhsNumber >= rhsNumber
+                case "<": return lhsNumber < rhsNumber
+                case "<=": return lhsNumber <= rhsNumber
+                default: return false
+                }
+            }
+            return false
+        default:
+            return false
+        }
+    }
+
+    private func edgeSummary(_ edge: WorkflowEdge) -> String {
+        nonEmpty(edge.label) ?? nonEmpty(edge.conditionExpression) ?? edge.id.uuidString.prefix(8).description
+    }
+
+    private func displayName(for node: WorkflowNode) -> String {
+        nonEmpty(node.title) ?? node.type.rawValue.capitalized
+    }
+
+    private func nonEmpty(_ string: String) -> String? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
     
     // 调用OpenClaw Agent
