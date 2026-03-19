@@ -8,6 +8,330 @@
 import SwiftUI
 import Charts
 
+struct MonitoringDashboardView: View {
+    @EnvironmentObject var appState: AppState
+
+    private var project: MAProject? { appState.currentProject }
+    private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
+    private var executionState: ExecutionState? { appState.openClawService.executionState }
+    private var recentTasks: [Task] {
+        appState.taskManager.tasks.sorted { $0.createdAt > $1.createdAt }.prefix(8).map { $0 }
+    }
+
+    var body: some View {
+        Group {
+            if project == nil {
+                ContentUnavailableView(
+                    "先打开一个 Project",
+                    systemImage: "gauge.with.dots.needle.33percent",
+                    description: Text("仪表盘会基于当前 project 展示工作流运行态、任务状态和 OpenClaw 干预入口。")
+                )
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        overviewSection
+                        executionSection
+                        interventionSection
+                        taskSection
+                        resultsSection
+                        logsSection
+                    }
+                    .padding()
+                }
+            }
+        }
+    }
+
+    private var overviewSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("全局状态")
+                .font(.headline)
+
+            HStack(spacing: 16) {
+                monitoringCard(
+                    title: "OpenClaw",
+                    value: appState.openClawManager.isConnected ? "Connected" : "Disconnected",
+                    detail: appState.openClawManager.config.deploymentSummary,
+                    color: appState.openClawManager.isConnected ? .green : .red
+                )
+                monitoringCard(
+                    title: "任务",
+                    value: "\(taskStats.total)",
+                    detail: "进行中 \(taskStats.inProgress) / 阻塞 \(taskStats.blocked)",
+                    color: .blue
+                )
+                monitoringCard(
+                    title: "执行",
+                    value: appState.openClawService.isExecuting ? "Running" : "Idle",
+                    detail: executionProgressText,
+                    color: appState.openClawService.isExecuting ? .orange : .secondary
+                )
+                monitoringCard(
+                    title: "记忆备份",
+                    value: "\(project?.memoryData.taskExecutionMemories.count ?? 0)",
+                    detail: "任务 \(project?.memoryData.taskExecutionMemories.count ?? 0) / Agent \(project?.memoryData.agentMemories.count ?? 0)",
+                    color: .purple
+                )
+            }
+        }
+    }
+
+    private var executionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("工作流运行态")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 12) {
+                ProgressView(
+                    value: Double(appState.openClawService.currentStep),
+                    total: max(Double(appState.openClawService.totalSteps), 1)
+                )
+                .progressViewStyle(.linear)
+
+                HStack(spacing: 8) {
+                    monitoringPill(
+                        title: executionProgressText,
+                        color: appState.openClawService.isExecuting ? .orange : .green
+                    )
+
+                    if let executionState, executionState.isPaused {
+                        monitoringPill(title: "已暂停", color: .red)
+                    }
+
+                    if let lastUpdated = project?.runtimeState.lastUpdated {
+                        monitoringPill(
+                            title: "更新于 \(lastUpdated.formatted(date: .omitted, time: .shortened))",
+                            color: .secondary
+                        )
+                    }
+                }
+
+                if let workflow = project?.workflows.first {
+                    Text("当前项目包含 \(workflow.nodes.filter { $0.type == .agent }.count) 个执行节点、\(workflow.edges.count) 条通信线、\(workflow.boundaries.count) 个文件边界。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var interventionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("干预操作")
+                .font(.headline)
+
+            HStack(spacing: 10) {
+                Button(appState.openClawManager.isConnected ? "断开 OpenClaw" : "连接 OpenClaw") {
+                    if appState.openClawManager.isConnected {
+                        appState.openClawManager.disconnect()
+                    } else {
+                        appState.openClawManager.connect()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("检测连接") {
+                    appState.openClawService.checkConnection()
+                }
+                .buttonStyle(.bordered)
+
+                Button("暂停执行") {
+                    appState.openClawService.pauseExecution()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!appState.openClawService.isExecuting)
+
+                Button("恢复执行") {
+                    appState.openClawService.resumeExecution()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!(executionState?.canResume ?? false))
+
+                Button("回滚检查点") {
+                    appState.openClawService.rollbackToLastCheckpoint()
+                }
+                .buttonStyle(.bordered)
+                .disabled(executionState?.completedNodes.isEmpty ?? true)
+
+                Button("项目设置") {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private var taskSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("任务监控")
+                .font(.headline)
+
+            VStack(spacing: 10) {
+                ForEach(recentTasks) { task in
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(task.title)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text(task.description)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                        }
+
+                        Spacer()
+
+                        monitoringPill(title: task.status.rawValue, color: task.status.color)
+
+                        Button("进行中") {
+                            appState.taskManager.moveTask(task.id, to: .inProgress)
+                        }
+                        .buttonStyle(.borderless)
+
+                        Button("完成") {
+                            appState.taskManager.moveTask(task.id, to: .done)
+                        }
+                        .buttonStyle(.borderless)
+
+                        Button("阻塞") {
+                            appState.taskManager.moveTask(task.id, to: .blocked)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+        }
+    }
+
+    private var resultsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("最近执行结果")
+                .font(.headline)
+
+            VStack(spacing: 8) {
+                if appState.openClawService.executionResults.isEmpty {
+                    Text("当前没有执行结果。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(appState.openClawService.executionResults.suffix(6).reversed()) { result in
+                        HStack {
+                            Text(result.status.rawValue)
+                                .font(.caption)
+                                .foregroundColor(result.status == .completed ? .green : .red)
+                                .frame(width: 80, alignment: .leading)
+                            Text(result.output.isEmpty ? "无输出" : result.output)
+                                .font(.caption)
+                                .lineLimit(2)
+                            Spacer()
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var logsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("实时日志")
+                    .font(.headline)
+                Spacer()
+                Button("清空日志") {
+                    appState.openClawService.clearLogs()
+                }
+                .buttonStyle(.borderless)
+            }
+
+            VStack(spacing: 6) {
+                if appState.openClawService.executionLogs.isEmpty {
+                    Text("当前没有日志。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(appState.openClawService.executionLogs.suffix(30).reversed()) { entry in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(entry.timestamp.formatted(date: .omitted, time: .standard))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .frame(width: 72, alignment: .leading)
+                            Text(entry.level.rawValue)
+                                .font(.caption2)
+                                .foregroundColor(logColor(for: entry.level))
+                                .frame(width: 56, alignment: .leading)
+                            Text(entry.message)
+                                .font(.caption)
+                                .lineLimit(2)
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var executionProgressText: String {
+        let totalSteps = appState.openClawService.totalSteps
+        let currentStep = appState.openClawService.currentStep
+        guard totalSteps > 0 else { return "未开始" }
+        return "\(currentStep)/\(totalSteps) 步"
+    }
+
+    private func monitoringCard(title: String, value: String, detail: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.title2)
+                .fontWeight(.semibold)
+                .foregroundColor(color)
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func monitoringPill(title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12))
+            .foregroundColor(color)
+            .clipShape(Capsule())
+    }
+
+    private func logColor(for level: ExecutionLogEntry.LogLevel) -> Color {
+        switch level {
+        case .info: return .blue
+        case .warning: return .orange
+        case .error: return .red
+        case .success: return .green
+        }
+    }
+}
+
 struct TaskDashboardView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var taskManager: TaskManager

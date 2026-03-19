@@ -23,6 +23,22 @@ class MessageManager: ObservableObject {
         messages.removeAll()
         pendingApprovals.removeAll()
     }
+
+    func appendMessage(_ message: Message) {
+        messages.append(message)
+        if message.status == .waitingForApproval {
+            pendingApprovals.append(message)
+        }
+    }
+
+    func workbenchMessages(for workflowID: UUID?) -> [Message] {
+        messages
+            .filter { message in
+                message.metadata["channel"] == "workbench"
+                    && (workflowID == nil || message.metadata["workflowID"] == workflowID?.uuidString)
+            }
+            .sorted { $0.timestamp < $1.timestamp }
+    }
     
     // 发送消息
     func sendMessage(_ message: Message, project: MAProject?) -> Bool {

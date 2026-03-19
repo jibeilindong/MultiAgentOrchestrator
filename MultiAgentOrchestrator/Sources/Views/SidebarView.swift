@@ -105,16 +105,15 @@ struct SidebarView: View {
     private var projectMeta: String {
         let agentCount = appState.currentProject?.agents.count ?? 0
         let workflowCount = appState.currentProject?.workflows.count ?? 0
-        return "\(agentCount) agents • \(workflowCount) workflows"
+        let taskCount = appState.taskManager.tasks.count
+        return "\(agentCount) agents • \(workflowCount) workflows • \(taskCount) tasks"
     }
 
     private var navigationItems: [NavigationItem] {
         [
-            NavigationItem(tag: 0, title: LocalizedString.workflow, icon: "square.grid.2x2"),
-            NavigationItem(tag: 1, title: LocalizedString.tasks, icon: "square.stack.3d.up"),
-            NavigationItem(tag: 2, title: LocalizedString.dashboard, icon: "chart.bar"),
-            NavigationItem(tag: 3, title: LocalizedString.messages, icon: "message"),
-            NavigationItem(tag: 4, title: LocalizedString.permissions, icon: "lock.shield")
+            NavigationItem(tag: 0, title: "工作流编辑器", icon: "square.grid.2x2"),
+            NavigationItem(tag: 1, title: "工作台对话", icon: "message.badge.waveform"),
+            NavigationItem(tag: 2, title: "监控仪表盘", icon: "gauge.with.dots.needle.33percent")
         ]
     }
 }

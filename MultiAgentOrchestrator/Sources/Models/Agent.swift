@@ -33,6 +33,7 @@ struct OpenClawAgentDefinition: Codable, Hashable {
 struct Agent: Codable, Identifiable, Equatable, Hashable {
     let id: UUID
     var name: String
+    var identity: String
     var description: String
     var soulMD: String
     var position: CGPoint
@@ -45,6 +46,7 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id
         case name
+        case identity
         case description
         case soulMD
         case position
@@ -60,6 +62,7 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
     init(name: String) {
         self.id = UUID()
         self.name = name
+        self.identity = "generalist"
         self.description = ""
         self.soulMD = "# 新智能体\n这是我的配置..."
         self.position = .zero
@@ -74,6 +77,7 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        identity = try container.decodeIfPresent(String.self, forKey: .identity) ?? "generalist"
         description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
         soulMD = try container.decodeIfPresent(String.self, forKey: .soulMD) ?? "# 新智能体\n这是我的配置..."
         position = try container.decodeIfPresent(CGPoint.self, forKey: .position) ?? .zero

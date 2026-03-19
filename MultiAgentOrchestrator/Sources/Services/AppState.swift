@@ -982,6 +982,124 @@ class AppState: ObservableObject {
         
         taskManager.generateTasks(from: workflow, projectAgents: agents)
     }
+
+    func workflow(for workflowID: UUID?) -> Workflow? {
+        guard let project = currentProject else { return nil }
+        if let workflowID {
+            return project.workflows.first { $0.id == workflowID }
+        }
+        return project.workflows.first
+    }
+
+    @discardableResult
+    func submitWorkbenchPrompt(_ prompt: String, workflowID: UUID? = nil) -> Bool {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty,
+              !openClawService.isExecuting,
+              let project = currentProject,
+              let workflow = self.workflow(for: workflowID) else {
+            return false
+        }
+
+        let executionPlan = openClawService.executionPlan(for: workflow)
+        guard let leadNode = executionPlan.first ?? workflow.nodes.first(where: { $0.type == .agent }),
+              let leadAgentID = leadNode.agentID,
+              let leadAgent = project.agents.first(where: { $0.id == leadAgentID }) else {
+            openClawService.addLog(.error, "Workbench publish failed: workflow has no executable agent node")
+            return false
+        }
+
+        var task = Task(
+            title: workbenchTaskTitle(from: trimmedPrompt),
+            description: trimmedPrompt,
+            status: .todo,
+            priority: .high,
+            assignedAgentID: leadAgent.id,
+            workflowNodeID: leadNode.id,
+            createdBy: nil,
+            tags: ["workbench", workflow.name]
+        )
+        task.metadata["source"] = "workbench"
+        task.metadata["workflowID"] = workflow.id.uuidString
+        task.metadata["entryAgentID"] = leadAgent.id.uuidString
+        taskManager.addTask(task)
+
+        var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
+        userMessage.status = .read
+        userMessage.metadata["channel"] = "workbench"
+        userMessage.metadata["role"] = "user"
+        userMessage.metadata["workflowID"] = workflow.id.uuidString
+        userMessage.metadata["taskID"] = task.id.uuidString
+        messageManager.appendMessage(userMessage)
+
+        var queuedMessage = Message(
+            from: leadAgent.id,
+            to: leadAgent.id,
+            type: .notification,
+            content: "任务已发布到 \(workflow.name)，由 \(leadAgent.name) 发起编排。"
+        )
+        queuedMessage.status = .read
+        queuedMessage.metadata["channel"] = "workbench"
+        queuedMessage.metadata["role"] = "assistant"
+        queuedMessage.metadata["workflowID"] = workflow.id.uuidString
+        queuedMessage.metadata["taskID"] = task.id.uuidString
+        messageManager.appendMessage(queuedMessage)
+
+        taskManager.moveTask(task.id, to: .inProgress)
+        openClawService.addLog(.info, "Workbench published task '\(task.title)' to workflow \(workflow.name)")
+
+        if var mutableProject = currentProject {
+            mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
+            mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
+            mutableProject.runtimeState.lastUpdated = Date()
+            mutableProject.updatedAt = Date()
+            currentProject = mutableProject
+        }
+
+        openClawService.executeWorkflow(workflow, agents: project.agents) { [weak self] results in
+            guard let self else { return }
+
+            let completedCount = results.filter { $0.status == .completed }.count
+            let failedCount = results.filter { $0.status == .failed }.count
+            let finalStatus: TaskStatus = results.isEmpty ? .blocked : (failedCount == 0 ? .done : .blocked)
+            self.taskManager.moveTask(task.id, to: finalStatus)
+
+            let responseText: String
+            if results.isEmpty {
+                responseText = "工作流未返回执行结果，请检查 OpenClaw 连接、Agent 定义或部署配置。"
+            } else {
+                responseText = "工作流 \(workflow.name) 执行完成，\(completedCount) 个节点完成，\(failedCount) 个节点失败。"
+            }
+
+            var responseMessage = Message(
+                from: leadAgent.id,
+                to: leadAgent.id,
+                type: failedCount == 0 ? .notification : .data,
+                content: responseText
+            )
+            responseMessage.status = .read
+            responseMessage.metadata["channel"] = "workbench"
+            responseMessage.metadata["role"] = "assistant"
+            responseMessage.metadata["workflowID"] = workflow.id.uuidString
+            responseMessage.metadata["taskID"] = task.id.uuidString
+            self.messageManager.appendMessage(responseMessage)
+
+            if var mutableProject = self.currentProject {
+                if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: trimmedPrompt) {
+                    mutableProject.runtimeState.messageQueue.remove(at: queueIndex)
+                }
+
+                for result in results {
+                    mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
+                }
+                mutableProject.runtimeState.lastUpdated = Date()
+                mutableProject.updatedAt = Date()
+                self.currentProject = mutableProject
+            }
+        }
+
+        return true
+    }
     
     // 获取Agent的任务统计
     func getAgentTaskStats(_ agentID: UUID) -> (total: Int, active: Int, completed: Int) {
@@ -1098,6 +1216,15 @@ class AppState: ObservableObject {
     // 显示键盘快捷键
     func showKeyboardShortcuts() {
         print("显示键盘快捷键...")
+    }
+
+    private func workbenchTaskTitle(from prompt: String) -> String {
+        let firstLine = prompt
+            .components(separatedBy: .newlines)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? prompt
+        guard !firstLine.isEmpty else { return "Workbench Task" }
+        return firstLine.count > 36 ? String(firstLine.prefix(36)) + "..." : firstLine
     }
 
     func setToolbarItem(_ item: ContentToolbarItem, visible: Bool) {

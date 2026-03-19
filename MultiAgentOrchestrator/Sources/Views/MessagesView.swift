@@ -2,494 +2,437 @@
 //  MessagesView.swift
 //  MultiAgentOrchestrator
 //
-//  Created by 陈荣泽 on 2026/3/18.
-//
 
 import SwiftUI
 
 struct MessagesView: View {
+    @ObservedObject var messageManager: MessageManager
+
+    var body: some View {
+        WorkbenchConversationView(messageManager: messageManager)
+    }
+}
+
+struct WorkbenchConversationView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var messageManager: MessageManager
-    
-    @State private var selectedAgentID: UUID?
-    @State private var messageText: String = ""
-    @State private var messageType: MessageType = .text
-    @State private var showingNewMessage = false
-    @State private var showingApprovals = false
-    
-    var agents: [Agent] {
-        appState.currentProject?.agents ?? []
-    }
-    
-    var selectedAgent: Agent? {
-        if let id = selectedAgentID {
-            return agents.first { $0.id == id }
+
+    @State private var selectedWorkflowID: UUID?
+    @State private var prompt = ""
+    @State private var errorText: String?
+
+    private var project: MAProject? { appState.currentProject }
+    private var workflows: [Workflow] { project?.workflows ?? [] }
+
+    private var selectedWorkflow: Workflow? {
+        if let selectedWorkflowID {
+            return workflows.first { $0.id == selectedWorkflowID }
         }
-        return nil
+        return workflows.first
     }
-    
-    var currentAgent: Agent? {
-        // 假设第一个Agent是当前用户
-        agents.first
+
+    private var workbenchMessages: [Message] {
+        messageManager.workbenchMessages(for: selectedWorkflow?.id)
     }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // 工具栏
-            HStack {
-                Text(LocalizedString.messages)
-                    .font(.title2)
-                
-                Spacer()
-                
-                // 待审批消息计数
-                if messageManager.pendingApprovals.count > 0 {
-                    Button {
-                        showingApprovals = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle")
-                            Text("\(messageManager.pendingApprovals.count) pending")
-                        }
-                        .foregroundColor(.orange)
-                    }
-                }
-                
-                Button("New Message") {
-                    showingNewMessage = true
-                }
+
+    private var workbenchTasks: [Task] {
+        appState.taskManager.tasks
+            .filter { task in
+                task.metadata["source"] == "workbench"
+                    && (selectedWorkflow == nil || task.metadata["workflowID"] == selectedWorkflow?.id.uuidString)
             }
-            .padding()
-            
-            Divider()
-            
-            if agents.isEmpty {
-                ContentUnavailableView(
-                    "No Agents",
-                    systemImage: "person.slash",
-                    description: Text(LocalizedString.addAgentsToStartMessaging)
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private var hasOpenClawConfiguration: Bool {
+        let config = appState.openClawManager.config
+        switch config.deploymentKind {
+        case .local:
+            return !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .remoteServer:
+            return !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .container:
+            return !config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private var hasExecutableWorkflow: Bool {
+        guard let workflow = selectedWorkflow else { return false }
+        return workflow.nodes.contains { $0.type == .agent }
+    }
+
+    var body: some View {
+        Group {
+            if project == nil {
+                WorkbenchEmptyState(
+                    title: "先配置 OpenClaw，再新建 Project",
+                    description: "安装软件后先完成 OpenClaw 配置，然后创建或打开项目，在编辑器中搭建工作流并保存。保存后，这里就是对该工作流发布任务和追踪回执的工作台。",
+                    primaryTitle: "配置 OpenClaw",
+                    primaryAction: { NotificationCenter.default.post(name: .openSettings, object: nil) },
+                    secondaryTitle: "新建项目",
+                    secondaryAction: { appState.createNewProject() }
+                )
+            } else if workflows.isEmpty {
+                WorkbenchEmptyState(
+                    title: "Project 里还没有工作流",
+                    description: "先在编辑器中创建工作流架构，再回到工作台以对话形式发布任务。",
+                    primaryTitle: "创建主工作流",
+                    primaryAction: { _ = appState.ensureMainWorkflow() },
+                    secondaryTitle: "保存项目",
+                    secondaryAction: { appState.saveProject() }
+                )
+            } else if !hasExecutableWorkflow {
+                WorkbenchEmptyState(
+                    title: "当前工作流还不能执行",
+                    description: "工作流至少需要一个 Agent 节点。节点负责执行，连接线负责通讯权限，边界负责文件权限。",
+                    primaryTitle: "导入 Project Agents",
+                    primaryAction: { appState.generateArchitectureFromProjectAgents() },
+                    secondaryTitle: "配置 OpenClaw",
+                    secondaryAction: { NotificationCenter.default.post(name: .openSettings, object: nil) }
                 )
             } else {
-                HStack(spacing: 0) {
-                    // Agent列表
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(LocalizedString.agents)
-                            .font(.headline)
-                            .padding()
-                        
-                        List(selection: $selectedAgentID) {
-                            ForEach(agents) { agent in
-                                AgentMessageRow(agent: agent, unreadCount: unreadCount(for: agent.id))
-                                    .tag(agent.id)
-                            }
-                        }
-                        .listStyle(.plain)
-                    }
-                    .frame(width: 250)
-                    .background(Color(.controlBackgroundColor))
-                    
-                    Divider()
-                    
-                    // 消息区域
-                    if let agent = selectedAgent, let current = currentAgent {
-                        MessageConversationView(
-                            fromAgent: current,
-                            toAgent: agent,
-                            messageManager: messageManager,
-                            project: appState.currentProject
-                        )
-                        .environmentObject(appState)
-                    } else {
-                        ContentUnavailableView(
-                            "Select an Agent",
-                            systemImage: "person.crop.circle",
-                            description: Text(LocalizedString.selectAgentToViewMessages)
-                        )
-                    }
-                }
+                content
             }
         }
-        .sheet(isPresented: $showingNewMessage) {
-            NewMessageView(agents: agents) { message in
-                if messageManager.sendMessage(message, project: appState.currentProject) {
-                    print("Message sent successfully")
-                }
+        .onAppear {
+            if selectedWorkflowID == nil {
+                selectedWorkflowID = workflows.first?.id
             }
         }
-        .sheet(isPresented: $showingApprovals) {
-            ApprovalsView(messageManager: messageManager)
+        .onChange(of: workflows.map(\.id)) { _, newValue in
+            guard let firstID = newValue.first else { return }
+            if selectedWorkflowID == nil || !newValue.contains(selectedWorkflowID ?? firstID) {
+                selectedWorkflowID = firstID
+            }
         }
     }
-    
-    private func unreadCount(for agentID: UUID) -> Int {
-        messageManager.messagesForAgent(agentID)
-            .filter { $0.status == .delivered || $0.status == .sent }
-            .count
-    }
-}
 
-// Agent消息行
-struct AgentMessageRow: View {
-    let agent: Agent
-    let unreadCount: Int
-    
-    var body: some View {
+    private var content: some View {
+        VStack(spacing: 0) {
+            header
+
+            Divider()
+
+            if !hasOpenClawConfiguration {
+                openClawBanner
+                Divider()
+            }
+
+            HStack(spacing: 0) {
+                conversationPane
+
+                Divider()
+
+                taskPane
+                    .frame(width: 280)
+                    .background(Color(.controlBackgroundColor))
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("工作台")
+                        .font(.title2)
+                    Text("以对话方式向已保存工作流发布任务")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Picker("Workflow", selection: $selectedWorkflowID) {
+                    ForEach(workflows) { workflow in
+                        Text(workflow.name).tag(workflow.id as UUID?)
+                    }
+                }
+                .frame(width: 220)
+
+                statusBadge(
+                    title: appState.openClawService.isExecuting ? "执行中" : "待命",
+                    color: appState.openClawService.isExecuting ? .orange : .green
+                )
+
+                Button("保存项目") {
+                    appState.saveProject()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if let workflow = selectedWorkflow {
+                HStack(spacing: 8) {
+                    statusBadge(title: "\(workflow.nodes.filter { $0.type == .agent }.count) 个执行节点", color: .blue)
+                    statusBadge(title: "\(workflow.edges.count) 条通信线", color: .purple)
+                    statusBadge(title: "\(workflow.boundaries.count) 个文件边界", color: .orange)
+                }
+            }
+        }
+        .padding()
+    }
+
+    private var openClawBanner: some View {
         HStack {
-            Image(systemName: "person.circle.fill")
-                .foregroundColor(.blue)
-                .font(.title2)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(agent.name)
-                    .font(.headline)
-                Text(agent.description)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("OpenClaw 尚未完成配置")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text("工作台会记录任务，但没有可用的 OpenClaw 配置时，流程无法稳定驱动执行。")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    .lineLimit(1)
             }
-            
-            Spacer()
-            
-            if unreadCount > 0 {
-                Text("\(unreadCount)")
-                    .font(.caption)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.blue))
-                    .foregroundColor(.white)
-            }
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 4)
-    }
-}
 
-// 消息对话视图
-struct MessageConversationView: View {
-    @EnvironmentObject var appState: AppState
-    let fromAgent: Agent
-    let toAgent: Agent
-    @ObservedObject var messageManager: MessageManager
-    let project: MAProject?
-    
-    @State private var newMessageText: String = ""
-    @State private var selectedMessageType: MessageType = .text
-    
-    var messages: [Message] {
-        messageManager.messagesBetween(agent1: fromAgent.id, agent2: toAgent.id)
-    }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // 对话标题
-            HStack {
-                Image(systemName: "person.circle.fill")
-                    .foregroundColor(.blue)
-                Text(toAgent.name)
-                    .font(.headline)
-                Spacer()
-                
-                // 权限指示器
-                if let project = project {
-                    let permission = project.permission(from: fromAgent, to: toAgent)
-                    Label(permission.rawValue, systemImage: permission.icon)
-                        .foregroundColor(permission.color)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(permission.color.opacity(0.1)))
-                }
+            Spacer()
+
+            Button("现在配置") {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
             }
-            .padding()
-            .background(Color(.controlBackgroundColor))
-            
-            // 消息列表
+            .buttonStyle(.borderedProminent)
+        }
+        .padding()
+        .background(Color.orange.opacity(0.08))
+    }
+
+    private var conversationPane: some View {
+        VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        if messages.isEmpty {
-                            VStack(spacing: 20) {
-                                Image(systemName: "bubble.left.and.bubble.right")
-                                    .font(.largeTitle)
-                                    .foregroundColor(.gray)
-                                Text(LocalizedString.noMessages)
-                                    .foregroundColor(.secondary)
-                                Text("Start a conversation with \(toAgent.name)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding()
+                        if workbenchMessages.isEmpty {
+                            ContentUnavailableView(
+                                "还没有对话任务",
+                                systemImage: "bubble.left.and.exclamationmark.bubble.right",
+                                description: Text("在下方输入任务目标，软件会把它发布到当前工作流，并把执行结果回写到项目。")
+                            )
+                            .frame(maxWidth: .infinity, minHeight: 280)
                         } else {
-                            ForEach(messages) { message in
-                                MessageBubbleView(message: message, isFromCurrentUser: message.fromAgentID == fromAgent.id)
-                                    .id(message.id)
+                            ForEach(workbenchMessages) { message in
+                                WorkbenchMessageBubble(
+                                    message: message,
+                                    linkedTask: linkedTask(for: message)
+                                )
+                                .id(message.id)
                             }
                         }
                     }
                     .padding()
                 }
-                .onChange(of: messages.count) { _ in
-                    if let lastMessage = messages.last {
+                .onChange(of: workbenchMessages.count) { _, _ in
+                    if let lastID = workbenchMessages.last?.id {
                         withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            proxy.scrollTo(lastID, anchor: .bottom)
                         }
                     }
                 }
             }
-            
+
             Divider()
-            
-            // 输入区域
-            HStack {
-                Picker("", selection: $selectedMessageType) {
-                    ForEach(MessageType.allCases, id: \.self) { type in
-                        Label(type.rawValue, systemImage: type.icon).tag(type)
-                    }
+
+            VStack(alignment: .leading, spacing: 8) {
+                if let errorText {
+                    Text(errorText)
+                        .font(.caption)
+                        .foregroundColor(.red)
                 }
-                .frame(width: 100)
-                .labelsHidden()
-                
-                TextField("Type a message...", text: $newMessageText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .padding(8)
-                    .background(Color(.controlBackgroundColor))
-                    .cornerRadius(8)
-                    .lineLimit(1...5)
-                    .onSubmit {
-                        sendMessage()
+
+                TextField(
+                    "描述要交给当前工作流处理的任务，例如：先调研，再拆分，再给出执行方案。",
+                    text: $prompt,
+                    axis: .vertical
+                )
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(3...8)
+
+                HStack {
+                    Text(selectedWorkflow?.name ?? "未选择工作流")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    Button("发送到工作流") {
+                        publishPrompt()
                     }
-                
-                Button {
-                    sendMessage()
-                } label: {
-                    Image(systemName: "paperplane.fill")
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appState.openClawService.isExecuting)
+                    .buttonStyle(.borderedProminent)
                 }
-                .disabled(newMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .buttonStyle(.borderedProminent)
             }
             .padding()
         }
     }
-    
-    private func sendMessage() {
-        guard !newMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        
-        let message = Message(
-            from: fromAgent.id,
-            to: toAgent.id,
-            type: selectedMessageType,
-            content: newMessageText,
-            requiresApproval: project?.permission(from: fromAgent, to: toAgent) == .requireApproval
-        )
-        
-        if messageManager.sendMessage(message, project: project) {
-            newMessageText = ""
-        }
-    }
-}
 
-// 消息气泡视图
-struct MessageBubbleView: View {
-    let message: Message
-    let isFromCurrentUser: Bool
-    
-    var body: some View {
-        HStack(alignment: .bottom) {
-            if !isFromCurrentUser {
-                Image(systemName: "person.circle.fill")
-                    .foregroundColor(.blue)
-                    .font(.title2)
-            }
-            
-            VStack(alignment: isFromCurrentUser ? .trailing : .leading, spacing: 4) {
-                // 消息类型标签
-                HStack {
-                    Image(systemName: message.type.icon)
-                        .font(.caption2)
-                    Text(message.type.rawValue)
-                        .font(.caption2)
-                }
-                .foregroundColor(.secondary)
-                
-                // 消息内容
-                Text(message.content)
-                    .padding(12)
-                    .background(isFromCurrentUser ? Color.blue : Color(.controlBackgroundColor))
-                    .foregroundColor(isFromCurrentUser ? .white : .primary)
-                    .cornerRadius(12)
-                
-                // 消息状态和时间
-                HStack(spacing: 8) {
-                    if isFromCurrentUser {
-                        Image(systemName: message.status.icon)
-                            .font(.caption2)
-                            .foregroundColor(message.status.color)
-                    }
-                    
-                    Text(message.timestamp, style: .time)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            if isFromCurrentUser {
-                Image(systemName: "person.circle.fill")
-                    .foregroundColor(.green)
-                    .font(.title2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: isFromCurrentUser ? .trailing : .leading)
-        .padding(.horizontal, 4)
-    }
-}
-
-// 新消息视图
-struct NewMessageView: View {
-    let agents: [Agent]
-    let onSend: (Message) -> Void
-    @Environment(\.dismiss) var dismiss
-    
-    @State private var selectedAgentID: UUID?
-    @State private var messageText: String = ""
-    @State private var messageType: MessageType = .text
-    
-    var body: some View {
-        NavigationView {
-            Form {
-                Section("Recipient") {
-                    Picker("To", selection: $selectedAgentID) {
-                        Text("Select").tag(nil as UUID?)
-                        ForEach(agents) { agent in
-                            Text(agent.name).tag(agent.id as UUID?)
-                        }
-                    }
-                }
-                
-                Section("Message") {
-                    Picker("Type", selection: $messageType) {
-                        ForEach(MessageType.allCases, id: \.self) { type in
-                            Label(type.rawValue, systemImage: type.icon).tag(type)
-                        }
-                    }
-                    
-                    TextEditor(text: $messageText)
-                        .frame(height: 100)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                        )
-                }
-            }
-            .formStyle(.grouped)
-            .navigationTitle("New Message")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Send") {
-                        if let agentID = selectedAgentID,
-                           let fromAgent = agents.first {
-                            let message = Message(
-                                from: fromAgent.id,
-                                to: agentID,
-                                type: messageType,
-                                content: messageText
-                            )
-                            onSend(message)
-                            dismiss()
-                        }
-                    }
-                    .disabled(selectedAgentID == nil || messageText.isEmpty)
-                }
-            }
-            .frame(minWidth: 400, minHeight: 300)
-        }
-    }
-}
-
-// 审批视图
-struct ApprovalsView: View {
-    @ObservedObject var messageManager: MessageManager
-    @Environment(\.dismiss) var dismiss
-    
-    var body: some View {
-        NavigationView {
-            VStack {
-                if messageManager.pendingApprovals.isEmpty {
-                    ContentUnavailableView(
-                        "No Pending Approvals",
-                        systemImage: "checkmark.shield",
-                        description: Text("All messages have been approved")
-                    )
-                } else {
-                    List {
-                        ForEach(messageManager.pendingApprovals) { message in
-                            ApprovalRowView(message: message, messageManager: messageManager)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Pending Approvals")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .frame(minWidth: 500, minHeight: 400)
-        }
-    }
-}
-
-// 审批行视图
-struct ApprovalRowView: View {
-    let message: Message
-    @ObservedObject var messageManager: MessageManager
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var taskPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Image(systemName: message.type.icon)
-                Text(message.type.rawValue)
+                Text("任务回执")
                     .font(.headline)
                 Spacer()
-                Text(message.timestamp, style: .time)
+                Text("\(workbenchTasks.count)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-            
-            Text(message.content)
-                .font(.body)
-                .foregroundColor(.secondary)
-            
-            HStack {
-                Button("Approve") {
-                    approveMessage()
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if workbenchTasks.isEmpty {
+                        Text("当前工作流还没有由工作台发布的任务。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding()
+                    } else {
+                        ForEach(workbenchTasks.prefix(12)) { task in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(task.title)
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    statusBadge(title: task.status.rawValue, color: task.status.color)
+                                }
+
+                                if let agentID = task.assignedAgentID,
+                                   let agent = project?.agents.first(where: { $0.id == agentID }) {
+                                    Text("入口 Agent: \(agent.name)")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Text(task.description)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(3)
+                            }
+                            .padding(10)
+                            .background(Color(.windowBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
-                
-                Button("Reject") {
-                    rejectMessage()
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                
-                Spacer()
+                .padding()
             }
         }
-        .padding(.vertical, 8)
     }
-    
-    private func approveMessage() {
-        // 因为 fromAgentID 是 UUID 类型（非可选），我们可以直接使用
-        _ = messageManager.approveMessage(message.id, approvedBy: message.fromAgentID)
+
+    private func linkedTask(for message: Message) -> Task? {
+        guard let taskIDValue = message.metadata["taskID"],
+              let taskID = UUID(uuidString: taskIDValue) else {
+            return nil
+        }
+        return appState.taskManager.task(with: taskID)
     }
-    
-    private func rejectMessage() {
-        // 因为 fromAgentID 是 UUID 类型（非可选），我们可以直接使用
-        _ = messageManager.rejectMessage(message.id, rejectedBy: message.fromAgentID)
+
+    private func publishPrompt() {
+        errorText = nil
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !text.isEmpty else {
+            errorText = "请输入要发给工作流的任务。"
+            return
+        }
+
+        guard hasExecutableWorkflow else {
+            errorText = "当前工作流还没有可执行的 Agent 节点。"
+            return
+        }
+
+        guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID) else {
+            errorText = appState.openClawService.isExecuting
+                ? "当前已有工作流在执行，请等待本轮完成后再发布新任务。"
+                : "任务发布失败，请检查工作流结构和 OpenClaw 配置。"
+            return
+        }
+
+        prompt = ""
+    }
+
+    private func statusBadge(title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12))
+            .foregroundColor(color)
+            .clipShape(Capsule())
+    }
+}
+
+private struct WorkbenchMessageBubble: View {
+    let message: Message
+    let linkedTask: Task?
+
+    private var isUserMessage: Bool {
+        message.metadata["role"] == "user"
+    }
+
+    var body: some View {
+        VStack(alignment: isUserMessage ? .trailing : .leading, spacing: 6) {
+            HStack {
+                if isUserMessage { Spacer() }
+                Text(isUserMessage ? "任务输入" : "工作流回执")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if !isUserMessage { Spacer() }
+            }
+
+            Text(message.content)
+                .font(.body)
+                .padding(12)
+                .frame(maxWidth: 560, alignment: isUserMessage ? .trailing : .leading)
+                .background(isUserMessage ? Color.accentColor : Color(.controlBackgroundColor))
+                .foregroundColor(isUserMessage ? .white : .primary)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            HStack(spacing: 8) {
+                if let linkedTask {
+                    Label(linkedTask.status.rawValue, systemImage: linkedTask.status.icon)
+                        .foregroundColor(linkedTask.status.color)
+                }
+                Text(message.timestamp.formatted(date: .omitted, time: .shortened))
+                    .foregroundColor(.secondary)
+            }
+            .font(.caption2)
+        }
+        .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
+    }
+}
+
+private struct WorkbenchEmptyState: View {
+    let title: String
+    let description: String
+    let primaryTitle: String
+    let primaryAction: () -> Void
+    let secondaryTitle: String
+    let secondaryAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "rectangle.and.pencil.and.ellipsis")
+                .font(.system(size: 56))
+                .foregroundColor(.accentColor)
+
+            Text(title)
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            Text(description)
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 560)
+
+            HStack(spacing: 12) {
+                Button(primaryTitle, action: primaryAction)
+                    .buttonStyle(.borderedProminent)
+                Button(secondaryTitle, action: secondaryAction)
+                    .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(32)
     }
 }

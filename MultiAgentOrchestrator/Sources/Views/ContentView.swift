@@ -25,14 +25,12 @@ struct ContentView: View {
                     Spacer(minLength: 12)
 
                     Picker("", selection: $selectedTab) {
-                        Label(LocalizedString.workflow, systemImage: "square.grid.2x2").tag(0)
-                        Label(LocalizedString.tasks, systemImage: "square.stack.3d.up").tag(1)
-                        Label(LocalizedString.dashboard, systemImage: "chart.bar").tag(2)
-                        Label(LocalizedString.messages, systemImage: "message").tag(3)
-                        Label(LocalizedString.permissions, systemImage: "lock.shield").tag(4)
+                        Label("编辑器", systemImage: "square.grid.2x2").tag(0)
+                        Label("工作台", systemImage: "message.badge.waveform").tag(1)
+                        Label("仪表盘", systemImage: "gauge.with.dots.needle.33percent").tag(2)
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 520)
+                    .frame(width: 360)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
@@ -42,13 +40,16 @@ struct ContentView: View {
                 
                 // 主内容
                 Group {
-                    switch selectedTab {
-                    case 0: WorkflowEditorView(zoomScale: $zoomScale)
-                    case 1: KanbanView()
-                    case 2: TaskDashboardView(taskManager: appState.taskManager)
-                    case 3: MessagesView(messageManager: appState.messageManager)
-                    case 4: PermissionsView()
-                    default: WorkflowEditorView(zoomScale: $zoomScale)
+                    if appState.currentProject == nil {
+                        ProjectOnboardingView()
+                            .environmentObject(appState)
+                    } else {
+                        switch selectedTab {
+                        case 0: WorkflowEditorView(zoomScale: $zoomScale)
+                        case 1: WorkbenchConversationView(messageManager: appState.messageManager)
+                        case 2: MonitoringDashboardView()
+                        default: WorkflowEditorView(zoomScale: $zoomScale)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -86,8 +87,8 @@ struct ContentView: View {
     private var projectSummary: String {
         let agentCount = appState.currentProject?.agents.count ?? 0
         let workflowCount = appState.currentProject?.workflows.count ?? 0
-        let edgeCount = appState.currentProject?.workflows.first?.edges.count ?? 0
-        return "\(agentCount) agents • \(workflowCount) workflows • \(edgeCount) routes"
+        let taskCount = appState.taskManager.tasks.count
+        return "\(agentCount) agents • \(workflowCount) workflows • \(taskCount) tasks"
     }
 
     @ViewBuilder
@@ -274,6 +275,80 @@ struct ContentView: View {
         }
         appState.currentProject = project
         openClawMessage = "Added \(appState.openClawManager.agents.count) agents."
+    }
+}
+
+private struct ProjectOnboardingView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "square.grid.3x3.middle.filled")
+                .font(.system(size: 64))
+                .foregroundColor(.accentColor)
+
+            Text("从 OpenClaw 配置开始")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Text("推荐流程：先配置 OpenClaw，再新建 Project，在编辑器搭建工作流并保存，随后到工作台对话发任务，最后在仪表盘实时监控与干预。")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 620)
+
+            VStack(alignment: .leading, spacing: 10) {
+                onboardingStep(index: 1, title: "配置 OpenClaw", detail: "保存本地、远程或容器部署配置，作为所有 agent 的底层驱动。")
+                onboardingStep(index: 2, title: "新建 Project", detail: "Project 保存工作流、OpenClaw、任务数据与记忆备份索引。")
+                onboardingStep(index: 3, title: "编辑工作流", detail: "搭建节点、连接线与边界，并编辑 agent 的 soul、identity 与 skill。")
+                onboardingStep(index: 4, title: "工作台发任务", detail: "保存后在工作台通过对话把任务发布给当前工作流。")
+                onboardingStep(index: 5, title: "仪表盘监控", detail: "实时查看任务、日志与执行进度，并进行暂停、恢复和回滚。")
+            }
+            .padding(18)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            HStack(spacing: 12) {
+                Button("配置 OpenClaw") {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("新建 Project") {
+                    appState.createNewProject()
+                }
+                .buttonStyle(.bordered)
+
+                Button("打开 Project") {
+                    appState.openProject()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(32)
+    }
+
+    private func onboardingStep(index: Int, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(index)")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .frame(width: 28, height: 28)
+                .background(Color.accentColor.opacity(0.12))
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+        }
     }
 }
 

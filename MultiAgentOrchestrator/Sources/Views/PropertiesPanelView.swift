@@ -194,6 +194,7 @@ struct AgentPropertiesView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedAgentID: UUID?
     @State private var agentName: String = ""
+    @State private var agentIdentity: String = ""
     @State private var agentDescription: String = ""
     @State private var soulMD: String = ""
     @State private var capabilities: [String] = ["Basic"]
@@ -235,6 +236,7 @@ struct AgentPropertiesView: View {
                         if let agentID = newAgentID,
                            let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
                             agentName = agent.name
+                            agentIdentity = agent.identity
                             agentDescription = agent.description
                             soulMD = agent.soulMD
                             capabilities = agent.capabilities
@@ -257,6 +259,14 @@ struct AgentPropertiesView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 TextField("Agent Name", text: $agentName)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Identity")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("Agent Identity", text: $agentIdentity)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
                             
@@ -343,7 +353,7 @@ struct AgentPropertiesView: View {
                             Divider()
                             
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Capabilities")
+                                Text("Skills")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 
@@ -402,6 +412,7 @@ struct AgentPropertiesView: View {
             if selectedAgentID == nil, let firstAgent = appState.currentProject?.agents.first {
                 selectedAgentID = firstAgent.id
                 agentName = firstAgent.name
+                agentIdentity = firstAgent.identity
                 agentDescription = firstAgent.description
                 soulMD = firstAgent.soulMD
                 capabilities = firstAgent.capabilities
@@ -417,6 +428,7 @@ struct AgentPropertiesView: View {
     private var hasChanges: Bool {
         guard let agent = selectedAgent else { return false }
         return agent.name != agentName ||
+               agent.identity != agentIdentity ||
                agent.description != agentDescription ||
                agent.soulMD != soulMD ||
                agent.capabilities != capabilities ||
@@ -462,6 +474,7 @@ struct AgentPropertiesView: View {
         
         var updatedAgent = agent
         updatedAgent.name = agentName
+        updatedAgent.identity = agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "generalist" : agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.description = agentDescription
         updatedAgent.soulMD = soulMD
         updatedAgent.capabilities = capabilities
@@ -490,6 +503,7 @@ struct AgentPropertiesView: View {
         appState.currentProject?.agents.append(newAgent)
         selectedAgentID = newAgent.id
         agentName = newAgent.name
+        agentIdentity = newAgent.identity
         agentDescription = newAgent.description
         soulMD = newAgent.soulMD
         capabilities = newAgent.capabilities
@@ -502,6 +516,7 @@ struct AgentPropertiesView: View {
     
     private func resetForm() {
         agentName = ""
+        agentIdentity = ""
         agentDescription = ""
         soulMD = ""
         capabilities = ["Basic"]

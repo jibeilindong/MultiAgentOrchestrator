@@ -162,30 +162,20 @@ struct MultiAgentOrchestratorApp: App {
             }
 
             CommandMenu(LocalizedString.view) {
-                Button(LocalizedString.workflow) {
+                Button("工作流编辑器") {
                     selectedTab = 0
                 }
                 .keyboardShortcut("1", modifiers: .command)
                 
-                Button(LocalizedString.tasks) {
+                Button("工作台对话") {
                     selectedTab = 1
                 }
                 .keyboardShortcut("2", modifiers: .command)
                 
-                Button(LocalizedString.dashboard) {
+                Button("监控仪表盘") {
                     selectedTab = 2
                 }
                 .keyboardShortcut("3", modifiers: .command)
-                
-                Button(LocalizedString.messages) {
-                    selectedTab = 3
-                }
-                .keyboardShortcut("4", modifiers: .command)
-                
-                Button(LocalizedString.permissions) {
-                    selectedTab = 4
-                }
-                .keyboardShortcut("5", modifiers: .command)
                 
                 Divider()
                 

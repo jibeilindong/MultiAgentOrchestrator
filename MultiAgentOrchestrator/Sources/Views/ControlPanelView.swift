@@ -11,7 +11,7 @@ struct ControlPanelView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        MessagesView(messageManager: appState.messageManager)
+        WorkbenchConversationView(messageManager: appState.messageManager)
             .environmentObject(appState)
     }
 }
