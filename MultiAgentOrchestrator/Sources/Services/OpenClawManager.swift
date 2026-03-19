@@ -173,7 +173,10 @@ class OpenClawManager: ObservableObject {
     }
 
     private func resolveOpenClawPath() -> String {
-        Self.possiblePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/Users/chenrongze/.local/bin/openclaw"
+        if FileManager.default.fileExists(atPath: config.localBinaryPath) {
+            return config.localBinaryPath
+        }
+        return Self.possiblePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? config.localBinaryPath
     }
 
     private static func parseAgentNames(from output: String) -> [String] {

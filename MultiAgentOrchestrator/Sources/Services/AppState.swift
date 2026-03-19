@@ -34,7 +34,7 @@ class ProjectManager: ObservableObject {
         return projectsDirectory.appendingPathComponent("backups", isDirectory: true)
     }
 
-    var workspaceRootDirectory: URL {
+    var defaultWorkspaceRootDirectory: URL {
         let appSupportPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupportPath.appendingPathComponent("MultiAgentOrchestrator/Workspaces", isDirectory: true)
     }
@@ -47,7 +47,7 @@ class ProjectManager: ObservableObject {
     func createDirectoriesIfNeeded() {
         try? FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: workspaceRootDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
     }
     
     func loadProjectList() {
@@ -98,7 +98,7 @@ class ProjectManager: ObservableObject {
     }
 
     func workspaceURL(for relativePath: String) -> URL {
-        workspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
+        defaultWorkspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
     }
 
     func ensureWorkspaceDirectory(relativePath: String) -> URL {
@@ -111,7 +111,7 @@ class ProjectManager: ObservableObject {
         try? FileManager.default.removeItem(at: url)
         if let projectID {
             try? FileManager.default.removeItem(
-                at: workspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+                at: defaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
         }
         loadProjectList()
@@ -308,7 +308,9 @@ class AppState: ObservableObject {
         project.executionResults = openClawService.executionResults
         project.executionLogs = openClawService.executionLogs
         project.openClaw = openClawManager.snapshot()
+        project.taskData.lastUpdatedAt = Date()
         project.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         currentProject = project
     }
@@ -497,7 +499,9 @@ class AppState: ObservableObject {
         project.executionResults = openClawService.executionResults
         project.executionLogs = openClawService.executionLogs
         project.openClaw = openClawManager.snapshot()
+        project.taskData.lastUpdatedAt = Date()
         project.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         project.updatedAt = Date()
         return project
@@ -513,7 +517,7 @@ class AppState: ObservableObject {
         return tasks.map { task in
             let relativePath = existingByTaskID[task.id]?.workspaceRelativePath
                 ?? projectManager.relativeWorkspacePath(projectID: projectID, taskID: task.id)
-            _ = projectManager.ensureWorkspaceDirectory(relativePath: relativePath)
+            _ = ensureWorkspaceDirectory(relativePath: relativePath)
 
             var record = existingByTaskID[task.id] ?? ProjectWorkspaceRecord(
                 taskID: task.id,
@@ -535,7 +539,7 @@ class AppState: ObservableObject {
             return nil
         }
 
-        return projectManager.workspaceURL(for: record.workspaceRelativePath)
+        return workspaceRootURL(for: project).appendingPathComponent(record.workspaceRelativePath, isDirectory: true)
     }
 
     func importProjectData(_ project: MAProject, tasks: [Task]) {
@@ -547,6 +551,111 @@ class AppState: ObservableObject {
         if let snapshot = snapshotCurrentProject() {
             currentProject = snapshot
         }
+    }
+
+    func chooseTaskDataRootDirectory() {
+        guard currentProject != nil else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = currentProject.flatMap(workspaceRootURL(for:))
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            self.updateTaskDataRootDirectory(url.path)
+        }
+    }
+
+    func resetTaskDataRootDirectory() {
+        updateTaskDataRootDirectory(nil)
+    }
+
+    func updateTaskDataRootDirectory(_ path: String?) {
+        guard var project = currentProject else { return }
+        project.taskData.workspaceRootPath = path
+        project.taskData.lastUpdatedAt = Date()
+        currentProject = project
+        currentProject?.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+    }
+
+    func addBoundary(around nodeIDs: Set<UUID>) {
+        guard !nodeIDs.isEmpty,
+              let workflow = currentProject?.workflows.first else { return }
+
+        let nodes = workflow.nodes.filter { nodeIDs.contains($0.id) }
+        guard !nodes.isEmpty else { return }
+
+        let xValues = nodes.map(\.position.x)
+        let yValues = nodes.map(\.position.y)
+        let minX = (xValues.min() ?? 0) - 110
+        let maxX = (xValues.max() ?? 0) + 110
+        let minY = (yValues.min() ?? 0) - 80
+        let maxY = (yValues.max() ?? 0) + 80
+
+        updateMainWorkflow { workflow in
+            var boundary = WorkflowBoundary(
+                title: "Boundary \(workflow.boundaries.count + 1)",
+                rect: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                memberNodeIDs: nodes.map(\.id)
+            )
+            boundary.updatedAt = Date()
+            workflow.boundaries.append(boundary)
+        }
+    }
+
+    func boundary(for nodeID: UUID) -> WorkflowBoundary? {
+        currentProject?.workflows.first?.boundary(containing: nodeID)
+    }
+
+    private func buildMemoryData(project: MAProject) -> ProjectMemoryData {
+        let taskMemories = project.workspaceIndex.map {
+            TaskMemoryBackupRecord(
+                taskID: $0.taskID,
+                workspaceRelativePath: $0.workspaceRelativePath,
+                backupLabel: $0.workspaceName,
+                lastCapturedAt: $0.updatedAt
+            )
+        }
+
+        let agentMemories = project.agents.map { agent in
+            AgentMemoryBackupRecord(
+                agentID: agent.id,
+                agentName: agent.name,
+                sourcePath: agent.openClawDefinition.memoryBackupPath,
+                lastCapturedAt: agent.updatedAt
+            )
+        }
+
+        return ProjectMemoryData(
+            backupOnly: true,
+            taskExecutionMemories: taskMemories,
+            agentMemories: agentMemories,
+            lastBackupAt: Date()
+        )
+    }
+
+    private func workspaceRootURL(for project: MAProject) -> URL {
+        if let configuredPath = project.taskData.workspaceRootPath, !configuredPath.isEmpty {
+            let url = URL(fileURLWithPath: configuredPath, isDirectory: true)
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+
+        let url = projectManager.defaultWorkspaceRootDirectory
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func ensureWorkspaceDirectory(relativePath: String) -> URL {
+        guard let project = currentProject else {
+            return projectManager.ensureWorkspaceDirectory(relativePath: relativePath)
+        }
+
+        let url = workspaceRootURL(for: project).appendingPathComponent(relativePath, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
     
     // 工作流操作方法
@@ -652,6 +761,12 @@ class AppState: ObservableObject {
         updateMainWorkflow { workflow in
             workflow.nodes.removeAll { nodeIDs.contains($0.id) }
             workflow.edges.removeAll { nodeIDs.contains($0.fromNodeID) || nodeIDs.contains($0.toNodeID) }
+            workflow.boundaries = workflow.boundaries.compactMap { boundary in
+                var updated = boundary
+                updated.memberNodeIDs.removeAll { nodeIDs.contains($0) }
+                updated.updatedAt = Date()
+                return updated.memberNodeIDs.isEmpty ? nil : updated
+            }
         }
 
         removedAgentIDs.forEach(openClawManager.terminateAgent)

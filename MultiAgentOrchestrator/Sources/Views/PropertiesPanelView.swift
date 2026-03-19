@@ -198,6 +198,10 @@ struct AgentPropertiesView: View {
     @State private var soulMD: String = ""
     @State private var capabilities: [String] = ["Basic"]
     @State private var colorHex: String = ""
+    @State private var openClawAgentIdentifier: String = ""
+    @State private var openClawModelIdentifier: String = "MiniMax-M2.5"
+    @State private var openClawRuntimeProfile: String = "default"
+    @State private var openClawMemoryBackupPath: String = ""
 
     private let agentColorPresets: [(title: String, hex: String, color: Color)] = [
         ("蓝", "2563EB", .blue),
@@ -235,6 +239,10 @@ struct AgentPropertiesView: View {
                             soulMD = agent.soulMD
                             capabilities = agent.capabilities
                             colorHex = agent.colorHex ?? ""
+                            openClawAgentIdentifier = agent.openClawDefinition.agentIdentifier
+                            openClawModelIdentifier = agent.openClawDefinition.modelIdentifier
+                            openClawRuntimeProfile = agent.openClawDefinition.runtimeProfile
+                            openClawMemoryBackupPath = agent.openClawDefinition.memoryBackupPath ?? ""
                         } else {
                             resetForm()
                         }
@@ -257,6 +265,23 @@ struct AgentPropertiesView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 TextField("Agent Description", text: $agentDescription)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                            }
+
+                            Divider()
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("OpenClaw Definition")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                TextField("OpenClaw Agent ID", text: $openClawAgentIdentifier)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                TextField("Model Identifier", text: $openClawModelIdentifier)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                TextField("Runtime Profile", text: $openClawRuntimeProfile)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                TextField("Memory Backup Path", text: $openClawMemoryBackupPath)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
 
@@ -381,6 +406,10 @@ struct AgentPropertiesView: View {
                 soulMD = firstAgent.soulMD
                 capabilities = firstAgent.capabilities
                 colorHex = firstAgent.colorHex ?? ""
+                openClawAgentIdentifier = firstAgent.openClawDefinition.agentIdentifier
+                openClawModelIdentifier = firstAgent.openClawDefinition.modelIdentifier
+                openClawRuntimeProfile = firstAgent.openClawDefinition.runtimeProfile
+                openClawMemoryBackupPath = firstAgent.openClawDefinition.memoryBackupPath ?? ""
             }
         }
     }
@@ -391,7 +420,11 @@ struct AgentPropertiesView: View {
                agent.description != agentDescription ||
                agent.soulMD != soulMD ||
                agent.capabilities != capabilities ||
-               (agent.colorHex ?? "") != colorHex
+               (agent.colorHex ?? "") != colorHex ||
+               agent.openClawDefinition.agentIdentifier != openClawAgentIdentifier ||
+               agent.openClawDefinition.modelIdentifier != openClawModelIdentifier ||
+               agent.openClawDefinition.runtimeProfile != openClawRuntimeProfile ||
+               (agent.openClawDefinition.memoryBackupPath ?? "") != openClawMemoryBackupPath
     }
     
     private func loadTemplate() {
@@ -433,6 +466,10 @@ struct AgentPropertiesView: View {
         updatedAgent.soulMD = soulMD
         updatedAgent.capabilities = capabilities
         updatedAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        updatedAgent.openClawDefinition.agentIdentifier = openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? updatedAgent.name : openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        updatedAgent.openClawDefinition.modelIdentifier = openClawModelIdentifier
+        updatedAgent.openClawDefinition.runtimeProfile = openClawRuntimeProfile
+        updatedAgent.openClawDefinition.memoryBackupPath = openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.updatedAt = Date()
         
         appState.currentProject?.agents[index] = updatedAgent
@@ -457,6 +494,10 @@ struct AgentPropertiesView: View {
         soulMD = newAgent.soulMD
         capabilities = newAgent.capabilities
         colorHex = newAgent.colorHex ?? ""
+        openClawAgentIdentifier = newAgent.openClawDefinition.agentIdentifier
+        openClawModelIdentifier = newAgent.openClawDefinition.modelIdentifier
+        openClawRuntimeProfile = newAgent.openClawDefinition.runtimeProfile
+        openClawMemoryBackupPath = newAgent.openClawDefinition.memoryBackupPath ?? ""
     }
     
     private func resetForm() {
@@ -465,6 +506,10 @@ struct AgentPropertiesView: View {
         soulMD = ""
         capabilities = ["Basic"]
         colorHex = ""
+        openClawAgentIdentifier = ""
+        openClawModelIdentifier = "MiniMax-M2.5"
+        openClawRuntimeProfile = "default"
+        openClawMemoryBackupPath = ""
     }
 }
 
@@ -474,6 +519,10 @@ struct ProjectPropertiesView: View {
     @EnvironmentObject var appState: AppState
     @State private var projectName: String = ""
     @State private var showExportPanel = false
+
+    private var workspaceRootPath: String {
+        appState.currentProject?.taskData.workspaceRootPath ?? appState.projectManager.defaultWorkspaceRootDirectory.path
+    }
     
     var body: some View {
         ScrollView {
@@ -501,7 +550,33 @@ struct ProjectPropertiesView: View {
                             InfoRow(label: "Last Updated", value: project.updatedAt.formatted(date: .abbreviated, time: .shortened))
                             InfoRow(label: "Agents", value: "\(project.agents.count)")
                             InfoRow(label: "Workflows", value: "\(project.workflows.count)")
+                            InfoRow(label: "OpenClaw", value: project.openClaw.config.deploymentSummary)
                         }
+                    }
+                }
+
+                SectionView(title: "Task Data") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(workspaceRootPath)
+                            .font(.caption)
+                            .textSelection(.enabled)
+
+                        HStack {
+                            Button("Choose Folder") {
+                                appState.chooseTaskDataRootDirectory()
+                            }
+                            Button("Reset Default") {
+                                appState.resetTaskDataRootDirectory()
+                            }
+                        }
+                    }
+                }
+
+                SectionView(title: "Memory Backup") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        InfoRow(label: "Mode", value: appState.currentProject?.memoryData.backupOnly == true ? "Backup Only" : "Managed")
+                        InfoRow(label: "Task Memories", value: "\(appState.currentProject?.memoryData.taskExecutionMemories.count ?? 0)")
+                        InfoRow(label: "Agent Memories", value: "\(appState.currentProject?.memoryData.agentMemories.count ?? 0)")
                     }
                 }
                 
@@ -509,6 +584,7 @@ struct ProjectPropertiesView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         InfoRow(label: "Total Nodes", value: "\(appState.currentProject?.workflows.first?.nodes.count ?? 0)")
                         InfoRow(label: "Total Connections", value: "\(appState.currentProject?.workflows.first?.edges.count ?? 0)")
+                        InfoRow(label: "Total Boundaries", value: "\(appState.currentProject?.workflows.first?.boundaries.count ?? 0)")
                         InfoRow(label: "Project Size", value: "Compact")
                     }
                 }

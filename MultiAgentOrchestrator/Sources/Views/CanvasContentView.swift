@@ -43,7 +43,10 @@ struct CanvasContentView: View {
                     DropIndicatorView(geometry: geometry)
                 }
 
-                WorkflowBoundaryOverlay(groups: collaborationGroups(in: geometry))
+                WorkflowBoundaryOverlay(
+                    groups: explicitBoundaryRects(in: geometry),
+                    fallbackGroups: collaborationGroups(in: geometry)
+                )
 
                 ConnectionLinesView(
                     currentWorkflow: currentWorkflow,
@@ -167,6 +170,7 @@ struct CanvasContentView: View {
     }
 
     private func collaborationGroups(in geometry: GeometryProxy) -> [CGRect] {
+        guard currentWorkflow?.boundaries.isEmpty ?? true else { return [] }
         guard let workflow = currentWorkflow else { return [] }
 
         let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
@@ -200,6 +204,22 @@ struct CanvasContentView: View {
         return rects
     }
 
+    private func explicitBoundaryRects(in geometry: GeometryProxy) -> [WorkflowBoundaryDisplayGroup] {
+        guard let workflow = currentWorkflow else { return [] }
+
+        return workflow.boundaries.map { boundary in
+            let origin = adjustedPosition(CGPoint(x: boundary.rect.minX, y: boundary.rect.minY), geometry: geometry)
+            let opposite = adjustedPosition(CGPoint(x: boundary.rect.maxX, y: boundary.rect.maxY), geometry: geometry)
+            let rect = CGRect(
+                x: min(origin.x, opposite.x),
+                y: min(origin.y, opposite.y),
+                width: abs(opposite.x - origin.x),
+                height: abs(opposite.y - origin.y)
+            )
+            return WorkflowBoundaryDisplayGroup(id: boundary.id, title: boundary.title, rect: rect)
+        }
+    }
+
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
         let center = adjustedPosition(node.position, geometry: geometry)
         let size: CGSize
@@ -220,20 +240,49 @@ struct CanvasContentView: View {
     }
 }
 
+struct WorkflowBoundaryDisplayGroup: Identifiable {
+    let id: UUID
+    let title: String
+    let rect: CGRect
+}
+
 struct WorkflowBoundaryOverlay: View {
-    let groups: [CGRect]
+    let groups: [WorkflowBoundaryDisplayGroup]
+    let fallbackGroups: [CGRect]
 
     var body: some View {
-        ForEach(Array(groups.indices), id: \.self) { index in
-            let rect = groups[index]
-            RoundedRectangle(cornerRadius: 18)
-                .fill(Color.orange.opacity(0.05))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color.orange.opacity(0.8), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
-                )
-                .frame(width: rect.width, height: rect.height)
-                .position(x: rect.midX, y: rect.midY)
+        ZStack {
+            ForEach(groups) { group in
+                let rect = group.rect
+                Rectangle()
+                    .fill(Color.orange.opacity(0.04))
+                    .overlay(
+                        Rectangle()
+                            .stroke(Color.orange.opacity(0.85), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                    )
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+
+                Text(group.title)
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.orange.opacity(0.95))
+                    .foregroundColor(.white)
+                    .position(x: rect.minX + 42, y: rect.minY + 12)
+            }
+
+            ForEach(Array(fallbackGroups.indices), id: \.self) { index in
+                let rect = fallbackGroups[index]
+                Rectangle()
+                    .fill(Color.orange.opacity(0.03))
+                    .overlay(
+                        Rectangle()
+                            .stroke(Color.orange.opacity(0.45), style: StrokeStyle(lineWidth: 1.5, dash: [8, 4]))
+                    )
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
         }
     }
 }

@@ -28,6 +28,16 @@ struct ControlButtonsView: View {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
     }
 
+    private var activeSelection: Set<UUID> {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs
+        }
+        if let selectedNodeID {
+            return [selectedNodeID]
+        }
+        return []
+    }
+
     var body: some View {
         VStack {
             Spacer()
@@ -154,6 +164,14 @@ struct ControlButtonsView: View {
                         }
                         .buttonStyle(.bordered)
                         .help("从工作流生成任务")
+
+                        Button(action: createBoundaryFromSelection) {
+                            Image(systemName: "square.dashed")
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(activeSelection.isEmpty)
+                        .help("为选中节点创建文件共享边界")
                     }
                 }
                 .padding(10)
@@ -241,5 +259,9 @@ struct ControlButtonsView: View {
 
     private func addAgentNode(_ agent: Agent) {
         appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+    }
+
+    private func createBoundaryFromSelection() {
+        appState.addBoundary(around: activeSelection)
     }
 }

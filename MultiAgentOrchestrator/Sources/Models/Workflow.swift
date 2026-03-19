@@ -9,6 +9,24 @@ import Foundation
 import CoreGraphics
 import Combine
 
+struct WorkflowBoundary: Identifiable, Codable, Hashable {
+    let id: UUID
+    var title: String
+    var rect: CGRect
+    var memberNodeIDs: [UUID]
+    var createdAt: Date
+    var updatedAt: Date
+
+    init(title: String = "Boundary", rect: CGRect = .zero, memberNodeIDs: [UUID] = []) {
+        self.id = UUID()
+        self.title = title
+        self.rect = rect
+        self.memberNodeIDs = memberNodeIDs
+        self.createdAt = Date()
+        self.updatedAt = Date()
+    }
+}
+
 // 子流程数据参数
 struct SubflowParameter: Codable, Identifiable, Hashable {
     let id: UUID
@@ -239,18 +257,45 @@ struct Workflow: Codable, Identifiable, Hashable {
     var name: String
     var nodes: [WorkflowNode]
     var edges: [WorkflowEdge]
+    var boundaries: [WorkflowBoundary]
     var createdAt: Date
     var parentNodeID: UUID?  // 父工作流的节点ID（如果是子流程）
     // 子流程数据存储
     var inputSchema: [SubflowParameter] = []  // 输入参数定义
     var outputSchema: [SubflowParameter] = [] // 输出参数定义
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case nodes
+        case edges
+        case boundaries
+        case createdAt
+        case parentNodeID
+        case inputSchema
+        case outputSchema
+    }
     
     init(name: String) {
         self.id = UUID()
         self.name = name
         self.nodes = []
         self.edges = []
+        self.boundaries = []
         self.createdAt = Date()
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        nodes = try container.decodeIfPresent([WorkflowNode].self, forKey: .nodes) ?? []
+        edges = try container.decodeIfPresent([WorkflowEdge].self, forKey: .edges) ?? []
+        boundaries = try container.decodeIfPresent([WorkflowBoundary].self, forKey: .boundaries) ?? []
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        parentNodeID = try container.decodeIfPresent(UUID.self, forKey: .parentNodeID)
+        inputSchema = try container.decodeIfPresent([SubflowParameter].self, forKey: .inputSchema) ?? []
+        outputSchema = try container.decodeIfPresent([SubflowParameter].self, forKey: .outputSchema) ?? []
     }
     
     // 获取所有子工作流
@@ -261,5 +306,9 @@ struct Workflow: Codable, Identifiable, Hashable {
     // 获取直接子节点（不含嵌套）
     var directNodes: [WorkflowNode] {
         nodes.filter { $0.nestingLevel == 0 }
+    }
+
+    func boundary(containing nodeID: UUID) -> WorkflowBoundary? {
+        boundaries.first { $0.memberNodeIDs.contains(nodeID) }
     }
 }

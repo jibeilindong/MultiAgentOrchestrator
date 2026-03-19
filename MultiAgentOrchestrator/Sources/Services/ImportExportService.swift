@@ -104,7 +104,7 @@ class ImportExportService {
                 soulMD: agent.soulMD,
                 position: agent.position,
                 capabilities: agent.capabilities,
-                openClawAgentID: openClawMapping[agent.id]
+                openClawAgentID: openClawMapping[agent.id] ?? agent.openClawDefinition.agentIdentifier
             )
         }
         
@@ -202,6 +202,9 @@ class ImportExportService {
             agent.soulMD = agentExport.soulMD
             agent.position = agentExport.position
             agent.capabilities = agentExport.capabilities
+            if let openClawAgentID = agentExport.openClawAgentID {
+                agent.openClawDefinition.agentIdentifier = openClawAgentID
+            }
             agents.append(agent)
         }
         

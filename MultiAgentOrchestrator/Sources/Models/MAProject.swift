@@ -76,6 +76,73 @@ struct ProjectOpenClawSnapshot: Codable {
     }
 }
 
+struct ProjectTaskDataSettings: Codable {
+    var workspaceRootPath: String?
+    var organizationMode: String
+    var lastUpdatedAt: Date
+
+    init(
+        workspaceRootPath: String? = nil,
+        organizationMode: String = "project/task",
+        lastUpdatedAt: Date = Date()
+    ) {
+        self.workspaceRootPath = workspaceRootPath
+        self.organizationMode = organizationMode
+        self.lastUpdatedAt = lastUpdatedAt
+    }
+}
+
+struct TaskMemoryBackupRecord: Codable, Identifiable, Hashable {
+    let id: UUID
+    var taskID: UUID
+    var workspaceRelativePath: String
+    var backupLabel: String
+    var lastCapturedAt: Date
+
+    init(taskID: UUID, workspaceRelativePath: String, backupLabel: String, lastCapturedAt: Date = Date()) {
+        self.id = taskID
+        self.taskID = taskID
+        self.workspaceRelativePath = workspaceRelativePath
+        self.backupLabel = backupLabel
+        self.lastCapturedAt = lastCapturedAt
+    }
+}
+
+struct AgentMemoryBackupRecord: Codable, Identifiable, Hashable {
+    let id: UUID
+    var agentID: UUID
+    var agentName: String
+    var sourcePath: String?
+    var lastCapturedAt: Date
+
+    init(agentID: UUID, agentName: String, sourcePath: String? = nil, lastCapturedAt: Date = Date()) {
+        self.id = agentID
+        self.agentID = agentID
+        self.agentName = agentName
+        self.sourcePath = sourcePath
+        self.lastCapturedAt = lastCapturedAt
+    }
+}
+
+struct ProjectMemoryData: Codable {
+    var backupOnly: Bool
+    var taskExecutionMemories: [TaskMemoryBackupRecord]
+    var agentMemories: [AgentMemoryBackupRecord]
+    var lastBackupAt: Date?
+
+    init(
+        backupOnly: Bool = true,
+        taskExecutionMemories: [TaskMemoryBackupRecord] = [],
+        agentMemories: [AgentMemoryBackupRecord] = [],
+        lastBackupAt: Date? = nil
+    ) {
+        self.backupOnly = backupOnly
+        self.taskExecutionMemories = taskExecutionMemories
+        self.agentMemories = agentMemories
+        self.lastBackupAt = lastBackupAt
+    }
+}
+
 struct MAProject: Codable, Identifiable {
     let id: UUID
     var fileVersion: String
@@ -84,11 +151,13 @@ struct MAProject: Codable, Identifiable {
     var workflows: [Workflow]
     var permissions: [Permission]
     var openClaw: ProjectOpenClawSnapshot
+    var taskData: ProjectTaskDataSettings
     var tasks: [Task]
     var messages: [Message]
     var executionResults: [ExecutionResult]
     var executionLogs: [ExecutionLogEntry]
     var workspaceIndex: [ProjectWorkspaceRecord]
+    var memoryData: ProjectMemoryData
     var runtimeState: RuntimeState
     var createdAt: Date
     var updatedAt: Date
@@ -102,11 +171,13 @@ struct MAProject: Codable, Identifiable {
         case workflows
         case permissions
         case openClaw
+        case taskData
         case tasks
         case messages
         case executionResults
         case executionLogs
         case workspaceIndex
+        case memoryData
         case runtimeState
         case createdAt
         case updatedAt
@@ -121,11 +192,13 @@ struct MAProject: Codable, Identifiable {
         workflows = try container.decode([Workflow].self, forKey: .workflows)
         permissions = try container.decode([Permission].self, forKey: .permissions)
         openClaw = try container.decodeIfPresent(ProjectOpenClawSnapshot.self, forKey: .openClaw) ?? ProjectOpenClawSnapshot()
+        taskData = try container.decodeIfPresent(ProjectTaskDataSettings.self, forKey: .taskData) ?? ProjectTaskDataSettings()
         tasks = try container.decodeIfPresent([Task].self, forKey: .tasks) ?? []
         messages = try container.decodeIfPresent([Message].self, forKey: .messages) ?? []
         executionResults = try container.decodeIfPresent([ExecutionResult].self, forKey: .executionResults) ?? []
         executionLogs = try container.decodeIfPresent([ExecutionLogEntry].self, forKey: .executionLogs) ?? []
         workspaceIndex = try container.decodeIfPresent([ProjectWorkspaceRecord].self, forKey: .workspaceIndex) ?? []
+        memoryData = try container.decodeIfPresent(ProjectMemoryData.self, forKey: .memoryData) ?? ProjectMemoryData()
         runtimeState = (try? container.decode(RuntimeState.self, forKey: .runtimeState)) ?? RuntimeState()
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -140,11 +213,13 @@ struct MAProject: Codable, Identifiable {
         try container.encode(workflows, forKey: .workflows)
         try container.encode(permissions, forKey: .permissions)
         try container.encode(openClaw, forKey: .openClaw)
+        try container.encode(taskData, forKey: .taskData)
         try container.encode(tasks, forKey: .tasks)
         try container.encode(messages, forKey: .messages)
         try container.encode(executionResults, forKey: .executionResults)
         try container.encode(executionLogs, forKey: .executionLogs)
         try container.encode(workspaceIndex, forKey: .workspaceIndex)
+        try container.encode(memoryData, forKey: .memoryData)
         try container.encode(runtimeState, forKey: .runtimeState)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
@@ -158,11 +233,13 @@ struct MAProject: Codable, Identifiable {
         self.workflows = [Workflow(name: "Main Workflow")]
         self.permissions = []
         self.openClaw = ProjectOpenClawSnapshot()
+        self.taskData = ProjectTaskDataSettings()
         self.tasks = []
         self.messages = []
         self.executionResults = []
         self.executionLogs = []
         self.workspaceIndex = []
+        self.memoryData = ProjectMemoryData()
         self.runtimeState = RuntimeState()
         self.createdAt = Date()
         self.updatedAt = Date()

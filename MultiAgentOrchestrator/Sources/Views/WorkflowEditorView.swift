@@ -429,7 +429,7 @@ struct AgentListRow: View {
                 .frame(width: 80, alignment: .leading)
             
             // 模型
-            Text("M2.5")
+            Text(agent.openClawDefinition.modelIdentifier)
                 .font(.caption)
                 .frame(width: 80, alignment: .leading)
             

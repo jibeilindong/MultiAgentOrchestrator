@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct NodeView: View {
+    @EnvironmentObject var appState: AppState
     let node: WorkflowNode
     let isSelected: Bool
     let agent: Agent?
@@ -219,6 +220,9 @@ struct NodeView: View {
     private var borderColor: Color {
         if isSelected {
             return nodeColor
+        }
+        if appState.boundary(for: node.id) != nil {
+            return Color.orange.opacity(0.75)
         }
         if isHovered {
             return nodeColor.opacity(0.7)
