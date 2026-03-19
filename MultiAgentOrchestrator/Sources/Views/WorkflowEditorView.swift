@@ -292,31 +292,6 @@ struct EditorToolbar: View {
             }
 
             Spacer()
-
-            WorkflowToolbarGroup(title: "OpenClaw") {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(appState.openClawService.isConnected ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                    Text(appState.openClawService.isConnected ? "Connected" : "Disconnected")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack(spacing: 8) {
-                    Button(action: { appState.openClawService.checkConnection() }) {
-                        Label("Refresh", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(action: { appState.openClawManager.connect() }) {
-                        Label("Auto Detect", systemImage: "wand.and.stars")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
@@ -759,6 +734,7 @@ struct AgentLibrarySidebar: View {
                 }
                 .padding()
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             
             Divider()
             
@@ -780,6 +756,7 @@ struct AgentLibrarySidebar: View {
             }
             .background(Color(.controlBackgroundColor))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
     
     private func loadOpenClawAgents() -> [String] {

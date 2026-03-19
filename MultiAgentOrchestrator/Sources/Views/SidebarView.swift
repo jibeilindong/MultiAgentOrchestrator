@@ -10,33 +10,115 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
-    @State private var agentLibraryHeight: CGFloat = 320
-    @State private var agentLibraryHeightAtDragStart: CGFloat?
+    @State private var showingProjectPicker = false
 
     var body: some View {
         VStack(spacing: 0) {
+            projectFileSection
+
+            Divider()
+
             navigationSection
 
             if selectedTab == 0 {
                 Divider()
-
-                resizeHandle
 
                 AgentLibrarySidebar(
                     onAddAll: { appState.generateArchitectureFromProjectAgents() },
                     isOpenClawConnected: appState.openClawManager.isConnected,
                     openClawAgents: appState.openClawManager.agents
                 )
-                .frame(height: agentLibraryHeight)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Spacer()
             }
-
-            if selectedTab == 0 {
-                Spacer(minLength: 0)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $showingProjectPicker) {
+            ProjectPickerView()
+                .environmentObject(appState)
+        }
+    }
+
+    private var projectFileSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Menu {
+                Section("当前项目") {
+                    Button(action: { showingProjectPicker = true }) {
+                        Label("切换或管理项目", systemImage: "rectangle.stack")
+                    }
+
+                    ForEach(appState.projectManager.projects.prefix(8)) { project in
+                        Button(action: { appState.openProject(at: project.url) }) {
+                            Label(project.name, systemImage: project.url == appState.currentProjectFileURL ? "checkmark.circle.fill" : "folder")
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button(action: { appState.createNewProject() }) {
+                    Label(LocalizedString.new, systemImage: "plus")
+                }
+                Button(action: { appState.openProject() }) {
+                    Label(LocalizedString.openProject, systemImage: "folder")
+                }
+                Button(action: { appState.saveProject() }) {
+                    Label(LocalizedString.save, systemImage: "square.and.arrow.down")
+                }
+                Button(action: { appState.saveProjectAs() }) {
+                    Label("另存为", systemImage: "square.and.arrow.down.on.square")
+                }
+
+                Divider()
+
+                Button(action: { appState.importData() }) {
+                    Label("导入架构", systemImage: "square.and.arrow.down.on.square")
+                }
+                Button(action: { appState.exportData() }) {
+                    Label("导出架构", systemImage: "square.and.arrow.up")
+                }
+
+                if appState.currentProject != nil {
+                    Divider()
+
+                    Button(action: { appState.deleteCurrentProject() }) {
+                        Label("删除项目", systemImage: "trash")
+                    }
+
+                    Button(action: { appState.closeProject() }) {
+                        Label("关闭项目", systemImage: "xmark.circle")
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appState.currentProject?.name ?? "项目")
+                            .font(.headline)
+                            .lineLimit(1)
+                        Text(projectSummary)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
     }
 
     private var navigationSection: some View {
@@ -44,7 +126,7 @@ struct SidebarView: View {
             Text(LocalizedString.navigation)
                 .font(.headline)
                 .padding(.horizontal)
-                .padding(.top, 16)
+                .padding(.top, 8)
 
             ForEach(navigationItems) { item in
                 Button(action: { selectedTab = item.tag }) {
@@ -64,34 +146,16 @@ struct SidebarView: View {
                 .padding(.horizontal, 10)
             }
         }
-        .padding(.bottom, selectedTab == 0 ? 12 : 0)
+        .padding(.bottom, selectedTab == 0 ? 8 : 0)
     }
 
-    private var resizeHandle: some View {
-        Rectangle()
-            .fill(Color.secondary.opacity(0.12))
-            .frame(height: 8)
-            .overlay(
-                Capsule()
-                    .fill(Color.secondary.opacity(0.4))
-                    .frame(width: 46, height: 4)
-            )
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { value in
-                        let startHeight = agentLibraryHeightAtDragStart ?? agentLibraryHeight
-                        if agentLibraryHeightAtDragStart == nil {
-                            agentLibraryHeightAtDragStart = agentLibraryHeight
-                        }
-                        agentLibraryHeight = min(max(startHeight + value.translation.height, 180), 560)
-                    }
-                    .onEnded { _ in
-                        agentLibraryHeightAtDragStart = nil
-                    }
-            )
-            .help("拖拉调整智能体库高度")
+    private var projectSummary: String {
+        let agentCount = appState.currentProject?.agents.count ?? 0
+        let workflowCount = appState.currentProject?.workflows.count ?? 0
+        let taskCount = appState.taskManager.tasks.count
+        return "\(agentCount) agents • \(workflowCount) workflows • \(taskCount) tasks"
     }
+
     private var navigationItems: [NavigationItem] {
         [
             NavigationItem(tag: 0, title: "工作流编辑器", icon: "square.grid.2x2"),

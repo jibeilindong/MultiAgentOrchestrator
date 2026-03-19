@@ -152,8 +152,6 @@ enum CanvasColorPreset: String, CaseIterable, Codable, Identifiable {
 }
 
 enum ContentToolbarItem: String, CaseIterable, Codable, Identifiable {
-    case file
-    case project
     case view
     case display
     case language
@@ -162,15 +160,13 @@ enum ContentToolbarItem: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
-        case .file: return "文件"
-        case .project: return "项目信息"
         case .view: return "视图"
         case .display: return "显示控制"
         case .language: return "语言"
         }
     }
 
-    static let defaultOrder: [ContentToolbarItem] = [.file, .project, .display, .view, .language]
+    static let defaultOrder: [ContentToolbarItem] = [.display, .view, .language]
 }
 
 struct CanvasDisplaySettings: Codable {

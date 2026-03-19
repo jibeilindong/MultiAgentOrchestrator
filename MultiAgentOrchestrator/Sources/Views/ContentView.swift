@@ -6,7 +6,6 @@ struct ContentView: View {
     @Binding var zoomScale: CGFloat
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
-    @State private var showingProjectPicker = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -95,91 +94,11 @@ struct ContentView: View {
         } message: {
             Text(openClawMessage ?? "")
         }
-        .sheet(isPresented: $showingProjectPicker) {
-            ProjectPickerView()
-                .environmentObject(appState)
-        }
-    }
-
-    private var projectSummary: String {
-        let agentCount = appState.currentProject?.agents.count ?? 0
-        let workflowCount = appState.currentProject?.workflows.count ?? 0
-        let taskCount = appState.taskManager.tasks.count
-        return "\(agentCount) agents • \(workflowCount) workflows • \(taskCount) tasks"
     }
 
     @ViewBuilder
     private func toolbarContent(for item: ContentToolbarItem) -> some View {
         switch item {
-        case .file:
-            TopToolbarGroup {
-                Menu {
-                    Section("当前项目") {
-                        Button(action: { showingProjectPicker = true }) {
-                            Label("切换或管理项目", systemImage: "rectangle.stack")
-                        }
-
-                        ForEach(appState.projectManager.projects.prefix(8)) { project in
-                            Button(action: { appState.openProject(at: project.url) }) {
-                                Label(project.name, systemImage: project.url == appState.currentProjectFileURL ? "checkmark.circle.fill" : "folder")
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    Button(action: { appState.createNewProject() }) {
-                        Label(LocalizedString.new, systemImage: "plus")
-                    }
-                    Button(action: { appState.openProject() }) {
-                        Label(LocalizedString.openProject, systemImage: "folder")
-                    }
-                    Button(action: { appState.saveProject() }) {
-                        Label(LocalizedString.save, systemImage: "square.and.arrow.down")
-                    }
-                    Button(action: { appState.saveProjectAs() }) {
-                        Label("另存为", systemImage: "square.and.arrow.down.on.square")
-                    }
-                    Divider()
-                    Button(action: { appState.importData() }) {
-                        Label("导入架构", systemImage: "square.and.arrow.down.on.square")
-                    }
-                    Button(action: { appState.exportData() }) {
-                        Label("导出架构", systemImage: "square.and.arrow.up")
-                    }
-                    if appState.currentProject != nil {
-                        Divider()
-                        Button(action: { appState.deleteCurrentProject() }) {
-                            Label("删除项目", systemImage: "trash")
-                        }
-                        Button(action: { appState.closeProject() }) {
-                            Label("Close Project", systemImage: "xmark.circle")
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder")
-                        Text(appState.currentProject?.name ?? "项目")
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-        case .project:
-            TopToolbarGroup {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(appState.currentProject?.name ?? LocalizedString.appName)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(projectSummary)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(minWidth: 170, alignment: .leading)
-            }
         case .view:
             TopToolbarGroup {
                 Menu {
@@ -874,10 +793,6 @@ struct ToolbarCustomizationSheet: View {
 
     private func toolbarItemDescription(for item: ContentToolbarItem) -> String {
         switch item {
-        case .file:
-            return "Project lifecycle and import/export actions"
-        case .project:
-            return "Project name and workflow summary"
         case .view:
             return "Zoom controls and log visibility"
         case .display:
