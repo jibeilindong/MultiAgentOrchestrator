@@ -27,6 +27,7 @@ struct CanvasView: View {
     @State private var isTransientLassoMode: Bool = false
     @State private var lassoRect: CGRect?
     @State private var suppressCanvasTapClear: Bool = false
+    @State private var isHoveringCanvas: Bool = false
 
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
@@ -38,6 +39,7 @@ struct CanvasView: View {
 
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
+    var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
 
@@ -48,6 +50,7 @@ struct CanvasView: View {
         connectFromAgentID: Binding<UUID?> = .constant(nil),
         onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil,
         onNodeSelected: ((WorkflowNode) -> Void)? = nil,
+        onNodeSecondarySelected: ((WorkflowNode) -> Void)? = nil,
         onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
         onDropAgent: ((String, CGPoint) -> Void)? = nil
     ) {
@@ -57,6 +60,7 @@ struct CanvasView: View {
         self._connectFromAgentID = connectFromAgentID
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
         self.onNodeSelected = onNodeSelected
+        self.onNodeSecondarySelected = onNodeSecondarySelected
         self.onEdgeSelected = onEdgeSelected
         self.onDropAgent = onDropAgent
     }
@@ -82,6 +86,10 @@ struct CanvasView: View {
             onNodeSelected: { node in
                 suppressCanvasTapClear = true
                 onNodeSelected?(node)
+            },
+            onNodeSecondarySelected: { node in
+                suppressCanvasTapClear = true
+                onNodeSecondarySelected?(node)
             },
             onEdgeSelected: { edge in
                 suppressCanvasTapClear = true
@@ -147,6 +155,13 @@ struct CanvasView: View {
             if !newValue {
                 connectFromAgentID = nil
             }
+        }
+        .onHover { hovering in
+            isHoveringCanvas = hovering
+            updateCanvasCursor()
+        }
+        .onChange(of: isDraggingCanvas) { _, _ in
+            updateCanvasCursor()
         }
     }
 
@@ -280,7 +295,7 @@ struct CanvasView: View {
                     zoomScale = scale
                 },
             SimultaneousGesture(
-                DragGesture(minimumDistance: 5)
+                DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         guard !isLassoMode, !isTransientLassoMode, connectingFromNode == nil else { return }
                         isDraggingCanvas = true
@@ -319,5 +334,17 @@ struct CanvasView: View {
 
     private func setupDefaultNodes() {
         _ = appState.ensureMainWorkflow()
+    }
+
+    private func updateCanvasCursor() {
+        guard isHoveringCanvas else {
+            NSCursor.arrow.set()
+            return
+        }
+        if isDraggingCanvas {
+            NSCursor.closedHand.set()
+        } else {
+            NSCursor.openHand.set()
+        }
     }
 }

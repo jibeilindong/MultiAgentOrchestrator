@@ -295,7 +295,7 @@ struct EditorToolbar: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color(.windowBackgroundColor))
+        .background(Color(.windowBackgroundColor).opacity(0.3))
     }
 }
 
@@ -314,7 +314,7 @@ private struct WorkflowToolbarGroup<Content: View>: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(.controlBackgroundColor))
+        .background(Color(.controlBackgroundColor).opacity(0.3))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
@@ -581,6 +581,11 @@ struct ArchitectureView: View {
                         self.handleNodeClickInConnectMode(node: node)
                     },
                     onNodeSelected: { node in
+                        selectedEdgeForProperty = nil
+                        showEdgePropertyPanel = false
+                        selectedNodeForProperty = node
+                    },
+                    onNodeSecondarySelected: { node in
                         selectedEdgeForProperty = nil
                         showEdgePropertyPanel = false
                         selectedNodeForProperty = node
@@ -995,6 +1000,7 @@ struct NodePropertyPanel: View {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
                 
                 Spacer()
                 
@@ -1003,6 +1009,7 @@ struct NodePropertyPanel: View {
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
             }
             .padding()
         }
@@ -1141,6 +1148,7 @@ struct EdgePropertyPanel: View {
                     isPresented = false
                 }
                 .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
             }
             .padding()
 
@@ -1209,6 +1217,7 @@ struct EdgePropertyPanel: View {
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
             }
             .padding()
         }

@@ -60,9 +60,9 @@ struct ConnectionLinesView: View {
 
                     OrthogonalConnectionShape(points: points)
                         .stroke(
-                            Color.clear,
+                            Color.primary.opacity(0.001),
                             style: StrokeStyle(
-                                lineWidth: max(14, lineWidth + 10),
+                                lineWidth: max(18, lineWidth + 14),
                                 lineCap: .round,
                                 lineJoin: .round
                             )

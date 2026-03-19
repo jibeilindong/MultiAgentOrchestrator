@@ -26,7 +26,11 @@ struct ControlButtonsView: View {
     let appState: AppState
 
     @State private var panelSize = CGSize(width: 280, height: 244)
+    @State private var panelCenter: CGPoint = .zero
+    @State private var hasInitializedPanelPosition = false
     @State private var panelSizeAtDragStart: CGSize?
+    @State private var panelCenterAtDragStart: CGPoint?
+    @State private var panelCenterAtResizeStart: CGPoint?
     @State private var activeResizeEdges: PanelResizeEdges = []
     private let edgeResizeThreshold: CGFloat = 12
 
@@ -45,10 +49,8 @@ struct ControlButtonsView: View {
     }
 
     var body: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
+        GeometryReader { geometry in
+            ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     ScrollView {
                         LazyVGrid(columns: gridColumns, spacing: 10) {
@@ -95,7 +97,7 @@ struct ControlButtonsView: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack(spacing: 6) {
                                         Button(action: toggleLassoMode) {
-                                            Image(systemName: isLassoMode ? "selection.pin.in.out" : "selection.pin.out")
+                                            Image(systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed")
                                                 .frame(width: 28, height: 28)
                                         }
                                         .buttonStyle(.bordered)
@@ -160,9 +162,20 @@ struct ControlButtonsView: View {
                         .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
                 )
                 .simultaneousGesture(edgeResizeGesture)
+                .simultaneousGesture(moveGesture)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
+                .position(panelCenter)
+                .onAppear {
+                    initializePanelPositionIfNeeded(in: geometry)
+                }
+                .onChange(of: geometry.size) { _, newSize in
+                    if !hasInitializedPanelPosition {
+                        initializePanelPositionIfNeeded(in: geometry)
+                    } else {
+                        clampPanelPosition(to: newSize)
+                    }
+                }
             }
-            .padding(12)
         }
     }
 
@@ -187,17 +200,23 @@ struct ControlButtonsView: View {
                 .onChanged { value in
                     if panelSizeAtDragStart == nil {
                         panelSizeAtDragStart = panelSize
+                        panelCenterAtResizeStart = panelCenter
                         activeResizeEdges = [.right, .bottom]
                     }
-                    guard let startSize = panelSizeAtDragStart else { return }
-                    panelSize = resizedPanelSize(
+                    guard let startSize = panelSizeAtDragStart,
+                          let startCenter = panelCenterAtResizeStart else { return }
+                    let metrics = resizedPanelMetrics(
                         from: startSize,
+                        center: startCenter,
                         translation: value.translation,
                         edges: activeResizeEdges
                     )
+                    panelSize = metrics.size
+                    panelCenter = metrics.center
                 }
                 .onEnded { _ in
                     panelSizeAtDragStart = nil
+                    panelCenterAtResizeStart = nil
                     activeResizeEdges = []
                 }
         )
@@ -212,6 +231,24 @@ struct ControlButtonsView: View {
         return edges
     }
 
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                guard resizeEdges(at: value.startLocation).isEmpty else { return }
+                if panelCenterAtDragStart == nil {
+                    panelCenterAtDragStart = panelCenter
+                }
+                guard let startCenter = panelCenterAtDragStart else { return }
+                panelCenter = CGPoint(
+                    x: startCenter.x + value.translation.width,
+                    y: startCenter.y + value.translation.height
+                )
+            }
+            .onEnded { _ in
+                panelCenterAtDragStart = nil
+            }
+    }
+
     private var edgeResizeGesture: some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
@@ -219,47 +256,87 @@ struct ControlButtonsView: View {
                     let edges = resizeEdges(at: value.startLocation)
                     guard !edges.isEmpty else { return }
                     panelSizeAtDragStart = panelSize
+                    panelCenterAtResizeStart = panelCenter
                     activeResizeEdges = edges
                 }
 
-                guard let startSize = panelSizeAtDragStart else { return }
-                panelSize = resizedPanelSize(
+                guard let startSize = panelSizeAtDragStart,
+                      let startCenter = panelCenterAtResizeStart else { return }
+                let metrics = resizedPanelMetrics(
                     from: startSize,
+                    center: startCenter,
                     translation: value.translation,
                     edges: activeResizeEdges
                 )
+                panelSize = metrics.size
+                panelCenter = metrics.center
             }
             .onEnded { _ in
                 panelSizeAtDragStart = nil
+                panelCenterAtResizeStart = nil
                 activeResizeEdges = []
             }
     }
 
-    private func resizedPanelSize(
+    private func resizedPanelMetrics(
         from startSize: CGSize,
+        center startCenter: CGPoint,
         translation: CGSize,
         edges: PanelResizeEdges
-    ) -> CGSize {
-        var width = startSize.width
-        var height = startSize.height
+    ) -> (size: CGSize, center: CGPoint) {
+        let minWidth: CGFloat = 190
+        let maxWidth: CGFloat = 520
+        let minHeight: CGFloat = 170
+        let maxHeight: CGFloat = 420
 
-        if edges.contains(.right) {
-            width += translation.width
-        }
-        if edges.contains(.left) {
-            width -= translation.width
-        }
-        if edges.contains(.bottom) {
-            height += translation.height
-        }
-        if edges.contains(.top) {
-            height -= translation.height
+        var left = startCenter.x - startSize.width / 2
+        var right = startCenter.x + startSize.width / 2
+        var top = startCenter.y - startSize.height / 2
+        var bottom = startCenter.y + startSize.height / 2
+
+        if edges.contains(.left) { left += translation.width }
+        if edges.contains(.right) { right += translation.width }
+        if edges.contains(.top) { top += translation.height }
+        if edges.contains(.bottom) { bottom += translation.height }
+
+        var width = right - left
+        if width < minWidth {
+            if edges.contains(.left) { left = right - minWidth } else { right = left + minWidth }
+            width = minWidth
+        } else if width > maxWidth {
+            if edges.contains(.left) { left = right - maxWidth } else { right = left + maxWidth }
+            width = maxWidth
         }
 
-        return CGSize(
-            width: min(max(width, 190), 520),
-            height: min(max(height, 170), 420)
+        var height = bottom - top
+        if height < minHeight {
+            if edges.contains(.top) { top = bottom - minHeight } else { bottom = top + minHeight }
+            height = minHeight
+        } else if height > maxHeight {
+            if edges.contains(.top) { top = bottom - maxHeight } else { bottom = top + maxHeight }
+            height = maxHeight
+        }
+
+        return (
+            CGSize(width: width, height: height),
+            CGPoint(x: (left + right) / 2, y: (top + bottom) / 2)
         )
+    }
+
+    private func initializePanelPositionIfNeeded(in geometry: GeometryProxy) {
+        guard !hasInitializedPanelPosition else { return }
+        panelCenter = CGPoint(
+            x: geometry.size.width - panelSize.width / 2 - 12,
+            y: geometry.size.height - panelSize.height / 2 - 12
+        )
+        hasInitializedPanelPosition = true
+    }
+
+    private func clampPanelPosition(to size: CGSize) {
+        let halfWidth = panelSize.width / 2
+        let halfHeight = panelSize.height / 2
+        panelCenter.x = min(max(panelCenter.x, halfWidth + 8), size.width - halfWidth - 8)
+        panelCenter.y = min(max(panelCenter.y, halfHeight + 8), size.height - halfHeight - 8)
     }
 
     @ViewBuilder

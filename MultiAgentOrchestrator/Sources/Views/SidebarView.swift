@@ -34,6 +34,7 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.windowBackgroundColor).opacity(0.3))
         .sheet(isPresented: $showingProjectPicker) {
             ProjectPickerView()
                 .environmentObject(appState)
