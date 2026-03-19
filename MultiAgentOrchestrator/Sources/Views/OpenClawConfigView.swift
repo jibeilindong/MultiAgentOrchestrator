@@ -16,15 +16,6 @@ struct OpenClawConfigView: View {
     @State private var lastTestedFingerprint: String?
     @State private var lastTestSucceeded = false
     @State private var isPresentingImportSheet = false
-    @State private var managedAgents: [OpenClawManager.ManagedAgentRecord] = []
-    @State private var availableModels: [String] = []
-    @State private var selectedManagedAgentID: String?
-    @State private var managedAgentModelDraft: String = ""
-    @State private var managedSkillSlug: String = ""
-    @State private var managedAgentMessage: String?
-    @State private var managedAgentTone: StatusTone = .neutral
-    @State private var isRefreshingManagedAgents = false
-    @State private var isMutatingManagedAgent = false
     
     var body: some View {
         ScrollView {
@@ -153,7 +144,6 @@ struct OpenClawConfigView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                agentManagementSection
                 detectedAgentsSection
             }
             .padding(24)
@@ -180,7 +170,6 @@ struct OpenClawConfigView: View {
         .onAppear {
             config = appState.openClawManager.config
             refreshStatusFromManager()
-            refreshManagedAgentDataIfNeeded()
         }
         .onChange(of: configFingerprint(config)) { _, newFingerprint in
             if let lastTestedFingerprint, lastTestedFingerprint != newFingerprint {
@@ -274,7 +263,6 @@ struct OpenClawConfigView: View {
         isSaving = false
         statusMessage = "配置已保存。识别后点击手动连接即可进入会话。"
         statusTone = .neutral
-        refreshManagedAgentDataIfNeeded()
     }
 
     private func connectNow() {
@@ -284,15 +272,6 @@ struct OpenClawConfigView: View {
             testResult = message
             statusMessage = success ? "连接已确认，OpenClaw 文件已经进入会话同步。" : "连接失败：\(message)"
             statusTone = success ? .success : .error
-            if success {
-                refreshManagedAgentDataIfNeeded()
-            } else {
-                managedAgents = []
-                availableModels = []
-                selectedManagedAgentID = nil
-                managedAgentModelDraft = ""
-                managedSkillSlug = ""
-            }
         }
     }
 
@@ -328,6 +307,67 @@ struct OpenClawConfigView: View {
         ].joined(separator: "|")
     }
 
+    @ViewBuilder
+    private var detectedAgentsSection: some View {
+        let detectedAgents = appState.openClawManager.discoveryResults
+
+        if !detectedAgents.isEmpty {
+            GroupBox("识别结果") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(detectedAgents) { agent in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: agent.directoryValidated && agent.configValidated ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                .foregroundColor(agent.directoryValidated && agent.configValidated ? .green : .orange)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(agent.name)
+                                    .font(.headline)
+                                Text(agent.issues.isEmpty ? "目录与 openclaw.json 都已校验。" : agent.issues.joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                if let path = agent.copiedToProjectPath {
+                                    Text(path)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("导入这些 Agents") {
+                            isPresentingImportSheet = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!appState.openClawManager.isConnected || detectedAgents.isEmpty)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct OpenClawAgentManagementView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var managedAgents: [OpenClawManager.ManagedAgentRecord] = []
+    @State private var availableModels: [String] = []
+    @State private var selectedManagedAgentID: String?
+    @State private var managedAgentModelDraft: String = ""
+    @State private var managedSkillSlug: String = ""
+    @State private var searchKeyword: String = ""
+    @State private var searchResults: [OpenClawManager.ClawHubSkillRecord] = []
+    @State private var managedAgentMessage: String?
+    @State private var managedAgentTone: StatusTone = .neutral
+    @State private var isRefreshingManagedAgents = false
+    @State private var isMutatingManagedAgent = false
+    @State private var isSearchingSkills = false
+
+    private var config: OpenClawConfig { appState.openClawManager.config }
+
     private var canManageOpenClawAgents: Bool {
         appState.openClawManager.isConnected && config.deploymentKind != .remoteServer
     }
@@ -337,180 +377,251 @@ struct OpenClawConfigView: View {
         return managedAgents.first(where: { $0.id == selectedManagedAgentID })
     }
 
-    @ViewBuilder
-    private var agentManagementSection: some View {
-        GroupBox("Agent 管理") {
-            VStack(alignment: .leading, spacing: 12) {
-                if !appState.openClawManager.isConnected {
-                    Text("先连接 OpenClaw，再选择具体 agent 进行 model / skill 配置。")
-                        .font(.caption)
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("OpenClaw Agent 管理")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("管理单个 OpenClaw agent 的 model 与 skills，并支持从 ClawHub 搜索后直接安装。")
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
-                } else if config.deploymentKind == .remoteServer {
-                    Text("远程网关模式只负责连接，不提供本地 agent 文件和 workspace 的直接编辑能力。")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    HStack(alignment: .center, spacing: 12) {
-                        labeledField("Target Agent") {
-                            Picker("Target Agent", selection: Binding<String?>(
-                                get: { selectedManagedAgentID },
-                                set: { newValue in
-                                    selectedManagedAgentID = newValue
-                                    syncManagedAgentDrafts()
+                }
+
+                GroupBox("Agent 配置") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !appState.openClawManager.isConnected {
+                            Text("请先在 OpenClaw Connection 页面完成连接。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else if config.deploymentKind == .remoteServer {
+                            Text("远程网关模式不提供本地 agent 文件与 workspace 直接编辑。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            HStack(alignment: .center, spacing: 12) {
+                                labeledField("Target Agent") {
+                                    Picker("Target Agent", selection: Binding<String?>(
+                                        get: { selectedManagedAgentID },
+                                        set: { newValue in
+                                            selectedManagedAgentID = newValue
+                                            syncManagedAgentDrafts()
+                                        }
+                                    )) {
+                                        Text("请选择 Agent").tag(nil as String?)
+                                        ForEach(managedAgents) { agent in
+                                            Text("\(agent.name) (\(agent.id))").tag(Optional(agent.id))
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
                                 }
-                            )) {
-                                Text("请选择 Agent").tag(nil as String?)
-                                ForEach(managedAgents) { agent in
-                                    Text("\(agent.name) (\(agent.id))").tag(Optional(agent.id))
+
+                                Spacer()
+
+                                Button {
+                                    refreshManagedAgentDataIfNeeded()
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        if isRefreshingManagedAgents {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        }
+                                        Text(isRefreshingManagedAgents ? "刷新中..." : "刷新列表")
+                                    }
                                 }
+                                .disabled(isRefreshingManagedAgents)
                             }
-                            .pickerStyle(.menu)
-                        }
 
-                        Spacer()
+                            if let selectedManagedAgent {
+                                Divider()
 
-                        Button {
-                            refreshManagedAgentDataIfNeeded()
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isRefreshingManagedAgents {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                }
-                                Text(isRefreshingManagedAgents ? "刷新中..." : "刷新列表")
-                            }
-                        }
-                        .disabled(isRefreshingManagedAgents)
-                    }
+                                VStack(alignment: .leading, spacing: 10) {
+                                    infoRow(label: "Agent ID", value: selectedManagedAgent.id)
+                                    infoRow(label: "配置索引", value: "\(selectedManagedAgent.configIndex)")
+                                    infoRow(label: "Workspace", value: selectedManagedAgent.workspacePath ?? "未配置")
+                                    infoRow(label: "Agent Dir", value: selectedManagedAgent.agentDirPath ?? "未配置")
+                                    infoRow(label: "当前 Model", value: selectedManagedAgent.modelIdentifier.isEmpty ? "未设置" : selectedManagedAgent.modelIdentifier)
 
-                    if let selectedManagedAgent {
-                        Divider()
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("Model 切换")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            infoRow(label: "Agent ID", value: selectedManagedAgent.id)
-                            infoRow(label: "配置索引", value: "\(selectedManagedAgent.configIndex)")
-                            infoRow(label: "Workspace", value: selectedManagedAgent.workspacePath ?? "未配置")
-                            infoRow(label: "Agent Dir", value: selectedManagedAgent.agentDirPath ?? "未配置")
-                            infoRow(label: "当前 Model", value: selectedManagedAgent.modelIdentifier.isEmpty ? "未设置" : selectedManagedAgent.modelIdentifier)
+                                        HStack(spacing: 10) {
+                                            TextField("provider/model", text: $managedAgentModelDraft)
+                                                .textFieldStyle(.roundedBorder)
 
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Model 切换")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                            Menu("模型候选") {
+                                                if availableModels.isEmpty {
+                                                    Text("暂无可用模型")
+                                                } else {
+                                                    ForEach(availableModels, id: \.self) { model in
+                                                        Button(model) {
+                                                            managedAgentModelDraft = model
+                                                        }
+                                                    }
+                                                }
+                                            }
 
-                                HStack(spacing: 10) {
-                                    TextField("provider/model", text: $managedAgentModelDraft)
-                                        .textFieldStyle(.roundedBorder)
+                                            Button {
+                                                applyManagedAgentModel()
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    if isMutatingManagedAgent {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                    }
+                                                    Text(isMutatingManagedAgent ? "应用中..." : "应用模型")
+                                                }
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .disabled(isMutatingManagedAgent || managedAgentModelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                        }
+                                    }
 
-                                    Menu("模型候选") {
-                                        if availableModels.isEmpty {
-                                            Text("暂无可用模型")
-                                        } else {
-                                            ForEach(availableModels, id: \.self) { model in
-                                                Button(model) {
-                                                    managedAgentModelDraft = model
+                                    Divider()
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("技能安装")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+
+                                        HStack(spacing: 10) {
+                                            TextField("clawhub skill slug", text: $managedSkillSlug)
+                                                .textFieldStyle(.roundedBorder)
+
+                                            Button {
+                                                installManagedSkill()
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    if isMutatingManagedAgent {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                    }
+                                                    Text("按 slug 安装")
+                                                }
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .disabled(isMutatingManagedAgent || managedSkillSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                        }
+
+                                        HStack(spacing: 10) {
+                                            TextField("从 ClawHub 搜索技能", text: $searchKeyword)
+                                                .textFieldStyle(.roundedBorder)
+                                            Button {
+                                                searchSkillsFromClawHub()
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    if isSearchingSkills {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                    }
+                                                    Text(isSearchingSkills ? "搜索中..." : "搜索并安装")
+                                                }
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(isSearchingSkills || isMutatingManagedAgent || searchKeyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                        }
+
+                                        if !searchResults.isEmpty {
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                ForEach(searchResults) { result in
+                                                    HStack(spacing: 8) {
+                                                        VStack(alignment: .leading, spacing: 2) {
+                                                            Text(result.slug)
+                                                                .font(.subheadline)
+                                                            if !result.summary.isEmpty {
+                                                                Text(result.summary)
+                                                                    .font(.caption2)
+                                                                    .foregroundColor(.secondary)
+                                                                    .lineLimit(2)
+                                                            }
+                                                        }
+                                                        Spacer()
+                                                        Button("安装") {
+                                                            managedSkillSlug = result.slug
+                                                            installManagedSkill()
+                                                        }
+                                                        .buttonStyle(.borderedProminent)
+                                                        .disabled(isMutatingManagedAgent)
+                                                    }
+                                                    .padding(.vertical, 2)
                                                 }
                                             }
                                         }
-                                    }
 
-                                    Button {
-                                        applyManagedAgentModel()
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            if isMutatingManagedAgent {
-                                                ProgressView()
-                                                    .controlSize(.small)
+                                        if selectedManagedAgent.installedSkills.isEmpty {
+                                            Text("暂无已安装技能。")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        } else {
+                                            ForEach(selectedManagedAgent.installedSkills) { skill in
+                                                HStack(spacing: 8) {
+                                                    VStack(alignment: .leading, spacing: 2) {
+                                                        Text(skill.name)
+                                                            .font(.subheadline)
+                                                        Text(skill.path)
+                                                            .font(.caption2)
+                                                            .foregroundColor(.secondary)
+                                                            .lineLimit(1)
+                                                    }
+                                                    Spacer()
+                                                    Button(role: .destructive) {
+                                                        removeManagedSkill(skill.name)
+                                                    } label: {
+                                                        Text("移除")
+                                                    }
+                                                    .buttonStyle(.bordered)
+                                                    .disabled(isMutatingManagedAgent)
+                                                }
+                                                .padding(.vertical, 3)
                                             }
-                                            Text(isMutatingManagedAgent ? "应用中..." : "应用模型")
                                         }
                                     }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(isMutatingManagedAgent || managedAgentModelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                 }
-                            }
-
-                            Divider()
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Skills")
+                            } else if !managedAgents.isEmpty {
+                                Text("请选择一个 agent 查看详细配置。")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-
-                                HStack(spacing: 10) {
-                                    TextField("clawhub skill slug", text: $managedSkillSlug)
-                                        .textFieldStyle(.roundedBorder)
-
-                                    Button {
-                                        installManagedSkill()
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            if isMutatingManagedAgent {
-                                                ProgressView()
-                                                    .controlSize(.small)
-                                            }
-                                            Text("安装")
-                                        }
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(isMutatingManagedAgent || managedSkillSlug.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                }
-
-                                if selectedManagedAgent.installedSkills.isEmpty {
-                                    Text("暂无已安装技能。")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                } else {
-                                    ForEach(selectedManagedAgent.installedSkills) { skill in
-                                        HStack(spacing: 8) {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(skill.name)
-                                                    .font(.subheadline)
-                                                Text(skill.path)
-                                                    .font(.caption2)
-                                                    .foregroundColor(.secondary)
-                                                    .lineLimit(1)
-                                            }
-                                            Spacer()
-                                            Button(role: .destructive) {
-                                                removeManagedSkill(skill.name)
-                                            } label: {
-                                                Text("移除")
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .disabled(isMutatingManagedAgent)
-                                        }
-                                        .padding(.vertical, 3)
-                                    }
-                                }
+                            } else {
+                                Text("当前没有可用的 OpenClaw agent 配置。")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
                         }
-                    } else if !managedAgents.isEmpty {
-                        Text("请选择一个 agent 查看详细配置。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("当前没有可用的 OpenClaw agent 配置。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    if let managedAgentMessage {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: managedAgentTone == .success ? "checkmark.circle.fill" : (managedAgentTone == .error ? "exclamationmark.triangle.fill" : "info.circle.fill"))
-                                .foregroundColor(managedAgentTone.color)
-                            Text(managedAgentMessage)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer()
-                        }
-                        .padding(10)
-                        .background(managedAgentTone.color.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                 }
+
+                if let managedAgentMessage {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: managedAgentTone == .success ? "checkmark.circle.fill" : (managedAgentTone == .error ? "exclamationmark.triangle.fill" : "info.circle.fill"))
+                            .foregroundColor(managedAgentTone.color)
+                        Text(managedAgentMessage)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(managedAgentTone.color.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
             }
+            .padding(24)
+        }
+        .onAppear {
+            refreshManagedAgentDataIfNeeded()
+        }
+    }
+
+    @ViewBuilder
+    private func labeledField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            content()
         }
     }
 
@@ -534,6 +645,7 @@ struct OpenClawConfigView: View {
             selectedManagedAgentID = nil
             managedAgentModelDraft = ""
             managedSkillSlug = ""
+            searchResults = []
             managedAgentMessage = nil
             return
         }
@@ -560,6 +672,7 @@ struct OpenClawConfigView: View {
                 selectedManagedAgentID = nil
                 managedAgentModelDraft = ""
                 managedSkillSlug = ""
+                searchResults = []
                 managedAgentMessage = message
                 managedAgentTone = .error
             }
@@ -574,6 +687,7 @@ struct OpenClawConfigView: View {
         guard let selectedManagedAgent else {
             managedAgentModelDraft = ""
             managedSkillSlug = ""
+            searchResults = []
             return
         }
 
@@ -626,60 +740,33 @@ struct OpenClawConfigView: View {
         }
     }
 
-    @ViewBuilder
-    private var detectedAgentsSection: some View {
-        let detectedAgents = appState.openClawManager.discoveryResults
+    private func searchSkillsFromClawHub() {
+        let keyword = searchKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else {
+            searchResults = []
+            return
+        }
 
-        if !detectedAgents.isEmpty {
-            GroupBox("识别结果") {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(detectedAgents) { agent in
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: agent.directoryValidated && agent.configValidated ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                                .foregroundColor(agent.directoryValidated && agent.configValidated ? .green : .orange)
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(agent.name)
-                                    .font(.headline)
-                                Text(agent.issues.isEmpty ? "目录与 openclaw.json 都已校验。" : agent.issues.joined(separator: " · "))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                if let path = agent.copiedToProjectPath {
-                                    Text(path)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, 4)
-                    }
-
-                    HStack {
-                        Spacer()
-                        Button("导入这些 Agents") {
-                            isPresentingImportSheet = true
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!appState.openClawManager.isConnected || detectedAgents.isEmpty)
-                    }
-                }
-            }
+        isSearchingSkills = true
+        appState.openClawManager.searchClawHubSkills(query: keyword, using: config) { success, message, records in
+            isSearchingSkills = false
+            searchResults = records
+            managedAgentMessage = message
+            managedAgentTone = success ? .success : .error
         }
     }
+}
 
-    private enum StatusTone {
-        case success
-        case error
-        case neutral
+private enum StatusTone {
+    case success
+    case error
+    case neutral
 
-        var color: Color {
-            switch self {
-            case .success: return .green
-            case .error: return .red
-            case .neutral: return .accentColor
-            }
+    var color: Color {
+        switch self {
+        case .success: return .green
+        case .error: return .red
+        case .neutral: return .accentColor
         }
     }
 }

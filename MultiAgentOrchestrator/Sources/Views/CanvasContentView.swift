@@ -126,12 +126,28 @@ struct CanvasContentView: View {
             provider.loadObject(ofClass: NSString.self) { item, _ in
                 if let agentName = item as? String {
                     DispatchQueue.main.async {
-                        addAgentNodeToCanvas(agentName: agentName, at: location, geometry: geometry)
+                        if agentName.hasPrefix("nodeType:") {
+                            let rawType = String(agentName.dropFirst("nodeType:".count))
+                            let nodeType = WorkflowNode.NodeType(rawValue: rawType) ?? WorkflowNode.NodeType.decoded(from: rawType)
+                            addWorkflowNodeToCanvas(type: nodeType, at: location, geometry: geometry)
+                        } else {
+                            addAgentNodeToCanvas(agentName: agentName, at: location, geometry: geometry)
+                        }
                     }
                 }
             }
         }
         return true
+    }
+
+    private func addWorkflowNodeToCanvas(type: WorkflowNode.NodeType, at location: CGPoint, geometry: GeometryProxy) {
+        let centerX = geometry.size.width / 2
+        let centerY = geometry.size.height / 2
+        let position = CGPoint(
+            x: (location.x - centerX - offset.width) / scale,
+            y: (location.y - centerY - offset.height) / scale
+        )
+        appState.addNode(type: type, position: position)
     }
 
     private func addAgentNodeToCanvas(agentName: String, at location: CGPoint, geometry: GeometryProxy) {
@@ -224,10 +240,10 @@ struct CanvasContentView: View {
         let center = adjustedPosition(node.position, geometry: geometry)
         let size: CGSize
         switch node.type {
+        case .start:
+            size = CGSize(width: 100, height: 60)
         case .agent:
             size = CGSize(width: 110, height: 65)
-        case .subflow:
-            size = CGSize(width: 130, height: 75)
         }
         return CGRect(
             x: center.x - size.width / 2,

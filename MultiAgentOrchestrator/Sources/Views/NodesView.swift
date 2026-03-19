@@ -32,7 +32,6 @@ struct NodesView: View {
                 isSelected: selectedNodeIDs.contains(node.id) || node.id == selectedNodeID,
                 agent: appState.getAgent(for: node),
                 taskStatus: getTaskStatus(for: node),
-                subflowName: getSubflowName(for: node),
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
                 onTap: { handleSingleTap(node) },
@@ -46,15 +45,6 @@ struct NodesView: View {
             .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
             .gesture(createNodeGesture(for: node))
         }
-    }
-
-    private func getSubflowName(for node: WorkflowNode) -> String? {
-        guard node.type == .subflow,
-              let subflowID = node.subflowID,
-              let subflow = appState.currentProject?.workflows.first(where: { $0.id == subflowID }) else {
-            return nil
-        }
-        return subflow.name
     }
 
     private func getTaskStatus(for node: WorkflowNode) -> TaskStatus? {
@@ -108,7 +98,7 @@ struct NodesView: View {
     }
 
     private func handleDoubleTap(_ node: WorkflowNode) {
-        if node.type == .subflow {
+        if node.type == .agent {
             onSubflowEdit?(node)
         }
     }
@@ -137,7 +127,7 @@ struct NodesView: View {
     }
 
     private func handleLongPress(_ node: WorkflowNode) {
-        if node.type == .subflow {
+        if node.type == .agent {
             onSubflowEdit?(node)
         }
     }

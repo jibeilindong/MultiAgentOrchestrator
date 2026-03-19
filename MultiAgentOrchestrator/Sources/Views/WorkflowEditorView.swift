@@ -748,8 +748,8 @@ struct AgentLibrarySidebar: View {
                     .padding(.horizontal)
                 
                 HStack(spacing: 8) {
-                    NodeTypeButton(icon: "circle", label: LocalizedString.agentNode, type: .agent)
-                    NodeTypeButton(icon: "arrow.down.doc.fill", label: LocalizedString.subflow, type: .subflow)
+                    NodeTypeButton(icon: "play.circle.fill", label: LocalizedString.startNode, type: .start)
+                    NodeTypeButton(icon: "person.circle.fill", label: LocalizedString.agentNode, type: .agent)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 8)
@@ -856,7 +856,7 @@ struct NodeTypeButton: View {
         .padding(8)
         .background(Color(.controlBackgroundColor))
         .cornerRadius(6)
-        .onDrag { NSItemProvider(object: type.rawValue as NSString) }
+        .onDrag { NSItemProvider(object: "nodeType:\(type.rawValue)" as NSString) }
     }
 }
 

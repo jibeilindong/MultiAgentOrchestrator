@@ -106,7 +106,7 @@ struct PermissionsView: View {
             loadAgents()
             initializeMatrix()
         }
-        .onChange(of: appState.currentProject?.agents) { _ in
+        .onChange(of: appState.currentProject?.agents) { _, _ in
             loadAgents()
             initializeMatrix()
         }

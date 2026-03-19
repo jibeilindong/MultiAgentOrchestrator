@@ -613,7 +613,9 @@ class AppState: ObservableObject {
         var workflow = Workflow(name: "Offline Template Workflow")
         var x: CGFloat = 160
         let y: CGFloat = 220
-        var previousNodeID: UUID?
+        let startNode = makeStartNode(position: CGPoint(x: 80, y: y))
+        workflow.nodes.append(startNode)
+        var previousNodeID: UUID? = startNode.id
 
         for agent in agents {
             var node = WorkflowNode(type: .agent)
@@ -633,16 +635,11 @@ class AppState: ObservableObject {
         return workflow
     }
 
-    private func makeOfflineTemplatePermissions(for agents: [Agent]) -> [Permission] {
-        guard agents.count > 1 else { return [] }
-
-        var permissions: [Permission] = []
-        for source in agents {
-            for target in agents where source.id != target.id {
-                permissions.append(Permission(fromAgentID: source.id, toAgentID: target.id, permissionType: .allow))
-            }
-        }
-        return permissions
+    private func makeStartNode(position: CGPoint = .zero) -> WorkflowNode {
+        var node = WorkflowNode(type: .start)
+        node.position = position
+        node.title = "Start"
+        return node
     }
 
     func detectOpenClawAgents(using config: OpenClawConfig? = nil, completion: ((Bool, String, [String]) -> Void)? = nil) {
@@ -896,7 +893,9 @@ class AppState: ObservableObject {
     func ensureMainWorkflow() -> Workflow? {
         guard var project = currentProject else { return nil }
         if project.workflows.isEmpty {
-            project.workflows.append(Workflow(name: "Main Workflow"))
+            var workflow = Workflow(name: "Main Workflow")
+            workflow.nodes.append(makeStartNode())
+            project.workflows.append(workflow)
             project.updatedAt = Date()
             currentProject = project
         }
@@ -957,7 +956,14 @@ class AppState: ObservableObject {
 
     func addNode(type: WorkflowNode.NodeType, position: CGPoint) {
         switch type {
-        case .agent, .subflow:
+        case .start:
+            updateMainWorkflow { workflow in
+                guard !workflow.nodes.contains(where: { $0.type == .start }) else { return }
+                var node = WorkflowNode(type: .start)
+                node.position = position
+                workflow.nodes.insert(node, at: 0)
+            }
+        case .agent:
             updateMainWorkflow { workflow in
                 var node = WorkflowNode(type: type)
                 node.position = position

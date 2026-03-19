@@ -13,7 +13,6 @@ struct NodeView: View {
     let isSelected: Bool
     let agent: Agent?
     let taskStatus: TaskStatus?
-    let subflowName: String?
     
     // 连接模式状态
     var isConnectingMode: Bool = false
@@ -55,18 +54,11 @@ struct NodeView: View {
                 Image(systemName: nodeTypeIcon)
                     .font(.title3)
                     .foregroundColor(nodeColor)
-                
-                if let subflowName = subflowName {
-                    Text(subflowName)
-                        .font(.system(size: 10 * textScale))
-                        .lineLimit(1)
-                        .foregroundColor(textColor)
-                } else {
-                    Text(nodeTitle)
-                        .font(.system(size: 12 * textScale))
-                        .lineLimit(1)
-                        .foregroundColor(textColor)
-                }
+
+                Text(nodeTitle)
+                    .font(.system(size: 12 * textScale))
+                    .lineLimit(1)
+                    .foregroundColor(textColor)
             }
 
             // 连接指示器（连接模式下显示）
@@ -84,16 +76,6 @@ struct NodeView: View {
                 .cornerRadius(4)
             }
             
-            // 子流程指示器
-            if node.type == .subflow {
-                HStack(spacing: 2) {
-                    Image(systemName: "arrow.down.doc")
-                        .font(.system(size: 10 * textScale))
-                    Text(LocalizedString.subflow)
-                        .font(.system(size: 10 * textScale))
-                }
-                .foregroundColor(.purple)
-            }
         }
         .frame(width: nodeWidth, height: nodeHeight)
         .background(
@@ -158,8 +140,8 @@ struct NodeView: View {
 
     private var nodeTypeIcon: String {
         switch node.type {
+        case .start: return "play.circle.fill"
         case .agent: return "person.circle.fill"
-        case .subflow: return "arrow.down.doc.fill"
         }
     }
     
@@ -172,8 +154,8 @@ struct NodeView: View {
         }
         
         switch node.type {
+        case .start: return "Start"
         case .agent: return "Agent"
-        case .subflow: return "Subflow"
         }
     }
     
@@ -182,8 +164,8 @@ struct NodeView: View {
             return .accentColor
         }
         switch node.type {
+        case .start: return .orange
         case .agent: return accentColor ?? .blue
-        case .subflow: return .purple
         }
     }
     
@@ -192,8 +174,8 @@ struct NodeView: View {
             return nodeColor.opacity(0.15)
         }
         switch node.type {
+        case .start: return Color.orange.opacity(0.12)
         case .agent: return nodeColor.opacity(0.1)
-        case .subflow: return Color.purple.opacity(0.08)
         }
     }
     
@@ -212,14 +194,14 @@ struct NodeView: View {
     
     private var nodeWidth: CGFloat {
         switch node.type {
+        case .start: return 100
         case .agent: return 110
-        case .subflow: return 130
         }
     }
 
     private var nodeHeight: CGFloat {
         switch node.type {
-        case .subflow: return 75
+        case .start: return 60
         case .agent: return 65
         }
     }

@@ -160,22 +160,22 @@ struct NodePropertiesView: View {
     
     private func nodeTypeIcon(_ type: WorkflowNode.NodeType) -> String {
         switch type {
+        case .start: return "play.circle.fill"
         case .agent: return "person.circle.fill"
-        case .subflow: return "square.stack.3d.up"
         }
     }
     
     private func nodeTypeColor(_ type: WorkflowNode.NodeType) -> Color {
         switch type {
+        case .start: return .orange
         case .agent: return .blue
-        case .subflow: return .purple
         }
     }
     
     private func nodeTypeName(_ type: WorkflowNode.NodeType) -> String {
         switch type {
+        case .start: return "Start Node"
         case .agent: return "Agent Node"
-        case .subflow: return "Subflow Node"
         }
     }
 }
@@ -223,7 +223,7 @@ struct AgentPropertiesView: View {
                             }
                         }
                     }
-                    .onChange(of: selectedAgentID) { newAgentID in
+                    .onChange(of: selectedAgentID) { _, newAgentID in
                         if let agentID = newAgentID,
                            let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
                             agentName = agent.name
@@ -541,7 +541,7 @@ struct ProjectPropertiesView: View {
                                 .onAppear {
                                     projectName = appState.currentProject?.name ?? ""
                                 }
-                                .onChange(of: projectName) { newValue in
+                                .onChange(of: projectName) { _, newValue in
                                     appState.currentProject?.name = newValue
                                 }
                         }

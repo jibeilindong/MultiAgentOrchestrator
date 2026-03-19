@@ -227,7 +227,7 @@ class ImportExportService {
             for nodeExport in workflowExport.nodes {
                 let newNodeID = UUID()
                 nodeIDMapping[nodeExport.id] = newNodeID
-                var node = WorkflowNode(type: WorkflowNode.NodeType(rawValue: nodeExport.type) ?? .agent)
+                var node = WorkflowNode(type: WorkflowNode.NodeType(rawValue: nodeExport.type) ?? WorkflowNode.NodeType.decoded(from: nodeExport.type))
                 node.agentID = nodeExport.agentID.flatMap { idMapping[$0] }
                 node.position = nodeExport.position
                 node.title = nodeExport.title ?? ""
@@ -264,7 +264,7 @@ class ImportExportService {
         // 转换任务
         var tasks: [Task] = []
         for taskExport in (arch.tasks ?? []) {
-            var task = Task(
+            let task = Task(
                 title: taskExport.title,
                 description: taskExport.description,
                 status: TaskStatus(rawValue: taskExport.status) ?? .todo,
