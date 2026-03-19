@@ -232,6 +232,7 @@ struct WorkbenchConversationView: View {
                     }
                     .padding()
                 }
+                .textSelection(.enabled)
                 .onChange(of: workbenchMessages.count) { _, _ in
                     if let lastID = workbenchMessages.last?.id {
                         withAnimation {
@@ -257,6 +258,9 @@ struct WorkbenchConversationView: View {
                 )
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(3...8)
+                .onSubmit {
+                    publishPrompt()
+                }
 
                 HStack {
                     Text(selectedWorkflow?.name ?? "未选择工作流")
@@ -274,6 +278,7 @@ struct WorkbenchConversationView: View {
                             || !hasExecutableWorkflow
                     )
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
                 }
             }
             .padding()
@@ -305,7 +310,7 @@ struct WorkbenchConversationView: View {
                         ForEach(workbenchTasks.prefix(12)) { task in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
-                                    Text(task.title)
+                                    MarkdownText(task.title)
                                         .font(.subheadline)
                                         .fontWeight(.medium)
                                         .lineLimit(1)
@@ -320,7 +325,7 @@ struct WorkbenchConversationView: View {
                                         .foregroundColor(.secondary)
                                 }
 
-                                Text(task.description)
+                                MarkdownText(task.description)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .lineLimit(3)
@@ -333,6 +338,7 @@ struct WorkbenchConversationView: View {
                 }
                 .padding()
             }
+            .textSelection(.enabled)
         }
     }
 
@@ -397,7 +403,7 @@ private struct WorkbenchMessageBubble: View {
                 if !isUserMessage { Spacer() }
             }
 
-            Text(message.content)
+            MarkdownText(message.content)
                 .font(.body)
                 .padding(12)
                 .frame(maxWidth: 560, alignment: isUserMessage ? .trailing : .leading)
@@ -416,6 +422,31 @@ private struct WorkbenchMessageBubble: View {
             .font(.caption2)
         }
         .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
+    }
+}
+
+private struct MarkdownText: View {
+    let content: String
+
+    init(_ content: String) {
+        self.content = content
+    }
+
+    var body: some View {
+        Text(parsed)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var parsed: AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        if let attributed = try? AttributedString(markdown: content, options: options) {
+            return attributed
+        }
+        return AttributedString(content)
     }
 }
 
