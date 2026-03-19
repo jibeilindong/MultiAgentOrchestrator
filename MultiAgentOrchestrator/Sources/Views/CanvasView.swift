@@ -269,7 +269,9 @@ struct CanvasView: View {
                         selectedEdgeID = nil
                         connectingFromNode = nil
                         tempConnectionEnd = nil
-                        connectFromAgentID = nil
+                        if !isConnectMode {
+                            connectFromAgentID = nil
+                        }
                     }
             )
         )

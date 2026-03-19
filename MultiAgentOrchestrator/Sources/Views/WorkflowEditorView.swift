@@ -627,7 +627,9 @@ struct ArchitectureView: View {
         if isConnectMode {
             if let fromID = connectFromAgentID {
                 // Create connection from source to this node
-                self.createConnection(from: fromID, to: node.id)
+                if let sourceNodeID = resolveAgentNodeID(from: fromID) {
+                    self.createConnection(from: sourceNodeID, to: node.id)
+                }
                 connectFromAgentID = nil
             } else {
                 // Set as source node
@@ -639,6 +641,20 @@ struct ArchitectureView: View {
     // 创建连接
     private func createConnection(from: UUID, to: UUID) {
         appState.connectNodes(from: from, to: to, bidirectional: connectionType == .bidirectional)
+    }
+
+    private func resolveAgentNodeID(from identifier: UUID) -> UUID? {
+        guard let workflow = appState.currentProject?.workflows.first else { return nil }
+
+        if workflow.nodes.contains(where: { $0.id == identifier && $0.type == .agent }) {
+            return identifier
+        }
+
+        if let node = workflow.nodes.first(where: { $0.agentID == identifier && $0.type == .agent }) {
+            return node.id
+        }
+
+        return nil
     }
 }
 

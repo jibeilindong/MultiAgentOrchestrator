@@ -17,6 +17,108 @@ struct MonitoringDashboardView: View {
     private var recentTasks: [Task] {
         appState.taskManager.tasks.sorted { $0.createdAt > $1.createdAt }.prefix(8).map { $0 }
     }
+    private var workflowConversationMessages: [Message] {
+        guard let project else { return [] }
+        let agentIDs = Set(project.agents.map(\.id))
+        return appState.messageManager.messages
+            .filter { message in
+                agentIDs.contains(message.fromAgentID) && agentIDs.contains(message.toAgentID)
+            }
+            .sorted { $0.timestamp < $1.timestamp }
+    }
+    private var conversationTotalCount: Int {
+        workflowConversationMessages.count
+    }
+    private var agentConversationRows: [AgentConversationRow] {
+        guard let project else { return [] }
+        let messages = workflowConversationMessages
+
+        return project.agents.map { agent in
+            let outgoingCount = messages.filter {
+                $0.fromAgentID == agent.id && $0.toAgentID != agent.id
+            }.count
+            let incomingCount = messages.filter {
+                $0.toAgentID == agent.id && $0.fromAgentID != agent.id
+            }.count
+            let state = onlineState(for: agent, in: project)
+            let skillCount = Set(agent.capabilities.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty }).count
+            let fileCount = filesOwnedCount(for: agent)
+
+            return AgentConversationRow(
+                agent: agent,
+                state: state,
+                outgoingCount: outgoingCount,
+                incomingCount: incomingCount,
+                skillCount: skillCount,
+                fileCount: fileCount
+            )
+        }
+        .sorted { $0.agent.name.localizedCaseInsensitiveCompare($1.agent.name) == .orderedAscending }
+    }
+    private var modelTokenRows: [ModelTokenUsageRow] {
+        guard let project else { return [] }
+
+        let agentLookup = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0) })
+        var usageByModel: [String: (input: Int, output: Int)] = [:]
+
+        for message in workflowConversationMessages {
+            if message.metadata["kind"] == "system" {
+                continue
+            }
+
+            let tokens = estimatedTokens(for: message)
+            guard tokens > 0 else { continue }
+
+            let fromModel = agentLookup[message.fromAgentID].map(normalizedModelName(for:))
+            let toModel = agentLookup[message.toAgentID].map(normalizedModelName(for:))
+            let role = message.metadata["role"]?.lowercased()
+
+            if message.fromAgentID == message.toAgentID {
+                guard let model = toModel ?? fromModel else { continue }
+                var bucket = usageByModel[model, default: (0, 0)]
+                if role == "assistant" || message.metadata["kind"] == "output" {
+                    bucket.output += tokens
+                } else {
+                    bucket.input += tokens
+                }
+                usageByModel[model] = bucket
+                continue
+            }
+
+            if let fromModel {
+                var bucket = usageByModel[fromModel, default: (0, 0)]
+                bucket.output += tokens
+                usageByModel[fromModel] = bucket
+            }
+
+            if let toModel {
+                var bucket = usageByModel[toModel, default: (0, 0)]
+                bucket.input += tokens
+                usageByModel[toModel] = bucket
+            }
+        }
+
+        return usageByModel
+            .map { model, usage in
+                ModelTokenUsageRow(
+                    model: model,
+                    inputTokens: usage.input,
+                    outputTokens: usage.output
+                )
+            }
+            .sorted { $0.model.localizedCaseInsensitiveCompare($1.model) == .orderedAscending }
+    }
+    private var totalTokenCount: Int {
+        modelTokenRows.reduce(0) { $0 + $1.totalTokens }
+    }
+    private var activeAgentCount: Int {
+        agentConversationRows.filter { $0.state == .active }.count
+    }
+    private var idleAgentCount: Int {
+        max(agentConversationRows.count - activeAgentCount, 0)
+    }
 
     var body: some View {
         Group {
@@ -30,6 +132,7 @@ struct MonitoringDashboardView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         overviewSection
+                        conversationMonitoringSection
                         executionSection
                         interventionSection
                         taskSection
@@ -110,6 +213,122 @@ struct MonitoringDashboardView: View {
                     Text("当前项目包含 \(workflow.nodes.filter { $0.type == .agent }.count) 个执行节点、\(workflow.edges.count) 条通信线、\(workflow.boundaries.count) 个文件边界。")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var conversationMonitoringSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("对话监控")
+                .font(.headline)
+
+            HStack(spacing: 16) {
+                monitoringCard(
+                    title: "总对话数量",
+                    value: "\(conversationTotalCount)",
+                    detail: "当前工作流上下文内累计消息",
+                    color: .blue
+                )
+                monitoringCard(
+                    title: "在线状态",
+                    value: "活跃 \(activeAgentCount) / 空闲 \(idleAgentCount)",
+                    detail: "按任务执行态与 runtime 状态判定",
+                    color: activeAgentCount > 0 ? .green : .secondary
+                )
+                monitoringCard(
+                    title: "模型 Token",
+                    value: "\(totalTokenCount)",
+                    detail: "\(modelTokenRows.count) 个模型的输入+输出估算",
+                    color: .purple
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Agent 发言/接收/技能/文件")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+
+                if agentConversationRows.isEmpty {
+                    Text("当前项目没有可监控的 Agent。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(agentConversationRows) { row in
+                        HStack(spacing: 10) {
+                            Text(row.agent.name)
+                                .font(.subheadline)
+                                .frame(width: 140, alignment: .leading)
+
+                            monitoringPill(title: row.state.title, color: row.state.color)
+                                .frame(width: 72, alignment: .leading)
+
+                            Text("发言 \(row.outgoingCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 68, alignment: .leading)
+
+                            Text("接收 \(row.incomingCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 68, alignment: .leading)
+
+                            Text("技能 \(row.skillCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 62, alignment: .leading)
+
+                            Text("文件 \(row.fileCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 72, alignment: .leading)
+
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("模型 Token 明细")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+
+                if modelTokenRows.isEmpty {
+                    Text("当前还没有可统计的模型 token 消耗。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(modelTokenRows) { row in
+                        HStack {
+                            Text(row.model)
+                                .font(.caption)
+                                .frame(width: 180, alignment: .leading)
+
+                            Text("输入 \(row.inputTokens)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 86, alignment: .leading)
+
+                            Text("输出 \(row.outputTokens)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 86, alignment: .leading)
+
+                            Text("总计 \(row.totalTokens)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 84, alignment: .leading)
+
+                            Spacer()
+                        }
+                    }
                 }
             }
             .padding()
@@ -329,6 +548,128 @@ struct MonitoringDashboardView: View {
         case .error: return .red
         case .success: return .green
         }
+    }
+
+    private func onlineState(for agent: Agent, in project: MAProject) -> AgentOnlineState {
+        let runtimeState = project.runtimeState.agentStates[agent.id.uuidString]?.lowercased() ?? ""
+        let openClawState = appState.openClawManager.activeAgents[agent.id]?.status.lowercased() ?? ""
+        let hasRunningTask = appState.taskManager.tasks.contains {
+            $0.assignedAgentID == agent.id && $0.status == .inProgress
+        }
+
+        let isActive = hasRunningTask
+            || runtimeState.contains("running")
+            || runtimeState.contains("queued")
+            || runtimeState.contains("active")
+            || runtimeState.contains("reload")
+            || openClawState.contains("running")
+            || openClawState.contains("active")
+            || openClawState.contains("reload")
+
+        return isActive ? .active : .idle
+    }
+
+    private func filesOwnedCount(for agent: Agent) -> Int {
+        var roots: [URL] = []
+
+        if let memoryPath = agent.openClawDefinition.memoryBackupPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !memoryPath.isEmpty {
+            roots.append(URL(fileURLWithPath: memoryPath, isDirectory: true))
+        }
+
+        for task in appState.taskManager.tasks(for: agent.id) {
+            if let workspaceURL = appState.absoluteWorkspaceURL(for: task.id) {
+                roots.append(workspaceURL)
+            }
+        }
+
+        let uniqueRoots = Dictionary(uniqueKeysWithValues: roots.map { ($0.standardizedFileURL.path, $0) })
+        return uniqueRoots.values.reduce(0) { partial, root in
+            partial + regularFileCount(at: root)
+        }
+    }
+
+    private func regularFileCount(at rootURL: URL) -> Int {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return 0
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return 0
+        }
+
+        var count = 0
+        for case let fileURL as URL in enumerator {
+            if let isRegular = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile,
+               isRegular == true {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func normalizedModelName(for agent: Agent) -> String {
+        let value = agent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? "Unknown" : value
+    }
+
+    private func estimatedTokens(for message: Message) -> Int {
+        if let tokenText = message.metadata["tokenEstimate"],
+           let value = Int(tokenText),
+           value >= 0 {
+            return value
+        }
+        return estimatedTokens(for: message.content)
+    }
+
+    private func estimatedTokens(for text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        let scalarCount = trimmed.unicodeScalars.count
+        return max(1, Int(ceil(Double(scalarCount) / 4.0)))
+    }
+
+    private enum AgentOnlineState {
+        case active
+        case idle
+
+        var title: String {
+            switch self {
+            case .active: return "活跃"
+            case .idle: return "空闲"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .active: return .green
+            case .idle: return .secondary
+            }
+        }
+    }
+
+    private struct AgentConversationRow: Identifiable {
+        var id: UUID { agent.id }
+        let agent: Agent
+        let state: AgentOnlineState
+        let outgoingCount: Int
+        let incomingCount: Int
+        let skillCount: Int
+        let fileCount: Int
+    }
+
+    private struct ModelTokenUsageRow: Identifiable {
+        var id: String { model }
+        let model: String
+        let inputTokens: Int
+        let outputTokens: Int
+        var totalTokens: Int { inputTokens + outputTokens }
     }
 }
 

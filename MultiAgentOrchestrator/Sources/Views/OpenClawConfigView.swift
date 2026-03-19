@@ -411,7 +411,7 @@ struct OpenClawAgentManagementView: View {
                                     )) {
                                         Text("请选择 Agent").tag(nil as String?)
                                         ForEach(managedAgents) { agent in
-                                            Text("\(agent.name) (\(agent.id))").tag(Optional(agent.id))
+                                            Text(agentPickerLabel(for: agent)).tag(Optional(agent.id))
                                         }
                                     }
                                     .pickerStyle(.menu)
@@ -437,8 +437,11 @@ struct OpenClawAgentManagementView: View {
                                 Divider()
 
                                 VStack(alignment: .leading, spacing: 10) {
-                                    infoRow(label: "Agent ID", value: selectedManagedAgent.id)
-                                    infoRow(label: "配置索引", value: "\(selectedManagedAgent.configIndex)")
+                                    infoRow(label: "项目 Agent", value: selectedManagedAgent.name)
+                                    infoRow(label: "OpenClaw ID", value: selectedManagedAgent.targetIdentifier)
+                                    if let configIndex = selectedManagedAgent.configIndex {
+                                        infoRow(label: "配置索引", value: "\(configIndex)")
+                                    }
                                     infoRow(label: "Workspace", value: selectedManagedAgent.workspacePath ?? "未配置")
                                     infoRow(label: "Agent Dir", value: selectedManagedAgent.agentDirPath ?? "未配置")
                                     infoRow(label: "当前 Model", value: selectedManagedAgent.modelIdentifier.isEmpty ? "未设置" : selectedManagedAgent.modelIdentifier)
@@ -638,6 +641,13 @@ struct OpenClawAgentManagementView: View {
         }
     }
 
+    private func agentPickerLabel(for agent: OpenClawManager.ManagedAgentRecord) -> String {
+        if agent.name == agent.targetIdentifier {
+            return agent.name
+        }
+        return "\(agent.name) -> \(agent.targetIdentifier)"
+    }
+
     private func refreshManagedAgentDataIfNeeded() {
         guard canManageOpenClawAgents else {
             managedAgents = []
@@ -652,7 +662,7 @@ struct OpenClawAgentManagementView: View {
 
         isRefreshingManagedAgents = true
 
-        appState.openClawManager.loadManagedAgents(using: config) { success, message, records in
+        appState.openClawManager.loadManagedAgents(for: appState.currentProject, using: config) { success, message, records in
             isRefreshingManagedAgents = false
             if success {
                 managedAgents = records
@@ -698,9 +708,33 @@ struct OpenClawAgentManagementView: View {
     private func applyManagedAgentModel() {
         guard let selectedManagedAgent else { return }
 
+        let trimmedModel = managedAgentModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty else { return }
+
+        guard let projectAgentID = selectedManagedAgent.projectAgentID else {
+            managedAgentMessage = "未定位到对应的项目 Agent。"
+            managedAgentTone = .error
+            return
+        }
+
+        if selectedManagedAgent.configIndex == nil {
+            appState.updateAgentOpenClawDefinition(for: projectAgentID) { definition in
+                definition.modelIdentifier = trimmedModel
+            }
+            managedAgentMessage = "\(selectedManagedAgent.name) 的项目 model 已更新为 \(trimmedModel)，但当前未匹配到可写回的 OpenClaw 运行时配置。"
+            managedAgentTone = .success
+            refreshManagedAgentDataIfNeeded()
+            return
+        }
+
         isMutatingManagedAgent = true
-        appState.openClawManager.updateManagedAgentModel(selectedManagedAgent, model: managedAgentModelDraft, using: config) { success, message in
+        appState.openClawManager.updateManagedAgentModel(selectedManagedAgent, model: trimmedModel, using: config) { success, message in
             isMutatingManagedAgent = false
+            if success {
+                appState.updateAgentOpenClawDefinition(for: projectAgentID) { definition in
+                    definition.modelIdentifier = trimmedModel
+                }
+            }
             managedAgentMessage = message
             managedAgentTone = success ? .success : .error
             if success {

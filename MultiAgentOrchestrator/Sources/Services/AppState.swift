@@ -1219,6 +1219,21 @@ class AppState: ObservableObject {
         }
     }
 
+    func updateAgentOpenClawDefinition(
+        for agentID: UUID,
+        mutate: (inout OpenClawAgentDefinition) -> Void
+    ) {
+        guard var project = currentProject,
+              let index = project.agents.firstIndex(where: { $0.id == agentID }) else { return }
+
+        mutate(&project.agents[index].openClawDefinition)
+        project.agents[index].updatedAt = Date()
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        persistCurrentProjectSilently()
+    }
+
     func reloadAgent(_ agentID: UUID) {
         guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return }
         openClawManager.reloadAgent(agent)
@@ -1331,8 +1346,10 @@ class AppState: ObservableObject {
         userMessage.status = .read
         userMessage.metadata["channel"] = "workbench"
         userMessage.metadata["role"] = "user"
+        userMessage.metadata["kind"] = "input"
         userMessage.metadata["workflowID"] = workflow.id.uuidString
         userMessage.metadata["taskID"] = task.id.uuidString
+        userMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: trimmedPrompt))
         messageManager.appendMessage(userMessage)
 
         var queuedMessage = Message(
@@ -1344,6 +1361,7 @@ class AppState: ObservableObject {
         queuedMessage.status = .read
         queuedMessage.metadata["channel"] = "workbench"
         queuedMessage.metadata["role"] = "assistant"
+        queuedMessage.metadata["kind"] = "system"
         queuedMessage.metadata["workflowID"] = workflow.id.uuidString
         queuedMessage.metadata["taskID"] = task.id.uuidString
         messageManager.appendMessage(queuedMessage)
@@ -1393,9 +1411,11 @@ class AppState: ObservableObject {
             responseMessage.status = .read
             responseMessage.metadata["channel"] = "workbench"
             responseMessage.metadata["role"] = "assistant"
+            responseMessage.metadata["kind"] = "output"
             responseMessage.metadata["workflowID"] = workflow.id.uuidString
             responseMessage.metadata["taskID"] = task.id.uuidString
             responseMessage.metadata["entryReply"] = "true"
+            responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: responseText))
             self.messageManager.appendMessage(responseMessage)
 
             if var mutableProject = self.currentProject {
@@ -1677,6 +1697,13 @@ class AppState: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? prompt
         guard !firstLine.isEmpty else { return "Workbench Task" }
         return firstLine.count > 36 ? String(firstLine.prefix(36)) + "..." : firstLine
+    }
+
+    private func estimatedTokenCount(for text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        let scalarCount = trimmed.unicodeScalars.count
+        return max(1, Int(ceil(Double(scalarCount) / 4.0)))
     }
 
     func setToolbarItem(_ item: ContentToolbarItem, visible: Bool) {

@@ -43,8 +43,10 @@ class OpenClawManager: ObservableObject {
 
     struct ManagedAgentRecord: Identifiable, Hashable {
         var id: String
-        var configIndex: Int
+        var projectAgentID: UUID?
+        var configIndex: Int?
         var name: String
+        var targetIdentifier: String
         var agentDirPath: String?
         var workspacePath: String?
         var modelIdentifier: String
@@ -52,16 +54,20 @@ class OpenClawManager: ObservableObject {
 
         init(
             id: String,
-            configIndex: Int,
+            projectAgentID: UUID? = nil,
+            configIndex: Int? = nil,
             name: String,
+            targetIdentifier: String,
             agentDirPath: String? = nil,
             workspacePath: String? = nil,
             modelIdentifier: String = "",
             installedSkills: [ManagedAgentSkillRecord] = []
         ) {
             self.id = id
+            self.projectAgentID = projectAgentID
             self.configIndex = configIndex
             self.name = name
+            self.targetIdentifier = targetIdentifier
             self.agentDirPath = agentDirPath
             self.workspacePath = workspacePath
             self.modelIdentifier = modelIdentifier
@@ -432,10 +438,16 @@ class OpenClawManager: ObservableObject {
     }
 
     func loadManagedAgents(
+        for project: MAProject?,
         using config: OpenClawConfig? = nil,
         completion: @escaping (Bool, String, [ManagedAgentRecord]) -> Void
     ) {
         let resolvedConfig = config ?? self.config
+
+        guard let project else {
+            completion(false, "请先创建或打开项目，再管理 target agents。", [])
+            return
+        }
 
         guard resolvedConfig.deploymentKind != .remoteServer else {
             completion(false, "远程网关模式下暂不支持直接修改 OpenClaw agent 配置。", [])
@@ -443,25 +455,34 @@ class OpenClawManager: ObservableObject {
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
+            var runtimeRecords: [ManagedAgentRecord] = []
+            var runtimeWarning: String?
+
             do {
                 let result = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
-                guard result.terminationStatus == 0 else {
+                if result.terminationStatus == 0 {
+                    runtimeRecords = self.parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
+                } else {
                     let fallback = String(data: result.standardError, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    throw NSError(
-                        domain: "OpenClawManager",
-                        code: Int(result.terminationStatus),
-                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw agents 失败" : fallback]
-                    )
-                }
-
-                let records = self.parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
-                DispatchQueue.main.async {
-                    completion(true, "已加载 \(records.count) 个 OpenClaw agents。", records)
+                    runtimeWarning = fallback.isEmpty ? "读取 OpenClaw agents 失败" : fallback
                 }
             } catch {
-                DispatchQueue.main.async {
-                    completion(false, error.localizedDescription, [])
+                runtimeWarning = error.localizedDescription
+            }
+
+            let records = self.mergeManagedAgents(for: project, runtimeRecords: runtimeRecords, using: resolvedConfig)
+            DispatchQueue.main.async {
+                if records.isEmpty, let runtimeWarning {
+                    completion(false, runtimeWarning, [])
+                } else {
+                    let message: String
+                    if let runtimeWarning, !runtimeWarning.isEmpty {
+                        message = "已加载 \(records.count) 个项目 target agents，运行时信息部分不可用：\(runtimeWarning)"
+                    } else {
+                        message = "已加载 \(records.count) 个项目 target agents。"
+                    }
+                    completion(true, message, records)
                 }
             }
         }
@@ -524,11 +545,16 @@ class OpenClawManager: ObservableObject {
             return
         }
 
+        guard let configIndex = agent.configIndex else {
+            completion(false, "未找到 \(agent.name) 对应的 OpenClaw 运行时配置，无法直接写回。")
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let result = try self.runOpenClawCommand(
                     using: resolvedConfig,
-                    arguments: ["config", "set", "agents.list[\(agent.configIndex)].model", trimmedModel]
+                    arguments: ["config", "set", "agents.list[\(configIndex)].model", trimmedModel]
                 )
 
                 guard result.terminationStatus == 0 else {
@@ -777,15 +803,16 @@ class OpenClawManager: ObservableObject {
 
     private func parseManagedAgents(from data: Data, using config: OpenClawConfig) -> [ManagedAgentRecord] {
         guard
-            let jsonObject = try? JSONSerialization.jsonObject(with: data),
+            let jsonData = extractJSONPayload(from: data),
+            let jsonObject = try? JSONSerialization.jsonObject(with: jsonData),
             let dictionaries = dictionaryArray(in: jsonObject)
         else {
             let names = parsePlainTextList(from: data)
             return names.enumerated().map { index, name in
                 ManagedAgentRecord(
                     id: name,
-                    configIndex: index,
                     name: name,
+                    targetIdentifier: name,
                     modelIdentifier: ""
                 )
             }
@@ -807,6 +834,7 @@ class OpenClawManager: ObservableObject {
                 id: id,
                 configIndex: index,
                 name: name,
+                targetIdentifier: id,
                 agentDirPath: agentDirPath,
                 workspacePath: workspacePath,
                 modelIdentifier: modelIdentifier,
@@ -873,11 +901,14 @@ class OpenClawManager: ObservableObject {
     }
 
     private func parsePlainTextList(from data: Data) -> [String] {
-        let output = String(data: data, encoding: .utf8) ?? ""
+        let output = String(data: data, encoding: .utf8)?
+            .replacingOccurrences(of: "\\n", with: "\n") ?? ""
         return output
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { line in
+                !line.isEmpty && !isDiagnosticOutputLine(line)
+            }
     }
 
     private func parseClawHubSkillRecords(from data: Data) -> [ClawHubSkillRecord] {
@@ -948,6 +979,197 @@ class OpenClawManager: ObservableObject {
             for key in ["agents", "list", "items", "data"] {
                 if let nested = dictionary[key], let nestedArray = dictionaryArray(in: nested) {
                     return nestedArray
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func mergeManagedAgents(
+        for project: MAProject,
+        runtimeRecords: [ManagedAgentRecord],
+        using config: OpenClawConfig
+    ) -> [ManagedAgentRecord] {
+        let detectedRecords = project.openClaw.detectedAgents.isEmpty ? discoveryResults : project.openClaw.detectedAgents
+
+        return project.agents.map { projectAgent in
+            let candidateKeys = managedAgentLookupKeys(for: projectAgent)
+            let runtimeRecord = runtimeRecords.first { runtime in
+                candidateKeys.contains(normalizeAgentKey(runtime.targetIdentifier))
+                    || candidateKeys.contains(normalizeAgentKey(runtime.name))
+            }
+            let detectedRecord = detectedRecords.first { record in
+                candidateKeys.contains(normalizeAgentKey(record.name))
+            }
+
+            let resolvedPaths = resolveManagedAgentPaths(
+                for: projectAgent,
+                runtimeRecord: runtimeRecord,
+                detectedRecord: detectedRecord
+            )
+
+            let runtimeModel = runtimeRecord?.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let projectModel = projectAgent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            let modelIdentifier = runtimeModel.isEmpty ? projectModel : runtimeModel
+
+            return ManagedAgentRecord(
+                id: projectAgent.id.uuidString,
+                projectAgentID: projectAgent.id,
+                configIndex: runtimeRecord?.configIndex,
+                name: projectAgent.name,
+                targetIdentifier: normalizedTargetIdentifier(for: projectAgent),
+                agentDirPath: resolvedPaths.agentDirPath,
+                workspacePath: resolvedPaths.workspacePath,
+                modelIdentifier: modelIdentifier,
+                installedSkills: loadInstalledSkills(
+                    forWorkspacePath: resolvedPaths.workspacePath,
+                    using: config
+                )
+            )
+        }
+    }
+
+    private func managedAgentLookupKeys(for agent: Agent) -> Set<String> {
+        var keys = Set<String>()
+        let identifier = normalizedTargetIdentifier(for: agent)
+        if !identifier.isEmpty {
+            keys.insert(normalizeAgentKey(identifier))
+        }
+        let normalizedName = normalizeAgentKey(agent.name)
+        if !normalizedName.isEmpty {
+            keys.insert(normalizedName)
+        }
+        return keys
+    }
+
+    private func normalizedTargetIdentifier(for agent: Agent) -> String {
+        let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        return identifier.isEmpty ? agent.name : identifier
+    }
+
+    private func resolveManagedAgentPaths(
+        for projectAgent: Agent,
+        runtimeRecord: ManagedAgentRecord?,
+        detectedRecord: ProjectOpenClawDetectedAgentRecord?
+    ) -> (agentDirPath: String?, workspacePath: String?) {
+        let projectPaths = resolveProjectManagedAgentPaths(for: projectAgent, detectedRecord: detectedRecord)
+        let workspacePath = firstNonEmptyPath(
+            runtimeRecord?.workspacePath,
+            projectPaths.workspacePath,
+            detectedRecord?.workspacePath
+        )
+        let agentDirPath = firstNonEmptyPath(
+            runtimeRecord?.agentDirPath,
+            projectPaths.agentDirPath,
+            detectedRecord?.directoryPath
+        )
+        return (agentDirPath, workspacePath)
+    }
+
+    private func resolveProjectManagedAgentPaths(
+        for projectAgent: Agent,
+        detectedRecord: ProjectOpenClawDetectedAgentRecord?
+    ) -> (agentDirPath: String?, workspacePath: String?) {
+        if let memoryBackupPath = firstNonEmptyPath(projectAgent.openClawDefinition.memoryBackupPath) {
+            let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
+            let agentRoot = privateURL.lastPathComponent == "private" ? privateURL.deletingLastPathComponent() : privateURL
+            let workspaceURL = agentRoot.appendingPathComponent("workspace", isDirectory: true)
+
+            return (
+                agentDirPath: FileManager.default.fileExists(atPath: privateURL.path) ? privateURL.path : nil,
+                workspacePath: FileManager.default.fileExists(atPath: workspaceURL.path) ? workspaceURL.path : nil
+            )
+        }
+
+        if let copiedRootPath = firstNonEmptyPath(detectedRecord?.copiedToProjectPath) {
+            let copiedRootURL = URL(fileURLWithPath: copiedRootPath, isDirectory: true)
+            let privateURL = copiedRootURL.appendingPathComponent("private", isDirectory: true)
+            let workspaceURL = copiedRootURL.appendingPathComponent("workspace", isDirectory: true)
+
+            return (
+                agentDirPath: FileManager.default.fileExists(atPath: privateURL.path) ? privateURL.path : nil,
+                workspacePath: FileManager.default.fileExists(atPath: workspaceURL.path) ? workspaceURL.path : nil
+            )
+        }
+
+        return (nil, nil)
+    }
+
+    private func firstNonEmptyPath(_ candidates: String?...) -> String? {
+        for candidate in candidates {
+            guard let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+                continue
+            }
+            return trimmed
+        }
+        return nil
+    }
+
+    private func isDiagnosticOutputLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return true
+        }
+        if trimmed.hasPrefix("[plugins]") || trimmed.hasPrefix("Config warnings:") {
+            return true
+        }
+        if trimmed.hasPrefix("- plugins.") || trimmed.contains("duplicate plugin id detected") {
+            return true
+        }
+        return false
+    }
+
+    private func extractJSONPayload(from data: Data) -> Data? {
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
+        let characters = Array(output)
+
+        for startIndex in characters.indices {
+            let opening = characters[startIndex]
+            guard opening == "[" || opening == "{" else { continue }
+
+            var stack: [Character] = [opening]
+            var isInsideString = false
+            var isEscaping = false
+
+            for index in characters.index(after: startIndex)..<characters.endIndex {
+                let character = characters[index]
+
+                if isInsideString {
+                    if isEscaping {
+                        isEscaping = false
+                    } else if character == "\\" {
+                        isEscaping = true
+                    } else if character == "\"" {
+                        isInsideString = false
+                    }
+                    continue
+                }
+
+                if character == "\"" {
+                    isInsideString = true
+                    continue
+                }
+
+                if character == "[" || character == "{" {
+                    stack.append(character)
+                    continue
+                }
+
+                if character == "]" || character == "}" {
+                    guard let last = stack.last else { break }
+                    let matches = (last == "[" && character == "]") || (last == "{" && character == "}")
+                    guard matches else { break }
+                    stack.removeLast()
+
+                    if stack.isEmpty {
+                        let payload = String(characters[startIndex...index])
+                        guard let payloadData = payload.data(using: .utf8) else { return nil }
+                        if (try? JSONSerialization.jsonObject(with: payloadData)) != nil {
+                            return payloadData
+                        }
+                        break
+                    }
                 }
             }
         }
