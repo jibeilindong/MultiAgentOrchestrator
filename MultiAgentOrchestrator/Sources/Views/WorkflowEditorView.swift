@@ -63,6 +63,7 @@ struct WorkflowEditorView: View {
                 isConnectMode: $isConnectMode,
                 connectFromAgentID: $connectFromAgentID,
                 connectionType: $connectionType,
+                isRunning: isRunning,
                 onRunTest: runTest,
                 onStopTest: stopTest
             )
@@ -244,157 +245,169 @@ struct EditorToolbar: View {
     @Binding var isConnectMode: Bool
     @Binding var connectFromAgentID: UUID?
     @Binding var connectionType: WorkflowEditorView.ConnectionType
+    let isRunning: Bool
     var onRunTest: () -> Void
     var onStopTest: () -> Void
     
     var body: some View {
-        HStack(spacing: 12) {
-            // 视图选择器 - 改进版
-            HStack(spacing: 4) {
-                ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
-                    Button(action: { viewMode = mode }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: mode.icon)
-                            Text(mode.rawValue)
-                                .font(.caption)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(viewMode == mode ? Color.accentColor.opacity(0.2) : Color.clear)
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(viewMode == mode ? .accentColor : .secondary)
-                }
-            }
-            .padding(4)
-            .background(Color(.controlBackgroundColor))
-            .cornerRadius(8)
-            
-            Divider()
-                .frame(height: 20)
-            
-            // 连接类型选择器
-            HStack(spacing: 4) {
-                ForEach(WorkflowEditorView.ConnectionType.allCases, id: \.self) { type in
-                    Button(action: {
-                        isConnectMode = true
-                        connectionType = type
-                    }) {
-                        HStack(spacing: 2) {
-                            Text(type.rawValue)
-                                .font(.headline)
-                            Text(type.description)
-                                .font(.caption)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(isConnectMode && connectionType == type ? Color.blue.opacity(0.2) : Color.clear)
-                        .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(isConnectMode && connectionType == type ? .blue : .secondary)
-                }
-            }
-            .padding(4)
-            .background(Color(.controlBackgroundColor))
-            .cornerRadius(8)
-            .tint(isConnectMode ? .blue : nil)
-            
-            // 连接状态提示
-            if isConnectMode {
-                Text(LocalizedString.selectTargetAgent)
-                    .font(.caption)
-                    .foregroundColor(.blue)
-            }
-            
-            Divider()
-                .frame(height: 20)
-            
-            // 测试按钮
-            Button(action: onRunTest) {
+        HStack(spacing: 10) {
+            WorkflowToolbarGroup(title: "View") {
                 HStack(spacing: 4) {
-                    Image(systemName: "play.circle")
-                    Text("Test")
-                        .font(.caption)
+                    ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
+                        Button(action: { viewMode = mode }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: mode.icon)
+                                Text(mode.rawValue)
+                                    .font(.caption)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(viewMode == mode ? Color.accentColor.opacity(0.18) : Color.clear)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(viewMode == mode ? .accentColor : .secondary)
+                    }
                 }
             }
-            .buttonStyle(.bordered)
-            
+
+            WorkflowToolbarGroup(title: "Routing") {
+                HStack(spacing: 8) {
+                    Button(action: toggleConnectMode) {
+                        Label(isConnectMode ? "Cancel Link" : "Link Nodes", systemImage: isConnectMode ? "xmark.circle" : "point.3.connected.trianglepath.dotted")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(isConnectMode ? .orange : .blue)
+
+                    Menu {
+                        ForEach(WorkflowEditorView.ConnectionType.allCases, id: \.self) { type in
+                            Button(action: {
+                                connectionType = type
+                                isConnectMode = true
+                            }) {
+                                HStack {
+                                    Text("\(type.rawValue) \(type.description)")
+                                    if connectionType == type {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("\(connectionType.rawValue) \(connectionType.description)", systemImage: "arrow.left.and.right")
+                            .font(.caption)
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+
+                if isConnectMode || connectFromAgentID != nil {
+                    Text(connectHint)
+                        .font(.caption)
+                        .foregroundColor(isConnectMode ? .blue : .secondary)
+                }
+            }
+
+            WorkflowToolbarGroup(title: "Execution") {
+                HStack(spacing: 8) {
+                    Button(action: isRunning ? onStopTest : onRunTest) {
+                        Label(isRunning ? "Stop" : "Test", systemImage: isRunning ? "stop.circle" : "play.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button(action: { appState.saveProject() }) {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if appState.isAutoSaving {
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .scaleEffect(0.6)
+                        Text(LocalizedString.saving)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } else if let lastSave = appState.lastAutoSaveTime {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("Auto-saved \(lastSave.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             Spacer()
-            
-            // OpenClaw连接状态
-            HStack(spacing: 8) {
-                // 连接状态指示
-                Circle()
-                    .fill(appState.openClawService.isConnected ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                
-                Text(appState.openClawService.isConnected ? "OpenClaw Connected" : "OpenClaw Disconnected")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                // 手动连接按钮
-                Button(action: { appState.openClawService.checkConnection() }) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh connection")
-            }
-            
-            Divider()
-                .frame(height: 20)
-            
-            // 自动识别Agents按钮
-            Button(action: { 
-                appState.openClawManager.connect()
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "wand.and.stars")
-                    Text("Auto Detect")
-                        .font(.caption)
-                }
-            }
-            .buttonStyle(.bordered)
-            .help("Auto-detect OpenClaw agents")
-            
-            Divider()
-                .frame(height: 20)
-            
-            // 自动保存状态指示器
-            if appState.isAutoSaving {
-                HStack(spacing: 4) {
-                    ProgressView()
-                        .scaleEffect(0.6)
-                    Text(LocalizedString.saving)
+
+            WorkflowToolbarGroup(title: "OpenClaw") {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(appState.openClawService.isConnected ? Color.green : Color.red)
+                        .frame(width: 8, height: 8)
+                    Text(appState.openClawService.isConnected ? "Connected" : "Disconnected")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-            } else if let lastSave = appState.lastAutoSaveTime {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text(LocalizedString.autoSaved)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .help("Last saved: \(lastSave.formatted(date: .omitted, time: .shortened))")
-            }
-            
-            // 手动保存按钮
-            Button(action: { appState.saveProject() }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.and.arrow.down")
-                    Text("Save")
-                        .font(.caption)
+
+                HStack(spacing: 8) {
+                    Button(action: { appState.openClawService.checkConnection() }) {
+                        Label("Refresh", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(action: { appState.openClawManager.connect() }) {
+                        Label("Auto Detect", systemImage: "wand.and.stars")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
-            .buttonStyle(.bordered)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(Color(.windowBackgroundColor))
+    }
+
+    private var connectHint: String {
+        if connectFromAgentID != nil {
+            return "Source locked. Select the target node to finish the route."
+        }
+        return LocalizedString.selectTargetAgent
+    }
+
+    private func toggleConnectMode() {
+        if isConnectMode {
+            isConnectMode = false
+            connectFromAgentID = nil
+        } else {
+            isConnectMode = true
+        }
+    }
+}
+
+private struct WorkflowToolbarGroup<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                content
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
