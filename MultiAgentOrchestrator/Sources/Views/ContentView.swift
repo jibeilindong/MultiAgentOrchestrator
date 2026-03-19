@@ -352,7 +352,7 @@ private struct TopToolbarGroup<Content: View>: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color(.controlBackgroundColor))
+        .background(Color(.controlBackgroundColor).opacity(0.8))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

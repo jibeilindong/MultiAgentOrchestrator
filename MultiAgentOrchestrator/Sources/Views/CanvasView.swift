@@ -28,6 +28,7 @@ struct CanvasView: View {
     @State private var lassoRect: CGRect?
     @State private var suppressCanvasTapClear: Bool = false
     @State private var isHoveringCanvas: Bool = false
+    @State private var didPanCanvasInCurrentGesture: Bool = false
 
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
@@ -104,7 +105,11 @@ struct CanvasView: View {
                 suppressCanvasTapClear = true
             }
         }
-        .highPriorityGesture(createCanvasGesture())
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(createCanvasGesture())
+        )
         .onAppear {
             NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                 if event.modifierFlags.contains(.command) {
@@ -279,9 +284,10 @@ struct CanvasView: View {
                     zoomScale = scale
                 },
             SimultaneousGesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 3)
                     .onChanged { value in
                         guard !isLassoMode, !isTransientLassoMode, connectingFromNode == nil else { return }
+                        didPanCanvasInCurrentGesture = true
                         isDraggingCanvas = true
                         offset = CGSize(
                             width: lastOffset.width + value.translation.width,
@@ -294,10 +300,17 @@ struct CanvasView: View {
                             lastOffset = offset
                             isDraggingCanvas = false
                         }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                            didPanCanvasInCurrentGesture = false
+                        }
                     },
                 TapGesture(count: 1)
                     .onEnded {
                         guard !isLassoMode, !isTransientLassoMode else { return }
+                        if didPanCanvasInCurrentGesture {
+                            didPanCanvasInCurrentGesture = false
+                            return
+                        }
                         if suppressCanvasTapClear {
                             suppressCanvasTapClear = false
                             return

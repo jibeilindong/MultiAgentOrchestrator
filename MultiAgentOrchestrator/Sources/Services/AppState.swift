@@ -1350,14 +1350,14 @@ class AppState: ObservableObject {
 
     func loadAgentSoulMDFromSource(agentID: UUID) -> (content: String, sourcePath: String?)? {
         guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
-        guard let soulURL = resolveAgentSoulFileURL(for: agent) else {
+        guard let soulURL = existingAgentSoulFileURL(for: agent) else {
             return (agent.soulMD, nil)
         }
 
         if let content = try? String(contentsOf: soulURL, encoding: .utf8) {
             return (content, soulURL.path)
         }
-        return (agent.soulMD, soulURL.path)
+        return (agent.soulMD, nil)
     }
 
     func persistAgentSoulMDToSource(agentID: UUID, soulMD: String) -> (success: Bool, message: String) {
@@ -1404,14 +1404,29 @@ class AppState: ObservableObject {
     }
 
     private func resolveAgentSoulFileURL(for agent: Agent) -> URL? {
+        if let existingSoulURL = existingAgentSoulFileURL(for: agent) {
+            return existingSoulURL
+        }
+
+        guard let rootURL = agentSoulRootURL(for: agent) else { return nil }
+        return preferredSoulURL(in: rootURL)
+    }
+
+    private func existingAgentSoulFileURL(for agent: Agent) -> URL? {
+        for rootURL in agentSoulRootCandidates(for: agent) {
+            if let soulURL = existingSoulFileURL(in: rootURL) {
+                return soulURL
+            }
+        }
+        return nil
+    }
+
+    private func agentSoulRootCandidates(for agent: Agent) -> [URL] {
+        var roots: [URL] = []
+
         if let directPath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
             let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
-            if FileManager.default.fileExists(atPath: directURL.path) {
-                return directURL
-            }
-            if FileManager.default.fileExists(atPath: directURL.deletingLastPathComponent().path) {
-                return preferredSoulURL(in: directURL.deletingLastPathComponent())
-            }
+            roots.append(directURL.deletingLastPathComponent())
         }
 
         let keys = Set([
@@ -1422,10 +1437,10 @@ class AppState: ObservableObject {
         if !keys.isEmpty {
             if let record = openClawManager.discoveryResults.first(where: { keys.contains(normalizeAgentKey($0.name)) }) {
                 if let copied = firstNonEmptyPath(record.copiedToProjectPath) {
-                    return preferredSoulURL(in: URL(fileURLWithPath: copied, isDirectory: true))
+                    roots.append(URL(fileURLWithPath: copied, isDirectory: true))
                 }
                 if let directory = firstNonEmptyPath(record.directoryPath) {
-                    return preferredSoulURL(in: URL(fileURLWithPath: directory, isDirectory: true))
+                    roots.append(URL(fileURLWithPath: directory, isDirectory: true))
                 }
             }
         }
@@ -1433,10 +1448,46 @@ class AppState: ObservableObject {
         if let memoryBackupPath = firstNonEmptyPath(agent.openClawDefinition.memoryBackupPath) {
             let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
             let rootURL = privateURL.lastPathComponent == "private" ? privateURL.deletingLastPathComponent() : privateURL
-            return preferredSoulURL(in: rootURL)
+            roots.append(rootURL)
         }
 
+        var seen: Set<String> = []
+        return roots.filter { seen.insert($0.path).inserted }
+    }
+
+    private func agentSoulRootURL(for agent: Agent) -> URL? {
+        agentSoulRootCandidates(for: agent).first
+    }
+
+    private func existingSoulFileURL(in rootURL: URL) -> URL? {
+        for ancestor in ancestorDirectories(from: rootURL, maxDepth: 3) {
+            let preferred = ancestor.appendingPathComponent("SOUL.md")
+            if FileManager.default.fileExists(atPath: preferred.path) {
+                return preferred
+            }
+
+            let fallback = ancestor.appendingPathComponent("soul.md")
+            if FileManager.default.fileExists(atPath: fallback.path) {
+                return fallback
+            }
+        }
         return nil
+    }
+
+    private func ancestorDirectories(from url: URL, maxDepth: Int) -> [URL] {
+        var directories: [URL] = [url]
+        var current = url
+
+        for _ in 0..<maxDepth {
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path || parent.path.isEmpty {
+                break
+            }
+            directories.append(parent)
+            current = parent
+        }
+
+        return directories
     }
 
     private func preferredSoulURL(in rootURL: URL) -> URL {

@@ -54,9 +54,10 @@ struct NodesView: View {
     }
 
     private func createNodeGesture(for node: WorkflowNode) -> some Gesture {
-        DragGesture()
+        DragGesture(minimumDistance: 2)
             .onChanged { value in
                 guard connectingFromNode == nil else { return }
+                prepareSelectionForDragging(node)
                 updateNodePositions(for: node, translation: value.translation)
                 draggingNode = node
             }
@@ -64,6 +65,18 @@ struct NodesView: View {
                 draggingNode = nil
                 dragOriginPositions.removeAll()
             }
+    }
+
+    private func prepareSelectionForDragging(_ node: WorkflowNode) {
+        if !selectedNodeIDs.contains(node.id) {
+            selectedNodeIDs = [node.id]
+            selectedNodeID = node.id
+        } else if selectedNodeID == nil, selectedNodeIDs.count == 1 {
+            selectedNodeID = node.id
+        }
+
+        selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
     }
 
     private func updateNodePositions(for node: WorkflowNode, translation: CGSize) {

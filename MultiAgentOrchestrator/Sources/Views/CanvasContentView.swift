@@ -550,7 +550,7 @@ struct WorkflowBoundaryOverlay: View {
                         onBoundaryTap?(group.id)
                     }
                     .gesture(
-                        DragGesture(minimumDistance: 1)
+                        DragGesture(minimumDistance: 2)
                             .onChanged { value in
                                 onBoundaryDragChanged?(group.id, value.translation)
                             }

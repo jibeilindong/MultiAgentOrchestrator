@@ -111,7 +111,7 @@ struct SidebarView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
-                    .background(Color(.controlBackgroundColor))
+                    .background(Color(.controlBackgroundColor).opacity(0.8))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
