@@ -688,6 +688,10 @@ class OpenClawManager: ObservableObject {
     }
 
     private func containerOpenClawRootPath(for config: OpenClawConfig) -> String? {
+        if let discoveredRoot = discoverContainerOpenClawRootPath(using: config) {
+            return discoveredRoot
+        }
+
         if let homeDirectory = queryContainerHomeDirectory(using: config) {
             let trimmed = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
@@ -702,6 +706,104 @@ class OpenClawManager: ObservableObject {
         return URL(fileURLWithPath: fallbackMount, isDirectory: true)
             .appendingPathComponent(".openclaw", isDirectory: true)
             .path
+    }
+
+    private func discoverContainerOpenClawRootPath(using config: OpenClawConfig) -> String? {
+        guard let containerName = containerName(for: config) else { return nil }
+
+        let workspaceMountPath = config.container.workspaceMountPath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var script = """
+        probe_candidate() {
+          candidate="$1"
+          if [ -n "$candidate" ] && [ -d "$candidate" ]; then
+            if [ -f "$candidate/openclaw.json" ] || [ -d "$candidate/agents" ]; then
+              printf '%s' "$candidate"
+              return 0
+            fi
+          fi
+          return 1
+        }
+
+        for candidate in \
+          "${OPENCLAW_ROOT:-}" \
+          "${OPENCLAW_HOME:-}" \
+          "${OPENCLAW_PATH:-}" \
+          "${XDG_CONFIG_HOME:-$HOME/.config}/openclaw" \
+          "${XDG_CONFIG_HOME:-$HOME/.config}/.openclaw" \
+          "${XDG_DATA_HOME:-$HOME/.local/share}/openclaw" \
+          "${XDG_DATA_HOME:-$HOME/.local/share}/.openclaw" \
+          "$HOME/.openclaw" \
+          "$HOME/openclaw" \
+          "/root/.openclaw" \
+          "/home/node/.openclaw" \
+          "/home/app/.openclaw" \
+          "/app/.openclaw" \
+          "/workspace/.openclaw" \
+          "/workspace/openclaw" \
+          "/workspaces/.openclaw" \
+          "/workspaces/openclaw"; do
+          probe_candidate "$candidate" && exit 0
+        done
+        """
+
+        if !workspaceMountPath.isEmpty {
+            let workspaceCandidates = [
+                URL(fileURLWithPath: workspaceMountPath, isDirectory: true)
+                    .appendingPathComponent(".openclaw", isDirectory: true)
+                    .path,
+                URL(fileURLWithPath: workspaceMountPath, isDirectory: true)
+                    .appendingPathComponent("openclaw", isDirectory: true)
+                    .path
+            ]
+
+            script += "\n"
+            for candidate in workspaceCandidates {
+                script += "probe_candidate \(shellQuoted(candidate)) && exit 0\n"
+            }
+        }
+
+        script += """
+
+        for root in \
+          "$HOME" \
+          "/root" \
+          "/home/node" \
+          "/home/app" \
+          "/app" \
+          "/workspace" \
+          "/workspaces" \
+          "/tmp" \
+          "/opt"; do
+          [ -d "$root" ] || continue
+
+          found_json="$(find "$root" -maxdepth 5 -type f -name openclaw.json 2>/dev/null | head -n 1)"
+          if [ -n "$found_json" ]; then
+            dirname "$found_json"
+            exit 0
+          fi
+
+          found_agents="$(find "$root" -maxdepth 5 -type d -name agents 2>/dev/null | head -n 1)"
+          if [ -n "$found_agents" ]; then
+            dirname "$found_agents"
+            exit 0
+          fi
+        done
+        """
+
+        let result = try? runDeploymentCommand(
+            using: config,
+            arguments: ["exec", containerName, "sh", "-lc", script]
+        )
+
+        guard let result, result.terminationStatus == 0 else { return nil }
+
+        let output = String(data: result.standardOutput, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard !output.isEmpty else { return nil }
+
+        return output
     }
 
     private func queryContainerHomeDirectory(using config: OpenClawConfig) -> String? {
