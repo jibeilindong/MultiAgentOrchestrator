@@ -8,58 +8,70 @@ struct ContentView: View {
     @State private var isConnectingOpenClaw = false
     
     var body: some View {
-        HStack(spacing: 0) {
-            // 左侧：导航栏
-            SidebarView(selectedTab: $selectedTab)
-                .frame(width: 280)
-            
-            Divider()
-            
-            // 中间：主内容区
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    ForEach(appState.toolbarItemsInDisplayOrder) { item in
-                        toolbarContent(for: item)
-                    }
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                // 左侧：导航栏
+                SidebarView(selectedTab: $selectedTab)
+                    .frame(width: 280)
 
-                    Spacer(minLength: 12)
-
-                    Picker("", selection: $selectedTab) {
-                        Label("编辑器", systemImage: "square.grid.2x2").tag(0)
-                        Label("工作台", systemImage: "message.badge.waveform").tag(1)
-                        Label("仪表盘", systemImage: "gauge.with.dots.needle.33percent").tag(2)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 360)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Color(.windowBackgroundColor))
-                
                 Divider()
-                
-                // 主内容
-                Group {
-                    if appState.currentProject == nil {
-                        ProjectOnboardingView()
-                            .environmentObject(appState)
-                    } else {
-                        switch selectedTab {
-                        case 0: WorkflowEditorView(zoomScale: $zoomScale)
-                        case 1: WorkbenchConversationView(messageManager: appState.messageManager)
-                        case 2: MonitoringDashboardView()
-                        default: WorkflowEditorView(zoomScale: $zoomScale)
+
+                // 中间：主内容区
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(appState.toolbarItemsInDisplayOrder) { item in
+                                    toolbarContent(for: item)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                        .scrollBounceBehavior(.basedOnSize)
+
+                        Spacer(minLength: 12)
+
+                        Picker("", selection: $selectedTab) {
+                            Label("编辑器", systemImage: "square.grid.2x2").tag(0)
+                            Label("工作台", systemImage: "message.badge.waveform").tag(1)
+                            Label("仪表盘", systemImage: "gauge.with.dots.needle.33percent").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 320)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color(.windowBackgroundColor))
+
+                    Divider()
+
+                    // 主内容
+                    Group {
+                        if appState.currentProject == nil {
+                            ProjectOnboardingView()
+                                .environmentObject(appState)
+                        } else {
+                            switch selectedTab {
+                            case 0: WorkflowEditorView(zoomScale: $zoomScale)
+                            case 1: WorkbenchConversationView(messageManager: appState.messageManager)
+                            case 2: MonitoringDashboardView()
+                            default: WorkflowEditorView(zoomScale: $zoomScale)
+                            }
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Divider()
+
+                // 右侧：实时信息面板
+                RealtimeInfoPanel()
+                    .frame(width: 320)
             }
-            
+
             Divider()
-            
-            // 右侧：实时信息面板
-            RealtimeInfoPanel()
-                .frame(width: 320)
+
+            bottomStatusBar
         }
         .overlay(alignment: .bottom) {
             if isConnectingOpenClaw {
@@ -94,17 +106,6 @@ struct ContentView: View {
     @ViewBuilder
     private func toolbarContent(for item: ContentToolbarItem) -> some View {
         switch item {
-        case .project:
-            TopToolbarGroup {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(appState.currentProject?.name ?? LocalizedString.appName)
-                        .font(.headline)
-                    Text(projectSummary)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(minWidth: 190, alignment: .leading)
-            }
         case .file:
             TopToolbarGroup {
                 Menu {
@@ -137,12 +138,21 @@ struct ContentView: View {
                         }
                     }
                 } label: {
-                    Label("File", systemImage: "doc")
+                    Label("项目", systemImage: "folder")
                 }
-
-                Button(action: { appState.saveProject() }) {
-                    Label(LocalizedString.save, systemImage: "square.and.arrow.down")
+            }
+        case .project:
+            TopToolbarGroup {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.currentProject?.name ?? LocalizedString.appName)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(projectSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
+                .frame(minWidth: 170, alignment: .leading)
             }
         case .view:
             TopToolbarGroup {
@@ -161,7 +171,7 @@ struct ContentView: View {
                         appState.showLogs.toggle()
                     }
                 } label: {
-                    Label("View", systemImage: "eye")
+                    Label("视图", systemImage: "eye")
                 }
 
                 HStack(spacing: 4) {
@@ -179,40 +189,6 @@ struct ContentView: View {
         case .display:
             CanvasDisplayToolbar()
                 .environmentObject(appState)
-        case .openClaw:
-            TopToolbarGroup {
-                HStack(spacing: 8) {
-                    Label("OpenClaw", systemImage: "bolt.horizontal.circle")
-                    statusBadge
-
-                    if appState.openClawManager.isConnected {
-                        Button(action: { appState.openClawManager.disconnect() }) {
-                            Label("断开", systemImage: "link.badge.minus")
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button(action: { addOpenClawAgentsToProject() }) {
-                            Label("导入 Agents", systemImage: "person.badge.plus")
-                        }
-                        .buttonStyle(.bordered)
-                    } else {
-                        Button(action: { autoDetectAndConnect() }) {
-                            Label("自动连接", systemImage: "antenna.radiowaves.left.and.right")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-
-                    Button(action: { appState.openClawService.checkConnection() }) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(action: { NotificationCenter.default.post(name: .openSettings, object: nil) }) {
-                        Image(systemName: "gear")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
         case .language:
             TopToolbarGroup {
                 HStack(spacing: 6) {
@@ -227,6 +203,50 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var bottomStatusBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+                Text(appState.openClawManager.isConnected ? "OpenClaw Connected" : "OpenClaw Disconnected")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Text(appState.openClawManager.config.deploymentSummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            if appState.openClawManager.isConnected {
+                StatusBarButton(title: "断开", icon: "link.badge.minus") {
+                    appState.openClawManager.disconnect()
+                }
+
+                StatusBarButton(title: "导入 Agents", icon: "person.badge.plus") {
+                    addOpenClawAgentsToProject()
+                }
+            } else {
+                StatusBarButton(title: "自动连接", icon: "antenna.radiowaves.left.and.right", prominent: true) {
+                    autoDetectAndConnect()
+                }
+            }
+
+            StatusBarButton(title: "检测", icon: "arrow.triangle.2.circlepath") {
+                appState.openClawService.checkConnection()
+            }
+
+            StatusBarButton(title: "设置", icon: "gearshape") {
+                NotificationCenter.default.post(name: .openSettings, object: nil)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color(.windowBackgroundColor))
     }
 
     private var statusBadge: some View {
@@ -359,10 +379,42 @@ private struct TopToolbarGroup<Content: View>: View {
         HStack(spacing: 8) {
             content
         }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color(.controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct StatusBarButton: View {
+    let title: String
+    let icon: String
+    var prominent: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Group {
+            if prominent {
+                Button(action: action) {
+                    label
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button(action: action) {
+                    label
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private var label: some View {
+        Label(title, systemImage: icon)
+            .font(.caption)
+            .lineLimit(1)
     }
 }
 
@@ -796,16 +848,14 @@ struct ToolbarCustomizationSheet: View {
 
     private func toolbarItemDescription(for item: ContentToolbarItem) -> String {
         switch item {
+        case .file:
+            return "Project lifecycle and import/export actions"
         case .project:
             return "Project name and workflow summary"
-        case .file:
-            return "New, save, import and export actions"
         case .view:
             return "Zoom controls and log visibility"
         case .display:
             return "Line width, text size and color controls"
-        case .openClaw:
-            return "OpenClaw status, connect and agent import"
         case .language:
             return "Language switcher"
         }

@@ -11,6 +11,8 @@ struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
     @State private var showingProjectPicker = false
+    @State private var agentLibraryHeight: CGFloat = 320
+    @State private var agentLibraryHeightAtDragStart: CGFloat?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,13 +25,20 @@ struct SidebarView: View {
             if selectedTab == 0 {
                 Divider()
 
+                resizeHandle
+
                 AgentLibrarySidebar(
                     onAddAll: { appState.generateArchitectureFromProjectAgents() },
                     isOpenClawConnected: appState.openClawManager.isConnected,
                     openClawAgents: appState.openClawManager.agents
                 )
+                .frame(height: agentLibraryHeight)
             } else {
                 Spacer()
+            }
+
+            if selectedTab == 0 {
+                Spacer(minLength: 0)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -96,10 +105,34 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, 10)
             }
-
-            Spacer(minLength: 0)
         }
         .padding(.bottom, selectedTab == 0 ? 12 : 0)
+    }
+
+    private var resizeHandle: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.12))
+            .frame(height: 8)
+            .overlay(
+                Capsule()
+                    .fill(Color.secondary.opacity(0.4))
+                    .frame(width: 46, height: 4)
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        let startHeight = agentLibraryHeightAtDragStart ?? agentLibraryHeight
+                        if agentLibraryHeightAtDragStart == nil {
+                            agentLibraryHeightAtDragStart = agentLibraryHeight
+                        }
+                        agentLibraryHeight = min(max(startHeight - value.translation.height, 180), 560)
+                    }
+                    .onEnded { _ in
+                        agentLibraryHeightAtDragStart = nil
+                    }
+            )
+            .help("拖拉调整智能体库高度")
     }
 
     private var projectMeta: String {

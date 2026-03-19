@@ -78,19 +78,19 @@ struct MultiAgentOrchestratorApp: App {
                 }
             }
 
-            CommandMenu(LocalizedString.file) {
+            CommandGroup(replacing: .newItem) {
                 Button(LocalizedString.newProject) {
                     appState.createNewProject()
                 }
                 .keyboardShortcut("n", modifiers: .command)
-                
+
                 Button(LocalizedString.openProject) {
                     appState.openProject()
                 }
                 .keyboardShortcut("o", modifiers: .command)
-                
-                Divider()
-                
+            }
+
+            CommandGroup(replacing: .saveItem) {
                 Button(LocalizedString.saveProject) {
                     appState.saveProject()
                 }
@@ -100,9 +100,9 @@ struct MultiAgentOrchestratorApp: App {
                     appState.saveProjectAs()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                
-                Divider()
-                
+            }
+
+            CommandGroup(after: .saveItem) {
                 Button("Import Architecture") {
                     appState.importData()
                 }
@@ -161,55 +161,7 @@ struct MultiAgentOrchestratorApp: App {
                 .keyboardShortcut("a", modifiers: .command)
             }
 
-            CommandMenu(LocalizedString.view) {
-                Button("工作流编辑器") {
-                    selectedTab = 0
-                }
-                .keyboardShortcut("1", modifiers: .command)
-                
-                Button("工作台对话") {
-                    selectedTab = 1
-                }
-                .keyboardShortcut("2", modifiers: .command)
-                
-                Button("监控仪表盘") {
-                    selectedTab = 2
-                }
-                .keyboardShortcut("3", modifiers: .command)
-                
-                Divider()
-                
-                Button(LocalizedString.zoomIn) {
-                    zoomScale = min(zoomScale * 1.25, 3.0)
-                }
-                .keyboardShortcut("+", modifiers: .command)
-                
-                Button(LocalizedString.zoomOut) {
-                    zoomScale = max(zoomScale / 1.25, 0.25)
-                }
-                .keyboardShortcut("-", modifiers: .command)
-                
-                Button(LocalizedString.resetZoom) {
-                    zoomScale = 1.0
-                }
-                .keyboardShortcut("0", modifiers: .command)
-                
-                Divider()
-
-                Button(appState.showLogs ? "Hide Logs" : "Show Logs") {
-                    appState.showLogs.toggle()
-                }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
-
-                Divider()
-                
-                Button(LocalizedString.toggleSidebar) {
-                    NSApp.keyWindow?.firstResponder?.tryToPerform(#selector(NSSplitViewController.toggleSidebar(_:)), with: nil)
-                }
-                .keyboardShortcut("s", modifiers: [.command, .control])
-            }
-
-            CommandMenu("Workflow") {
+            CommandMenu(LocalizedString.tools) {
                 Button(LocalizedString.addAgent) {
                     appState.addNewAgent()
                 }
