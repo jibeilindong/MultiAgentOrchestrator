@@ -22,6 +22,7 @@ struct NodeView: View {
     var onTap: (() -> Void)?
     var onDoubleTap: (() -> Void)?
     var onLongPress: (() -> Void)?
+    var accentColor: Color? = nil
 
     @State private var isHovered: Bool = false
     @State private var pulseAnimation: Bool = false
@@ -61,6 +62,14 @@ struct NodeView: View {
                         .font(.caption)
                         .lineLimit(1)
                 }
+            }
+
+            if node.type == .branch, let condition = optionalText(node.conditionExpression) {
+                Text(condition)
+                    .font(.system(size: 10))
+                    .lineLimit(1)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
             }
             
             // 连接指示器（连接模式下显示）
@@ -182,7 +191,7 @@ struct NodeView: View {
             return .accentColor
         }
         switch node.type {
-        case .agent: return .blue
+        case .agent: return accentColor ?? .blue
         case .branch: return .orange
         case .start: return .green
         case .end: return .red
@@ -195,7 +204,7 @@ struct NodeView: View {
             return nodeColor.opacity(0.15)
         }
         switch node.type {
-        case .agent: return Color.blue.opacity(0.08)
+        case .agent: return nodeColor.opacity(0.1)
         case .branch: return Color.orange.opacity(0.1)
         case .start: return Color.green.opacity(0.08)
         case .end: return Color.red.opacity(0.08)

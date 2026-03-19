@@ -2,8 +2,6 @@
 //  NodesView.swift
 //  MultiAgentOrchestrator
 //
-//  Created by 陈荣泽 on 2026/3/18.
-//
 
 import SwiftUI
 
@@ -11,6 +9,7 @@ struct NodesView: View {
     @EnvironmentObject var appState: AppState
     let currentWorkflow: Workflow?
     @Binding var selectedNodeID: UUID?
+    @Binding var selectedNodeIDs: Set<UUID>
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     let scale: CGFloat
@@ -19,32 +18,32 @@ struct NodesView: View {
     var isConnectMode: Bool = false
     var connectFromAgentID: UUID?
     var onNodeClick: ((WorkflowNode) -> Void)?
-    var onSubflowEdit: ((WorkflowNode) -> Void)?  // 新增：子流程编辑回调
-    
+    var onSubflowEdit: ((WorkflowNode) -> Void)?
+
     @State private var draggingNode: WorkflowNode?
-    @State private var isDraggingNode: Bool = false
-    
+    @State private var dragOriginPositions: [UUID: CGPoint] = [:]
+
     var body: some View {
         ForEach(currentWorkflow?.nodes ?? []) { node in
             NodeView(
                 node: node,
-                isSelected: node.id == selectedNodeID,
+                isSelected: selectedNodeIDs.contains(node.id) || node.id == selectedNodeID,
                 agent: appState.getAgent(for: node),
                 taskStatus: getTaskStatus(for: node),
-                subflowName: getSubflowName(for: node),  // 新增
+                subflowName: getSubflowName(for: node),
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
                 onTap: { handleSingleTap(node) },
                 onDoubleTap: { handleDoubleTap(node) },
-                onLongPress: { handleLongPress(node) }
+                onLongPress: { handleLongPress(node) },
+                accentColor: displayColor(for: node)
             )
             .position(adjustedPosition(node.position))
-            .zIndex(node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
+            .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
             .gesture(createNodeGesture(for: node))
         }
     }
-    
-    // 获取子流程名称
+
     private func getSubflowName(for node: WorkflowNode) -> String? {
         guard node.type == .subflow,
               let subflowID = node.subflowID,
@@ -53,14 +52,14 @@ struct NodesView: View {
         }
         return subflow.name
     }
-    
+
     private func getTaskStatus(for node: WorkflowNode) -> TaskStatus? {
         guard let task = appState.taskManager.tasks.first(where: { $0.workflowNodeID == node.id }) else {
             return nil
         }
         return task.status
     }
-    
+
     private func adjustedPosition(_ position: CGPoint) -> CGPoint {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
@@ -69,97 +68,116 @@ struct NodesView: View {
             y: position.y * scale + offset.height + centerY
         )
     }
-    
+
     private func createNodeGesture(for node: WorkflowNode) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                if connectingFromNode == nil {
-                    isDraggingNode = true
-                    updateNodePosition(node.id, value.location)
-                    draggingNode = node
-                }
+                guard connectingFromNode == nil else { return }
+                updateNodePositions(for: node, translation: value.translation)
+                draggingNode = node
             }
             .onEnded { _ in
                 draggingNode = nil
-                isDraggingNode = false
+                dragOriginPositions.removeAll()
             }
     }
-    
-    private func updateNodePosition(_ nodeID: UUID, _ location: CGPoint) {
-        guard var workflow = currentWorkflow,
-              let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        
-        let centerX = geometry.size.width / 2
-        let centerY = geometry.size.height / 2
-        
-        let adjustedX = (location.x - centerX - offset.width) / scale
-        let adjustedY = (location.y - centerY - offset.height) / scale
-        
-        workflow.nodes[index].position = CGPoint(x: adjustedX, y: adjustedY)
-        updateWorkflow(workflow)
+
+    private func updateNodePositions(for node: WorkflowNode, translation: CGSize) {
+        guard let workflow = currentWorkflow else { return }
+        let selection = selectedNodeIDs.contains(node.id) ? selectedNodeIDs : [node.id]
+
+        if dragOriginPositions.isEmpty {
+            dragOriginPositions = Dictionary(uniqueKeysWithValues: workflow.nodes
+                .filter { selection.contains($0.id) }
+                .map { ($0.id, $0.position) })
+        }
+
+        let dx = translation.width / scale
+        let dy = translation.height / scale
+
+        appState.updateMainWorkflow { workflow in
+            for index in workflow.nodes.indices where selection.contains(workflow.nodes[index].id) {
+                guard let origin = dragOriginPositions[workflow.nodes[index].id] else { continue }
+                workflow.nodes[index].position = CGPoint(x: origin.x + dx, y: origin.y + dy)
+            }
+        }
     }
-    
-    // 双击处理：如果是子流程节点，打开子流程编辑器
+
     private func handleDoubleTap(_ node: WorkflowNode) {
         if node.type == .subflow {
-            // 打开子流程编辑器
             onSubflowEdit?(node)
-        } else if connectingFromNode == nil {
-            connectingFromNode = node
-        } else if connectingFromNode?.id != node.id {
-            createConnection(from: connectingFromNode!.id, to: node.id)
+        }
+    }
+
+    private func handleSingleTap(_ node: WorkflowNode) {
+        if NSEvent.modifierFlags.contains(.command) {
+            if selectedNodeIDs.contains(node.id) {
+                selectedNodeIDs.remove(node.id)
+            } else {
+                selectedNodeIDs.insert(node.id)
+            }
+            selectedNodeID = selectedNodeIDs.count == 1 ? selectedNodeIDs.first : nil
+        } else {
+            selectedNodeIDs = [node.id]
+            selectedNodeID = node.id
+        }
+
+        if isConnectMode, let onNodeClick {
+            onNodeClick(node)
+        } else {
             connectingFromNode = nil
             tempConnectionEnd = nil
         }
     }
-    
-    private func handleSingleTap(_ node: WorkflowNode) {
-        selectedNodeID = node.id
-        connectingFromNode = nil
-        tempConnectionEnd = nil
-        
-        if let callback = onNodeClick {
-            callback(node)
-        }
-    }
-    
-    // 长按处理：如果是子流程节点，打开编辑菜单
+
     private func handleLongPress(_ node: WorkflowNode) {
         if node.type == .subflow {
             onSubflowEdit?(node)
+        }
+    }
+
+    private func displayColor(for node: WorkflowNode) -> Color? {
+        guard node.type == .agent else { return nil }
+
+        if let agent = appState.getAgent(for: node),
+           let colorHex = agent.colorHex,
+           let customColor = color(from: colorHex) {
+            return customColor
+        }
+
+        let connectedNodeIDs = Set((currentWorkflow?.edges ?? []).flatMap { [$0.fromNodeID, $0.toNodeID] })
+        if !connectedNodeIDs.contains(node.id) {
+            return .red
+        }
+        return nil
+    }
+
+    private func color(from hex: String) -> Color? {
+        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard cleaned.count == 6 || cleaned.count == 8 else { return nil }
+
+        var value: UInt64 = 0
+        guard Scanner(string: cleaned).scanHexInt64(&value) else { return nil }
+
+        let r, g, b, a: UInt64
+        if cleaned.count == 8 {
+            r = (value >> 24) & 0xff
+            g = (value >> 16) & 0xff
+            b = (value >> 8) & 0xff
+            a = value & 0xff
         } else {
-            deleteNode(node.id)
+            r = (value >> 16) & 0xff
+            g = (value >> 8) & 0xff
+            b = value & 0xff
+            a = 0xff
         }
-    }
-    
-    private func createConnection(from: UUID, to: UUID) {
-        guard var workflow = currentWorkflow,
-              workflow.nodes.contains(where: { $0.id == from }),
-              workflow.nodes.contains(where: { $0.id == to }) else { return }
-        
-        let newEdge = WorkflowEdge(from: from, to: to)
-        workflow.edges.append(newEdge)
-        updateWorkflow(workflow)
-    }
-    
-    private func deleteNode(_ nodeID: UUID) {
-        guard var workflow = currentWorkflow else { return }
-        
-        // 删除节点
-        workflow.nodes.removeAll { $0.id == nodeID }
-        
-        // 删除相关的连接线
-        workflow.edges.removeAll { $0.fromNodeID == nodeID || $0.toNodeID == nodeID }
-        
-        updateWorkflow(workflow)
-        
-        if selectedNodeID == nodeID {
-            selectedNodeID = nil
-        }
-    }
-    
-    private func updateWorkflow(_ workflow: Workflow) {
-        guard let index = appState.currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) else { return }
-        appState.currentProject?.workflows[index] = workflow
+
+        return Color(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
     }
 }
