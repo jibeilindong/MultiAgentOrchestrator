@@ -18,6 +18,7 @@ struct WorkbenchConversationView: View {
     @ObservedObject var messageManager: MessageManager
 
     @State private var selectedWorkflowID: UUID?
+    @State private var dashboardLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var prompt = ""
     @State private var errorText: String?
 
@@ -132,15 +133,7 @@ struct WorkbenchConversationView: View {
                 Divider()
             }
 
-            HStack(spacing: 0) {
-                conversationPane
-
-                Divider()
-
-                taskPane
-                    .frame(width: 280)
-                    .background(Color(.controlBackgroundColor))
-            }
+            workbenchAndDashboardPane
         }
     }
 
@@ -163,6 +156,14 @@ struct WorkbenchConversationView: View {
                     }
                 }
                 .frame(width: 220)
+
+                Picker("布局", selection: $dashboardLayout) {
+                    ForEach(WorkbenchDashboardLayout.allCases) { layout in
+                        Text(layout.title).tag(layout)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 170)
 
                 statusBadge(
                     title: appState.openClawService.isExecuting ? "执行中" : "待命",
@@ -206,6 +207,41 @@ struct WorkbenchConversationView: View {
         }
         .padding()
         .background(Color.orange.opacity(0.08))
+    }
+
+    @ViewBuilder
+    private var workbenchAndDashboardPane: some View {
+        switch dashboardLayout {
+        case .sideBySide:
+            HSplitView {
+                dialogueAndReceiptsPane
+                    .frame(minWidth: 500, idealWidth: 560)
+                MonitoringDashboardView()
+                    .frame(minWidth: 360, idealWidth: 780, maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .topBottom:
+            VSplitView {
+                dialogueAndReceiptsPane
+                    .frame(minHeight: 280, idealHeight: 360)
+                MonitoringDashboardView()
+                    .frame(minHeight: 280, idealHeight: 420)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private var dialogueAndReceiptsPane: some View {
+        HStack(spacing: 0) {
+            conversationPane
+                .frame(minWidth: 300, idealWidth: 340, maxWidth: .infinity)
+
+            Divider()
+
+            taskPane
+                .frame(minWidth: 220, idealWidth: 280, maxWidth: 360)
+                .background(Color(.controlBackgroundColor))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var conversationPane: some View {
@@ -382,6 +418,22 @@ struct WorkbenchConversationView: View {
             .background(color.opacity(0.12))
             .foregroundColor(color)
             .clipShape(Capsule())
+    }
+}
+
+private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
+    case sideBySide
+    case topBottom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sideBySide:
+            return "左右分栏"
+        case .topBottom:
+            return "上下分栏"
+        }
     }
 }
 

@@ -373,6 +373,54 @@ class AppState: ObservableObject {
             return leftKey < rightKey
         }
     }
+
+    private func enforceUniqueAgentNodes(in workflow: Workflow) -> (workflow: Workflow, removedNodeIDs: [UUID]) {
+        var mutableWorkflow = workflow
+        var seenAgentIDs = Set<UUID>()
+        var removedNodeIDs = Set<UUID>()
+
+        mutableWorkflow.nodes = workflow.nodes.filter { node in
+            guard node.type == .agent, let agentID = node.agentID else {
+                return true
+            }
+            if seenAgentIDs.insert(agentID).inserted {
+                return true
+            }
+            removedNodeIDs.insert(node.id)
+            return false
+        }
+
+        guard !removedNodeIDs.isEmpty else {
+            return (workflow, [])
+        }
+
+        mutableWorkflow.edges.removeAll {
+            removedNodeIDs.contains($0.fromNodeID) || removedNodeIDs.contains($0.toNodeID)
+        }
+
+        mutableWorkflow.boundaries = mutableWorkflow.boundaries.compactMap { boundary in
+            var updatedBoundary = boundary
+            let originalCount = updatedBoundary.memberNodeIDs.count
+            updatedBoundary.memberNodeIDs.removeAll { removedNodeIDs.contains($0) }
+            guard !updatedBoundary.memberNodeIDs.isEmpty else { return nil }
+            if updatedBoundary.memberNodeIDs.count != originalCount {
+                updatedBoundary.updatedAt = Date()
+            }
+            return updatedBoundary
+        }
+
+        return (mutableWorkflow, Array(removedNodeIDs))
+    }
+
+    private func enforceUniqueAgentNodes(in workflows: [Workflow]) -> (workflows: [Workflow], removedNodeCount: Int) {
+        var totalRemoved = 0
+        let sanitized = workflows.map { workflow -> Workflow in
+            let result = enforceUniqueAgentNodes(in: workflow)
+            totalRemoved += result.removedNodeIDs.count
+            return result.workflow
+        }
+        return (sanitized, totalRemoved)
+    }
     
     private func performAutoSave() {
         guard autoSaveEnabled, let project = snapshotCurrentProject() else { return }
@@ -566,6 +614,8 @@ class AppState: ObservableObject {
         openClawManager.restore(from: project.openClaw)
 
         var hydratedProject = project
+        let deduplication = enforceUniqueAgentNodes(in: hydratedProject.workflows)
+        hydratedProject.workflows = deduplication.workflows
         hydratedProject.workspaceIndex = ensureWorkspaceIndex(
             for: hydratedProject.id,
             tasks: project.tasks,
@@ -575,6 +625,13 @@ class AppState: ObservableObject {
             hydratedProject.permissions = conversationPermissions(for: hydratedProject.workflows)
         }
         currentProject = hydratedProject
+
+        if deduplication.removedNodeCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "检测到重复 Agent 节点，已自动清理 \(deduplication.removedNodeCount) 个重复节点。"
+            )
+        }
     }
 
     private func makeOfflineTemplateProject(named projectName: String) -> MAProject {
@@ -753,13 +810,27 @@ class AppState: ObservableObject {
     }
 
     func importProjectData(_ project: MAProject, tasks: [Task]) {
+        var normalizedProject = project
+        let deduplication = enforceUniqueAgentNodes(in: normalizedProject.workflows)
+        normalizedProject.workflows = deduplication.workflows
+        if !normalizedProject.workflows.isEmpty {
+            normalizedProject.permissions = conversationPermissions(for: normalizedProject.workflows)
+        }
+
         currentProjectFileURL = nil
         taskManager.replaceTasks(tasks)
         messageManager.reset()
         openClawService.resetExecutionSnapshot()
-        currentProject = project
+        currentProject = normalizedProject
         if let snapshot = snapshotCurrentProject() {
             currentProject = snapshot
+        }
+
+        if deduplication.removedNodeCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "导入项目时清理了 \(deduplication.removedNodeCount) 个重复 Agent 节点。"
+            )
         }
     }
 
@@ -904,12 +975,20 @@ class AppState: ObservableObject {
     
     func updateWorkflow(_ workflow: Workflow) {
         guard let index = currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) else { return }
-        currentProject?.workflows[index] = workflow
+        let deduplication = enforceUniqueAgentNodes(in: workflow)
+        currentProject?.workflows[index] = deduplication.workflow
         currentProject?.updatedAt = Date()
         objectWillChange.send()
         
         // 当工作流更新时，重新生成任务
         generateTasksFromWorkflow()
+
+        if !deduplication.removedNodeIDs.isEmpty {
+            openClawService.addLog(
+                .warning,
+                "工作流中存在重复 Agent 节点，已移除 \(deduplication.removedNodeIDs.count) 个重复项。"
+            )
+        }
     }
 
     func updateMainWorkflow(_ updates: (inout Workflow) -> Void) {
@@ -918,11 +997,20 @@ class AppState: ObservableObject {
               let index = project.workflows.indices.first else { return }
 
         updates(&project.workflows[index])
+        let deduplication = enforceUniqueAgentNodes(in: project.workflows[index])
+        project.workflows[index] = deduplication.workflow
         syncConversationPermissions(for: project.workflows, in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
         generateTasksFromWorkflow()
+
+        if !deduplication.removedNodeIDs.isEmpty {
+            openClawService.addLog(
+                .warning,
+                "工作流中存在重复 Agent 节点，已移除 \(deduplication.removedNodeIDs.count) 个重复项。"
+            )
+        }
     }
 
     @discardableResult
@@ -975,13 +1063,7 @@ class AppState: ObservableObject {
     func addAgentNode(agentName: String, position: CGPoint) {
         guard let agent = ensureAgent(named: agentName, description: "OpenClaw Agent: \(agentName)") else { return }
 
-        updateMainWorkflow { workflow in
-            var node = WorkflowNode(type: .agent)
-            node.agentID = agent.id
-            node.position = position
-            node.title = agent.name
-            workflow.nodes.append(node)
-        }
+        _ = ensureAgentNode(agentID: agent.id, suggestedPosition: position)
         openClawManager.activateAgent(agent)
     }
 
@@ -1382,46 +1464,88 @@ class AppState: ObservableObject {
             currentProject = mutableProject
         }
 
-        openClawService.executeWorkflow(workflow, agents: project.agents, prompt: trimmedPrompt) { [weak self] results in
+        var entryReplySent = false
+
+        openClawService.executeWorkflow(
+            workflow,
+            agents: project.agents,
+            prompt: trimmedPrompt,
+            onNodeCompleted: { [weak self] result in
+                guard let self else { return }
+                guard !entryReplySent, entryAgentIDs.contains(result.agentID) else { return }
+                guard result.outputType == .agentFinalResponse else {
+                    self.openClawService.addLog(
+                        .info,
+                        "已跳过非最终回复输出（\(result.outputType.rawValue)），不写入工作台对话。",
+                        nodeID: result.nodeID
+                    )
+                    return
+                }
+
+                let respondingAgent = project.agents.first(where: { $0.id == result.agentID }) ?? leadAgent
+                let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !output.isEmpty else { return }
+                entryReplySent = true
+
+                var responseMessage = Message(
+                    from: respondingAgent.id,
+                    to: respondingAgent.id,
+                    type: result.status == .completed ? .notification : .data,
+                    content: output
+                )
+                responseMessage.status = .read
+                responseMessage.metadata["channel"] = "workbench"
+                responseMessage.metadata["role"] = "assistant"
+                responseMessage.metadata["kind"] = "output"
+                responseMessage.metadata["outputType"] = result.outputType.rawValue
+                responseMessage.metadata["workflowID"] = workflow.id.uuidString
+                responseMessage.metadata["taskID"] = task.id.uuidString
+                responseMessage.metadata["entryReply"] = "true"
+                responseMessage.metadata["streamed"] = "true"
+                responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
+                self.messageManager.appendMessage(responseMessage)
+            }
+        ) { [weak self] results in
             guard let self else { return }
 
-            let completedCount = results.filter { $0.status == .completed }.count
             let failedCount = results.filter { $0.status == .failed }.count
             let finalStatus: TaskStatus = results.isEmpty ? .blocked : (failedCount == 0 ? .done : .blocked)
             self.taskManager.moveTask(task.id, to: finalStatus)
 
-            let entryResult = results.first { entryAgentIDs.contains($0.agentID) }
-            let respondingAgent = entryResult
-                .flatMap { result in project.agents.first(where: { $0.id == result.agentID }) }
-                ?? leadAgent
+            if !entryReplySent {
+                let entryResult = results.first { result in
+                    entryAgentIDs.contains(result.agentID)
+                        && result.outputType == .agentFinalResponse
+                        && !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
 
-            let responseText: String
-            if results.isEmpty {
-                responseText = "工作流未返回执行结果，请检查 OpenClaw 连接、Agent 定义或部署配置。"
-            } else if let entryResult {
-                let output = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                responseText = output.isEmpty
-                    ? "\(respondingAgent.name) 已从入口链路执行完成，\(completedCount) 个节点完成，\(failedCount) 个节点失败。"
-                    : output
-            } else {
-                responseText = "工作流 \(workflow.name) 执行完成，\(completedCount) 个节点完成，\(failedCount) 个节点失败。"
+                if let entryResult {
+                    let respondingAgent = project.agents.first(where: { $0.id == entryResult.agentID }) ?? leadAgent
+                    let output = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    var responseMessage = Message(
+                        from: respondingAgent.id,
+                        to: respondingAgent.id,
+                        type: failedCount == 0 ? .notification : .data,
+                        content: output
+                    )
+                    responseMessage.status = .read
+                    responseMessage.metadata["channel"] = "workbench"
+                    responseMessage.metadata["role"] = "assistant"
+                    responseMessage.metadata["kind"] = "output"
+                    responseMessage.metadata["outputType"] = entryResult.outputType.rawValue
+                    responseMessage.metadata["workflowID"] = workflow.id.uuidString
+                    responseMessage.metadata["taskID"] = task.id.uuidString
+                    responseMessage.metadata["entryReply"] = "true"
+                    responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
+                    self.messageManager.appendMessage(responseMessage)
+                } else {
+                    self.openClawService.addLog(
+                        .info,
+                        "本轮执行未产出 agent_final_response，结果保留在仪表盘日志中。"
+                    )
+                }
             }
-
-            var responseMessage = Message(
-                from: respondingAgent.id,
-                to: respondingAgent.id,
-                type: failedCount == 0 ? .notification : .data,
-                content: responseText
-            )
-            responseMessage.status = .read
-            responseMessage.metadata["channel"] = "workbench"
-            responseMessage.metadata["role"] = "assistant"
-            responseMessage.metadata["kind"] = "output"
-            responseMessage.metadata["workflowID"] = workflow.id.uuidString
-            responseMessage.metadata["taskID"] = task.id.uuidString
-            responseMessage.metadata["entryReply"] = "true"
-            responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: responseText))
-            self.messageManager.appendMessage(responseMessage)
 
             if var mutableProject = self.currentProject {
                 if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: trimmedPrompt) {
@@ -1571,6 +1695,23 @@ class AppState: ObservableObject {
         currentProject = project
         objectWillChange.send()
         return duplicated
+    }
+
+    func duplicateAgentsForWorkflowPaste(
+        _ sourceAgentIDs: [UUID],
+        suffix: String = "Copy",
+        offset: CGPoint = .zero
+    ) -> [UUID: UUID] {
+        var mapping: [UUID: UUID] = [:]
+        var seen = Set<UUID>()
+
+        for sourceAgentID in sourceAgentIDs {
+            guard seen.insert(sourceAgentID).inserted else { continue }
+            guard let duplicated = duplicateAgent(sourceAgentID, suffix: suffix, offset: offset) else { continue }
+            mapping[sourceAgentID] = duplicated.id
+        }
+
+        return mapping
     }
 
     func cutAgent(_ agentID: UUID) -> Bool {

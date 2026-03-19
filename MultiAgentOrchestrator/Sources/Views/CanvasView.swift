@@ -166,12 +166,23 @@ struct CanvasView: View {
     private func pasteSelection() {
         guard !copiedNodes.isEmpty else { return }
 
+        let sourceAgentIDs = copiedNodes.compactMap(\.agentID)
+        let duplicatedAgentIDs = appState.duplicateAgentsForWorkflowPaste(sourceAgentIDs)
+
         appState.updateMainWorkflow { workflow in
             var nodeIDMapping: [UUID: UUID] = [:]
 
             for sourceNode in copiedNodes {
                 var newNode = WorkflowNode(type: sourceNode.type)
-                newNode.agentID = sourceNode.agentID
+                if sourceNode.type == .agent {
+                    guard let sourceAgentID = sourceNode.agentID,
+                          let duplicatedAgentID = duplicatedAgentIDs[sourceAgentID] else {
+                        continue
+                    }
+                    newNode.agentID = duplicatedAgentID
+                } else {
+                    newNode.agentID = sourceNode.agentID
+                }
                 newNode.position = CGPoint(x: sourceNode.position.x + 60, y: sourceNode.position.y + 60)
                 newNode.title = sourceNode.title
                 newNode.conditionExpression = sourceNode.conditionExpression

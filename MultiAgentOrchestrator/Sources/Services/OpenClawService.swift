@@ -16,25 +16,78 @@ enum ExecutionStatus: String, Codable {
     case waiting = "Waiting"
 }
 
+enum ExecutionOutputType: String, Codable {
+    case agentFinalResponse = "agent_final_response"
+    case runtimeLog = "runtime_log"
+    case errorSummary = "error_summary"
+    case empty = "empty"
+}
+
 struct ExecutionResult: Codable, Identifiable {
     let id: UUID
     let nodeID: UUID
     let agentID: UUID
     let status: ExecutionStatus
     let output: String
+    let outputType: ExecutionOutputType
     let startedAt: Date
     let completedAt: Date?
     let duration: TimeInterval?
-    
-    init(nodeID: UUID, agentID: UUID, status: ExecutionStatus, output: String = "") {
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case nodeID
+        case agentID
+        case status
+        case output
+        case outputType
+        case startedAt
+        case completedAt
+        case duration
+    }
+
+    init(
+        nodeID: UUID,
+        agentID: UUID,
+        status: ExecutionStatus,
+        output: String = "",
+        outputType: ExecutionOutputType = .empty
+    ) {
         self.id = UUID()
         self.nodeID = nodeID
         self.agentID = agentID
         self.status = status
         self.output = output
+        self.outputType = outputType
         self.startedAt = Date()
         self.completedAt = status == .completed ? Date() : nil
         self.duration = self.completedAt?.timeIntervalSince(self.startedAt)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        nodeID = try container.decode(UUID.self, forKey: .nodeID)
+        agentID = try container.decode(UUID.self, forKey: .agentID)
+        status = try container.decode(ExecutionStatus.self, forKey: .status)
+        output = try container.decodeIfPresent(String.self, forKey: .output) ?? ""
+        outputType = try container.decodeIfPresent(ExecutionOutputType.self, forKey: .outputType) ?? .runtimeLog
+        startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(nodeID, forKey: .nodeID)
+        try container.encode(agentID, forKey: .agentID)
+        try container.encode(status, forKey: .status)
+        try container.encode(output, forKey: .output)
+        try container.encode(outputType, forKey: .outputType)
+        try container.encode(startedAt, forKey: .startedAt)
+        try container.encodeIfPresent(completedAt, forKey: .completedAt)
+        try container.encodeIfPresent(duration, forKey: .duration)
     }
 }
 
@@ -363,6 +416,7 @@ class OpenClawService: ObservableObject {
         _ workflow: Workflow,
         agents: [Agent],
         prompt: String? = nil,
+        onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
         // 检查连接状态
@@ -395,7 +449,13 @@ class OpenClawService: ObservableObject {
         }
         
         // 按连接顺序执行
-        executeNodesSequentially(agentNodes, workflow: workflow, agents: agents, prompt: prompt) { nodeResults in
+        executeNodesSequentially(
+            agentNodes,
+            workflow: workflow,
+            agents: agents,
+            prompt: prompt,
+            onNodeCompleted: onNodeCompleted
+        ) { nodeResults in
             results = nodeResults
             self.executionResults = results
             self.isExecuting = false
@@ -422,11 +482,19 @@ class OpenClawService: ObservableObject {
         }
         let outgoingEdges = Dictionary(grouping: orderedEdges, by: \.fromNodeID)
 
-        let entryNodes = workflow.nodes
-            .filter { node in
-                !workflow.edges.contains(where: { $0.toNodeID == node.id })
-            }
+        let startNodes = workflow.nodes
+            .filter { $0.type == .start }
             .sorted(by: nodeSort)
+        let entryNodes: [WorkflowNode]
+        if !startNodes.isEmpty {
+            entryNodes = startNodes
+        } else {
+            entryNodes = workflow.nodes
+                .filter { node in
+                    !workflow.edges.contains(where: { $0.toNodeID == node.id })
+                }
+                .sorted(by: nodeSort)
+        }
 
         var routedAgents: [WorkflowNode] = []
         var appendedAgents = Set<UUID>()
@@ -481,6 +549,7 @@ class OpenClawService: ObservableObject {
         workflow: Workflow,
         agents: [Agent],
         prompt: String?,
+        onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
         var results: [ExecutionResult] = []
@@ -514,7 +583,8 @@ class OpenClawService: ObservableObject {
                     nodeID: node.id,
                     agentID: UUID(),
                     status: .failed,
-                    output: "Agent not found for node"
+                    output: "Agent not found for node",
+                    outputType: .errorSummary
                 )
                 results.append(result)
                 executionState?.failedNodes.append(node.id)
@@ -527,6 +597,7 @@ class OpenClawService: ObservableObject {
             executeNodeOnOpenClaw(node: node, agent: agent, prompt: prompt) { result in
                 results.append(result)
                 self.executionResults.append(result)
+                onNodeCompleted?(result)
                 
                 // 更新执行状态
                 if result.status == .completed {
@@ -557,13 +628,14 @@ class OpenClawService: ObservableObject {
         let targetAgentID = resolvedAgentIdentifier(for: agent)
         
         // 调用openclaw agent命令
-        callOpenClawAgent(instruction: instruction, agentIdentifier: targetAgentID) { success, output in
+        callOpenClawAgent(instruction: instruction, agentIdentifier: targetAgentID) { success, output, outputType in
             let status: ExecutionStatus = success ? .completed : .failed
             let result = ExecutionResult(
                 nodeID: node.id,
                 agentID: agent.id,
                 status: status,
-                output: output
+                output: output,
+                outputType: outputType
             )
             completion(result)
         }
@@ -591,7 +663,7 @@ class OpenClawService: ObservableObject {
     private func callOpenClawAgent(
         instruction: String,
         agentIdentifier: String,
-        completion: @escaping (Bool, String) -> Void
+        completion: @escaping (Bool, String, ExecutionOutputType) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -602,7 +674,7 @@ class OpenClawService: ObservableObject {
 
             if connectionConfig.deploymentKind == .remoteServer {
                 DispatchQueue.main.async {
-                    completion(false, "当前连接模式为远程网关，工作台对话暂不支持直接执行 agent CLI。")
+                    completion(false, "当前连接模式为远程网关，工作台对话暂不支持直接执行 agent CLI。", .errorSummary)
                 }
                 return
             }
@@ -635,25 +707,30 @@ class OpenClawService: ObservableObject {
                 let result = try manager.executeOpenClawCLI(arguments: args, using: connectionConfig)
                 let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""
                 let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
-                let combinedOutput = [stdout, stderr]
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n")
-                let parsedOutput = self.extractAgentResponse(from: stdout)
+                let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                let parsedOutput = self.extractAgentResponse(from: stdoutTrimmed)
+
+                if !stderrTrimmed.isEmpty {
+                    let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
+                    self.addLog(level, "OpenClaw stderr (\(resolvedAgent.identifier)): \(self.truncatedLog(stderrTrimmed))")
+                }
 
                 DispatchQueue.main.async {
                     if result.terminationStatus == 0 {
-                        let message = parsedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        completion(true, message.isEmpty ? combinedOutput : message)
+                        completion(true, parsedOutput.text, parsedOutput.type)
                     } else {
-                        let message = parsedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let fallback = combinedOutput.isEmpty ? "OpenClaw agent execution failed" : combinedOutput
-                        completion(false, message.isEmpty ? fallback : message)
+                        let fallback = self.executionFailureSummary(
+                            exitCode: result.terminationStatus,
+                            stderr: stderrTrimmed,
+                            stdout: stdoutTrimmed
+                        )
+                        completion(false, fallback, .errorSummary)
                     }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    completion(false, "Error: \(error.localizedDescription)")
+                    completion(false, "Error: \(error.localizedDescription)", .errorSummary)
                 }
             }
         }
@@ -679,21 +756,160 @@ class OpenClawService: ObservableObject {
         return fallback.isEmpty ? "default" : fallback
     }
 
-    private func extractAgentResponse(from output: String) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
+    private func extractAgentResponse(from stdout: String) -> (text: String, type: ExecutionOutputType) {
+        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return ("", .empty) }
 
-        if let payload = extractFirstJSONPayload(from: trimmed),
-           let data = payload.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            for key in ["content", "message", "response", "output", "text"] {
-                if let value = json[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return value
-                }
+        let payloads = extractJSONPayloads(from: trimmed)
+        for payload in payloads.reversed() {
+            guard let data = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data),
+                  let candidate = extractFinalResponseCandidate(from: json) else {
+                continue
             }
+            return (candidate, .agentFinalResponse)
         }
 
-        return trimmed
+        if !payloads.isEmpty {
+            return ("", .runtimeLog)
+        }
+
+        if looksLikeRuntimeLog(trimmed) {
+            return ("", .runtimeLog)
+        }
+
+        return (trimmed, .agentFinalResponse)
+    }
+
+    private func extractFinalResponseCandidate(from json: Any) -> String? {
+        if let dict = json as? [String: Any] {
+            if let direct = firstNonEmptyString(in: dict, keys: ["final", "content", "message", "response", "output", "text", "answer"]) {
+                return direct
+            }
+
+            if let choices = dict["choices"] as? [Any] {
+                for choice in choices.reversed() {
+                    if let text = extractFinalResponseCandidate(from: choice) {
+                        return text
+                    }
+                }
+            }
+
+            if let messages = dict["messages"] as? [Any] {
+                for message in messages.reversed() {
+                    if let text = extractFinalResponseCandidate(from: message) {
+                        return text
+                    }
+                }
+            }
+
+            for key in ["result", "data", "payload"] {
+                if let nested = dict[key],
+                   let text = extractFinalResponseCandidate(from: nested) {
+                    return text
+                }
+            }
+
+            return nil
+        }
+
+        if let array = json as? [Any] {
+            for item in array.reversed() {
+                if let text = extractFinalResponseCandidate(from: item) {
+                    return text
+                }
+            }
+            return nil
+        }
+
+        if let string = json as? String {
+            return normalizedNonEmpty(string)
+        }
+
+        return nil
+    }
+
+    private func firstNonEmptyString(in dict: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            guard let value = dict[key] else { continue }
+            if let text = textValue(from: value) {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private func textValue(from value: Any) -> String? {
+        if let text = value as? String {
+            return normalizedNonEmpty(text)
+        }
+
+        if let dict = value as? [String: Any] {
+            if let direct = firstNonEmptyString(in: dict, keys: ["content", "text", "output_text", "message", "response", "final"]) {
+                return direct
+            }
+            return nil
+        }
+
+        if let array = value as? [Any] {
+            let chunks = array.compactMap { item -> String? in
+                if let text = item as? String {
+                    return normalizedNonEmpty(text)
+                }
+                if let dict = item as? [String: Any] {
+                    return firstNonEmptyString(in: dict, keys: ["text", "content", "output_text"])
+                }
+                return nil
+            }
+            let combined = chunks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return combined.isEmpty ? nil : combined
+        }
+
+        return nil
+    }
+
+    private func normalizedNonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func looksLikeRuntimeLog(_ text: String) -> Bool {
+        let lowercased = text.lowercased()
+        if lowercased.hasPrefix("[plugins]") || lowercased.hasPrefix("[diagnostic]") || lowercased.hasPrefix("[model-fallback/decision]") {
+            return true
+        }
+        if lowercased.contains(" registered ") && lowercased.contains(" tool") {
+            return true
+        }
+        if lowercased.contains("\"summarychars\"") && lowercased.contains("\"propertiescount\"") {
+            return true
+        }
+        return false
+    }
+
+    private func executionFailureSummary(exitCode: Int32, stderr: String, stdout: String) -> String {
+        let stderrLine = stderr
+            .components(separatedBy: .newlines)
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            ?? ""
+        if let normalized = normalizedNonEmpty(stderrLine) {
+            return normalized
+        }
+
+        let stdoutLine = stdout
+            .components(separatedBy: .newlines)
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            ?? ""
+        if let normalized = normalizedNonEmpty(stdoutLine) {
+            return normalized
+        }
+
+        return "OpenClaw agent execution failed (exit code \(exitCode))."
+    }
+
+    private func truncatedLog(_ text: String, maxLength: Int = 2000) -> String {
+        guard text.count > maxLength else { return text }
+        return "\(text.prefix(maxLength)) …"
     }
 
     private func resolveRuntimeAgentIdentifier(
@@ -782,7 +998,12 @@ class OpenClawService: ObservableObject {
     }
 
     private func extractFirstJSONPayload(from text: String) -> String? {
+        extractJSONPayloads(from: text).first
+    }
+
+    private func extractJSONPayloads(from text: String) -> [String] {
         let chars = Array(text)
+        var payloads: [String] = []
 
         for startIndex in chars.indices {
             let opening = chars[startIndex]
@@ -822,13 +1043,14 @@ class OpenClawService: ObservableObject {
                     guard matched else { break }
                     stack.removeLast()
                     if stack.isEmpty {
-                        return String(chars[startIndex...index])
+                        payloads.append(String(chars[startIndex...index]))
+                        break
                     }
                 }
             }
         }
 
-        return nil
+        return payloads
     }
     
     // 测试OpenClaw连接
