@@ -53,6 +53,12 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 }
                 .disabled(selectedWorkflow == nil || isExecuting)
                 .buttonStyle(.borderedProminent)
+
+                Button(openClawService.isRunningTransportBenchmark ? "Benchmarking..." : "Run Benchmark") {
+                    runTransportBenchmark()
+                }
+                .disabled(isExecuting || openClawService.isRunningTransportBenchmark)
+                .buttonStyle(.bordered)
                 
                 Button(LocalizedString.text("clear_results_action")) {
                     openClawService.clearResults()
@@ -206,12 +212,18 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     private var executionResultsView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if let report = openClawService.transportBenchmarkReport {
+                    benchmarkSummaryView(report)
+                }
+
                 if openClawService.executionResults.isEmpty {
+                    if openClawService.transportBenchmarkReport == nil {
                     ContentUnavailableView(
                         LocalizedString.text("no_execution_results"),
                         systemImage: "chart.bar",
                         description: Text(LocalizedString.executeWorkflowToSeeResults)
                     )
+                    }
                 } else {
                     // 统计摘要
                     resultSummaryView
@@ -227,7 +239,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     }
     
     private var resultSummaryView: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 12) {
             Text(LocalizedString.executionResults)
                 .font(.headline)
             
@@ -235,6 +247,15 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
             let completed = openClawService.executionResults.filter { $0.status == .completed }.count
             let failed = openClawService.executionResults.filter { $0.status == .failed }.count
             let successRate = total > 0 ? Double(completed) / Double(total) * 100 : 0
+            let gatewayRuns = openClawService.executionResults.filter { ($0.transportKind ?? "").hasPrefix("gateway_") }.count
+            let gatewayAdoption = total > 0 ? Double(gatewayRuns) / Double(total) * 100 : 0
+            let firstResponseSamples = openClawService.executionResults.compactMap(\.firstChunkLatencyMs)
+            let averageFirstResponseMs = firstResponseSamples.isEmpty
+                ? nil
+                : Double(firstResponseSamples.reduce(0, +)) / Double(firstResponseSamples.count)
+            let runtimeEventCount = openClawService.executionResults.reduce(0) { partial, result in
+                partial + result.runtimeEvents.count
+            }
             
             HStack(spacing: 20) {
                 StatCard(title: LocalizedString.text("execution_total"), value: "\(total)", color: .primary)
@@ -242,11 +263,200 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 StatCard(title: LocalizedString.text("execution_failed_summary"), value: "\(failed)", color: .red)
                 StatCard(title: LocalizedString.text("execution_success_rate"), value: String(format: "%.1f%%", successRate),
                         color: successRate > 80 ? .green : .orange)
+                StatCard(title: "Gateway", value: String(format: "%.1f%%", gatewayAdoption),
+                        color: gatewayAdoption >= 80 ? .green : .orange)
+                StatCard(title: "首响", value: averageFirstResponseMs.map(formatLatency) ?? "N/A",
+                        color: (averageFirstResponseMs ?? 9999) <= 1200 ? .green : .orange)
+                StatCard(title: "Protocol", value: "\(runtimeEventCount)", color: runtimeEventCount > 0 ? .purple : .secondary)
+            }
+        }
+        .padding()
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func benchmarkSummaryView(_ report: TransportBenchmarkReport) -> some View {
+        let sortedSummaries = report.summaries.sorted { lhs, rhs in
+            switch (lhs.averageCompletionLatencyMs, rhs.averageCompletionLatencyMs) {
+            case let (left?, right?):
+                return left < right
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.transport.displayName < rhs.transport.displayName
+            }
+        }
+        let cliSummary = benchmarkSummary(for: .cli, in: report)
+        let fastestSummary = sortedSummaries.first { $0.averageCompletionLatencyMs != nil }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Transport Benchmark")
+                    .font(.headline)
+                Spacer()
+                Text(report.deploymentKind.title)
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.14))
+                    .foregroundColor(.blue)
+                    .clipShape(Capsule())
+            }
+
+            Text("Agent: \(report.agentIdentifier) | Iterations: \(report.iterationsPerTransport)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if let cliSummary {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Vs CLI")
+                        .font(.subheadline)
+
+                    ForEach(sortedSummaries.filter { $0.transport != .cli }) { summary in
+                        HStack(spacing: 12) {
+                            Text(summary.transport.displayName)
+                                .font(.caption)
+                                .frame(width: 120, alignment: .leading)
+
+                            Text(benchmarkComparisonLabel(summary: summary, baseline: cliSummary) ?? "Insufficient data")
+                                .font(.caption)
+                                .foregroundColor(benchmarkComparisonColor(summary: summary, baseline: cliSummary))
+
+                            if let spreadLabel = benchmarkSpreadLabel(summary) {
+                                Text(spreadLabel)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+                        }
+                    }
+                }
+                .padding(12)
+                .background(Color.blue.opacity(0.08))
+                .cornerRadius(10)
+            }
+
+            if let fastestSummary,
+               let recommendation = benchmarkRecommendationLabel(summary: fastestSummary, baseline: cliSummary) {
+                Text(recommendation)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            ForEach(sortedSummaries) { summary in
+                HStack(spacing: 16) {
+                    Text(summary.transport.displayName)
+                        .font(.subheadline)
+                        .frame(width: 120, alignment: .leading)
+
+                    Text("Success \(summary.successCount)/\(summary.sampleCount)")
+                        .font(.caption)
+                        .foregroundColor(summary.failureCount == 0 ? .green : .orange)
+                        .frame(width: 110, alignment: .leading)
+
+                    Text("First \(summary.averageFirstChunkLatencyMs.map(formatLatency) ?? "N/A")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(width: 110, alignment: .leading)
+
+                    Text("Total \(summary.averageCompletionLatencyMs.map(formatLatency) ?? "N/A")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(width: 110, alignment: .leading)
+
+                    if let spreadLabel = benchmarkSpreadLabel(summary) {
+                        Text(spreadLabel)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(width: 120, alignment: .leading)
+                    }
+
+                    Spacer()
+                }
+                .padding(.vertical, 2)
+            }
+
+            if let reportFilePath = report.reportFilePath {
+                Text(reportFilePath)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
             }
         }
         .padding()
         .background(Color(.controlBackgroundColor))
         .cornerRadius(12)
+    }
+
+    private func benchmarkSummary(
+        for transport: TransportBenchmarkKind,
+        in report: TransportBenchmarkReport
+    ) -> TransportBenchmarkSummary? {
+        report.summaries.first { $0.transport == transport }
+    }
+
+    private func benchmarkComparisonLabel(
+        summary: TransportBenchmarkSummary,
+        baseline: TransportBenchmarkSummary
+    ) -> String? {
+        guard
+            let baselineLatency = baseline.averageCompletionLatencyMs,
+            let summaryLatency = summary.averageCompletionLatencyMs,
+            baselineLatency > 0,
+            summaryLatency > 0
+        else {
+            return nil
+        }
+
+        let ratio = baselineLatency / summaryLatency
+        let improvement = (baselineLatency - summaryLatency) / baselineLatency * 100
+
+        if ratio >= 1 {
+            return String(format: "%.2fx faster (%.0f%% lower total)", ratio, improvement)
+        }
+
+        return String(format: "%.2fx slower (%.0f%% higher total)", 1 / ratio, abs(improvement))
+    }
+
+    private func benchmarkComparisonColor(
+        summary: TransportBenchmarkSummary,
+        baseline: TransportBenchmarkSummary
+    ) -> Color {
+        guard
+            let baselineLatency = baseline.averageCompletionLatencyMs,
+            let summaryLatency = summary.averageCompletionLatencyMs
+        else {
+            return .secondary
+        }
+
+        return summaryLatency <= baselineLatency ? .green : .orange
+    }
+
+    private func benchmarkSpreadLabel(_ summary: TransportBenchmarkSummary) -> String? {
+        guard
+            let fastest = summary.fastestCompletionLatencyMs,
+            let slowest = summary.slowestCompletionLatencyMs
+        else {
+            return nil
+        }
+
+        return "Range \(formatLatency(Double(fastest)))-\(formatLatency(Double(slowest)))"
+    }
+
+    private func benchmarkRecommendationLabel(
+        summary: TransportBenchmarkSummary,
+        baseline: TransportBenchmarkSummary?
+    ) -> String? {
+        guard let averageLatency = summary.averageCompletionLatencyMs else { return nil }
+
+        if let baseline, let comparison = benchmarkComparisonLabel(summary: summary, baseline: baseline) {
+            return "Recommended default: \(summary.transport.displayName) at \(formatLatency(averageLatency)), \(comparison)."
+        }
+
+        return "Recommended default: \(summary.transport.displayName) at \(formatLatency(averageLatency))."
     }
     
     private var defaultView: some View {
@@ -292,11 +502,25 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
         
         appState.openClawService.executeWorkflow(
             workflow,
-            agents: project.agents
+            agents: project.agents,
+            projectRuntimeSessionID: project.runtimeState.sessionID
         ) { _ in
             isExecuting = false
             showResults = true
         }
+    }
+
+    private func runTransportBenchmark() {
+        openClawService.runTransportBenchmark { _ in
+            showResults = true
+        }
+    }
+
+    private func formatLatency(_ milliseconds: Double) -> String {
+        if milliseconds >= 1000 {
+            return String(format: "%.1fs", milliseconds / 1000.0)
+        }
+        return "\(Int(milliseconds.rounded()))ms"
     }
 }
 

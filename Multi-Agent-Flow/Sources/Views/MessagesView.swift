@@ -48,7 +48,8 @@ struct WorkbenchConversationView: View {
             last.id.uuidString,
             String(last.content.count),
             last.metadata["thinking"] ?? "false",
-            last.metadata["outputType"] ?? ""
+            last.inferredOutputType ?? "",
+            last.runtimeEvent?.eventType.rawValue ?? ""
         ].joined(separator: "|")
     }
 
@@ -135,6 +136,16 @@ struct WorkbenchConversationView: View {
         return agentIDs.count
     }
 
+    private var canStopActiveRemoteConversation: Bool {
+        let runID = appState.openClawService.activeGatewayRunID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sessionKey = appState.openClawService.activeGatewaySessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !runID.isEmpty && !sessionKey.isEmpty
+    }
+
+    private var isStoppingActiveRemoteConversation: Bool {
+        appState.openClawService.isAbortingActiveGatewayRun
+    }
+
     var body: some View {
         Group {
             if project == nil {
@@ -181,12 +192,21 @@ struct WorkbenchConversationView: View {
             if selectedWorkflowID == nil {
                 selectedWorkflowID = workflows.first?.id
             }
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID)
         }
         .onChange(of: workflows.map(\.id)) { _, newValue in
             guard let firstID = newValue.first else { return }
             if selectedWorkflowID == nil || !newValue.contains(selectedWorkflowID ?? firstID) {
                 selectedWorkflowID = firstID
             }
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+        }
+        .onChange(of: selectedWorkflowID) { _, newValue in
+            appState.refreshWorkbenchHistory(for: newValue)
+        }
+        .onChange(of: appState.openClawManager.isConnected) { _, isConnected in
+            guard isConnected else { return }
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID)
         }
         .onChange(of: dashboardLayout) { _, newValue in
             if newValue != .dashboardOnly {
@@ -421,13 +441,21 @@ struct WorkbenchConversationView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Spacer()
+                Spacer()
 
-                    Button(LocalizedString.text("send_to_workflow")) {
-                        publishPrompt()
+                if canStopActiveRemoteConversation || isStoppingActiveRemoteConversation {
+                    Button(LocalizedString.stopExecution) {
+                        stopActiveRemoteConversation()
                     }
-                    .disabled(
-                        prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    .buttonStyle(.bordered)
+                    .disabled(!canStopActiveRemoteConversation || isStoppingActiveRemoteConversation)
+                }
+
+                Button(LocalizedString.text("send_to_workflow")) {
+                    publishPrompt()
+                }
+                .disabled(
+                    prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || appState.openClawService.isExecuting
                             || !hasExecutableWorkflow
                     )
@@ -600,6 +628,11 @@ struct WorkbenchConversationView: View {
         prompt = ""
     }
 
+    private func stopActiveRemoteConversation() {
+        errorText = nil
+        appState.openClawService.abortActiveRemoteConversation()
+    }
+
     private func scheduleAutoScroll(
         using proxy: ScrollViewProxy,
         animated: Bool,
@@ -769,16 +802,40 @@ private struct WorkbenchMessageBubble: View {
     let linkedTask: Task?
 
     private var isUserMessage: Bool {
-        message.metadata["role"] == "user"
+        message.inferredRole == "user"
     }
 
     private var agentName: String {
-        let name = message.metadata["agentName"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = message.inferredAgentName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? LocalizedString.text("node_agent_fallback") : name
     }
 
     private var isThinking: Bool {
         !isUserMessage && message.metadata["thinking"] == "true"
+    }
+
+    private var runtimeEventLabel: String? {
+        guard let eventType = message.runtimeEvent?.eventType else { return nil }
+        switch eventType {
+        case .taskDispatch:
+            return "Dispatch"
+        case .taskAccepted:
+            return "Accepted"
+        case .taskProgress:
+            return "Progress"
+        case .taskResult:
+            return "Result"
+        case .taskRoute:
+            return "Route"
+        case .taskError:
+            return "Error"
+        case .taskApprovalRequired:
+            return "Approval"
+        case .taskApproved:
+            return "Approved"
+        case .sessionSync:
+            return "Session"
+        }
     }
 
     var body: some View {
@@ -789,6 +846,15 @@ private struct WorkbenchMessageBubble: View {
                     .font(.caption2)
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
+                if let runtimeEventLabel {
+                    Text(runtimeEventLabel)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12))
+                        .foregroundColor(.secondary)
+                        .clipShape(Capsule())
+                }
                 if !isUserMessage {
                     Text(isThinking ? LocalizedString.text("thinking") : LocalizedString.text("replied"))
                         .font(.caption2)
@@ -808,7 +874,7 @@ private struct WorkbenchMessageBubble: View {
                 .frame(maxWidth: .infinity, alignment: isUserMessage ? .trailing : .leading)
             }
 
-            MarkdownText(message.content)
+            MarkdownText(message.summaryText)
                 .font(.body)
                 .padding(12)
                 .frame(maxWidth: 560, alignment: isUserMessage ? .trailing : .leading)

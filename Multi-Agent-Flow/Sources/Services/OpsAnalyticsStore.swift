@@ -428,6 +428,9 @@ final class OpsAnalyticsStore {
         externalSignature: String
     ) -> String {
         let latestResultID = executionResults.last?.id.uuidString ?? "none"
+        let latestTransportKind = executionResults.last?.transportKind ?? "none"
+        let latestCompletionLatencyMs = executionResults.last?.completionLatencyMs ?? -1
+        let latestFirstChunkLatencyMs = executionResults.last?.firstChunkLatencyMs ?? -1
         let latestUpdatedAt = project.updatedAt.timeIntervalSinceReferenceDate
         return [
             project.id.uuidString,
@@ -438,7 +441,11 @@ final class OpsAnalyticsStore {
             String(failedExecutions),
             String(warningLogCount),
             String(errorLogCount),
+            String(executionResults.count),
             latestResultID,
+            latestTransportKind,
+            String(latestCompletionLatencyMs),
+            String(latestFirstChunkLatencyMs),
             String(latestUpdatedAt),
             externalSignature
         ].joined(separator: "::")
@@ -561,6 +568,16 @@ final class OpsAnalyticsStore {
         let reliabilityRate = totalExecutions > 0 ? (Double(completedExecutions) / Double(totalExecutions)) * 100.0 : 0.0
         let engagementRate = totalAgents > 0 ? (Double(activeAgents) / Double(totalAgents)) * 100.0 : 0.0
         let memoryRate = totalAgents > 0 ? (Double(trackedMemoryAgents) / Double(totalAgents)) * 100.0 : 0.0
+        let gatewayExecutions = executionResults.filter { ($0.transportKind ?? "").hasPrefix("gateway_") }.count
+        let gatewayAdoptionRate = totalExecutions > 0 ? (Double(gatewayExecutions) / Double(totalExecutions)) * 100.0 : 0.0
+        let firstChunkLatencies = executionResults.compactMap(\.firstChunkLatencyMs).map(Double.init)
+        let completionLatencies = executionResults.compactMap(\.completionLatencyMs).map(Double.init)
+        let averageFirstChunkLatency = firstChunkLatencies.isEmpty
+            ? nil
+            : firstChunkLatencies.reduce(0, +) / Double(firstChunkLatencies.count)
+        let averageCompletionLatency = completionLatencies.isEmpty
+            ? nil
+            : completionLatencies.reduce(0, +) / Double(completionLatencies.count)
 
         upsertGoalMetric(
             db: db,
@@ -655,6 +672,43 @@ final class OpsAnalyticsStore {
             unit: "count",
             breakdown: ["warning_count": "\(warningLogCount)"]
         )
+        upsertGoalMetric(
+            db: db,
+            projectID: projectID,
+            date: dateString,
+            goal: "transport_efficiency",
+            metric: "gateway_adoption_rate",
+            value: gatewayAdoptionRate,
+            unit: "%",
+            breakdown: [
+                "gateway_runs": "\(gatewayExecutions)",
+                "total_runs": "\(totalExecutions)"
+            ]
+        )
+        if let averageFirstChunkLatency {
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: dateString,
+                goal: "transport_efficiency",
+                metric: "avg_first_chunk_latency_ms",
+                value: averageFirstChunkLatency,
+                unit: "ms",
+                breakdown: ["sample_count": "\(firstChunkLatencies.count)"]
+            )
+        }
+        if let averageCompletionLatency {
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: dateString,
+                goal: "transport_efficiency",
+                metric: "avg_completion_latency_ms",
+                value: averageCompletionLatency,
+                unit: "ms",
+                breakdown: ["sample_count": "\(completionLatencies.count)"]
+            )
+        }
 
         for row in agentRows {
             upsertDailyAgentActivity(
@@ -678,11 +732,15 @@ final class OpsAnalyticsStore {
                 "node_id": result.nodeID.uuidString,
                 "execution_status": result.status.rawValue,
                 "output_type": result.outputType.rawValue,
+                "session_id": result.sessionID ?? "",
+                "transport_kind": result.transportKind ?? "",
+                "first_chunk_latency_ms": result.firstChunkLatencyMs.map(String.init) ?? "",
+                "completion_latency_ms": result.completionLatencyMs.map(String.init) ?? "",
                 "routing_action": result.routingAction ?? "",
                 "routing_reason": result.routingReason ?? "",
                 "routing_targets": result.routingTargets.joined(separator: ", "),
-                "output_text": result.output,
-                "preview_text": result.output.compactSingleLinePreview(limit: 160)
+                "output_text": result.renderedOutputText,
+                "preview_text": result.previewText
             ]
 
             upsertSpan(
@@ -697,7 +755,8 @@ final class OpsAnalyticsStore {
                 startTime: result.startedAt,
                 endTime: result.completedAt,
                 durationMs: result.duration.map { $0 * 1000.0 },
-                attributes: attributes
+                attributes: attributes,
+                eventsText: result.runtimeEventsText
             )
 
             if result.routingAction != nil || result.routingReason != nil || !result.routingTargets.isEmpty {
@@ -724,11 +783,36 @@ final class OpsAnalyticsStore {
                 )
             }
 
-            if !result.output.isEmpty {
+            if let firstChunkLatencyMs = result.firstChunkLatencyMs {
+                let firstResponseAt = result.startedAt.addingTimeInterval(Double(firstChunkLatencyMs) / 1000.0)
+                let firstResponseAttributes: [String: String] = [
+                    "agent_name": agentNamesByID[result.agentID] ?? "Unknown Agent",
+                    "transport_kind": result.transportKind ?? "",
+                    "session_id": result.sessionID ?? "",
+                    "first_chunk_latency_ms": String(firstChunkLatencyMs)
+                ]
+
+                upsertSpan(
+                    db: db,
+                    spanID: "\(result.id.uuidString)-first-response",
+                    projectID: projectID,
+                    traceID: traceID,
+                    parentSpanID: result.id.uuidString,
+                    name: "First Response",
+                    service: "multi-agent-flow.streaming",
+                    status: "ok",
+                    startTime: result.startedAt,
+                    endTime: firstResponseAt,
+                    durationMs: Double(firstChunkLatencyMs),
+                    attributes: firstResponseAttributes
+                )
+            }
+
+            if !result.renderedOutputText.isEmpty {
                 let outputAttributes: [String: String] = [
                     "agent_name": agentNamesByID[result.agentID] ?? "Unknown Agent",
                     "output_type": result.outputType.rawValue,
-                    "preview_text": result.output.compactSingleLinePreview(limit: 160)
+                    "preview_text": result.previewText
                 ]
 
                 upsertSpan(
@@ -743,7 +827,8 @@ final class OpsAnalyticsStore {
                     startTime: result.completedAt ?? result.startedAt,
                     endTime: result.completedAt ?? result.startedAt,
                     durationMs: 0,
-                    attributes: outputAttributes
+                    attributes: outputAttributes,
+                    eventsText: result.runtimeEventsText
                 )
             }
         }
@@ -1647,6 +1732,14 @@ final class OpsAnalyticsStore {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
         let relatedSpans = loadTraceRelatedSpans(db: db, traceID: String(cString: traceCString), rootSpanID: id.uuidString)
 
+        let normalizedEventsText = emptyToNil(eventsText)
+        let previewText = emptyToNil(attributes["preview_text"])
+            ?? emptyToNil(normalizedEventsText?.compactSingleLinePreview(limit: 160))
+            ?? "No output"
+        let outputText = emptyToNil(attributes["output_text"])
+            ?? normalizedEventsText
+            ?? ""
+
         return OpsTraceDetail(
             id: id,
             traceID: String(cString: traceCString),
@@ -1664,10 +1757,10 @@ final class OpsAnalyticsStore {
             startedAt: startedAt,
             completedAt: completedAt,
             duration: durationMs.map { $0 / 1000.0 },
-            previewText: attributes["preview_text"] ?? "No output",
-            outputText: attributes["output_text"] ?? "",
+            previewText: previewText,
+            outputText: outputText,
             attributes: attributes,
-            eventsText: emptyToNil(eventsText),
+            eventsText: normalizedEventsText,
             relatedSpans: relatedSpans
         )
     }

@@ -72,6 +72,7 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
     var timestamp: Date
     var status: MessageStatus
     var metadata: [String: String]
+    var runtimeEvent: OpenClawRuntimeEvent?
     var requiresApproval: Bool
     var approvedBy: UUID?
     var approvalTimestamp: Date?
@@ -85,6 +86,7 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
         self.timestamp = Date()
         self.status = requiresApproval ? .waitingForApproval : .pending
         self.metadata = [:]
+        self.runtimeEvent = nil
         self.requiresApproval = requiresApproval
     }
     
@@ -96,5 +98,63 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
             type: MessageType.text,  // 明确指定类型
             content: "Hello, this is a sample message."
         )
+    }
+
+    nonisolated var inferredRole: String? {
+        if let role = metadata["role"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !role.isEmpty {
+            return role
+        }
+
+        switch runtimeEvent?.eventType {
+        case .taskDispatch:
+            return runtimeEvent?.source.kind == .user ? "user" : "assistant"
+        case .taskAccepted, .taskProgress, .taskResult, .taskRoute, .taskError, .taskApprovalRequired, .taskApproved, .sessionSync:
+            return "assistant"
+        case nil:
+            return nil
+        }
+    }
+
+    nonisolated var inferredKind: String? {
+        if let kind = metadata["kind"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !kind.isEmpty {
+            return kind
+        }
+
+        switch runtimeEvent?.eventType {
+        case .taskDispatch:
+            return "input"
+        case .taskAccepted, .taskProgress, .sessionSync:
+            return "system"
+        case .taskResult, .taskRoute, .taskError, .taskApprovalRequired, .taskApproved:
+            return "output"
+        case nil:
+            return nil
+        }
+    }
+
+    nonisolated var inferredAgentName: String? {
+        if let agentName = metadata["agentName"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agentName.isEmpty {
+            return agentName
+        }
+        return runtimeEvent?.source.agentName ?? runtimeEvent?.target.agentName
+    }
+
+    nonisolated var inferredOutputType: String? {
+        if let outputType = metadata["outputType"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !outputType.isEmpty {
+            return outputType
+        }
+        return runtimeEvent?.payload["outputType"]
+    }
+
+    nonisolated var summaryText: String {
+        if let summary = runtimeEvent?.payload["summary"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty {
+            return summary
+        }
+        return content
     }
 }

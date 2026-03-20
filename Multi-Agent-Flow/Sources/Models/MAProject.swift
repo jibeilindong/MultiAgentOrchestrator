@@ -13,13 +13,41 @@ struct RuntimeState: Codable {
     var sessionID: String
     var messageQueue: [String]
     var agentStates: [String: String]
+    var runtimeEvents: [OpenClawRuntimeEvent]
     var lastUpdated: Date
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID
+        case messageQueue
+        case agentStates
+        case runtimeEvents
+        case lastUpdated
+    }
     
     init() {
         self.sessionID = UUID().uuidString
         self.messageQueue = []
         self.agentStates = [:]
+        self.runtimeEvents = []
         self.lastUpdated = Date()
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? UUID().uuidString
+        messageQueue = try container.decodeIfPresent([String].self, forKey: .messageQueue) ?? []
+        agentStates = try container.decodeIfPresent([String: String].self, forKey: .agentStates) ?? [:]
+        runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
+        lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? Date()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(messageQueue, forKey: .messageQueue)
+        try container.encode(agentStates, forKey: .agentStates)
+        try container.encode(runtimeEvents, forKey: .runtimeEvents)
+        try container.encode(lastUpdated, forKey: .lastUpdated)
     }
 }
 

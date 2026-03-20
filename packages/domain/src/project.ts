@@ -6,11 +6,13 @@ import type { Permission } from "./permission";
 import type { Task } from "./task";
 import type { SwiftDate } from "./types";
 import type { Workflow } from "./workflow";
+import type { OpenClawRuntimeEvent } from "./openclaw-runtime";
 
 export interface RuntimeState {
   sessionID: string;
   messageQueue: string[];
   agentStates: Record<string, string>;
+  runtimeEvents: OpenClawRuntimeEvent[];
   lastUpdated: SwiftDate;
 }
 

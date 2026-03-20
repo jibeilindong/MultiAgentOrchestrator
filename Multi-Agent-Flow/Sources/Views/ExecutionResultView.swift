@@ -36,10 +36,18 @@ struct ExecutionResultView: View {
             if hasRoutingDetails {
                 routingDetailsView
             }
+
+            if hasTransportDetails {
+                transportDetailsView
+            }
+
+            if !result.runtimeEvents.isEmpty {
+                runtimeEventsView
+            }
             
             Divider()
             
-            Text(result.output)
+            Text(result.renderedOutputText.isEmpty ? LocalizedString.text("no_output") : result.renderedOutputText)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(8)
@@ -103,6 +111,13 @@ struct ExecutionResultView: View {
         result.routingAction != nil || !result.routingTargets.isEmpty || result.routingReason != nil
     }
 
+    private var hasTransportDetails: Bool {
+        result.transportKind != nil
+            || result.sessionID != nil
+            || result.firstChunkLatencyMs != nil
+            || result.completionLatencyMs != nil
+    }
+
     private var routingDetailsView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -139,6 +154,78 @@ struct ExecutionResultView: View {
         .cornerRadius(8)
     }
 
+    private var transportDetailsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Transport")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.blue)
+
+                if let transportKind = result.transportKind,
+                   !transportKind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(transportKindLabel(transportKind))
+                        .font(.caption2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.blue.opacity(0.16))
+                        .foregroundColor(.blue)
+                        .clipShape(Capsule())
+                }
+            }
+
+            if let sessionID = result.sessionID,
+               !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Session: \(sessionID)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            if let firstChunkLatencyMs = result.firstChunkLatencyMs {
+                Text("First Response: \(formatLatency(milliseconds: firstChunkLatencyMs))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            if let completionLatencyMs = result.completionLatencyMs {
+                Text("Completion: \(formatLatency(milliseconds: completionLatencyMs))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.blue.opacity(0.08))
+        .cornerRadius(8)
+    }
+
+    private var runtimeEventsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Protocol")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.purple)
+                Text("\(result.runtimeEvents.count) event(s)")
+                    .font(.caption2)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.purple.opacity(0.16))
+                    .foregroundColor(.purple)
+                    .clipShape(Capsule())
+            }
+
+            ForEach(Array(result.runtimeEvents.prefix(3))) { event in
+                Text("\(event.eventType.rawValue) · \(event.timestamp.formatted(date: .omitted, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.purple.opacity(0.08))
+        .cornerRadius(8)
+    }
+
     private func routingActionLabel(_ action: String) -> String {
         switch action.lowercased() {
         case "stop": return "Stop"
@@ -156,6 +243,15 @@ struct ExecutionResultView: View {
         default: return .secondary
         }
     }
+
+    private func transportKindLabel(_ value: String) -> String {
+        switch value.lowercased() {
+        case "gateway_chat": return "Gateway Chat"
+        case "gateway_agent": return "Gateway Agent"
+        case "cli": return "CLI"
+        default: return value
+        }
+    }
     
     private func formatDuration(_ duration: TimeInterval) -> String {
         if duration < 1 {
@@ -167,5 +263,12 @@ struct ExecutionResultView: View {
             let seconds = Int(duration.truncatingRemainder(dividingBy: 60))
             return "\(minutes)m \(seconds)s"
         }
+    }
+
+    private func formatLatency(milliseconds: Int) -> String {
+        if milliseconds >= 1000 {
+            return String(format: "%.1fs", Double(milliseconds) / 1000.0)
+        }
+        return "\(milliseconds)ms"
     }
 }

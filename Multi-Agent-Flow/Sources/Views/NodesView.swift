@@ -19,6 +19,8 @@ struct NodesView: View {
     let geometry: GeometryProxy
     var isConnectMode: Bool = false
     var connectFromAgentID: UUID?
+    var batchSourceNodeIDs: Set<UUID> = []
+    var batchTargetNodeIDs: Set<UUID> = []
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
 
@@ -42,6 +44,9 @@ struct NodesView: View {
                 outgoingConnections: counts.outgoing,
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
+                isBatchSource: batchSourceNodeIDs.contains(node.id),
+                isBatchTarget: batchTargetNodeIDs.contains(node.id),
+                hasBatchConflict: batchSourceNodeIDs.contains(node.id) && batchTargetNodeIDs.contains(node.id),
                 isRelatedToSelection: relatedNodeIDs.contains(node.id) && !focusedNodeIDs.contains(node.id) && node.type == .agent,
                 onTap: { handleSingleTap(node) },
                 accentColor: displayColor(for: node, connectedNodeIDs: connectedNodeIDs),

@@ -16,6 +16,8 @@ struct ConnectionLinesView: View {
     let textScale: CGFloat
     let textColor: Color
     @Binding var selectedEdgeID: UUID?
+    let previewCandidates: [BatchConnectionCandidate]
+    let recentlyCreatedEdgeIDs: Set<UUID>
     @State private var hoveredSharedSegmentID: String?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
@@ -29,6 +31,8 @@ struct ConnectionLinesView: View {
         textScale: CGFloat = 1,
         textColor: Color = .black,
         selectedEdgeID: Binding<UUID?> = .constant(nil),
+        previewCandidates: [BatchConnectionCandidate] = [],
+        recentlyCreatedEdgeIDs: Set<UUID> = [],
         onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
         onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil
     ) {
@@ -40,6 +44,8 @@ struct ConnectionLinesView: View {
         self.textScale = textScale
         self.textColor = textColor
         self._selectedEdgeID = selectedEdgeID
+        self.previewCandidates = previewCandidates
+        self.recentlyCreatedEdgeIDs = recentlyCreatedEdgeIDs
         self.onEdgeSelected = onEdgeSelected
         self.onEdgeSecondarySelected = onEdgeSecondarySelected
     }
@@ -54,9 +60,9 @@ struct ConnectionLinesView: View {
                     if !layout.strokePolylines.isEmpty {
                         OrthogonalConnectionGroupShape(polylines: layout.strokePolylines)
                             .stroke(
-                                layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.78),
+                                layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.92) : layout.baseColor.opacity(0.78)),
                                 style: StrokeStyle(
-                                    lineWidth: max(1, lineWidth + (layout.isSelected ? 1 : 0)),
+                                    lineWidth: max(1, lineWidth + (layout.isSelected ? 1 : 0) + (layout.isRecentlyCreated ? 1.5 : 0)),
                                     lineCap: .round,
                                     lineJoin: .round,
                                     dash: layout.edge.requiresApproval ? [8, 4] : []
@@ -76,14 +82,14 @@ struct ConnectionLinesView: View {
                         if layout.showsForwardArrow {
                             ArrowShape(from: points[points.count - 2], to: points[points.count - 1])
                                 .stroke(
-                                    layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.9),
+                                    layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
                                     style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                                 )
                         }
                         if layout.edge.isBidirectional {
                             ArrowShape(from: points[1], to: points[0])
                                 .stroke(
-                                    layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.9),
+                                    layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
                                     style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                                 )
                         }
@@ -100,6 +106,17 @@ struct ConnectionLinesView: View {
                         )
                         .position(layout.labelPosition ?? labelPosition(for: layout))
                     }
+                }
+
+                ForEach(previewLineLayouts(in: geo), id: \.id) { previewLine in
+                    Path { path in
+                        path.move(to: previewLine.from)
+                        path.addLine(to: previewLine.to)
+                    }
+                    .stroke(
+                        Color.accentColor.opacity(0.85),
+                        style: StrokeStyle(lineWidth: max(2, lineWidth + 0.5), lineCap: .round, dash: [10, 6])
+                    )
                 }
 
                 ForEach(renderData.sharedHitLayouts, id: \.id) { sharedHit in
@@ -260,6 +277,7 @@ struct ConnectionLinesView: View {
                         points: path,
                         strokePolylines: [path],
                         isSelected: selectedEdgeID == candidate.edge.id,
+                        isRecentlyCreated: recentlyCreatedEdgeIDs.contains(candidate.edge.id),
                         baseColor: edgeBaseColor(candidate.edge),
                         displayText: edgeDisplayText(candidate.edge),
                         showsForwardArrow: true,
@@ -292,6 +310,23 @@ struct ConnectionLinesView: View {
                 return lhsPoint.y < rhsPoint.y
             }
             return lhsPoint.x < rhsPoint.x
+        }
+    }
+
+    private func previewLineLayouts(in geometry: GeometryProxy) -> [PreviewLineLayout] {
+        guard let workflow = currentWorkflow else { return [] }
+        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+
+        return previewCandidates.compactMap { candidate in
+            guard candidate.status == .new,
+                  let fromNode = nodesByID[candidate.fromNodeID],
+                  let toNode = nodesByID[candidate.toNodeID] else { return nil }
+
+            return PreviewLineLayout(
+                id: candidate.id,
+                from: nodeFrame(for: fromNode, geometry: geometry).center,
+                to: nodeFrame(for: toNode, geometry: geometry).center
+            )
         }
     }
 
@@ -577,6 +612,7 @@ struct ConnectionLinesView: View {
                 points: layout.points,
                 strokePolylines: layout.strokePolylines,
                 isSelected: layout.isSelected,
+                isRecentlyCreated: layout.isRecentlyCreated,
                 baseColor: layout.baseColor,
                 displayText: layout.displayText,
                 showsForwardArrow: shouldShowArrow,
@@ -606,6 +642,7 @@ struct ConnectionLinesView: View {
                 points: layout.points,
                 strokePolylines: uniquePolylines,
                 isSelected: layout.isSelected,
+                isRecentlyCreated: layout.isRecentlyCreated,
                 baseColor: layout.baseColor,
                 displayText: layout.displayText,
                 showsForwardArrow: layout.showsForwardArrow,
@@ -751,6 +788,7 @@ struct ConnectionLinesView: View {
                 points: layout.points,
                 strokePolylines: layout.strokePolylines,
                 isSelected: layout.isSelected,
+                isRecentlyCreated: layout.isRecentlyCreated,
                 baseColor: layout.baseColor,
                 displayText: layout.displayText,
                 showsForwardArrow: layout.showsForwardArrow,
@@ -1098,10 +1136,17 @@ private struct EdgeLayout {
     let points: [CGPoint]
     let strokePolylines: [[CGPoint]]
     let isSelected: Bool
+    let isRecentlyCreated: Bool
     let baseColor: Color
     let displayText: String
     let showsForwardArrow: Bool
     let labelPosition: CGPoint?
+}
+
+private struct PreviewLineLayout: Identifiable {
+    let id: String
+    let from: CGPoint
+    let to: CGPoint
 }
 
 private struct ConnectionRenderData {

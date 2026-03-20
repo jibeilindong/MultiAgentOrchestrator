@@ -52,6 +52,12 @@ private enum WorkflowInstructionStyle {
     case fastWorkbenchEntry
 }
 
+private enum AgentTransportPreference: Sendable {
+    case automatic
+    case gatewayOnly
+    case cliOnly
+}
+
 private actor StreamingTextAccumulator {
     private var lastVisibleText = ""
 
@@ -75,9 +81,15 @@ struct ExecutionResult: Codable, Identifiable {
     let status: ExecutionStatus
     let output: String
     let outputType: ExecutionOutputType
+    let sessionID: String?
+    let transportKind: String?
+    let firstChunkLatencyMs: Int?
+    let completionLatencyMs: Int?
     let routingAction: String?
     let routingTargets: [String]
     let routingReason: String?
+    let runtimeEvents: [OpenClawRuntimeEvent]
+    let primaryRuntimeEvent: OpenClawRuntimeEvent?
     let startedAt: Date
     let completedAt: Date?
     let duration: TimeInterval?
@@ -89,9 +101,15 @@ struct ExecutionResult: Codable, Identifiable {
         case status
         case output
         case outputType
+        case sessionID
+        case transportKind
+        case firstChunkLatencyMs
+        case completionLatencyMs
         case routingAction
         case routingTargets
         case routingReason
+        case runtimeEvents
+        case primaryRuntimeEvent
         case startedAt
         case completedAt
         case duration
@@ -103,9 +121,17 @@ struct ExecutionResult: Codable, Identifiable {
         status: ExecutionStatus,
         output: String = "",
         outputType: ExecutionOutputType = .empty,
+        sessionID: String? = nil,
+        transportKind: String? = nil,
+        firstChunkLatencyMs: Int? = nil,
+        completionLatencyMs: Int? = nil,
         routingAction: String? = nil,
         routingTargets: [String] = [],
-        routingReason: String? = nil
+        routingReason: String? = nil,
+        runtimeEvents: [OpenClawRuntimeEvent] = [],
+        primaryRuntimeEvent: OpenClawRuntimeEvent? = nil,
+        startedAt: Date = Date(),
+        completedAt: Date? = nil
     ) {
         self.id = UUID()
         self.nodeID = nodeID
@@ -113,12 +139,19 @@ struct ExecutionResult: Codable, Identifiable {
         self.status = status
         self.output = output
         self.outputType = outputType
+        self.sessionID = sessionID
+        self.transportKind = transportKind
+        self.firstChunkLatencyMs = firstChunkLatencyMs
+        self.completionLatencyMs = completionLatencyMs
         self.routingAction = routingAction
         self.routingTargets = routingTargets
         self.routingReason = routingReason
-        self.startedAt = Date()
-        self.completedAt = status == .completed ? Date() : nil
-        self.duration = self.completedAt?.timeIntervalSince(self.startedAt)
+        self.runtimeEvents = runtimeEvents
+        self.primaryRuntimeEvent = primaryRuntimeEvent
+        self.startedAt = startedAt
+        let resolvedCompletedAt = completedAt ?? (status == .completed ? Date() : nil)
+        self.completedAt = resolvedCompletedAt
+        self.duration = resolvedCompletedAt?.timeIntervalSince(self.startedAt)
     }
 
     init(from decoder: Decoder) throws {
@@ -129,9 +162,15 @@ struct ExecutionResult: Codable, Identifiable {
         status = try container.decode(ExecutionStatus.self, forKey: .status)
         output = try container.decodeIfPresent(String.self, forKey: .output) ?? ""
         outputType = try container.decodeIfPresent(ExecutionOutputType.self, forKey: .outputType) ?? .runtimeLog
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        transportKind = try container.decodeIfPresent(String.self, forKey: .transportKind)
+        firstChunkLatencyMs = try container.decodeIfPresent(Int.self, forKey: .firstChunkLatencyMs)
+        completionLatencyMs = try container.decodeIfPresent(Int.self, forKey: .completionLatencyMs)
         routingAction = try container.decodeIfPresent(String.self, forKey: .routingAction)
         routingTargets = try container.decodeIfPresent([String].self, forKey: .routingTargets) ?? []
         routingReason = try container.decodeIfPresent(String.self, forKey: .routingReason)
+        runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
+        primaryRuntimeEvent = try container.decodeIfPresent(OpenClawRuntimeEvent.self, forKey: .primaryRuntimeEvent)
         startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
@@ -145,12 +184,63 @@ struct ExecutionResult: Codable, Identifiable {
         try container.encode(status, forKey: .status)
         try container.encode(output, forKey: .output)
         try container.encode(outputType, forKey: .outputType)
+        try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(transportKind, forKey: .transportKind)
+        try container.encodeIfPresent(firstChunkLatencyMs, forKey: .firstChunkLatencyMs)
+        try container.encodeIfPresent(completionLatencyMs, forKey: .completionLatencyMs)
         try container.encodeIfPresent(routingAction, forKey: .routingAction)
         try container.encode(routingTargets, forKey: .routingTargets)
         try container.encodeIfPresent(routingReason, forKey: .routingReason)
+        try container.encode(runtimeEvents, forKey: .runtimeEvents)
+        try container.encodeIfPresent(primaryRuntimeEvent, forKey: .primaryRuntimeEvent)
         try container.encode(startedAt, forKey: .startedAt)
         try container.encodeIfPresent(completedAt, forKey: .completedAt)
         try container.encodeIfPresent(duration, forKey: .duration)
+    }
+}
+
+extension ExecutionResult {
+    var summaryText: String {
+        if let primaryRuntimeEvent,
+           !primaryRuntimeEvent.summaryText.isEmpty {
+            return primaryRuntimeEvent.summaryText
+        }
+
+        if let latestSummary = runtimeEvents
+            .map(\.summaryText)
+            .last(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            return latestSummary
+        }
+
+        return output
+    }
+
+    var previewText: String {
+        summaryText.compactSingleLinePreview(limit: 160)
+    }
+
+    var renderedOutputText: String {
+        let summary = summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !summary.isEmpty && summary != rawOutput {
+            if rawOutput.isEmpty {
+                return summary
+            }
+            return "\(summary)\n\n\(rawOutput)"
+        }
+
+        if !rawOutput.isEmpty {
+            return rawOutput
+        }
+
+        return summary
+    }
+
+    var runtimeEventsText: String? {
+        let lines = runtimeEvents.map(\.summaryLine)
+        guard !lines.isEmpty else { return nil }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -163,6 +253,90 @@ struct NodeStreamUpdate {
 struct WorkbenchEntryExecution {
     let result: ExecutionResult
     let downstreamNodes: [WorkflowNode]
+}
+
+enum TransportBenchmarkKind: String, Codable, CaseIterable, Identifiable {
+    case gatewayChat = "gateway_chat"
+    case gatewayAgent = "gateway_agent"
+    case cli = "cli"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .gatewayChat:
+            return "Gateway Chat"
+        case .gatewayAgent:
+            return "Gateway Agent"
+        case .cli:
+            return "CLI"
+        }
+    }
+}
+
+struct TransportBenchmarkSample: Codable, Identifiable {
+    let id: UUID
+    let transport: TransportBenchmarkKind
+    let iteration: Int
+    let success: Bool
+    let sessionID: String?
+    let startedAt: Date
+    let completedAt: Date
+    let firstChunkLatencyMs: Int?
+    let completionLatencyMs: Int?
+    let previewText: String
+    let errorText: String?
+
+    init(
+        transport: TransportBenchmarkKind,
+        iteration: Int,
+        success: Bool,
+        sessionID: String?,
+        startedAt: Date,
+        completedAt: Date,
+        firstChunkLatencyMs: Int?,
+        completionLatencyMs: Int?,
+        previewText: String,
+        errorText: String?
+    ) {
+        self.id = UUID()
+        self.transport = transport
+        self.iteration = iteration
+        self.success = success
+        self.sessionID = sessionID
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.firstChunkLatencyMs = firstChunkLatencyMs
+        self.completionLatencyMs = completionLatencyMs
+        self.previewText = previewText
+        self.errorText = errorText
+    }
+}
+
+struct TransportBenchmarkSummary: Codable, Identifiable {
+    let transport: TransportBenchmarkKind
+    let sampleCount: Int
+    let successCount: Int
+    let failureCount: Int
+    let averageFirstChunkLatencyMs: Double?
+    let averageCompletionLatencyMs: Double?
+    let fastestCompletionLatencyMs: Int?
+    let slowestCompletionLatencyMs: Int?
+
+    var id: String { transport.rawValue }
+}
+
+struct TransportBenchmarkReport: Codable, Identifiable {
+    let id: UUID
+    let deploymentKind: OpenClawDeploymentKind
+    let agentIdentifier: String
+    let prompt: String
+    let iterationsPerTransport: Int
+    let startedAt: Date
+    let completedAt: Date
+    let samples: [TransportBenchmarkSample]
+    let summaries: [TransportBenchmarkSummary]
+    let reportFilePath: String?
 }
 
 // OpenClaw Agent配置
@@ -228,10 +402,24 @@ struct ExecutionState: Codable {
     var totalSteps: Int
     var completedNodes: [UUID]
     var failedNodes: [UUID]
+    var runtimeEvents: [OpenClawRuntimeEvent]
     var startTime: Date
     var lastUpdated: Date
     var isPaused: Bool
     var canResume: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case workflowID
+        case currentStep
+        case totalSteps
+        case completedNodes
+        case failedNodes
+        case runtimeEvents
+        case startTime
+        case lastUpdated
+        case isPaused
+        case canResume
+    }
     
     init(workflowID: UUID, totalSteps: Int) {
         self.workflowID = workflowID
@@ -239,10 +427,39 @@ struct ExecutionState: Codable {
         self.totalSteps = totalSteps
         self.completedNodes = []
         self.failedNodes = []
+        self.runtimeEvents = []
         self.startTime = Date()
         self.lastUpdated = Date()
         self.isPaused = false
         self.canResume = false
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workflowID = try container.decode(UUID.self, forKey: .workflowID)
+        currentStep = try container.decodeIfPresent(Int.self, forKey: .currentStep) ?? 0
+        totalSteps = try container.decodeIfPresent(Int.self, forKey: .totalSteps) ?? 0
+        completedNodes = try container.decodeIfPresent([UUID].self, forKey: .completedNodes) ?? []
+        failedNodes = try container.decodeIfPresent([UUID].self, forKey: .failedNodes) ?? []
+        runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
+        startTime = try container.decodeIfPresent(Date.self, forKey: .startTime) ?? Date()
+        lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? Date()
+        isPaused = try container.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false
+        canResume = try container.decodeIfPresent(Bool.self, forKey: .canResume) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(workflowID, forKey: .workflowID)
+        try container.encode(currentStep, forKey: .currentStep)
+        try container.encode(totalSteps, forKey: .totalSteps)
+        try container.encode(completedNodes, forKey: .completedNodes)
+        try container.encode(failedNodes, forKey: .failedNodes)
+        try container.encode(runtimeEvents, forKey: .runtimeEvents)
+        try container.encode(startTime, forKey: .startTime)
+        try container.encode(lastUpdated, forKey: .lastUpdated)
+        try container.encode(isPaused, forKey: .isPaused)
+        try container.encode(canResume, forKey: .canResume)
     }
 }
 
@@ -257,6 +474,12 @@ class OpenClawService: ObservableObject {
     @Published var isConnected = false
     @Published var executionState: ExecutionState?
     @Published var connectionStatus: ConnectionStatus = .disconnected
+    @Published var activeGatewayRunID: String?
+    @Published var activeGatewaySessionKey: String?
+    @Published var isAbortingActiveGatewayRun = false
+    @Published var isRunningTransportBenchmark = false
+    @Published var transportBenchmarkReport: TransportBenchmarkReport?
+    @Published var transportBenchmarkError: String?
     
     // Agent配置
     @Published var agentConfig = OpenClawAgentConfig.default
@@ -294,7 +517,29 @@ class OpenClawService: ObservableObject {
     private struct ParsedAgentOutput {
         let text: String
         let type: ExecutionOutputType
+        let sessionID: String?
+        let transportKind: String?
+        let firstChunkLatencyMs: Int?
+        let completionLatencyMs: Int?
         let routingDecision: WorkflowRoutingDecision?
+
+        init(
+            text: String,
+            type: ExecutionOutputType,
+            sessionID: String? = nil,
+            transportKind: String? = nil,
+            firstChunkLatencyMs: Int? = nil,
+            completionLatencyMs: Int? = nil,
+            routingDecision: WorkflowRoutingDecision? = nil
+        ) {
+            self.text = text
+            self.type = type
+            self.sessionID = sessionID
+            self.transportKind = transportKind
+            self.firstChunkLatencyMs = firstChunkLatencyMs
+            self.completionLatencyMs = completionLatencyMs
+            self.routingDecision = routingDecision
+        }
     }
 
     private struct RoutingTargetDescriptor {
@@ -328,6 +573,7 @@ class OpenClawService: ObservableObject {
         totalSteps = 0
         currentNodeID = nil
         lastError = nil
+        clearActiveGatewayConversation()
     }
 
     func resetExecutionSnapshot() {
@@ -339,6 +585,7 @@ class OpenClawService: ObservableObject {
         totalSteps = 0
         currentNodeID = nil
         lastError = nil
+        clearActiveGatewayConversation()
     }
     
     // MARK: - 日志方法
@@ -400,6 +647,20 @@ class OpenClawService: ObservableObject {
         if let url = stateFileURL {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    @MainActor
+    private func setActiveGatewayConversation(runID: String, sessionKey: String) {
+        activeGatewayRunID = runID
+        activeGatewaySessionKey = sessionKey
+        isAbortingActiveGatewayRun = false
+    }
+
+    @MainActor
+    private func clearActiveGatewayConversation() {
+        activeGatewayRunID = nil
+        activeGatewaySessionKey = nil
+        isAbortingActiveGatewayRun = false
     }
     
     // MARK: - 回滚机制（刑部任务）
@@ -466,10 +727,12 @@ class OpenClawService: ObservableObject {
         case .disconnected:
             connectionStatus = .disconnected
             isConnected = false
+            clearActiveGatewayConversation()
         case .error(let message):
             connectionStatus = .error(message)
             isConnected = false
             lastError = message
+            clearActiveGatewayConversation()
         }
     }
     
@@ -504,12 +767,54 @@ class OpenClawService: ObservableObject {
         // 尝试重新连接
         checkConnection()
     }
+
+    func abortActiveRemoteConversation() {
+        let manager = OpenClawManager.shared
+        let connectionConfig = manager.config
+        guard let gatewayConfig = manager.preferredGatewayConfig(using: connectionConfig) else {
+            addLog(.warning, "Abort ignored: no available gateway transport for the active conversation.")
+            return
+        }
+
+        let sessionKey = activeGatewaySessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let runID = activeGatewayRunID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !sessionKey.isEmpty, !runID.isEmpty else {
+            addLog(.warning, "Abort ignored: no active gateway chat run is tracked.")
+            return
+        }
+
+        guard !isAbortingActiveGatewayRun else { return }
+
+        DispatchQueue.main.async {
+            self.isAbortingActiveGatewayRun = true
+        }
+        addLog(.info, "Requesting gateway chat abort for run \(runID) in session \(sessionKey).")
+
+        _Concurrency.Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await manager.abortGatewayChatRun(
+                    sessionKey: sessionKey,
+                    runID: runID,
+                    using: gatewayConfig
+                )
+                self.addLog(.info, "Gateway chat abort accepted for run \(runID).")
+            } catch {
+                DispatchQueue.main.async {
+                    self.isAbortingActiveGatewayRun = false
+                    self.lastError = error.localizedDescription
+                }
+                self.addLog(.error, "Failed to abort gateway chat run \(runID): \(error.localizedDescription)")
+            }
+        }
+    }
     
     // 执行工作流 - 真正调用OpenClaw
     func executeWorkflow(
         _ workflow: Workflow,
         agents: [Agent],
         prompt: String? = nil,
+        projectRuntimeSessionID: String? = nil,
         startingNodes: [WorkflowNode]? = nil,
         entryNodeIDsOverride: Set<UUID>? = nil,
         preloadedResults: [ExecutionResult] = [],
@@ -569,6 +874,7 @@ class OpenClawService: ObservableObject {
             workflow: workflow,
             agents: agents,
             prompt: prompt,
+            projectRuntimeSessionID: projectRuntimeSessionID,
             entryNodeIDs: effectiveEntryNodeIDs,
             seedResults: preloadedResults,
             agentOutputMode: agentOutputMode,
@@ -646,6 +952,7 @@ class OpenClawService: ObservableObject {
             instructionStyle: .fastWorkbenchEntry,
             sessionID: sessionID,
             thinkingLevel: thinkingLevel,
+            trackActiveRemoteRun: true,
             outputMode: .plainStreaming,
             onStream: onStream
         ) { [weak self] result, routingDecision in
@@ -790,6 +1097,7 @@ class OpenClawService: ObservableObject {
         workflow: Workflow,
         agents: [Agent],
         prompt: String?,
+        projectRuntimeSessionID: String?,
         entryNodeIDs: Set<UUID>,
         seedResults: [ExecutionResult] = [],
         agentOutputMode: AgentOutputMode,
@@ -872,6 +1180,13 @@ class OpenClawService: ObservableObject {
                 executeNext()
                 return
             }
+
+            let nodeSessionID = workflowNodeSessionID(
+                projectRuntimeSessionID: projectRuntimeSessionID,
+                workflowID: workflow.id,
+                nodeID: node.id,
+                agentID: agent.id
+            )
             
             // 调用OpenClaw执行节点
             executeNodeOnOpenClaw(
@@ -880,6 +1195,7 @@ class OpenClawService: ObservableObject {
                 prompt: prompt,
                 isEntryNode: entryNodeIDs.contains(node.id),
                 downstreamTargets: routingTargets(for: node, workflow: workflow, agents: agents, outgoingEdges: outgoingEdges),
+                sessionID: nodeSessionID,
                 outputMode: agentOutputMode,
                 onStream: { chunk in
                     onNodeStream?(
@@ -893,6 +1209,7 @@ class OpenClawService: ObservableObject {
             ) { result, routingDecision in
                 results.append(result)
                 self.executionResults.append(result)
+                self.executionState?.runtimeEvents.append(contentsOf: result.runtimeEvents)
                 onNodeCompleted?(result)
 
                 // 更新执行状态
@@ -934,10 +1251,41 @@ class OpenClawService: ObservableObject {
         instructionStyle: WorkflowInstructionStyle = .standard,
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel? = nil,
+        trackActiveRemoteRun: Bool = false,
         outputMode: AgentOutputMode = .structuredJSON,
         onStream: ((String) -> Void)? = nil,
         completion: @escaping (ExecutionResult, WorkflowRoutingDecision?) -> Void
     ) {
+        let nodeStartedAt = Date()
+        let targetAgentID = resolvedAgentIdentifier(for: agent)
+        let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTransportKind = runtimeTransportKind(for: outputMode, sessionID: normalizedSessionID)
+        let dispatchEvent = makeRuntimeEvent(
+            eventType: .taskDispatch,
+            source: runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
+            target: runtimeAgentActor(id: targetAgentID, name: agent.name),
+            transportKind: resolvedTransportKind,
+            deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+            node: node,
+            sessionKey: normalizedSessionID,
+            payload: [
+                "intent": "respond",
+                "summary": (prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? prompt!.trimmingCharacters(in: .whitespacesAndNewlines)
+                    : "execute workflow node"),
+                "expectedOutput": outputMode == .structuredJSON ? "structured_result" : "plain_response",
+                "visibleToUser": isEntryNode ? "true" : "false"
+            ],
+            constraints: [
+                "timeoutSeconds": String(max(1, agentConfig.timeout)),
+                "thinkingLevel": thinkingLevel?.rawValue ?? "off"
+            ],
+            control: [
+                "requiresApproval": "false",
+                "fallbackRoutingPolicy": "stop"
+            ]
+        )
+
         // 构建执行指令
         let instruction = buildInstruction(
             for: node,
@@ -947,7 +1295,6 @@ class OpenClawService: ObservableObject {
             downstreamTargets: downstreamTargets,
             style: instructionStyle
         )
-        let targetAgentID = resolvedAgentIdentifier(for: agent)
 
         // 调用openclaw agent命令
         callOpenClawAgent(
@@ -955,22 +1302,124 @@ class OpenClawService: ObservableObject {
             agentIdentifier: targetAgentID,
             sessionID: sessionID,
             thinkingLevel: thinkingLevel,
+            trackActiveRemoteRun: trackActiveRemoteRun,
             outputMode: outputMode,
             onPartial: onStream
         ) { success, parsedOutput in
             let status: ExecutionStatus = success ? .completed : .failed
+            let completedAt = Date()
+            let resultEvent = self.makeRuntimeEvent(
+                eventType: success ? .taskResult : .taskError,
+                source: self.runtimeAgentActor(id: targetAgentID, name: agent.name),
+                target: self.runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
+                transportKind: resolvedTransportKind,
+                deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                node: node,
+                sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
+                parentEventId: dispatchEvent.id,
+                payload: success
+                    ? [
+                        "status": "success",
+                        "outputType": parsedOutput.type.rawValue,
+                        "summary": parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "execution completed"
+                            : parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                      ]
+                    : [
+                        "code": "E_AGENT_EXECUTION_FAILED",
+                        "message": parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? "OpenClaw agent execution failed."
+                            : parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                        "retryable": "false"
+                      ]
+            )
+            let routeEvent = parsedOutput.routingDecision.map { decision in
+                self.makeRuntimeEvent(
+                    eventType: .taskRoute,
+                    source: self.runtimeAgentActor(id: targetAgentID, name: agent.name),
+                    target: self.runtimeSystemActor(kind: .orchestrator, id: "workflow.router"),
+                    transportKind: resolvedTransportKind,
+                    deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                    node: node,
+                    sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
+                    parentEventId: resultEvent.id,
+                    payload: [
+                        "action": decision.action.rawValue,
+                        "targets": decision.targets.joined(separator: ","),
+                        "reason": decision.reason ?? ""
+                    ]
+                )
+            }
+            let runtimeEvents = [dispatchEvent, resultEvent] + (routeEvent.map { [$0] } ?? [])
             let result = ExecutionResult(
                 nodeID: node.id,
                 agentID: agent.id,
                 status: status,
                 output: parsedOutput.text,
                 outputType: parsedOutput.type,
+                sessionID: parsedOutput.sessionID,
+                transportKind: parsedOutput.transportKind,
+                firstChunkLatencyMs: parsedOutput.firstChunkLatencyMs,
+                completionLatencyMs: parsedOutput.completionLatencyMs,
                 routingAction: parsedOutput.routingDecision?.action.rawValue,
                 routingTargets: parsedOutput.routingDecision?.targets ?? [],
-                routingReason: parsedOutput.routingDecision?.reason
+                routingReason: parsedOutput.routingDecision?.reason,
+                runtimeEvents: runtimeEvents,
+                primaryRuntimeEvent: routeEvent ?? resultEvent,
+                startedAt: nodeStartedAt,
+                completedAt: completedAt
             )
             completion(result, parsedOutput.routingDecision)
         }
+    }
+
+    private func runtimeAgentActor(id: String, name: String? = nil) -> OpenClawRuntimeActor {
+        OpenClawRuntimeActor(kind: .agent, agentId: id, agentName: name)
+    }
+
+    private func runtimeSystemActor(kind: OpenClawRuntimeActorKind, id: String) -> OpenClawRuntimeActor {
+        OpenClawRuntimeActor(kind: kind, agentId: id, agentName: id)
+    }
+
+    private func runtimeTransportKind(for outputMode: AgentOutputMode, sessionID: String?) -> String {
+        let deploymentKind = OpenClawManager.shared.config.deploymentKind
+        switch deploymentKind {
+        case .remoteServer:
+            return (sessionID?.isEmpty == false || outputMode == .plainStreaming) ? "gateway_chat" : "gateway_agent"
+        case .local, .container:
+            return "cli"
+        }
+    }
+
+    private func makeRuntimeEvent(
+        eventType: OpenClawRuntimeEventType,
+        source: OpenClawRuntimeActor,
+        target: OpenClawRuntimeActor,
+        transportKind: String,
+        deploymentKind: String,
+        node: WorkflowNode,
+        sessionKey: String?,
+        parentEventId: String? = nil,
+        payload: [String: String],
+        constraints: [String: String] = [:],
+        control: [String: String] = [:]
+    ) -> OpenClawRuntimeEvent {
+        let resolvedTransport = OpenClawRuntimeTransportKind(rawValue: transportKind) ?? .unknown
+        return OpenClawRuntimeEvent(
+            eventType: eventType,
+            workflowId: node.id.uuidString,
+            nodeId: node.id.uuidString,
+            sessionKey: sessionKey,
+            parentEventId: parentEventId,
+            idempotencyKey: UUID().uuidString,
+            source: source,
+            target: target,
+            transport: OpenClawRuntimeTransport(kind: resolvedTransport, deploymentKind: deploymentKind),
+            payload: payload,
+            refs: [],
+            constraints: constraints,
+            control: control
+        )
     }
 
     // 构建Agent指令
@@ -1202,12 +1651,58 @@ class OpenClawService: ObservableObject {
         agentIdentifier: String,
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel? = nil,
+        trackActiveRemoteRun: Bool = false,
+        transportPreference: AgentTransportPreference = .automatic,
         outputMode: AgentOutputMode = .structuredJSON,
         onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Bool, ParsedAgentOutput) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async(execute: { [weak self] in
             guard let self = self else { return }
+            let executionStartedAt = Date()
+            let metricsQueue = DispatchQueue(label: "com.openclaw.agent.metrics")
+
+            final class FirstChunkLatencyState: @unchecked Sendable {
+                var value: Int?
+            }
+
+            let firstChunkLatencyState = FirstChunkLatencyState()
+
+            func durationMs(since start: Date, until end: Date = Date()) -> Int {
+                Int((end.timeIntervalSince(start) * 1000.0).rounded())
+            }
+
+            @Sendable
+            func captureFirstChunkLatencyIfNeeded(referenceTime: Date = Date()) {
+                metricsQueue.sync {
+                    guard firstChunkLatencyState.value == nil else { return }
+                    firstChunkLatencyState.value = durationMs(since: executionStartedAt, until: referenceTime)
+                }
+            }
+
+            @Sendable
+            func currentFirstChunkLatency() -> Int? {
+                metricsQueue.sync { firstChunkLatencyState.value }
+            }
+
+            func buildParsedOutput(
+                text: String,
+                type: ExecutionOutputType,
+                sessionID: String?,
+                transportKind: String?,
+                completionLatencyMs: Int,
+                routingDecision: WorkflowRoutingDecision?
+            ) -> ParsedAgentOutput {
+                ParsedAgentOutput(
+                    text: text,
+                    type: type,
+                    sessionID: sessionID,
+                    transportKind: transportKind,
+                    firstChunkLatencyMs: currentFirstChunkLatency(),
+                    completionLatencyMs: completionLatencyMs,
+                    routingDecision: routingDecision
+                )
+            }
             
             let serviceConfig = self.agentConfig
             let manager = OpenClawManager.shared
@@ -1227,12 +1722,156 @@ class OpenClawService: ObservableObject {
             if let message = resolvedAgent.message {
                 self.addLog(.warning, message)
             }
+            let gatewayConfig = manager.preferredGatewayConfig(using: connectionConfig)
 
-            if connectionConfig.deploymentKind == .remoteServer {
+            func runCLITransport() {
+                var args = ["agent"]
+                args.append(contentsOf: ["--agent", resolvedAgent.identifier])
+                args.append(contentsOf: ["--message", instruction])
+                if let sessionID, !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    args.append(contentsOf: ["--session-id", sessionID])
+                }
+                if let thinkingLevel {
+                    args.append(contentsOf: ["--thinking", thinkingLevel.rawValue])
+                }
+
+                let capabilityCacheKey = self.capabilityCacheKey(for: connectionConfig)
+                let capabilities = self.resolveAgentCLICapabilities(
+                    manager: manager,
+                    config: connectionConfig,
+                    cacheKey: capabilityCacheKey
+                )
+                let enabledFlags = self.appendCLIOutputFlags(
+                    to: &args,
+                    capabilities: capabilities,
+                    config: connectionConfig,
+                    outputMode: outputMode
+                )
+
+                if self.loggedCapabilityKeys.insert(capabilityCacheKey).inserted {
+                    let flagText = enabledFlags.isEmpty ? "(none)" : enabledFlags.joined(separator: " ")
+                    self.addLog(
+                        .info,
+                        "OpenClaw CLI 输出能力: quiet=\(capabilities.supportsQuiet), log-level=\(capabilities.supportsLogLevel), json-only=\(capabilities.supportsJSONOnly); 当前启用参数: \(flagText)."
+                    )
+                }
+
+                let shouldUseLocal = serviceConfig.useLocal
+                    && !manager.isConnected
+                    && connectionConfig.deploymentKind == .local
+                let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let effectiveSessionID = (normalizedSessionID?.isEmpty == false) ? normalizedSessionID : nil
+                if shouldUseLocal {
+                    args.append("--local")
+                }
+
+                args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
+
+                do {
+                    let result = try manager.executeAgentRuntimeCommand(
+                        arguments: args,
+                        using: connectionConfig,
+                        onStdoutChunk: { chunk in
+                            let visibleChunk = self.extractStreamingTextChunk(from: chunk)
+                            guard !visibleChunk.isEmpty else { return }
+                            captureFirstChunkLatencyIfNeeded()
+                            guard let onPartial else { return }
+                            DispatchQueue.main.async {
+                                onPartial(visibleChunk)
+                            }
+                        }
+                    )
+                    let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""
+                    let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
+                    let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let completionLatencyMs = durationMs(since: executionStartedAt)
+                    let parsedAgentOutput = self.parseAgentOutput(
+                        from: stdoutTrimmed,
+                        outputMode: outputMode,
+                        sessionID: effectiveSessionID,
+                        transportKind: "cli",
+                        firstChunkLatencyMs: currentFirstChunkLatency(),
+                        completionLatencyMs: completionLatencyMs
+                    )
+
+                    let runtimeMessage: String?
+                    if result.executionCount == 1 {
+                        runtimeMessage = "Created OpenClaw Agent Runtime channel \(result.channelKey) and executed the first request."
+                    } else if result.executionCount == 2 {
+                        runtimeMessage = "OpenClaw Agent Runtime channel \(result.channelKey) is now being reused for subsequent requests."
+                    } else {
+                        runtimeMessage = nil
+                    }
+                    if let runtimeMessage {
+                        self.addLog(.info, runtimeMessage)
+                    }
+
+                    if !stderrTrimmed.isEmpty {
+                        let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
+                        self.addLog(level, "OpenClaw stderr (\(resolvedAgent.identifier)): \(self.truncatedLog(stderrTrimmed))")
+                    }
+
+                    DispatchQueue.main.async {
+                        if result.terminationStatus == 0 {
+                            completion(true, parsedAgentOutput)
+                        } else {
+                            let fallback = self.executionFailureSummary(
+                                exitCode: result.terminationStatus,
+                                stderr: stderrTrimmed,
+                                stdout: stdoutTrimmed
+                            )
+                            completion(
+                                false,
+                                buildParsedOutput(
+                                    text: fallback,
+                                    type: .errorSummary,
+                                    sessionID: effectiveSessionID,
+                                    transportKind: "cli",
+                                    completionLatencyMs: completionLatencyMs,
+                                    routingDecision: nil
+                                )
+                            )
+                        }
+                    }
+                } catch {
+                    let completionLatencyMs = durationMs(since: executionStartedAt)
+                    DispatchQueue.main.async {
+                        completion(
+                            false,
+                            buildParsedOutput(
+                                text: "Error: \(error.localizedDescription)",
+                                type: .errorSummary,
+                                sessionID: effectiveSessionID,
+                                transportKind: "cli",
+                                completionLatencyMs: completionLatencyMs,
+                                routingDecision: nil
+                            )
+                        )
+                    }
+                }
+            }
+
+            let shouldUseGatewayTransport: Bool
+            switch transportPreference {
+            case .automatic, .gatewayOnly:
+                shouldUseGatewayTransport = true
+            case .cliOnly:
+                shouldUseGatewayTransport = false
+            }
+
+            if let gatewayConfig, shouldUseGatewayTransport {
                 let gatewaySessionKey = self.gatewaySessionKey(
                     sessionID: sessionID,
                     agentIdentifier: resolvedAgent.identifier
                 )
+                let hasSessionID: Bool
+                if let sessionID {
+                    hasSessionID = !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                } else {
+                    hasSessionID = false
+                }
+                let transportKind = hasSessionID ? "gateway_chat" : "gateway_agent"
                 let shouldStreamPlainOutput: Bool
                 switch outputMode {
                 case .plainStreaming:
@@ -1240,16 +1879,23 @@ class OpenClawService: ObservableObject {
                 case .structuredJSON:
                     shouldStreamPlainOutput = false
                 }
+                let gatewayModeDescription = connectionConfig.deploymentKind == .remoteServer
+                    ? "remote server"
+                    : "local loopback"
 
                 self.addLog(
                     .info,
-                    "Gateway agent path enabled for remote server: agent=\(resolvedAgent.identifier), sessionKey=\(gatewaySessionKey)"
+                    "Gateway agent path enabled for \(gatewayModeDescription): agent=\(resolvedAgent.identifier), sessionKey=\(gatewaySessionKey)"
                 )
 
                 _Concurrency.Task {
                     do {
                         let streamAccumulator = StreamingTextAccumulator()
                         let onAssistantTextUpdated: @Sendable (String) -> Void = { fullText in
+                            let visibleText = Self.extractVisiblePlainResponseText(from: fullText)
+                            if !visibleText.isEmpty {
+                                captureFirstChunkLatencyIfNeeded()
+                            }
                             guard let onPartial, shouldStreamPlainOutput else { return }
                             _Concurrency.Task {
                                 let delta = await streamAccumulator.delta(
@@ -1268,17 +1914,38 @@ class OpenClawService: ObservableObject {
                             await MainActor.run {
                                 self.addLog(
                                     .info,
-                                    "Gateway chat session path enabled for remote workbench session \(gatewaySessionKey)."
+                                    "Gateway chat session path enabled for session \(gatewaySessionKey)."
                                 )
                             }
-                            result = try await manager.executeGatewayChatCommand(
-                                message: instruction,
-                                sessionKey: gatewaySessionKey,
-                                thinkingLevel: thinkingLevel,
-                                timeoutSeconds: max(1, serviceConfig.timeout),
-                                using: connectionConfig,
-                                onAssistantTextUpdated: onAssistantTextUpdated
-                            )
+                            do {
+                                result = try await manager.executeGatewayChatCommand(
+                                    message: instruction,
+                                    sessionKey: gatewaySessionKey,
+                                    thinkingLevel: thinkingLevel,
+                                    timeoutSeconds: max(1, serviceConfig.timeout),
+                                    using: gatewayConfig,
+                                    onRunStarted: { [weak self] runID, sessionKey in
+                                        guard trackActiveRemoteRun else { return }
+                                        guard let service = self else { return }
+                                        _Concurrency.Task { @MainActor in
+                                            service.setActiveGatewayConversation(runID: runID, sessionKey: sessionKey)
+                                        }
+                                    },
+                                    onAssistantTextUpdated: onAssistantTextUpdated
+                                )
+                                if trackActiveRemoteRun {
+                                    await MainActor.run {
+                                        self.clearActiveGatewayConversation()
+                                    }
+                                }
+                            } catch {
+                                if trackActiveRemoteRun {
+                                    await MainActor.run {
+                                        self.clearActiveGatewayConversation()
+                                    }
+                                }
+                                throw error
+                            }
                         } else {
                             result = try await manager.executeGatewayAgentCommand(
                                 message: instruction,
@@ -1286,39 +1953,78 @@ class OpenClawService: ObservableObject {
                                 sessionKey: gatewaySessionKey,
                                 thinkingLevel: thinkingLevel,
                                 timeoutSeconds: max(1, serviceConfig.timeout),
-                                using: connectionConfig,
+                                using: gatewayConfig,
                                 onAssistantTextUpdated: onAssistantTextUpdated
                             )
                         }
 
                         let normalizedText = result.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let parsedOutput = await MainActor.run {
-                            self.parseAgentOutput(from: normalizedText, outputMode: outputMode)
+                        if !normalizedText.isEmpty {
+                            captureFirstChunkLatencyIfNeeded()
+                        }
+                        let completionLatencyMs = durationMs(since: executionStartedAt)
+                        let parsedAgentOutput = await MainActor.run {
+                            self.parseAgentOutput(
+                                from: normalizedText,
+                                outputMode: outputMode,
+                                sessionID: result.sessionKey ?? sessionID,
+                                transportKind: transportKind,
+                                firstChunkLatencyMs: currentFirstChunkLatency(),
+                                completionLatencyMs: completionLatencyMs
+                            )
                         }
                         let success = result.status == "ok"
                         let fallback = result.errorMessage ?? (normalizedText.isEmpty ? "Gateway agent run finished with status: \(result.status)" : normalizedText)
 
                         DispatchQueue.main.async {
                             if success {
-                                completion(true, parsedOutput)
+                                completion(true, parsedAgentOutput)
                             } else {
                                 completion(
                                     false,
-                                    ParsedAgentOutput(
+                                    buildParsedOutput(
                                         text: fallback,
                                         type: .errorSummary,
+                                        sessionID: result.sessionKey ?? sessionID,
+                                        transportKind: transportKind,
+                                        completionLatencyMs: completionLatencyMs,
                                         routingDecision: nil
                                     )
                                 )
                             }
                         }
                     } catch {
+                        let shouldFallbackToCLI: Bool
+                        switch transportPreference {
+                        case .automatic:
+                            shouldFallbackToCLI = connectionConfig.deploymentKind != .remoteServer
+                        case .gatewayOnly, .cliOnly:
+                            shouldFallbackToCLI = false
+                        }
+
+                        if shouldFallbackToCLI {
+                            await MainActor.run {
+                                self.addLog(
+                                    .warning,
+                                    "Gateway transport failed in local mode, falling back to CLI: \(error.localizedDescription)"
+                                )
+                            }
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                runCLITransport()
+                            }
+                            return
+                        }
+
+                        let completionLatencyMs = durationMs(since: executionStartedAt)
                         DispatchQueue.main.async {
                             completion(
                                 false,
-                                ParsedAgentOutput(
+                                buildParsedOutput(
                                     text: "Gateway error: \(error.localizedDescription)",
                                     type: .errorSummary,
+                                    sessionID: sessionID,
+                                    transportKind: transportKind,
+                                    completionLatencyMs: completionLatencyMs,
                                     routingDecision: nil
                                 )
                             )
@@ -1327,126 +2033,54 @@ class OpenClawService: ObservableObject {
                 }
                 return
             }
-            
-            // 构建命令
 
-            var args = ["agent"]
-            args.append(contentsOf: ["--agent", resolvedAgent.identifier])
-            args.append(contentsOf: ["--message", instruction])
-            if let sessionID, !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                args.append(contentsOf: ["--session-id", sessionID])
-            }
-            if let thinkingLevel {
-                args.append(contentsOf: ["--thinking", thinkingLevel.rawValue])
-            }
-
-            let capabilityCacheKey = self.capabilityCacheKey(for: connectionConfig)
-            let capabilities = self.resolveAgentCLICapabilities(
-                manager: manager,
-                config: connectionConfig,
-                cacheKey: capabilityCacheKey
-            )
-            let enabledFlags = self.appendCLIOutputFlags(
-                to: &args,
-                capabilities: capabilities,
-                config: connectionConfig,
-                outputMode: outputMode
-            )
-
-            if self.loggedCapabilityKeys.insert(capabilityCacheKey).inserted {
-                let flagText = enabledFlags.isEmpty ? "(none)" : enabledFlags.joined(separator: " ")
-                self.addLog(
-                    .info,
-                    "OpenClaw CLI 输出能力: quiet=\(capabilities.supportsQuiet), log-level=\(capabilities.supportsLogLevel), json-only=\(capabilities.supportsJSONOnly); 当前启用参数: \(flagText)."
-                )
-            }
-            
-            let shouldUseLocal = serviceConfig.useLocal
-                && !manager.isConnected
-                && connectionConfig.deploymentKind == .local
-            if shouldUseLocal {
-                args.append("--local")
-            }
-            
-            args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
-
-            do {
-                let result = try manager.executeAgentRuntimeCommand(
-                    arguments: args,
-                    using: connectionConfig,
-                    onStdoutChunk: { chunk in
-                        guard let onPartial else { return }
-                        let visibleChunk = self.extractStreamingTextChunk(from: chunk)
-                        guard !visibleChunk.isEmpty else { return }
-                        DispatchQueue.main.async {
-                            onPartial(visibleChunk)
-                        }
-                    }
-                )
-                let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""
-                let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
-                let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-                let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                let parsedOutput = self.parseAgentOutput(from: stdoutTrimmed, outputMode: outputMode)
-
-                let runtimeMessage: String?
-                if result.executionCount == 1 {
-                    runtimeMessage = "Created OpenClaw Agent Runtime channel \(result.channelKey) and executed the first request."
-                } else if result.executionCount == 2 {
-                    runtimeMessage = "OpenClaw Agent Runtime channel \(result.channelKey) is now being reused for subsequent requests."
-                } else {
-                    runtimeMessage = nil
-                }
-                if let runtimeMessage {
-                    self.addLog(.info, runtimeMessage)
-                }
-
-                if !stderrTrimmed.isEmpty {
-                    let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
-                    self.addLog(level, "OpenClaw stderr (\(resolvedAgent.identifier)): \(self.truncatedLog(stderrTrimmed))")
-                }
-
-                DispatchQueue.main.async {
-                    if result.terminationStatus == 0 {
-                        completion(true, parsedOutput)
-                    } else {
-                        let fallback = self.executionFailureSummary(
-                            exitCode: result.terminationStatus,
-                            stderr: stderrTrimmed,
-                            stdout: stdoutTrimmed
-                        )
-                        completion(
-                            false,
-                            ParsedAgentOutput(
-                                text: fallback,
-                                type: .errorSummary,
-                                routingDecision: nil
-                            )
-                        )
-                    }
-                }
-            } catch {
+            switch transportPreference {
+            case .gatewayOnly:
+                let completionLatencyMs = durationMs(since: executionStartedAt)
                 DispatchQueue.main.async {
                     completion(
                         false,
-                        ParsedAgentOutput(
-                            text: "Error: \(error.localizedDescription)",
+                        buildParsedOutput(
+                            text: "Gateway transport is unavailable for the current OpenClaw configuration.",
                             type: .errorSummary,
+                            sessionID: sessionID,
+                            transportKind: sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? "gateway_chat" : "gateway_agent",
+                            completionLatencyMs: completionLatencyMs,
                             routingDecision: nil
                         )
                     )
                 }
+                return
+            case .automatic, .cliOnly:
+                break
             }
+
+            runCLITransport()
         })
     }
 
-    private func parseAgentOutput(from stdout: String, outputMode: AgentOutputMode) -> ParsedAgentOutput {
+    private func parseAgentOutput(
+        from stdout: String,
+        outputMode: AgentOutputMode,
+        sessionID: String? = nil,
+        transportKind: String? = nil,
+        firstChunkLatencyMs: Int? = nil,
+        completionLatencyMs: Int? = nil
+    ) -> ParsedAgentOutput {
         switch outputMode {
         case .structuredJSON:
             let parsed = extractAgentResponse(from: stdout)
             let routingDecision = extractRoutingDecision(from: stdout) ?? extractRoutingDecision(from: parsed.text)
             let sanitizedText = stripRoutingDirective(from: parsed.text)
-            return ParsedAgentOutput(text: sanitizedText, type: parsed.type, routingDecision: routingDecision)
+            return ParsedAgentOutput(
+                text: sanitizedText,
+                type: parsed.type,
+                sessionID: sessionID,
+                transportKind: transportKind,
+                firstChunkLatencyMs: firstChunkLatencyMs,
+                completionLatencyMs: completionLatencyMs,
+                routingDecision: routingDecision
+            )
         case .plainStreaming:
             let text = extractVisiblePlainResponse(from: stdout)
             let routingDecision = extractRoutingDecision(from: stdout) ?? extractRoutingDecision(from: text)
@@ -1454,7 +2088,15 @@ class OpenClawService: ObservableObject {
             let outputType: ExecutionOutputType = sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? .runtimeLog
                 : .agentFinalResponse
-            return ParsedAgentOutput(text: sanitizedText, type: outputType, routingDecision: routingDecision)
+            return ParsedAgentOutput(
+                text: sanitizedText,
+                type: outputType,
+                sessionID: sessionID,
+                transportKind: transportKind,
+                firstChunkLatencyMs: firstChunkLatencyMs,
+                completionLatencyMs: completionLatencyMs,
+                routingDecision: routingDecision
+            )
         }
     }
 
@@ -1709,6 +2351,20 @@ class OpenClawService: ObservableObject {
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
             .lowercased()
         return value.isEmpty ? "main" : value
+    }
+
+    private func workflowNodeSessionID(
+        projectRuntimeSessionID: String?,
+        workflowID: UUID,
+        nodeID: UUID,
+        agentID: UUID
+    ) -> String? {
+        let connectionConfig = OpenClawManager.shared.config
+        guard OpenClawManager.shared.preferredGatewayConfig(using: connectionConfig) != nil else { return nil }
+
+        let base = projectRuntimeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedBase = base.isEmpty ? workflowID.uuidString : base
+        return "workflow-\(resolvedBase)-\(workflowID.uuidString)-\(nodeID.uuidString)-\(agentID.uuidString)"
     }
 
     private func streamingDelta(from previous: String, to current: String) -> String {
@@ -2343,12 +2999,148 @@ class OpenClawService: ObservableObject {
     var recentResults: [ExecutionResult] {
         Array(executionResults.suffix(10))
     }
+
+    private var transportBenchmarkReportsDirectoryURL: URL? {
+        stateFileURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("benchmarks", isDirectory: true)
+    }
     
     // 清理结果
     func clearResults() {
         executionResults.removeAll()
         currentNodeID = nil
         lastError = nil
+    }
+
+    func runTransportBenchmark(
+        prompt: String? = nil,
+        iterationsPerTransport: Int = 3,
+        completion: ((TransportBenchmarkReport) -> Void)? = nil
+    ) {
+        guard !isRunningTransportBenchmark else { return }
+
+        let manager = OpenClawManager.shared
+        let config = manager.config
+        let transports = availableBenchmarkTransports(for: config)
+        guard !transports.isEmpty else {
+            let message = "No benchmark transports are available for the current OpenClaw deployment."
+            transportBenchmarkError = message
+            addLog(.warning, message)
+            return
+        }
+
+        let preferredAgentIdentifier = preferredBenchmarkAgentIdentifier(using: config)
+        let benchmarkPrompt = sanitizedBenchmarkPrompt(prompt)
+        let measuredIterations = max(1, iterationsPerTransport)
+
+        transportBenchmarkError = nil
+        isRunningTransportBenchmark = true
+        addLog(
+            .info,
+            "Starting transport benchmark for \(transports.map(\.displayName).joined(separator: ", ")) with \(measuredIterations) iteration(s) each."
+        )
+
+        _Concurrency.Task { [weak self] in
+            guard let self else { return }
+
+            let benchmarkStartedAt = Date()
+            var samples: [TransportBenchmarkSample] = []
+
+            for transport in transports {
+                let sharedSessionID: String?
+                switch transport {
+                case .gatewayChat:
+                    sharedSessionID = "benchmark-\(UUID().uuidString.lowercased())"
+                case .gatewayAgent, .cli:
+                    sharedSessionID = nil
+                }
+
+                for iteration in 1...measuredIterations {
+                    let instruction = """
+                    \(benchmarkPrompt)
+
+                    Benchmark metadata:
+                    - transport: \(transport.rawValue)
+                    - iteration: \(iteration)
+                    - required output: reply with one short sentence and include the iteration number.
+                    """
+
+                    let invocationStartedAt = Date()
+                    let outcome = await self.runTransportBenchmarkInvocation(
+                        instruction: instruction,
+                        preferredAgentIdentifier: preferredAgentIdentifier,
+                        transport: transport,
+                        sessionID: sharedSessionID
+                    )
+                    let completedAt = Date()
+
+                    let previewText: String
+                    if outcome.output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        previewText = outcome.success ? "No output" : "Benchmark failed"
+                    } else {
+                        previewText = outcome.output.text.compactSingleLinePreview(limit: 180)
+                    }
+
+                    let sample = TransportBenchmarkSample(
+                        transport: transport,
+                        iteration: iteration,
+                        success: outcome.success,
+                        sessionID: outcome.output.sessionID ?? sharedSessionID,
+                        startedAt: invocationStartedAt,
+                        completedAt: completedAt,
+                        firstChunkLatencyMs: outcome.output.firstChunkLatencyMs,
+                        completionLatencyMs: outcome.output.completionLatencyMs,
+                        previewText: previewText,
+                        errorText: outcome.success ? nil : outcome.output.text
+                    )
+                    samples.append(sample)
+
+                    let logLevel: ExecutionLogEntry.LogLevel = outcome.success ? .success : .error
+                    self.addLog(
+                        logLevel,
+                        "Benchmark \(transport.displayName) #\(iteration): first=\(sample.firstChunkLatencyMs.map(String.init) ?? "n/a")ms, total=\(sample.completionLatencyMs.map(String.init) ?? "n/a")ms"
+                    )
+                }
+            }
+
+            let reportBase = TransportBenchmarkReport(
+                id: UUID(),
+                deploymentKind: config.deploymentKind,
+                agentIdentifier: preferredAgentIdentifier,
+                prompt: benchmarkPrompt,
+                iterationsPerTransport: measuredIterations,
+                startedAt: benchmarkStartedAt,
+                completedAt: Date(),
+                samples: samples,
+                summaries: self.summarizeTransportBenchmarkSamples(samples),
+                reportFilePath: nil
+            )
+            let persistedReportURL = self.persistTransportBenchmarkReport(reportBase)
+            let report = TransportBenchmarkReport(
+                id: reportBase.id,
+                deploymentKind: reportBase.deploymentKind,
+                agentIdentifier: reportBase.agentIdentifier,
+                prompt: reportBase.prompt,
+                iterationsPerTransport: reportBase.iterationsPerTransport,
+                startedAt: reportBase.startedAt,
+                completedAt: reportBase.completedAt,
+                samples: reportBase.samples,
+                summaries: reportBase.summaries,
+                reportFilePath: persistedReportURL?.path
+            )
+
+            await MainActor.run {
+                self.transportBenchmarkReport = report
+                self.isRunningTransportBenchmark = false
+                completion?(report)
+            }
+
+            self.addLog(
+                .info,
+                "Transport benchmark completed. Report saved to \(persistedReportURL?.path ?? "memory only")."
+            )
+        }
     }
 
     func reloadAgent(_ agent: Agent, completion: @escaping (Bool, String) -> Void) {
@@ -2553,6 +3345,119 @@ class OpenClawService: ObservableObject {
                 return lhs.uuidString < rhs.uuidString
             }
             return self.nodeSort(leftNode, rightNode)
+        }
+    }
+
+    private func availableBenchmarkTransports(for config: OpenClawConfig) -> [TransportBenchmarkKind] {
+        if OpenClawManager.shared.preferredGatewayConfig(using: config) != nil {
+            if config.deploymentKind == .remoteServer {
+                return [.gatewayChat, .gatewayAgent]
+            }
+            return [.gatewayChat, .gatewayAgent, .cli]
+        }
+        return [.cli]
+    }
+
+    private func preferredBenchmarkAgentIdentifier(using config: OpenClawConfig) -> String {
+        let configured = agentConfig.agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configured.isEmpty {
+            return configured
+        }
+
+        let fallback = config.defaultAgent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "default" : fallback
+    }
+
+    private func sanitizedBenchmarkPrompt(_ prompt: String?) -> String {
+        let trimmed = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            return "You are running a transport latency benchmark. Reply briefly in plain text."
+        }
+        return trimmed
+    }
+
+    private func runTransportBenchmarkInvocation(
+        instruction: String,
+        preferredAgentIdentifier: String,
+        transport: TransportBenchmarkKind,
+        sessionID: String?
+    ) async -> (success: Bool, output: ParsedAgentOutput) {
+        await withCheckedContinuation { continuation in
+            let benchmarkSessionID: String?
+            let transportPreference: AgentTransportPreference
+            switch transport {
+            case .gatewayChat:
+                benchmarkSessionID = sessionID
+                transportPreference = .gatewayOnly
+            case .gatewayAgent:
+                benchmarkSessionID = nil
+                transportPreference = .gatewayOnly
+            case .cli:
+                benchmarkSessionID = nil
+                transportPreference = .cliOnly
+            }
+
+            callOpenClawAgent(
+                instruction: instruction,
+                agentIdentifier: preferredAgentIdentifier,
+                sessionID: benchmarkSessionID,
+                thinkingLevel: .off,
+                transportPreference: transportPreference,
+                outputMode: .plainStreaming
+            ) { success, output in
+                continuation.resume(returning: (success, output))
+            }
+        }
+    }
+
+    private func summarizeTransportBenchmarkSamples(
+        _ samples: [TransportBenchmarkSample]
+    ) -> [TransportBenchmarkSummary] {
+        Dictionary(grouping: samples, by: \.transport)
+            .map { transport, groupedSamples in
+                let successCount = groupedSamples.filter(\.success).count
+                let failureCount = groupedSamples.count - successCount
+                let firstChunkValues = groupedSamples.compactMap(\.firstChunkLatencyMs).map(Double.init)
+                let completionValues = groupedSamples.compactMap(\.completionLatencyMs).map(Double.init)
+
+                return TransportBenchmarkSummary(
+                    transport: transport,
+                    sampleCount: groupedSamples.count,
+                    successCount: successCount,
+                    failureCount: failureCount,
+                    averageFirstChunkLatencyMs: firstChunkValues.isEmpty
+                        ? nil
+                        : firstChunkValues.reduce(0, +) / Double(firstChunkValues.count),
+                    averageCompletionLatencyMs: completionValues.isEmpty
+                        ? nil
+                        : completionValues.reduce(0, +) / Double(completionValues.count),
+                    fastestCompletionLatencyMs: groupedSamples.compactMap(\.completionLatencyMs).min(),
+                    slowestCompletionLatencyMs: groupedSamples.compactMap(\.completionLatencyMs).max()
+                )
+            }
+            .sorted { $0.transport.displayName < $1.transport.displayName }
+    }
+
+    private func persistTransportBenchmarkReport(_ report: TransportBenchmarkReport) -> URL? {
+        guard let directoryURL = transportBenchmarkReportsDirectoryURL else { return nil }
+
+        do {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
+            let timestamp = formatter.string(from: report.completedAt).replacingOccurrences(of: ":", with: "-")
+            let filename = "transport-benchmark-\(timestamp)-\(report.deploymentKind.rawValue).json"
+            let fileURL = directoryURL.appendingPathComponent(filename, isDirectory: false)
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(report)
+            try data.write(to: fileURL, options: .atomic)
+            return fileURL
+        } catch {
+            addLog(.warning, "Failed to persist transport benchmark report: \(error.localizedDescription)")
+            return nil
         }
     }
 }

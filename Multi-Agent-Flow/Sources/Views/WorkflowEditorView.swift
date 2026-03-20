@@ -23,6 +23,16 @@ struct WorkflowEditorView: View {
     @State private var canvasLastOffset: CGSize = .zero
     @State private var isConnectMode: Bool = false
     @State private var connectFromAgentID: UUID?
+    @State private var isBatchConnectMode: Bool = false
+    @State private var batchSourceNodeIDs: Set<UUID> = []
+    @State private var batchTargetNodeIDs: Set<UUID> = []
+    @State private var batchPreview: BatchConnectionPreview?
+    @State private var batchCreatedEdgeIDs: Set<UUID> = []
+    @State private var batchHighlightedEdgeIDs: Set<UUID> = []
+    @State private var batchEdgeLabel: String = ""
+    @State private var batchEdgeColorHex: String?
+    @State private var batchRequiresApproval: Bool = false
+    @State private var batchFeedback: BatchFeedback?
     @State private var isLassoMode: Bool = false
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
@@ -70,6 +80,11 @@ struct WorkflowEditorView: View {
             }
         }
     }
+
+    private struct BatchFeedback: Equatable {
+        let message: String
+        let isError: Bool
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -84,9 +99,13 @@ struct WorkflowEditorView: View {
                 selectedBoundaryIDs: $selectedBoundaryIDs,
                 isRunning: isRunning,
                 isConnectMode: $isConnectMode,
+                isBatchConnectMode: $isBatchConnectMode,
                 isLassoMode: $isLassoMode,
                 connectionType: $connectionType,
                 connectFromAgentID: $connectFromAgentID,
+                batchSourceCount: batchSourceNodeIDs.count,
+                batchTargetCount: batchTargetNodeIDs.count,
+                batchPreviewCount: batchPreview?.newEdgeCount ?? 0,
                 onAddNode: { addNode() },
                 onAddNodeWithTemplate: { templateID in addNode(templateID: templateID) },
                 onDeleteSelectedEdge: deleteSelectedEdge,
@@ -102,6 +121,11 @@ struct WorkflowEditorView: View {
                 onGenerateTasks: generateTasksFromWorkflow,
                 onRunTest: runTest,
                 onStopTest: stopTest,
+                onToggleBatchConnectMode: toggleBatchConnectMode,
+                onAssignBatchSources: assignBatchSourcesFromSelection,
+                onAssignBatchTargets: assignBatchTargetsFromSelection,
+                onPreviewBatchConnections: previewBatchConnections,
+                onCancelBatchConnections: cancelBatchConnectionMode,
                 onSave: { appState.saveProject() }
             )
             .zIndex(1000)
@@ -124,6 +148,12 @@ struct WorkflowEditorView: View {
             )
             
             Divider()
+
+            if let batchFeedback {
+                BatchFeedbackBanner(message: batchFeedback.message, isError: batchFeedback.isError)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 10)
+            }
             
             ZStack {
                 ArchitectureView(
@@ -139,6 +169,21 @@ struct WorkflowEditorView: View {
                     selectedEdgeID: $selectedEdgeID,
                     selectedBoundaryIDs: $selectedBoundaryIDs,
                     isLassoMode: $isLassoMode,
+                    isBatchConnectMode: $isBatchConnectMode,
+                    batchSourceNodeIDs: $batchSourceNodeIDs,
+                    batchTargetNodeIDs: $batchTargetNodeIDs,
+                    batchPreview: $batchPreview,
+                    batchCreatedEdgeIDs: $batchCreatedEdgeIDs,
+                    batchHighlightedEdgeIDs: batchHighlightedEdgeIDs,
+                    batchEdgeLabel: $batchEdgeLabel,
+                    batchEdgeColorHex: $batchEdgeColorHex,
+                    batchRequiresApproval: $batchRequiresApproval,
+                    onAssignBatchSources: assignBatchSourcesFromSelection,
+                    onAssignBatchTargets: assignBatchTargetsFromSelection,
+                    onPreviewBatchConnections: previewBatchConnections,
+                    onCommitBatchConnections: commitBatchConnections,
+                    onCancelBatchConnections: cancelBatchConnectionMode,
+                    onUndoBatchConnections: undoLastBatchConnection,
                     onConnect: handleAgentConnection,
                     testExecution: testExecution
                 )
@@ -188,6 +233,7 @@ struct WorkflowEditorView: View {
                 isConnectMode = false
                 connectFromAgentID = nil
                 isLassoMode = false
+                resetBatchConnectionState()
                 if agentCollectionSnapshot.items.isEmpty {
                     refreshAgentCollectionSnapshot(immediate: true)
                 }
@@ -256,6 +302,146 @@ struct WorkflowEditorView: View {
 
         connectFromAgentID = nil
     }
+
+    private func toggleBatchConnectMode() {
+        if isBatchConnectMode {
+            cancelBatchConnectionMode()
+            return
+        }
+
+        isBatchConnectMode = true
+        isConnectMode = false
+        connectFromAgentID = nil
+        batchPreview = nil
+        showBatchFeedback(batchLocalizedString("batch_mode_enabled"), isError: false)
+    }
+
+    private func assignBatchSourcesFromSelection() {
+        let selection = activeNodeSelection()
+        guard !selection.isEmpty else {
+            showBatchFeedback(batchLocalizedString("select_sources_first"), isError: true)
+            return
+        }
+
+        isBatchConnectMode = true
+        isConnectMode = false
+        batchSourceNodeIDs = selection
+        batchPreview = nil
+        showBatchFeedback(batchLocalizedFormat("batch_sources_selected", selection.count), isError: false)
+    }
+
+    private func assignBatchTargetsFromSelection() {
+        let selection = activeNodeSelection()
+        guard !selection.isEmpty else {
+            showBatchFeedback(batchLocalizedString("select_targets_first"), isError: true)
+            return
+        }
+
+        isBatchConnectMode = true
+        isConnectMode = false
+        batchTargetNodeIDs = selection
+        batchPreview = nil
+        showBatchFeedback(batchLocalizedFormat("batch_targets_selected", selection.count), isError: false)
+    }
+
+    private func previewBatchConnections() {
+        guard !batchSourceNodeIDs.isEmpty else {
+            showBatchFeedback(batchLocalizedString("select_sources_first"), isError: true)
+            return
+        }
+        guard !batchTargetNodeIDs.isEmpty else {
+            showBatchFeedback(batchLocalizedString("select_targets_first"), isError: true)
+            return
+        }
+        guard let preview = appState.previewBatchConnections(
+            sourceNodeIDs: batchSourceNodeIDs,
+            targetNodeIDs: batchTargetNodeIDs
+        ) else {
+            showBatchFeedback(batchLocalizedString("batch_preview_failed"), isError: true)
+            return
+        }
+
+        batchPreview = preview
+        let previewMessage = batchLocalizedSummary(
+            created: preview.newEdgeCount,
+            duplicate: preview.duplicateCount,
+            invalid: preview.invalidCount
+        )
+        showBatchFeedback(previewMessage, isError: !preview.hasActionableEdges)
+    }
+
+    private func commitBatchConnections() {
+        guard let result = appState.connectNodesBatch(
+            sourceNodeIDs: batchSourceNodeIDs,
+            targetNodeIDs: batchTargetNodeIDs,
+            bidirectional: connectionType == .bidirectional,
+            sharedLabel: batchEdgeLabel,
+            sharedColorHex: batchEdgeColorHex,
+            requiresApproval: batchRequiresApproval
+        ) else {
+            showBatchFeedback(batchLocalizedString("batch_commit_failed"), isError: true)
+            return
+        }
+
+        batchPreview = result.preview
+        batchCreatedEdgeIDs = Set(result.createdEdgeIDs)
+        batchHighlightedEdgeIDs = Set(result.createdEdgeIDs)
+        if !result.createdEdgeIDs.isEmpty {
+            let createdEdgeSet = Set(result.createdEdgeIDs)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+                if batchHighlightedEdgeIDs == createdEdgeSet {
+                    batchHighlightedEdgeIDs.removeAll()
+                }
+            }
+        }
+        showBatchFeedback(
+            batchLocalizedSummary(
+                created: result.createdCount,
+                duplicate: result.duplicateCount,
+                invalid: result.invalidCount
+            ),
+            isError: result.createdCount == 0
+        )
+    }
+
+    private func undoLastBatchConnection() {
+        guard !batchCreatedEdgeIDs.isEmpty else { return }
+        appState.removeEdges(batchCreatedEdgeIDs)
+        let removedCount = batchCreatedEdgeIDs.count
+        batchCreatedEdgeIDs.removeAll()
+        batchHighlightedEdgeIDs.removeAll()
+        batchPreview = nil
+        showBatchFeedback(batchLocalizedFormat("batch_undo_success", removedCount), isError: false)
+    }
+
+    private func cancelBatchConnectionMode() {
+        resetBatchConnectionState(clearCreatedEdges: false)
+        showBatchFeedback(batchLocalizedString("batch_mode_cancelled"), isError: false)
+    }
+
+    private func resetBatchConnectionState(clearCreatedEdges: Bool = true) {
+        isBatchConnectMode = false
+        batchSourceNodeIDs.removeAll()
+        batchTargetNodeIDs.removeAll()
+        batchPreview = nil
+        batchEdgeLabel = ""
+        batchEdgeColorHex = nil
+        batchRequiresApproval = false
+        batchHighlightedEdgeIDs.removeAll()
+        if clearCreatedEdges {
+            batchCreatedEdgeIDs.removeAll()
+        }
+    }
+
+    private func showBatchFeedback(_ message: String, isError: Bool) {
+        let feedback = BatchFeedback(message: message, isError: isError)
+        batchFeedback = feedback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            if batchFeedback == feedback {
+                batchFeedback = nil
+            }
+        }
+    }
     
     private func runTest() {
         guard let project = appState.currentProject,
@@ -269,7 +455,8 @@ struct WorkflowEditorView: View {
         // 调用OpenClaw执行工作流
         appState.openClawService.executeWorkflow(
             workflow,
-            agents: project.agents
+            agents: project.agents,
+            projectRuntimeSessionID: project.runtimeState.sessionID
         ) { results in
             DispatchQueue.main.async {
                 self.isRunning = false
@@ -757,9 +944,13 @@ struct EditorToolbar: View {
     @Binding var selectedBoundaryIDs: Set<UUID>
     let isRunning: Bool
     @Binding var isConnectMode: Bool
+    @Binding var isBatchConnectMode: Bool
     @Binding var isLassoMode: Bool
     @Binding var connectionType: WorkflowEditorView.ConnectionType
     @Binding var connectFromAgentID: UUID?
+    let batchSourceCount: Int
+    let batchTargetCount: Int
+    let batchPreviewCount: Int
     var onAddNode: () -> Void
     var onAddNodeWithTemplate: (String?) -> Void
     var onDeleteSelectedEdge: () -> Void
@@ -775,6 +966,11 @@ struct EditorToolbar: View {
     var onGenerateTasks: () -> Void
     var onRunTest: () -> Void
     var onStopTest: () -> Void
+    var onToggleBatchConnectMode: () -> Void
+    var onAssignBatchSources: () -> Void
+    var onAssignBatchTargets: () -> Void
+    var onPreviewBatchConnections: () -> Void
+    var onCancelBatchConnections: () -> Void
     var onSave: () -> Void
 
     @State private var quickAddTemplateID: String = AgentTemplateCatalog.defaultTemplateID
@@ -904,6 +1100,50 @@ struct EditorToolbar: View {
                     if isConnectMode {
                         connectionTypeButton(type: .unidirectional)
                         connectionTypeButton(type: .bidirectional)
+                    }
+
+                    toolbarIconToggleButton(
+                        systemName: isBatchConnectMode ? "square.stack.3d.up.fill" : "square.stack.3d.up",
+                        title: batchLocalizedString("batch_connect"),
+                        action: onToggleBatchConnectMode,
+                        isActive: isBatchConnectMode,
+                        tooltip: batchLocalizedString("batch_connect_help")
+                    )
+
+                    if isBatchConnectMode {
+                        connectionTypeButton(type: .unidirectional)
+                        connectionTypeButton(type: .bidirectional)
+
+                        toolbarIconButton(
+                            systemName: "arrow.up.circle",
+                            title: batchSourceCount > 0 ? batchLocalizedFormat("batch_sources_short", batchSourceCount) : batchLocalizedString("set_sources"),
+                            action: onAssignBatchSources,
+                            tooltip: batchLocalizedString("set_sources_help"),
+                            prominent: batchSourceCount > 0
+                        )
+
+                        toolbarIconButton(
+                            systemName: "arrow.down.circle",
+                            title: batchTargetCount > 0 ? batchLocalizedFormat("batch_targets_short", batchTargetCount) : batchLocalizedString("set_targets"),
+                            action: onAssignBatchTargets,
+                            tooltip: batchLocalizedString("set_targets_help"),
+                            prominent: batchTargetCount > 0
+                        )
+
+                        toolbarIconButton(
+                            systemName: "sparkles.rectangle.stack",
+                            title: batchPreviewCount > 0 ? batchLocalizedFormat("preview_count_short", batchPreviewCount) : batchLocalizedString("preview"),
+                            action: onPreviewBatchConnections,
+                            tooltip: batchLocalizedString("preview_help"),
+                            prominent: batchSourceCount > 0 && batchTargetCount > 0
+                        )
+
+                        toolbarIconButton(
+                            systemName: "xmark.circle",
+                            title: batchLocalizedString("cancel"),
+                            action: onCancelBatchConnections,
+                            tooltip: batchLocalizedString("cancel_help")
+                        )
                     }
 
                     toolbarIconButton(
@@ -1160,14 +1400,15 @@ struct EditorToolbar: View {
         systemName: String,
         title: String? = nil,
         action: @escaping () -> Void,
-        tooltip: String
+        tooltip: String,
+        prominent: Bool = false
     ) -> some View {
         Button(action: action) {
             toolbarActionLabel(
                 systemName: systemName,
                 title: title,
                 isActive: false,
-                prominent: false
+                prominent: prominent
             )
         }
         .buttonStyle(.plain)
@@ -1199,7 +1440,11 @@ struct EditorToolbar: View {
         let isActive = connectionType == type
         return Button(action: {
             connectionType = type
-            isConnectMode = true
+            if isBatchConnectMode {
+                isConnectMode = false
+            } else {
+                isConnectMode = true
+            }
         }) {
             HStack(spacing: 8) {
                 Image(systemName: icon)
@@ -1322,6 +1567,7 @@ struct EditorToolbar: View {
             isConnectMode.toggle()
             if isConnectMode {
                 isLassoMode = false
+                isBatchConnectMode = false
             } else {
                 connectFromAgentID = nil
             }
@@ -3004,6 +3250,21 @@ struct ArchitectureView: View {
     @Binding var selectedEdgeID: UUID?
     @Binding var selectedBoundaryIDs: Set<UUID>
     @Binding var isLassoMode: Bool
+    @Binding var isBatchConnectMode: Bool
+    @Binding var batchSourceNodeIDs: Set<UUID>
+    @Binding var batchTargetNodeIDs: Set<UUID>
+    @Binding var batchPreview: BatchConnectionPreview?
+    @Binding var batchCreatedEdgeIDs: Set<UUID>
+    let batchHighlightedEdgeIDs: Set<UUID>
+    @Binding var batchEdgeLabel: String
+    @Binding var batchEdgeColorHex: String?
+    @Binding var batchRequiresApproval: Bool
+    var onAssignBatchSources: () -> Void
+    var onAssignBatchTargets: () -> Void
+    var onPreviewBatchConnections: () -> Void
+    var onCommitBatchConnections: () -> Void
+    var onCancelBatchConnections: () -> Void
+    var onUndoBatchConnections: () -> Void
     var onConnect: (UUID, UUID) -> Void
     var testExecution: WorkflowTestExecution?
     
@@ -3028,6 +3289,11 @@ struct ArchitectureView: View {
                     connectionType: $connectionType,
                     connectFromAgentID: $connectFromAgentID,
                     isLassoMode: $isLassoMode,
+                    batchSourceNodeIDs: batchSourceNodeIDs,
+                    batchTargetNodeIDs: batchTargetNodeIDs,
+                    batchPreview: batchPreview,
+                    batchCreatedEdgeIDs: batchHighlightedEdgeIDs,
+                    isBatchConnectMode: isBatchConnectMode,
                     onNodeClickInConnectMode: { node in
                         self.handleNodeClickInConnectMode(node: node)
                     },
@@ -3056,11 +3322,33 @@ struct ArchitectureView: View {
                     },
                     onDropAgent: { agentName, location in
                         self.addAgentNodeToCanvas(agentName: agentName, at: location)
-                    }
+                    },
+                    onAssignBatchSources: onAssignBatchSources,
+                    onAssignBatchTargets: onAssignBatchTargets
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if showNodePropertyPanel, let node = selectedNodeForProperty {
+                if isBatchConnectMode {
+                    BatchConnectionPreviewPanel(
+                        workflow: appState.currentProject?.workflows.first,
+                        selectedNodeIDs: selectedNodeIDs,
+                        sourceNodeIDs: batchSourceNodeIDs,
+                        targetNodeIDs: batchTargetNodeIDs,
+                        preview: batchPreview,
+                        createdEdgeIDs: batchCreatedEdgeIDs,
+                        edgeLabel: $batchEdgeLabel,
+                        edgeColorHex: $batchEdgeColorHex,
+                        requiresApproval: $batchRequiresApproval,
+                        onAssignSources: onAssignBatchSources,
+                        onAssignTargets: onAssignBatchTargets,
+                        onPreview: onPreviewBatchConnections,
+                        onCommit: onCommitBatchConnections,
+                        onUndo: onUndoBatchConnections,
+                        onCancel: onCancelBatchConnections
+                    )
+                    .frame(width: 360)
+                    .transition(.move(edge: .trailing))
+                } else if showNodePropertyPanel, let node = selectedNodeForProperty {
                     NodePropertyPanel(
                         node: node,
                         isPresented: $showNodePropertyPanel
@@ -4744,5 +5032,474 @@ struct TestStepRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(step.status == .running ? Color.blue.opacity(0.1) : Color.clear)
+    }
+}
+
+private struct BatchFeedbackBanner: View {
+    let message: String
+    let isError: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundColor(isError ? .orange : .green)
+            Text(message)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundColor(.primary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(NSColor.windowBackgroundColor).opacity(0.95))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke((isError ? Color.orange : Color.green).opacity(0.22), lineWidth: 1)
+        )
+    }
+}
+
+private struct BatchConnectionPreviewPanel: View {
+    @EnvironmentObject var appState: AppState
+    @ObservedObject private var localizationManager = LocalizationManager.shared
+
+    let workflow: Workflow?
+    let selectedNodeIDs: Set<UUID>
+    let sourceNodeIDs: Set<UUID>
+    let targetNodeIDs: Set<UUID>
+    let preview: BatchConnectionPreview?
+    let createdEdgeIDs: Set<UUID>
+    @Binding var edgeLabel: String
+    @Binding var edgeColorHex: String?
+    @Binding var requiresApproval: Bool
+    var onAssignSources: () -> Void
+    var onAssignTargets: () -> Void
+    var onPreview: () -> Void
+    var onCommit: () -> Void
+    var onUndo: () -> Void
+    var onCancel: () -> Void
+
+    private var currentSelectionCount: Int {
+        selectedNodeIDs.count
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label(batchPanelText("panel_title"), systemImage: "square.stack.3d.up.fill")
+                    .font(.headline)
+                Spacer()
+                Button(batchLocalizedString("cancel")) {
+                    onCancel()
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    GroupBox(batchPanelText("selection")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            panelMetricRow(title: batchPanelText("current_selection"), value: "\(currentSelectionCount)")
+                            panelMetricRow(title: batchPanelText("source_nodes"), value: "\(sourceNodeIDs.count)")
+                            panelMetricRow(title: batchPanelText("target_nodes"), value: "\(targetNodeIDs.count)")
+
+                            HStack(spacing: 8) {
+                                Button(batchLocalizedString("set_sources")) {
+                                    onAssignSources()
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(currentSelectionCount == 0)
+
+                                Button(batchLocalizedString("set_targets")) {
+                                    onAssignTargets()
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(currentSelectionCount == 0)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
+
+                    GroupBox(batchPanelText("attributes")) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            TextField(batchPanelText("label"), text: $edgeLabel)
+                                .textFieldStyle(.roundedBorder)
+
+                            Toggle(batchPanelText("requires_approval"), isOn: $requiresApproval)
+
+                            HStack(spacing: 8) {
+                                ForEach(CanvasAccentColorPreset.allCases) { preset in
+                                    Button {
+                                        edgeColorHex = preset.hex
+                                    } label: {
+                                        Circle()
+                                            .fill(preset.color)
+                                            .frame(width: 18, height: 18)
+                                            .overlay(
+                                                Circle()
+                                                    .stroke(
+                                                        CanvasStylePalette.normalizedHex(edgeColorHex) == preset.hex ? Color.primary : Color.clear,
+                                                        lineWidth: 2
+                                                    )
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                Button(batchPanelText("color_default")) {
+                                    edgeColorHex = nil
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(8)
+                    }
+
+                    GroupBox(batchPanelText("summary")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            panelMetricRow(title: batchPanelText("planned_new_edges"), value: "\(preview?.newEdgeCount ?? 0)")
+                            panelMetricRow(title: batchPanelText("skipped_duplicates"), value: "\(preview?.duplicateCount ?? 0)")
+                            panelMetricRow(title: batchPanelText("skipped_invalid"), value: "\(preview?.invalidCount ?? 0)")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
+
+                    if let preview {
+                        if !preview.newEdges.isEmpty {
+                            candidateSection(title: batchPanelText("created_edges"), candidates: preview.newEdges)
+                        }
+                        if !preview.duplicateEdges.isEmpty {
+                            candidateSection(title: batchPanelText("duplicate_edges"), candidates: preview.duplicateEdges)
+                        }
+                        if !preview.invalidPairs.isEmpty {
+                            candidateSection(title: batchPanelText("invalid_edges"), candidates: preview.invalidPairs)
+                        }
+                    } else {
+                        Text(batchPanelText("preview_first"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding()
+            }
+
+            Divider()
+
+            HStack {
+                Button(batchLocalizedString("preview")) {
+                    onPreview()
+                }
+                .buttonStyle(.bordered)
+                .disabled(sourceNodeIDs.isEmpty || targetNodeIDs.isEmpty)
+
+                Button(batchPanelText("undo_last")) {
+                    onUndo()
+                }
+                .buttonStyle(.bordered)
+                .disabled(createdEdgeIDs.isEmpty)
+
+                Spacer()
+
+                Button(batchPanelText("create_now")) {
+                    onCommit()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!(preview?.hasActionableEdges ?? false))
+            }
+            .padding()
+        }
+        .background(Color(.windowBackgroundColor))
+    }
+
+    private func panelMetricRow(title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.semibold)
+        }
+        .font(.caption)
+    }
+
+    private func candidateSection(title: String, candidates: [BatchConnectionCandidate]) -> some View {
+        GroupBox(title) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(candidates.prefix(12)) { candidate in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(nodeName(candidate.fromNodeID)) -> \(nodeName(candidate.toNodeID))")
+                            .font(.caption.weight(.semibold))
+                        if let reason = candidate.reason {
+                            Text(batchCandidateReasonText(reason))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+
+                if candidates.count > 12 {
+                    Text(batchPanelText("more_rows", candidates.count - 12))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(8)
+        }
+    }
+
+    private func nodeName(_ nodeID: UUID) -> String {
+        guard let workflow,
+              let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
+            return nodeID.uuidString.prefix(6).description
+        }
+
+        if let agentID = node.agentID,
+           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
+            return agent.name
+        }
+
+        if !node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return node.title
+        }
+
+        return node.type == .start ? batchPanelText("start_node") : batchPanelText("agent_node")
+    }
+
+    private func batchPanelText(_ key: String, _ count: Int? = nil) -> String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            switch key {
+            case "panel_title": return "Batch Connect"
+            case "selection": return "Selection"
+            case "attributes": return "Shared Attributes"
+            case "summary": return "Preview Summary"
+            case "current_selection": return "Current selection"
+            case "source_nodes": return "Source nodes"
+            case "target_nodes": return "Target nodes"
+            case "planned_new_edges": return "Planned new edges"
+            case "skipped_duplicates": return "Skipped duplicates"
+            case "skipped_invalid": return "Skipped invalid"
+            case "label": return "Label"
+            case "requires_approval": return "Requires approval"
+            case "color_default": return "Default"
+            case "created_edges": return "New edges"
+            case "duplicate_edges": return "Existing edges"
+            case "invalid_edges": return "Invalid pairs"
+            case "preview_first": return "Set a source set and a target set, then preview before creating."
+            case "create_now": return "Create"
+            case "undo_last": return "Undo last batch"
+            case "start_node": return "Start"
+            case "agent_node": return "Agent"
+            case "more_rows": return "+\(count ?? 0) more"
+            default: return key
+            }
+        case .traditionalChinese:
+            switch key {
+            case "panel_title": return "批量連線"
+            case "selection": return "選擇"
+            case "attributes": return "統一屬性"
+            case "summary": return "預覽摘要"
+            case "current_selection": return "當前選取"
+            case "source_nodes": return "來源節點"
+            case "target_nodes": return "目標節點"
+            case "planned_new_edges": return "預計新增"
+            case "skipped_duplicates": return "跳過重複"
+            case "skipped_invalid": return "跳過無效"
+            case "label": return "標籤"
+            case "requires_approval": return "需要審批"
+            case "color_default": return "預設"
+            case "created_edges": return "新增連線"
+            case "duplicate_edges": return "已存在連線"
+            case "invalid_edges": return "無效配對"
+            case "preview_first": return "先設定來源與目標，再預覽後建立。"
+            case "create_now": return "建立"
+            case "undo_last": return "撤銷上次批量"
+            case "start_node": return "開始"
+            case "agent_node": return "節點"
+            case "more_rows": return "還有 \(count ?? 0) 條"
+            default: return key
+            }
+        case .simplifiedChinese:
+            switch key {
+            case "panel_title": return "批量连接"
+            case "selection": return "选择"
+            case "attributes": return "统一属性"
+            case "summary": return "预览摘要"
+            case "current_selection": return "当前选中"
+            case "source_nodes": return "来源节点"
+            case "target_nodes": return "目标节点"
+            case "planned_new_edges": return "预计新增"
+            case "skipped_duplicates": return "跳过重复"
+            case "skipped_invalid": return "跳过无效"
+            case "label": return "标签"
+            case "requires_approval": return "需要审批"
+            case "color_default": return "默认"
+            case "created_edges": return "新增连接"
+            case "duplicate_edges": return "已存在连接"
+            case "invalid_edges": return "无效配对"
+            case "preview_first": return "先设置来源与目标，再预览后创建。"
+            case "create_now": return "创建"
+            case "undo_last": return "撤销上次批量"
+            case "start_node": return "开始"
+            case "agent_node": return "节点"
+            case "more_rows": return "还有 \(count ?? 0) 条"
+            default: return key
+            }
+        }
+    }
+}
+
+private func batchLocalizedString(_ key: String) -> String {
+    switch LocalizationManager.shared.currentLanguage {
+    case .english:
+        switch key {
+        case "batch_mode_enabled": return "Batch connect mode enabled."
+        case "select_sources_first": return "Select one or more nodes, then set them as sources."
+        case "select_targets_first": return "Select one or more nodes, then set them as targets."
+        case "batch_preview_failed": return "Unable to build a batch preview right now."
+        case "batch_commit_failed": return "Unable to create batch connections."
+        case "batch_mode_cancelled": return "Batch connect mode cancelled."
+        case "batch_connect": return "Batch Connect"
+        case "batch_connect_help": return "Prepare sources and targets for bulk edge creation"
+        case "set_sources": return "Set Sources"
+        case "set_targets": return "Set Targets"
+        case "set_sources_help": return "Use the current node selection as the source set"
+        case "set_targets_help": return "Use the current node selection as the target set"
+        case "preview": return "Preview"
+        case "preview_help": return "Preview how many edges will be created or skipped"
+        case "cancel": return "Cancel"
+        case "cancel_help": return "Exit batch connect mode"
+        default: return key
+        }
+    case .traditionalChinese:
+        switch key {
+        case "batch_mode_enabled": return "已進入批量連線模式。"
+        case "select_sources_first": return "請先選取一個或多個節點，再設為來源。"
+        case "select_targets_first": return "請先選取一個或多個節點，再設為目標。"
+        case "batch_preview_failed": return "暫時無法生成批量預覽。"
+        case "batch_commit_failed": return "暫時無法建立批量連線。"
+        case "batch_mode_cancelled": return "已取消批量連線模式。"
+        case "batch_connect": return "批量連線"
+        case "batch_connect_help": return "先設定來源與目標，再一次建立多條連線"
+        case "set_sources": return "設為來源"
+        case "set_targets": return "設為目標"
+        case "set_sources_help": return "將當前選取的節點設為來源集合"
+        case "set_targets_help": return "將當前選取的節點設為目標集合"
+        case "preview": return "預覽"
+        case "preview_help": return "預覽本次會新增或跳過多少條連線"
+        case "cancel": return "取消"
+        case "cancel_help": return "退出批量連線模式"
+        default: return key
+        }
+    case .simplifiedChinese:
+        switch key {
+        case "batch_mode_enabled": return "已进入批量连接模式。"
+        case "select_sources_first": return "请先选中一个或多个节点，再设为来源。"
+        case "select_targets_first": return "请先选中一个或多个节点，再设为目标。"
+        case "batch_preview_failed": return "暂时无法生成批量预览。"
+        case "batch_commit_failed": return "暂时无法创建批量连接。"
+        case "batch_mode_cancelled": return "已取消批量连接模式。"
+        case "batch_connect": return "批量连接"
+        case "batch_connect_help": return "先设置来源与目标，再一次创建多条连接"
+        case "set_sources": return "设为来源"
+        case "set_targets": return "设为目标"
+        case "set_sources_help": return "将当前选中的节点设为来源集合"
+        case "set_targets_help": return "将当前选中的节点设为目标集合"
+        case "preview": return "预览"
+        case "preview_help": return "预览本次会新增或跳过多少条连接"
+        case "cancel": return "取消"
+        case "cancel_help": return "退出批量连接模式"
+        default: return key
+        }
+    }
+}
+
+private func batchLocalizedFormat(_ key: String, _ count: Int) -> String {
+    switch LocalizationManager.shared.currentLanguage {
+    case .english:
+        switch key {
+        case "batch_sources_selected": return "\(count) source nodes selected."
+        case "batch_targets_selected": return "\(count) target nodes selected."
+        case "batch_undo_success": return "Removed \(count) newly created edges."
+        case "batch_sources_short": return "Sources \(count)"
+        case "batch_targets_short": return "Targets \(count)"
+        case "preview_count_short": return "Preview \(count)"
+        default: return "\(count)"
+        }
+    case .traditionalChinese:
+        switch key {
+        case "batch_sources_selected": return "已選擇 \(count) 個來源節點。"
+        case "batch_targets_selected": return "已選擇 \(count) 個目標節點。"
+        case "batch_undo_success": return "已移除剛建立的 \(count) 條連線。"
+        case "batch_sources_short": return "來源 \(count)"
+        case "batch_targets_short": return "目標 \(count)"
+        case "preview_count_short": return "預覽 \(count)"
+        default: return "\(count)"
+        }
+    case .simplifiedChinese:
+        switch key {
+        case "batch_sources_selected": return "已选择 \(count) 个来源节点。"
+        case "batch_targets_selected": return "已选择 \(count) 个目标节点。"
+        case "batch_undo_success": return "已移除刚创建的 \(count) 条连接。"
+        case "batch_sources_short": return "来源 \(count)"
+        case "batch_targets_short": return "目标 \(count)"
+        case "preview_count_short": return "预览 \(count)"
+        default: return "\(count)"
+        }
+    }
+}
+
+private func batchLocalizedSummary(created: Int, duplicate: Int, invalid: Int) -> String {
+    switch LocalizationManager.shared.currentLanguage {
+    case .english:
+        return "New \(created), skipped \(duplicate) duplicates, skipped \(invalid) invalid."
+    case .traditionalChinese:
+        return "新增 \(created) 條，跳過 \(duplicate) 條重複，跳過 \(invalid) 條無效。"
+    case .simplifiedChinese:
+        return "新增 \(created) 条，跳过 \(duplicate) 条重复，跳过 \(invalid) 条无效。"
+    }
+}
+
+private func batchCandidateReasonText(_ reason: BatchConnectionCandidateReason) -> String {
+    switch LocalizationManager.shared.currentLanguage {
+    case .english:
+        switch reason {
+        case .existingRelationship: return "Already connected."
+        case .selfConnection: return "Self connections are not allowed."
+        case .unsupportedSource: return "The source node type does not support edges."
+        case .unsupportedTarget: return "The target node type does not support edges."
+        case .missingSourceNode: return "The source node is missing."
+        case .missingTargetNode: return "The target node is missing."
+        }
+    case .traditionalChinese:
+        switch reason {
+        case .existingRelationship: return "該節點對已存在連線。"
+        case .selfConnection: return "不允許自連線。"
+        case .unsupportedSource: return "來源節點類型不支援連線。"
+        case .unsupportedTarget: return "目標節點類型不支援連線。"
+        case .missingSourceNode: return "來源節點不存在。"
+        case .missingTargetNode: return "目標節點不存在。"
+        }
+    case .simplifiedChinese:
+        switch reason {
+        case .existingRelationship: return "该节点对已存在连接。"
+        case .selfConnection: return "不允许自连接。"
+        case .unsupportedSource: return "来源节点类型不支持连接。"
+        case .unsupportedTarget: return "目标节点类型不支持连接。"
+        case .missingSourceNode: return "来源节点不存在。"
+        case .missingTargetNode: return "目标节点不存在。"
+        }
     }
 }

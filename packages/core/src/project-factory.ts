@@ -84,6 +84,7 @@ function createDefaultRuntimeState(now: number): RuntimeState {
     sessionID: createUUID(),
     messageQueue: [],
     agentStates: {},
+    runtimeEvents: [],
     lastUpdated: now
   };
 }

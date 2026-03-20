@@ -438,6 +438,14 @@ class AppState: ObservableObject {
     private let persistenceQueue = DispatchQueue(label: "MultiAgentFlow.AppState.persistence", qos: .utility)
     private var latestSilentPersistToken = UUID()
     private var taskGenerationWorkItem: DispatchWorkItem?
+
+    private struct WorkbenchRemoteSessionContext: Sendable {
+        let workflowID: UUID
+        let sessionID: String
+        let gatewaySessionKey: String
+        let agentID: UUID
+        let agentName: String
+    }
     
     init() {
         loadToolbarPreferences()
@@ -1577,6 +1585,159 @@ class AppState: ObservableObject {
 
     }
 
+    func removeEdges(_ edgeIDs: Set<UUID>) {
+        guard !edgeIDs.isEmpty,
+              let workflow = currentProject?.workflows.first,
+              workflow.edges.contains(where: { edgeIDs.contains($0.id) }) else { return }
+
+        updateMainWorkflow { workflow in
+            workflow.edges.removeAll { edgeIDs.contains($0.id) }
+        }
+    }
+
+    func previewBatchConnections(sourceNodeIDs: Set<UUID>, targetNodeIDs: Set<UUID>) -> BatchConnectionPreview? {
+        guard let workflow = currentProject?.workflows.first else { return nil }
+
+        let sortedSources = sourceNodeIDs.sorted { $0.uuidString < $1.uuidString }
+        let sortedTargets = targetNodeIDs.sorted { $0.uuidString < $1.uuidString }
+        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let supportedTypes: Set<WorkflowNode.NodeType> = [.start, .agent]
+
+        var candidates: [BatchConnectionCandidate] = []
+        candidates.reserveCapacity(sortedSources.count * sortedTargets.count)
+
+        for sourceNodeID in sortedSources {
+            for targetNodeID in sortedTargets {
+                let candidate: BatchConnectionCandidate
+
+                if sourceNodeID == targetNodeID {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .invalid,
+                        reason: .selfConnection
+                    )
+                } else if nodesByID[sourceNodeID] == nil {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .invalid,
+                        reason: .missingSourceNode
+                    )
+                } else if nodesByID[targetNodeID] == nil {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .invalid,
+                        reason: .missingTargetNode
+                    )
+                } else if let sourceNode = nodesByID[sourceNodeID], !supportedTypes.contains(sourceNode.type) {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .invalid,
+                        reason: .unsupportedSource
+                    )
+                } else if let targetNode = nodesByID[targetNodeID], !supportedTypes.contains(targetNode.type) {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .invalid,
+                        reason: .unsupportedTarget
+                    )
+                } else if let existingEdge = workflow.edges.first(where: {
+                    undirectedEdgeKey(from: $0.fromNodeID, to: $0.toNodeID) == undirectedEdgeKey(from: sourceNodeID, to: targetNodeID)
+                }) {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .duplicate,
+                        reason: .existingRelationship,
+                        existingEdgeID: existingEdge.id
+                    )
+                } else {
+                    candidate = BatchConnectionCandidate(
+                        fromNodeID: sourceNodeID,
+                        toNodeID: targetNodeID,
+                        status: .new
+                    )
+                }
+
+                candidates.append(candidate)
+            }
+        }
+
+        return BatchConnectionPreview(
+            sourceNodeIDs: sortedSources,
+            targetNodeIDs: sortedTargets,
+            candidates: candidates
+        )
+    }
+
+    func connectNodesBatch(
+        sourceNodeIDs: Set<UUID>,
+        targetNodeIDs: Set<UUID>,
+        bidirectional: Bool = false,
+        sharedLabel: String = "",
+        sharedColorHex: String? = nil,
+        requiresApproval: Bool = false
+    ) -> BatchConnectionResult? {
+        guard let preview = previewBatchConnections(sourceNodeIDs: sourceNodeIDs, targetNodeIDs: targetNodeIDs),
+              preview.hasActionableEdges else {
+            return previewBatchConnections(sourceNodeIDs: sourceNodeIDs, targetNodeIDs: targetNodeIDs).map {
+                BatchConnectionResult(
+                    preview: $0,
+                    createdEdgeIDs: [],
+                    createdCount: 0,
+                    duplicateCount: $0.duplicateCount,
+                    invalidCount: $0.invalidCount
+                )
+            }
+        }
+
+        let normalizedColorHex = CanvasStylePalette.normalizedHex(sharedColorHex)
+        let normalizedLabel = sharedLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        var createdEdgeIDs: [UUID] = []
+        let newCandidates = preview.newEdges
+
+        updateMainWorkflow { workflow in
+            for candidate in newCandidates {
+                var edge = WorkflowEdge(from: candidate.fromNodeID, to: candidate.toNodeID)
+                edge.isBidirectional = bidirectional
+                edge.label = normalizedLabel
+                edge.displayColorHex = normalizedColorHex
+                edge.requiresApproval = requiresApproval
+                workflow.edges.append(edge)
+                createdEdgeIDs.append(edge.id)
+            }
+        }
+
+        if let workflow = currentProject?.workflows.first {
+            let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+            for candidate in newCandidates {
+                guard let sourceNode = nodesByID[candidate.fromNodeID],
+                      let targetNode = nodesByID[candidate.toNodeID],
+                      sourceNode.type == .agent,
+                      targetNode.type == .agent,
+                      let sourceAgentID = sourceNode.agentID,
+                      let targetAgentID = targetNode.agentID else { continue }
+
+                setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
+                if bidirectional {
+                    setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
+                }
+            }
+        }
+
+        return BatchConnectionResult(
+            preview: preview,
+            createdEdgeIDs: createdEdgeIDs,
+            createdCount: createdEdgeIDs.count,
+            duplicateCount: preview.duplicateCount,
+            invalidCount: preview.invalidCount
+        )
+    }
+
     func addEdge(
         from fromNodeID: UUID,
         to toNodeID: UUID,
@@ -2368,6 +2529,7 @@ class AppState: ObservableObject {
                 workflow,
                 agents: agents,
                 prompt: testCase.prompt,
+                projectRuntimeSessionID: currentProject?.runtimeState.sessionID,
                 agentOutputMode: .structuredJSON
             ) { [weak self] results in
                 guard let self else { return }
@@ -2709,6 +2871,19 @@ class AppState: ObservableObject {
             userMessage.metadata["workbenchSessionID"] = workbenchSessionID
             userMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             userMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: trimmedPrompt))
+            userMessage.runtimeEvent = self.makeWorkbenchRuntimeEvent(
+                eventType: .taskDispatch,
+                workflowID: workflow.id,
+                nodeID: leadNode.id,
+                sessionID: workbenchSessionID,
+                source: OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User"),
+                target: OpenClawRuntimeActor(kind: .agent, agentId: leadAgent.id.uuidString, agentName: leadAgent.name),
+                payload: [
+                    "intent": "respond",
+                    "summary": trimmedPrompt,
+                    "expectedOutput": "agent_final_response"
+                ]
+            )
             self.messageManager.appendMessage(userMessage)
 
             self.taskManager.moveTask(task.id, to: .inProgress)
@@ -2757,7 +2932,8 @@ class AppState: ObservableObject {
                 content: String,
                 type: MessageType,
                 outputType: ExecutionOutputType,
-                isThinking: Bool
+                isThinking: Bool,
+                runtimeEvent: OpenClawRuntimeEvent? = nil
             ) {
                 let cleanedContent = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isThinking
                     ? "已收到任务，正在继续处理。"
@@ -2775,6 +2951,9 @@ class AppState: ObservableObject {
                         message.metadata["workbenchSessionID"] = workbenchSessionID
                         message.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
                         message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
+                        if let runtimeEvent {
+                            message.runtimeEvent = runtimeEvent
+                        }
                     }
                 } else {
                     var responseMessage = Message(
@@ -2797,6 +2976,7 @@ class AppState: ObservableObject {
                     responseMessage.metadata["workbenchSessionID"] = workbenchSessionID
                     responseMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
                     responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
+                    responseMessage.runtimeEvent = runtimeEvent
                     self.messageManager.appendMessage(responseMessage)
                     streamingMessageID = responseMessage.id
                 }
@@ -2832,6 +3012,7 @@ class AppState: ObservableObject {
                     for result in results {
                         mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
                     }
+                    mutableProject.runtimeState.runtimeEvents.append(contentsOf: results.flatMap(\.runtimeEvents))
                     mutableProject.runtimeState.lastUpdated = Date()
                     mutableProject.updatedAt = Date()
                     self.currentProject = mutableProject
@@ -2892,7 +3073,8 @@ class AppState: ObservableObject {
                         content: visibleOutput.isEmpty ? streamingContent : visibleOutput,
                         type: entryResult.status == .completed ? .notification : .data,
                         outputType: entryResult.outputType,
-                        isThinking: false
+                        isThinking: false,
+                        runtimeEvent: entryResult.primaryRuntimeEvent ?? entryResult.runtimeEvents.last
                     )
                 } else if let messageID = streamingMessageID {
                     self.messageManager.updateMessage(messageID) { message in
@@ -2930,6 +3112,7 @@ class AppState: ObservableObject {
                     workflow,
                     agents: project.agents,
                     prompt: trimmedPrompt,
+                    projectRuntimeSessionID: project.runtimeState.sessionID,
                     startingNodes: backgroundNodes,
                     entryNodeIDsOverride: backgroundEntryNodeIDs,
                     preloadedResults: [entryResult],
@@ -2945,6 +3128,41 @@ class AppState: ObservableObject {
         beginWorkbenchExecution()
 
         return true
+    }
+
+    func refreshWorkbenchHistory(for workflowID: UUID? = nil) {
+        guard openClawManager.isConnected else { return }
+
+        let connectionConfig = openClawManager.config
+        guard let gatewayConfig = openClawManager.preferredGatewayConfig(using: connectionConfig) else { return }
+        guard let project = currentProject,
+              let workflow = self.workflow(for: workflowID) ?? project.workflows.first,
+              let sessionContext = latestWorkbenchRemoteSessionContext(for: workflow, project: project) else {
+            return
+        }
+
+        let manager = openClawManager
+        _Concurrency.Task { [weak self, manager, gatewayConfig, sessionContext] in
+            do {
+                let transcript = try await manager.gatewayChatHistory(
+                    sessionKey: sessionContext.gatewaySessionKey,
+                    using: gatewayConfig,
+                    limit: 40
+                )
+                guard let appState = self else { return }
+                await MainActor.run {
+                    appState.mergeWorkbenchTranscript(transcript, into: sessionContext)
+                }
+            } catch {
+                guard let appState = self else { return }
+                await MainActor.run {
+                    appState.openClawService.addLog(
+                        .warning,
+                        "Workbench history refresh failed for session \(sessionContext.gatewaySessionKey): \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
     }
     
     // 获取Agent的任务统计
@@ -3263,6 +3481,301 @@ class AppState: ObservableObject {
             return .minimal
         }
         return .off
+    }
+
+    private func latestWorkbenchRemoteSessionContext(
+        for workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        let workflowMessages = messageManager.workbenchMessages(for: workflow.id)
+            .sorted { $0.timestamp > $1.timestamp }
+
+        for message in workflowMessages {
+            guard let sessionID = normalizedWorkbenchSessionID(from: message.metadata["workbenchSessionID"]) else {
+                continue
+            }
+            guard let agent = workbenchLeadAgent(for: message, project: project) else { continue }
+            return makeWorkbenchRemoteSessionContext(
+                workflowID: workflow.id,
+                sessionID: sessionID,
+                agent: agent
+            )
+        }
+
+        let workflowTasks = taskManager.tasks
+            .filter { $0.metadata["workflowID"] == workflow.id.uuidString }
+            .sorted { $0.createdAt > $1.createdAt }
+
+        for task in workflowTasks {
+            guard let sessionID = normalizedWorkbenchSessionID(from: task.metadata["workbenchSessionID"]) else {
+                continue
+            }
+            guard let agent = workbenchLeadAgent(for: task, project: project) else { continue }
+            return makeWorkbenchRemoteSessionContext(
+                workflowID: workflow.id,
+                sessionID: sessionID,
+                agent: agent
+            )
+        }
+
+        return nil
+    }
+
+    private func makeWorkbenchRemoteSessionContext(
+        workflowID: UUID,
+        sessionID: String,
+        agent: Agent
+    ) -> WorkbenchRemoteSessionContext {
+        let agentIdentifier = resolvedWorkbenchAgentIdentifier(for: agent)
+        return WorkbenchRemoteSessionContext(
+            workflowID: workflowID,
+            sessionID: sessionID,
+            gatewaySessionKey: workbenchGatewaySessionKey(
+                sessionID: sessionID,
+                agentIdentifier: agentIdentifier
+            ),
+            agentID: agent.id,
+            agentName: agent.name
+        )
+    }
+
+    private func normalizedWorkbenchSessionID(from rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func workbenchLeadAgent(for message: Message, project: MAProject) -> Agent? {
+        let candidateIDs: [UUID?] = [
+            message.fromAgentID,
+            message.toAgentID,
+            UUID(uuidString: message.metadata["entryAgentID"] ?? "")
+        ]
+
+        for candidateID in candidateIDs.compactMap({ $0 }) {
+            if let agent = project.agents.first(where: { $0.id == candidateID }) {
+                return agent
+            }
+        }
+
+        return nil
+    }
+
+    private func workbenchLeadAgent(for task: Task, project: MAProject) -> Agent? {
+        let candidateIDs: [UUID?] = [
+            task.assignedAgentID,
+            UUID(uuidString: task.metadata["entryAgentID"] ?? "")
+        ]
+
+        for candidateID in candidateIDs.compactMap({ $0 }) {
+            if let agent = project.agents.first(where: { $0.id == candidateID }) {
+                return agent
+            }
+        }
+
+        return nil
+    }
+
+    private func resolvedWorkbenchAgentIdentifier(for agent: Agent) -> String {
+        let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !identifier.isEmpty {
+            return identifier
+        }
+
+        let name = agent.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty {
+            return name
+        }
+
+        let fallback = openClawManager.config.defaultAgent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "default" : fallback
+    }
+
+    private func workbenchGatewaySessionKey(sessionID: String, agentIdentifier: String) -> String {
+        let normalizedAgent = normalizedWorkbenchGatewayAgentID(agentIdentifier)
+        let base = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.lowercased().hasPrefix("agent:") {
+            return base.lowercased()
+        }
+        return "agent:\(normalizedAgent):\(sanitizedWorkbenchGatewaySessionComponent(base))"
+    }
+
+    private func normalizedWorkbenchGatewayAgentID(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return "main" }
+
+        let filtered = trimmed.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar) {
+                return Character(scalar)
+            }
+            if scalar == "-" || scalar == "_" || scalar == "." {
+                return Character(scalar)
+            }
+            return "-"
+        }
+
+        let value = String(filtered).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return value.isEmpty ? "main" : value
+    }
+
+    private func sanitizedWorkbenchGatewaySessionComponent(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return "main" }
+
+        let filtered = trimmed.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar) {
+                return Character(scalar)
+            }
+            if scalar == "-" || scalar == "_" || scalar == "." {
+                return Character(scalar)
+            }
+            return "-"
+        }
+
+        let normalized = String(filtered).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return normalized.isEmpty ? "main" : normalized
+    }
+
+    private func mergeWorkbenchTranscript(
+        _ transcript: [OpenClawGatewayClient.ChatTranscriptMessage],
+        into sessionContext: WorkbenchRemoteSessionContext
+    ) {
+        let remoteMessages = transcript.filter { entry in
+            let role = entry.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return (role == "user" || role == "assistant")
+                && !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        guard !remoteMessages.isEmpty else { return }
+
+        var localMessageIndicesByRole: [String: [Int]] = [:]
+        for (index, message) in messageManager.messages.enumerated() {
+            guard message.metadata["channel"] == "workbench",
+                  message.metadata["workflowID"] == sessionContext.workflowID.uuidString,
+                  message.metadata["workbenchSessionID"] == sessionContext.sessionID else {
+                continue
+            }
+
+            let role = (message.metadata["role"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard role == "user" || role == "assistant" else { continue }
+            localMessageIndicesByRole[role, default: []].append(index)
+        }
+
+        var matchedLocalMessageIndices = Set<Int>()
+        for entry in remoteMessages {
+            let role = entry.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let timestamp = normalizedWorkbenchTranscriptDate(entry.timestamp)
+
+            if let existingIndex = localMessageIndicesByRole[role]?.first(where: { !matchedLocalMessageIndices.contains($0) }) {
+                matchedLocalMessageIndices.insert(existingIndex)
+                let messageID = messageManager.messages[existingIndex].id
+                messageManager.updateMessage(messageID) { message in
+                    message.content = entry.text
+                    message.timestamp = timestamp
+                    message.status = .read
+                    message.type = role == "user" ? .task : .notification
+                    message.metadata["channel"] = "workbench"
+                    message.metadata["role"] = role
+                    message.metadata["kind"] = role == "user" ? "input" : "output"
+                    message.metadata["workflowID"] = sessionContext.workflowID.uuidString
+                    message.metadata["workbenchSessionID"] = sessionContext.sessionID
+                    if role == "assistant" {
+                        message.metadata["thinking"] = "false"
+                        message.metadata["streamed"] = "true"
+                        message.metadata["agentName"] = sessionContext.agentName
+                        message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
+                    }
+                    message.runtimeEvent = self.makeTranscriptRuntimeEvent(
+                        role: role,
+                        text: entry.text,
+                        sessionContext: sessionContext
+                    )
+                }
+                continue
+            }
+
+            var appendedMessage = Message(
+                from: sessionContext.agentID,
+                to: sessionContext.agentID,
+                type: role == "user" ? .task : .notification,
+                content: entry.text
+            )
+            appendedMessage.timestamp = timestamp
+            appendedMessage.status = .read
+            appendedMessage.metadata["channel"] = "workbench"
+            appendedMessage.metadata["role"] = role
+            appendedMessage.metadata["kind"] = role == "user" ? "input" : "output"
+            appendedMessage.metadata["workflowID"] = sessionContext.workflowID.uuidString
+            appendedMessage.metadata["workbenchSessionID"] = sessionContext.sessionID
+            if role == "assistant" {
+                appendedMessage.metadata["entryReply"] = "true"
+                appendedMessage.metadata["streamed"] = "true"
+                appendedMessage.metadata["thinking"] = "false"
+                appendedMessage.metadata["agentName"] = sessionContext.agentName
+                appendedMessage.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
+            }
+            appendedMessage.runtimeEvent = makeTranscriptRuntimeEvent(
+                role: role,
+                text: entry.text,
+                sessionContext: sessionContext
+            )
+            messageManager.appendMessage(appendedMessage)
+        }
+    }
+
+    private func makeWorkbenchRuntimeEvent(
+        eventType: OpenClawRuntimeEventType,
+        workflowID: UUID,
+        nodeID: UUID?,
+        sessionID: String,
+        source: OpenClawRuntimeActor,
+        target: OpenClawRuntimeActor,
+        payload: [String: String]
+    ) -> OpenClawRuntimeEvent {
+        OpenClawRuntimeEvent(
+            eventType: eventType,
+            workflowId: workflowID.uuidString,
+            nodeId: nodeID?.uuidString,
+            sessionKey: sessionID,
+            idempotencyKey: UUID().uuidString,
+            source: source,
+            target: target,
+            transport: OpenClawRuntimeTransport(kind: .gatewayChat, deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue),
+            payload: payload
+        )
+    }
+
+    private func makeTranscriptRuntimeEvent(
+        role: String,
+        text: String,
+        sessionContext: WorkbenchRemoteSessionContext
+    ) -> OpenClawRuntimeEvent {
+        let normalizedRole = role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let eventType: OpenClawRuntimeEventType = normalizedRole == "assistant" ? .taskResult : .taskDispatch
+        let source = normalizedRole == "assistant"
+            ? OpenClawRuntimeActor(kind: .agent, agentId: sessionContext.agentID.uuidString, agentName: sessionContext.agentName)
+            : OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User")
+        let target = normalizedRole == "assistant"
+            ? OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User")
+            : OpenClawRuntimeActor(kind: .agent, agentId: sessionContext.agentID.uuidString, agentName: sessionContext.agentName)
+        return OpenClawRuntimeEvent(
+            eventType: eventType,
+            workflowId: sessionContext.workflowID.uuidString,
+            sessionKey: sessionContext.sessionID,
+            idempotencyKey: UUID().uuidString,
+            source: source,
+            target: target,
+            transport: OpenClawRuntimeTransport(kind: .gatewayChat, deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue),
+            payload: [
+                "summary": text,
+                "role": normalizedRole
+            ]
+        )
+    }
+
+    private func normalizedWorkbenchTranscriptDate(_ timestamp: Double?) -> Date {
+        guard let timestamp, timestamp > 0 else { return Date() }
+        return Date(timeIntervalSince1970: timestamp)
     }
 
     private func workbenchSessionID(projectRuntimeSessionID: String, workflowID: UUID, agentID: UUID) -> String {

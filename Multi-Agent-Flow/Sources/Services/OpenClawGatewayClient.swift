@@ -28,6 +28,12 @@ actor OpenClawGatewayClient {
         let updatedAt: Double?
     }
 
+    struct ChatTranscriptMessage: Hashable, Sendable {
+        let role: String
+        let text: String
+        let timestamp: Double?
+    }
+
     private struct ChatRunState {
         var sessionKey: String?
         var state: String?
@@ -293,6 +299,7 @@ actor OpenClawGatewayClient {
         sessionKey: String,
         thinkingLevel: AgentThinkingLevel?,
         timeoutSeconds: Int,
+        onRunStarted: (@Sendable (String, String) -> Void)? = nil,
         onAssistantTextUpdated: @escaping @Sendable (String) -> Void
     ) async throws -> AgentExecutionResult {
         let requestedSessionKey = sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -324,6 +331,8 @@ actor OpenClawGatewayClient {
         else {
             throw gatewayError("Gateway chat invocation did not return a runId.")
         }
+        let acceptedSessionKey = normalizedNonEmptyString(payload["sessionKey"]) ?? requestedSessionKey
+        onRunStarted?(runID, acceptedSessionKey)
 
         let observerID = UUID()
         registerObserver(id: observerID, for: runID, handler: onAssistantTextUpdated)
@@ -347,7 +356,7 @@ actor OpenClawGatewayClient {
         let waitStatus = normalizedNonEmptyString(waitPayload["status"]) ?? "unknown"
         var agentState = runStates[runID] ?? AgentRunState()
         let chatState = chatRunStates[runID]
-        let resolvedSessionKey = chatState?.sessionKey ?? requestedSessionKey
+        let resolvedSessionKey = chatState?.sessionKey ?? acceptedSessionKey
 
         if let errorMessage = normalizedNonEmptyString(waitPayload["error"]) {
             agentState.errorMessage = errorMessage
@@ -403,6 +412,16 @@ actor OpenClawGatewayClient {
             timeoutSeconds: max(config.timeout, 5),
             using: config
         )
+    }
+
+    func chatHistory(
+        using config: OpenClawConfig,
+        sessionKey: String,
+        limit: Int? = nil
+    ) async throws -> [ChatTranscriptMessage] {
+        let payload = try await requestChatHistoryPayload(using: config, sessionKey: sessionKey, limit: limit)
+        let messages = payload["messages"] as? [Any] ?? []
+        return messages.compactMap { transcriptMessage(fromHistoryEntry: $0) }
     }
 
     private func registerObserver(
@@ -798,7 +817,28 @@ actor OpenClawGatewayClient {
     private func extractAssistantText(fromHistoryEntry entry: Any) -> String? {
         guard let message = entry as? [String: Any] else { return nil }
         guard normalizedNonEmptyString(message["role"])?.lowercased() == "assistant" else { return nil }
+        return extractMessageText(fromHistoryEntry: message)
+    }
 
+    private func transcriptMessage(fromHistoryEntry entry: Any) -> ChatTranscriptMessage? {
+        guard let message = entry as? [String: Any] else { return nil }
+        guard let role = normalizedNonEmptyString(message["role"])?.lowercased() else { return nil }
+        guard let text = extractMessageText(fromHistoryEntry: message), !text.isEmpty else { return nil }
+
+        let timestampValue = message["timestamp"]
+            ?? message["createdAt"]
+            ?? message["createdAtMs"]
+            ?? message["updatedAt"]
+            ?? message["updatedAtMs"]
+
+        return ChatTranscriptMessage(
+            role: role,
+            text: text,
+            timestamp: normalizedHistoryTimestamp(timestampValue)
+        )
+    }
+
+    private func extractMessageText(fromHistoryEntry message: [String: Any]) -> String? {
         if let contentItems = message["content"] as? [[String: Any]] {
             let parts = contentItems.compactMap { item -> String? in
                 if let text = normalizedNonEmptyString(item["text"]) {
@@ -813,11 +853,37 @@ actor OpenClawGatewayClient {
             return joined.isEmpty ? nil : joined
         }
 
+        if let contentItems = message["content"] as? [String: Any] {
+            let text = normalizedNonEmptyString(contentItems["text"])
+                ?? normalizedNonEmptyString(contentItems["thinking"])
+            return text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? text : nil
+        }
+
         if let content = normalizedNonEmptyString(message["content"]) {
             return content
         }
 
         return nil
+    }
+
+    private func normalizedHistoryTimestamp(_ rawValue: Any?) -> Double? {
+        let rawNumber: Double?
+        switch rawValue {
+        case let number as Double:
+            rawNumber = number
+        case let number as NSNumber:
+            rawNumber = number.doubleValue
+        case let string as String:
+            rawNumber = Double(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            rawNumber = nil
+        }
+
+        guard let rawNumber, rawNumber > 0 else { return nil }
+        if rawNumber > 1_000_000_000_000 {
+            return rawNumber / 1000.0
+        }
+        return rawNumber
     }
 
     private func runtimeConfiguration(for config: OpenClawConfig) throws -> RuntimeConfiguration {

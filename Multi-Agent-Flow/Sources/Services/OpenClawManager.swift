@@ -19,6 +19,8 @@ class OpenClawManager: ObservableObject {
     @Published var config: OpenClawConfig = .load()
     private var cachedLocalWorkspaceMap: [String: String] = [:]
     private var cachedLocalWorkspaceConfigModificationDate: Date?
+    private var cachedLocalGatewayConfig: OpenClawConfig?
+    private var cachedLocalGatewayConfigModificationDate: Date?
     
     var backupDirectory: URL {
         let openclawPath = NSHomeDirectory() + "/.openclaw"
@@ -1269,6 +1271,20 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    func preferredGatewayConfig(using config: OpenClawConfig? = nil) -> OpenClawConfig? {
+        let resolvedConfig = config ?? self.config
+
+        switch resolvedConfig.deploymentKind {
+        case .remoteServer:
+            let host = resolvedConfig.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            return host.isEmpty ? nil : resolvedConfig
+        case .local:
+            return localLoopbackGatewayConfig(using: resolvedConfig)
+        case .container:
+            return nil
+        }
+    }
+
     func executeGatewayAgentCommand(
         message: String,
         agentIdentifier: String,
@@ -1295,6 +1311,7 @@ class OpenClawManager: ObservableObject {
         thinkingLevel: AgentThinkingLevel?,
         timeoutSeconds: Int,
         using config: OpenClawConfig? = nil,
+        onRunStarted: (@Sendable (String, String) -> Void)? = nil,
         onAssistantTextUpdated: @escaping @Sendable (String) -> Void
     ) async throws -> OpenClawGatewayClient.AgentExecutionResult {
         try await gatewayClient.executeChat(
@@ -1303,6 +1320,7 @@ class OpenClawManager: ObservableObject {
             sessionKey: sessionKey,
             thinkingLevel: thinkingLevel,
             timeoutSeconds: timeoutSeconds,
+            onRunStarted: onRunStarted,
             onAssistantTextUpdated: onAssistantTextUpdated
         )
     }
@@ -1312,6 +1330,18 @@ class OpenClawManager: ObservableObject {
         limit: Int? = nil
     ) async throws -> [OpenClawGatewayClient.ChatSessionRecord] {
         try await gatewayClient.listSessions(using: config ?? self.config, limit: limit)
+    }
+
+    func gatewayChatHistory(
+        sessionKey: String,
+        using config: OpenClawConfig? = nil,
+        limit: Int? = nil
+    ) async throws -> [OpenClawGatewayClient.ChatTranscriptMessage] {
+        try await gatewayClient.chatHistory(
+            using: config ?? self.config,
+            sessionKey: sessionKey,
+            limit: limit
+        )
     }
 
     func abortGatewayChatRun(
@@ -2164,6 +2194,81 @@ class OpenClawManager: ObservableObject {
         return map
     }
 
+    private func localLoopbackGatewayConfig(using baseConfig: OpenClawConfig) -> OpenClawConfig? {
+        let configURL = localOpenClawRootURL().appendingPathComponent("openclaw.json")
+        let currentModificationDate = (try? fileManager.attributesOfItem(atPath: configURL.path)[.modificationDate] as? Date) ?? nil
+
+        if cachedLocalGatewayConfigModificationDate == currentModificationDate {
+            return cachedLocalGatewayConfig
+        }
+
+        guard
+            let data = try? Data(contentsOf: configURL),
+            let json = try? JSONSerialization.jsonObject(with: data),
+            let root = json as? [String: Any],
+            let gateway = root["gateway"] as? [String: Any]
+        else {
+            cachedLocalGatewayConfig = nil
+            cachedLocalGatewayConfigModificationDate = currentModificationDate
+            return nil
+        }
+
+        let mode = (stringValue(gateway, keys: ["mode"]) ?? "local").lowercased()
+        guard mode == "local" else {
+            cachedLocalGatewayConfig = nil
+            cachedLocalGatewayConfigModificationDate = currentModificationDate
+            return nil
+        }
+
+        let port = intValue(gateway, keys: ["port"]) ?? baseConfig.port
+        guard port > 0 else {
+            cachedLocalGatewayConfig = nil
+            cachedLocalGatewayConfigModificationDate = currentModificationDate
+            return nil
+        }
+
+        let auth = gateway["auth"] as? [String: Any] ?? [:]
+        let authMode = (stringValue(auth, keys: ["mode"]) ?? "token").lowercased()
+        let token = auth["token"] as? String
+        let normalizedToken = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let resolvedToken: String
+        switch authMode {
+        case "none":
+            resolvedToken = ""
+        case "token":
+            guard !normalizedToken.isEmpty else {
+                cachedLocalGatewayConfig = nil
+                cachedLocalGatewayConfigModificationDate = currentModificationDate
+                return nil
+            }
+            resolvedToken = normalizedToken
+        default:
+            cachedLocalGatewayConfig = nil
+            cachedLocalGatewayConfigModificationDate = currentModificationDate
+            return nil
+        }
+
+        let gatewayConfig = OpenClawConfig(
+            deploymentKind: .remoteServer,
+            host: "127.0.0.1",
+            port: port,
+            useSSL: false,
+            apiKey: resolvedToken,
+            defaultAgent: baseConfig.defaultAgent,
+            timeout: baseConfig.timeout,
+            autoConnect: baseConfig.autoConnect,
+            localBinaryPath: baseConfig.localBinaryPath,
+            container: baseConfig.container,
+            cliQuietMode: baseConfig.cliQuietMode,
+            cliLogLevel: baseConfig.cliLogLevel
+        )
+
+        cachedLocalGatewayConfig = gatewayConfig
+        cachedLocalGatewayConfigModificationDate = currentModificationDate
+        return gatewayConfig
+    }
+
     private func existingSoulURL(in rootURL: URL) -> URL? {
         let preferred = rootURL.appendingPathComponent("SOUL.md")
         if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
@@ -2388,6 +2493,22 @@ class OpenClawManager: ObservableObject {
         for key in keys {
             if let value = dictionary[key] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return value
+            }
+        }
+        return nil
+    }
+
+    private func intValue(_ dictionary: [String: Any], keys: [String]) -> Int? {
+        for key in keys {
+            if let value = dictionary[key] as? Int {
+                return value
+            }
+            if let value = dictionary[key] as? NSNumber {
+                return value.intValue
+            }
+            if let value = dictionary[key] as? String,
+               let parsed = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return parsed
             }
         }
         return nil

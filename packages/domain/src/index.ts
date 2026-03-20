@@ -2,6 +2,8 @@ export * from "./agent";
 export * from "./execution";
 export * from "./message";
 export * from "./openclaw";
+export * from "./openclaw-runtime";
+export * from "./openclaw-runtime-factory";
 export * from "./permission";
 export * from "./project";
 export * from "./task";

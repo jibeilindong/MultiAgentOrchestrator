@@ -31,6 +31,22 @@ class MessageManager: ObservableObject {
         }
     }
 
+    func appendRuntimeEventMessage(
+        from fromAgentID: UUID,
+        to toAgentID: UUID,
+        type: MessageType,
+        content: String,
+        runtimeEvent: OpenClawRuntimeEvent,
+        metadata: [String: String] = [:],
+        status: MessageStatus = .read
+    ) {
+        var message = Message(from: fromAgentID, to: toAgentID, type: type, content: content)
+        message.status = status
+        message.metadata = metadata
+        message.runtimeEvent = runtimeEvent
+        appendMessage(message)
+    }
+
     func updateMessage(_ messageID: UUID, mutate: (inout Message) -> Void) {
         guard let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
         var message = messages[index]
@@ -169,7 +185,7 @@ class MessageManager: ObservableObject {
     
     // 获取Agent相关的消息
     func messagesForAgent(_ agentID: UUID) -> [Message] {
-        messages.filter { $0.toAgentID == agentID }
+        messages.filter { $0.toAgentID == agentID || $0.fromAgentID == agentID }
             .sorted { $0.timestamp < $1.timestamp }
     }
     

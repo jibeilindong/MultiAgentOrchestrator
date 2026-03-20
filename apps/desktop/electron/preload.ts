@@ -3,6 +3,7 @@ import type {
   ExecutionOutputType,
   MAProject,
   OpenClawConfig,
+  OpenClawRuntimeEvent,
   ProjectOpenClawAgentRecord,
   ProjectOpenClawDetectedAgentRecord
 } from "@multi-agent-flow/domain";
@@ -59,6 +60,8 @@ interface OpenClawAgentExecutionResult {
   rawStdout: string;
   rawStderr: string;
   routingDecision: OpenClawRoutingDecision | null;
+  runtimeEvents: OpenClawRuntimeEvent[];
+  primaryRuntimeEvent: OpenClawRuntimeEvent | null;
 }
 
 contextBridge.exposeInMainWorld("desktopApi", {

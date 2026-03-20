@@ -20,6 +20,11 @@ struct CanvasView: View {
     @Binding var connectionType: WorkflowEditorView.ConnectionType
     @Binding var connectFromAgentID: UUID?
     @Binding var isLassoMode: Bool
+    let batchSourceNodeIDs: Set<UUID>
+    let batchTargetNodeIDs: Set<UUID>
+    let batchPreview: BatchConnectionPreview?
+    let batchCreatedEdgeIDs: Set<UUID>
+    let isBatchConnectMode: Bool
 
     @State private var scale: CGFloat = 1
     @State private var connectingFromNode: WorkflowNode?
@@ -35,6 +40,8 @@ struct CanvasView: View {
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
+    var onAssignBatchSources: (() -> Void)?
+    var onAssignBatchTargets: (() -> Void)?
 
     init(
         isActive: Bool = true,
@@ -49,12 +56,19 @@ struct CanvasView: View {
         connectionType: Binding<WorkflowEditorView.ConnectionType> = .constant(.bidirectional),
         connectFromAgentID: Binding<UUID?> = .constant(nil),
         isLassoMode: Binding<Bool> = .constant(false),
+        batchSourceNodeIDs: Set<UUID> = [],
+        batchTargetNodeIDs: Set<UUID> = [],
+        batchPreview: BatchConnectionPreview? = nil,
+        batchCreatedEdgeIDs: Set<UUID> = [],
+        isBatchConnectMode: Bool = false,
         onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil,
         onNodeSelected: ((WorkflowNode) -> Void)? = nil,
         onNodeSecondarySelected: ((WorkflowNode) -> Void)? = nil,
         onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
         onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil,
-        onDropAgent: ((String, CGPoint) -> Void)? = nil
+        onDropAgent: ((String, CGPoint) -> Void)? = nil,
+        onAssignBatchSources: (() -> Void)? = nil,
+        onAssignBatchTargets: (() -> Void)? = nil
     ) {
         self.isActive = isActive
         self._zoomScale = zoomScale
@@ -68,12 +82,19 @@ struct CanvasView: View {
         self._connectionType = connectionType
         self._connectFromAgentID = connectFromAgentID
         self._isLassoMode = isLassoMode
+        self.batchSourceNodeIDs = batchSourceNodeIDs
+        self.batchTargetNodeIDs = batchTargetNodeIDs
+        self.batchPreview = batchPreview
+        self.batchCreatedEdgeIDs = batchCreatedEdgeIDs
+        self.isBatchConnectMode = isBatchConnectMode
         self.onNodeClickInConnectMode = onNodeClickInConnectMode
         self.onNodeSelected = onNodeSelected
         self.onNodeSecondarySelected = onNodeSecondarySelected
         self.onEdgeSelected = onEdgeSelected
         self.onEdgeSecondarySelected = onEdgeSecondarySelected
         self.onDropAgent = onDropAgent
+        self.onAssignBatchSources = onAssignBatchSources
+        self.onAssignBatchTargets = onAssignBatchTargets
     }
 
     var body: some View {
@@ -95,6 +116,11 @@ struct CanvasView: View {
                     tempConnectionEnd: $tempConnectionEnd,
                     isConnectMode: isConnectMode,
                     connectFromAgentID: connectFromAgentID,
+                    batchSourceNodeIDs: batchSourceNodeIDs,
+                    batchTargetNodeIDs: batchTargetNodeIDs,
+                    batchPreview: batchPreview,
+                    batchCreatedEdgeIDs: batchCreatedEdgeIDs,
+                    isBatchConnectMode: isBatchConnectMode,
                     onNodeClick: onNodeClickInConnectMode,
                     onNodeSelected: { node in
                         suppressCanvasTapClear = true
@@ -111,7 +137,9 @@ struct CanvasView: View {
                     onEdgeSecondarySelected: { edge in
                         suppressCanvasTapClear = true
                         onEdgeSecondarySelected?(edge)
-                    }
+                    },
+                    onAssignBatchSources: onAssignBatchSources,
+                    onAssignBatchTargets: onAssignBatchTargets
                 )
             } else {
                 Color.clear

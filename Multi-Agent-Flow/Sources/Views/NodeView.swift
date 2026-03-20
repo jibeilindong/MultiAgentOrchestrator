@@ -19,6 +19,9 @@ struct NodeView: View {
     // 连接模式状态
     var isConnectingMode: Bool = false
     var isConnectSource: Bool = false
+    var isBatchSource: Bool = false
+    var isBatchTarget: Bool = false
+    var hasBatchConflict: Bool = false
     var isRelatedToSelection: Bool = false
     
     // 回调函数
@@ -93,6 +96,15 @@ struct NodeView: View {
         if isSelected {
             return nodeColor
         }
+        if hasBatchConflict {
+            return .red.opacity(0.92)
+        }
+        if isBatchSource {
+            return .blue.opacity(0.88)
+        }
+        if isBatchTarget {
+            return .green.opacity(0.85)
+        }
         if isRelatedToSelection {
             return Color.yellow.opacity(0.92)
         }
@@ -135,6 +147,9 @@ struct NodeView: View {
         .shadow(color: nodeShadowColor, radius: nodeShadowRadius, x: 0, y: nodeShadowYOffset)
         .overlay(relatedHighlightOverlay)
         .overlay(connectSourceOverlay)
+        .overlay(alignment: .topTrailing) {
+            batchRoleBadge
+        }
         .onTapGesture(count: 1) {
             onTap?()
         }
@@ -256,6 +271,47 @@ struct NodeView: View {
                     : .default,
                 value: pulseAnimation
             )
+    }
+
+    @ViewBuilder
+    private var batchRoleBadge: some View {
+        if hasBatchConflict {
+            batchBadge(text: "!", color: .red)
+                .offset(x: -6, y: 6)
+        } else if isBatchSource {
+            batchBadge(text: batchBadgeText(kind: .source), color: .blue)
+                .offset(x: -6, y: 6)
+        } else if isBatchTarget {
+            batchBadge(text: batchBadgeText(kind: .target), color: .green)
+                .offset(x: -6, y: 6)
+        }
+    }
+
+    private func batchBadge(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 8 * textScale, weight: .bold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color)
+            .clipShape(Capsule())
+            .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1)
+    }
+
+    private enum BatchBadgeKind {
+        case source
+        case target
+    }
+
+    private func batchBadgeText(kind: BatchBadgeKind) -> String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return kind == .source ? "From" : "To"
+        case .traditionalChinese:
+            return kind == .source ? "來源" : "目標"
+        case .simplifiedChinese:
+            return kind == .source ? "来源" : "目标"
+        }
     }
 
     private var nodeShadowColor: Color {

@@ -16,6 +16,8 @@ import type {
   ExecutionOutputType,
   MAProject,
   OpenClawConfig,
+  OpenClawRuntimeEvent,
+  OpenClawRuntimeRouteAction,
   ProjectOpenClawAgentRecord,
   ProjectOpenClawDetectedAgentRecord
 } from "@multi-agent-flow/domain";
@@ -94,6 +96,8 @@ interface OpenClawAgentExecutionResult {
   rawStdout: string;
   rawStderr: string;
   routingDecision: OpenClawRoutingDecision | null;
+  runtimeEvents: OpenClawRuntimeEvent[];
+  primaryRuntimeEvent: OpenClawRuntimeEvent | null;
 }
 
 interface DirectoryInspection {
@@ -102,6 +106,172 @@ interface DirectoryInspection {
   workspacePath: string | null;
   statePath: string | null;
   hasSoulFile: boolean;
+}
+
+function runtimeTimestamp(): string {
+  return new Date().toISOString();
+}
+
+function createRuntimeActor(agentId: string, agentName?: string | null) {
+  return {
+    kind: "agent" as const,
+    agentId,
+    agentName: agentName ?? null
+  };
+}
+
+function createSystemActor(kind: "system" | "orchestrator", agentId: string) {
+  return {
+    kind,
+    agentId,
+    agentName: agentId
+  };
+}
+
+function createExecutionTransport(config: OpenClawConfig, request: OpenClawAgentExecutionRequest) {
+  return {
+    kind: config.deploymentKind === "remoteServer" ? (trimmedString(request.sessionID) ? "gateway_chat" : "gateway_agent") : "cli",
+    deploymentKind: config.deploymentKind
+  } as const;
+}
+
+function createRuntimeEvent(input: {
+  eventType: OpenClawRuntimeEvent["eventType"];
+  source: OpenClawRuntimeEvent["source"];
+  target: OpenClawRuntimeEvent["target"];
+  transport: OpenClawRuntimeEvent["transport"];
+  payload: OpenClawRuntimeEvent["payload"];
+  runId?: string | null;
+  sessionKey?: string | null;
+  refs?: OpenClawRuntimeEvent["refs"];
+  constraints?: OpenClawRuntimeEvent["constraints"];
+  control?: OpenClawRuntimeEvent["control"];
+  parentEventId?: string | null;
+  idempotencyKey?: string | null;
+}): OpenClawRuntimeEvent {
+  return {
+    version: "openclaw.runtime.v1",
+    eventId: crypto.randomUUID(),
+    eventType: input.eventType,
+    timestamp: runtimeTimestamp(),
+    projectId: null,
+    workflowId: null,
+    nodeId: null,
+    runId: input.runId ?? null,
+    sessionKey: input.sessionKey ?? null,
+    parentEventId: input.parentEventId ?? null,
+    idempotencyKey: input.idempotencyKey ?? null,
+    attempt: 1,
+    source: input.source,
+    target: input.target,
+    transport: input.transport,
+    payload: input.payload,
+    refs: input.refs ?? [],
+    constraints: input.constraints ?? {},
+    control: input.control ?? {},
+    integrity: null
+  };
+}
+
+function routeActionValue(action: OpenClawRoutingDecision["action"]): OpenClawRuntimeRouteAction {
+  switch (action) {
+    case "all":
+      return "all";
+    case "selected":
+      return "selected";
+    default:
+      return "stop";
+  }
+}
+
+function buildRuntimeEventsForExecution(
+  config: OpenClawConfig,
+  request: OpenClawAgentExecutionRequest,
+  result: {
+    success: boolean;
+    message: string;
+    agentIdentifier: string;
+    output: string;
+    outputType: ExecutionOutputType;
+    routingDecision: OpenClawRoutingDecision | null;
+  }
+): { runtimeEvents: OpenClawRuntimeEvent[]; primaryRuntimeEvent: OpenClawRuntimeEvent | null } {
+  const transport = createExecutionTransport(config, request);
+  const idempotencyKey = crypto.randomUUID();
+  const sessionKey = trimmedString(request.sessionID) || null;
+  const dispatchEvent = createRuntimeEvent({
+    eventType: "task.dispatch",
+    source: createSystemActor("orchestrator", "openclaw.executeAgent"),
+    target: createRuntimeActor(result.agentIdentifier, result.agentIdentifier),
+    transport,
+    sessionKey,
+    idempotencyKey,
+    payload: {
+      intent: "respond",
+      summary: trimmedString(request.message) || "execute agent request",
+      inputRefIds: [],
+      expectedOutput: result.outputType,
+      visibleToUser: true
+    },
+    constraints: {
+      timeoutSeconds: request.timeoutSeconds ?? config.timeout ?? null,
+      thinkingLevel: trimmedString(request.thinkingLevel) || null
+    },
+    control: {
+      requiresApproval: false,
+      fallbackRoutingPolicy: "stop",
+      allowRetry: true,
+      maxRetries: 1,
+      priority: "medium"
+    }
+  });
+
+  const resultEvent = createRuntimeEvent({
+    eventType: result.success ? "task.result" : "task.error",
+    source: createRuntimeActor(result.agentIdentifier, result.agentIdentifier),
+    target: createSystemActor("orchestrator", "openclaw.executeAgent"),
+    transport,
+    sessionKey,
+    idempotencyKey,
+    parentEventId: dispatchEvent.eventId,
+    payload: result.success
+      ? {
+          status: "success",
+          outputType: result.outputType,
+          summary: trimmedString(result.output) || trimmedString(result.message) || "execution completed",
+          artifactRefIds: []
+        }
+      : {
+          code: "E_AGENT_EXECUTION_FAILED",
+          message: trimmedString(result.message) || "OpenClaw agent execution failed.",
+          retryable: false,
+          detailsRef: null
+        }
+  });
+
+  const routeEvent =
+    result.routingDecision == null
+      ? null
+      : createRuntimeEvent({
+          eventType: "task.route",
+          source: createRuntimeActor(result.agentIdentifier, result.agentIdentifier),
+          target: createSystemActor("orchestrator", "openclaw.router"),
+          transport,
+          sessionKey,
+          idempotencyKey,
+          parentEventId: resultEvent.eventId,
+          payload: {
+            action: routeActionValue(result.routingDecision.action),
+            targets: result.routingDecision.targets,
+            reason: result.routingDecision.reason
+          }
+        });
+
+  const runtimeEvents = routeEvent ? [dispatchEvent, resultEvent, routeEvent] : [dispatchEvent, resultEvent];
+  return {
+    runtimeEvents,
+    primaryRuntimeEvent: routeEvent ?? resultEvent
+  };
 }
 
 interface ConfigInspection {
@@ -819,15 +989,21 @@ async function executeOpenClawAgent(
   const agentIdentifier = trimmedString(request.agentIdentifier) || normalizedConfig.defaultAgent || "default";
   const message = trimmedString(request.message);
   if (!message) {
-    return {
+    const failedResult = {
       success: false,
       message: "Execution message is required.",
       agentIdentifier,
       output: "",
-      outputType: "empty",
+      outputType: "empty" as ExecutionOutputType,
+      routingDecision: null
+    };
+    const runtimeEnvelope = buildRuntimeEventsForExecution(normalizedConfig, request, failedResult);
+    return {
+      ...failedResult,
       rawStdout: "",
       rawStderr: "",
-      routingDecision: null
+      runtimeEvents: runtimeEnvelope.runtimeEvents,
+      primaryRuntimeEvent: runtimeEnvelope.primaryRuntimeEvent
     };
   }
 
@@ -848,26 +1024,38 @@ async function executeOpenClawAgent(
     const stderrText = (stderr ?? "").trim();
     const success = parsed.output.length > 0 || !stderrText;
 
-    return {
+    const executionResult = {
       success,
       message: success ? "OpenClaw agent execution completed." : stderrText || "OpenClaw agent execution failed.",
       agentIdentifier,
       output: parsed.output,
       outputType: success ? parsed.outputType : "error_summary",
-      rawStdout: stdout ?? "",
-      rawStderr: stderr ?? "",
       routingDecision: parsed.routingDecision
     };
-  } catch (error) {
+    const runtimeEnvelope = buildRuntimeEventsForExecution(normalizedConfig, request, executionResult);
     return {
+      ...executionResult,
+      rawStdout: stdout ?? "",
+      rawStderr: stderr ?? "",
+      runtimeEvents: runtimeEnvelope.runtimeEvents,
+      primaryRuntimeEvent: runtimeEnvelope.primaryRuntimeEvent
+    };
+  } catch (error) {
+    const executionResult = {
       success: false,
       message: error instanceof Error ? error.message : String(error),
       agentIdentifier,
       output: "",
-      outputType: "error_summary",
+      outputType: "error_summary" as ExecutionOutputType,
+      routingDecision: null
+    };
+    const runtimeEnvelope = buildRuntimeEventsForExecution(normalizedConfig, request, executionResult);
+    return {
+      ...executionResult,
       rawStdout: "",
       rawStderr: "",
-      routingDecision: null
+      runtimeEvents: runtimeEnvelope.runtimeEvents,
+      primaryRuntimeEvent: runtimeEnvelope.primaryRuntimeEvent
     };
   }
 }

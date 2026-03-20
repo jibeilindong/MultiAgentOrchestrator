@@ -1,4 +1,5 @@
 import type { SwiftDate } from "./types";
+import type { OpenClawRuntimeEvent } from "./openclaw-runtime";
 
 export const EXECUTION_STATUSES = ["Idle", "Running", "Completed", "Failed", "Waiting"] as const;
 export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
@@ -24,6 +25,8 @@ export interface ExecutionResult {
   routingAction?: string | null;
   routingTargets: string[];
   routingReason?: string | null;
+  runtimeEvents?: OpenClawRuntimeEvent[];
+  primaryRuntimeEvent?: OpenClawRuntimeEvent | null;
   startedAt: SwiftDate;
   completedAt?: SwiftDate | null;
   duration?: number | null;

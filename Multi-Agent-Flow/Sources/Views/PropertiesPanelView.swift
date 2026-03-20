@@ -862,263 +862,13 @@ struct ProjectPropertiesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionView(title: LocalizedString.text("project_info")) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(LocalizedString.text("project_name_label"))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            TextField(LocalizedString.text("project_name_label"), text: $projectName)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                                .onAppear {
-                                    projectName = appState.currentProject?.name ?? ""
-                                }
-                                .onChange(of: projectName) { _, newValue in
-                                    appState.currentProject?.name = newValue
-                                }
-                        }
-                        
-                        if let project = appState.currentProject {
-                            Divider()
-                            
-                            InfoRow(label: LocalizedString.text("created_label"), value: project.createdAt.formatted(date: .abbreviated, time: .shortened))
-                            InfoRow(label: LocalizedString.text("last_updated"), value: project.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                            InfoRow(label: LocalizedString.agents, value: "\(project.agents.count)")
-                            InfoRow(label: LocalizedString.workflows, value: "\(project.workflows.count)")
-                            InfoRow(label: "OpenClaw", value: project.openClaw.config.deploymentSummary)
-                        }
-                    }
-                }
-
-                SectionView(title: LocalizedString.text("task_data")) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(workspaceRootPath)
-                            .font(.caption)
-                            .textSelection(.enabled)
-
-                        HStack {
-                            Button(LocalizedString.text("choose_folder")) {
-                                appState.chooseTaskDataRootDirectory()
-                            }
-                            Button(LocalizedString.text("reset_default")) {
-                                appState.resetTaskDataRootDirectory()
-                            }
-                        }
-                    }
-                }
-
-                SectionView(title: LocalizedString.text("workflow_routing")) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if workflows.isEmpty {
-                            Text(LocalizedString.text("no_workflows_in_project"))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(LocalizedString.text("workflow_label"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Picker(LocalizedString.text("workflow_label"), selection: workflowSelectionBinding) {
-                                    ForEach(workflows) { workflow in
-                                        Text(workflow.name).tag(workflow.id as UUID?)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                            }
-
-                            if let workflow = selectedWorkflow {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(LocalizedString.text("fallback_routing_policy"))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Picker(
-                                        LocalizedString.text("fallback_routing_policy"),
-                                        selection: Binding(
-                                            get: { workflow.fallbackRoutingPolicy },
-                                            set: { newPolicy in
-                                                var updatedWorkflow = workflow
-                                                updatedWorkflow.fallbackRoutingPolicy = newPolicy
-                                                appState.updateWorkflow(updatedWorkflow)
-                                            }
-                                        )
-                                    ) {
-                                        ForEach(WorkflowFallbackRoutingPolicy.allCases, id: \.self) { policy in
-                                            Text(policy.displayName).tag(policy)
-                                        }
-                                    }
-                                    .pickerStyle(.menu)
-                                }
-
-                                Text(workflow.fallbackRoutingPolicy.detail)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .padding(10)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color(.controlBackgroundColor))
-                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            }
-                        }
-                    }
-                }
-
-                SectionView(title: LocalizedString.text("launch_verification")) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(LocalizedString.text("manual_check"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Text(LocalizedString.text("launch_verification_manual_hint"))
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            Spacer()
-
-                            Button(isRunningLaunchVerification ? LocalizedString.executionRunning : LocalizedString.text("launch_verification")) {
-                                showLaunchVerificationConfirmation = true
-                            }
-                            .disabled(selectedWorkflow == nil || isRunningLaunchVerification || appState.openClawService.isExecuting)
-                        }
-
-                        if isRunningLaunchVerification {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text(LocalizedString.text("running_launch_verification"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        if let report = selectedWorkflow?.lastLaunchVerificationReport {
-                            HStack {
-                                Text(LocalizedString.text("last_result"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text(report.status.displayName)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(verificationColor(report.status).opacity(0.14))
-                                    .foregroundColor(verificationColor(report.status))
-                                    .clipShape(Capsule())
-                            }
-
-                            InfoRow(label: LocalizedString.text("started_label"), value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
-                            InfoRow(label: LocalizedString.text("completed_label"), value: report.completedAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedString.executionRunning)
-                            InfoRow(label: LocalizedString.text("cases_label"), value: "\(report.testCaseReports.count)")
-
-                            if !report.staticFindings.isEmpty {
-                                verificationList(title: LocalizedString.text("static_findings"), items: report.staticFindings, color: .orange)
-                            }
-
-                            if !report.runtimeFindings.isEmpty {
-                                verificationList(title: LocalizedString.text("runtime_findings"), items: Array(report.runtimeFindings.prefix(5)), color: .blue)
-                            }
-
-                            if !report.testCaseReports.isEmpty {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(LocalizedString.text("case_results"))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-
-                                    ForEach(report.testCaseReports) { caseReport in
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            HStack {
-                                                Text(caseReport.name)
-                                                    .font(.caption)
-                                                    .fontWeight(.semibold)
-                                                Spacer()
-                                                Text(caseReport.status.displayName)
-                                                    .font(.caption2)
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 3)
-                                                    .background(verificationColor(caseReport.status).opacity(0.14))
-                                                    .foregroundColor(verificationColor(caseReport.status))
-                                                    .clipShape(Capsule())
-                                            }
-                                            Text(LocalizedString.format("case_result_summary", caseReport.actualStepCount, caseReport.actualAgents.joined(separator: ", ")))
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                            if !caseReport.notes.isEmpty {
-                                                Text(caseReport.notes.joined(separator: " | "))
-                                                    .font(.caption2)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                        }
-                                        .padding(10)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(Color(.controlBackgroundColor))
-                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                    }
-                                }
-                            }
-                        } else {
-                            Text(LocalizedString.text("no_launch_verification_report"))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .confirmationDialog(
-                        LocalizedString.text("run_launch_verification_confirm"),
-                        isPresented: $showLaunchVerificationConfirmation,
-                        titleVisibility: .visible
-                    ) {
-                        Button(LocalizedString.text("start_verification")) {
-                            guard let workflow = selectedWorkflow else { return }
-                            isRunningLaunchVerification = true
-                            let started = appState.runWorkflowLaunchVerification(workflowID: workflow.id) { _ in
-                                DispatchQueue.main.async {
-                                    isRunningLaunchVerification = false
-                                }
-                            }
-                            if !started {
-                                isRunningLaunchVerification = false
-                            }
-                        }
-                        Button(LocalizedString.cancel, role: .cancel) { }
-                    } message: {
-                        Text(LocalizedString.text("launch_verification_confirm_message"))
-                    }
-                }
-
-                SectionView(title: LocalizedString.text("memory_backup_section")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        InfoRow(label: LocalizedString.text("mode_label"), value: appState.currentProject?.memoryData.backupOnly == true ? LocalizedString.text("backup_only") : LocalizedString.text("managed_mode"))
-                        InfoRow(label: LocalizedString.text("task_memories"), value: "\(appState.currentProject?.memoryData.taskExecutionMemories.count ?? 0)")
-                        InfoRow(label: LocalizedString.text("agent_memories"), value: "\(appState.currentProject?.memoryData.agentMemories.count ?? 0)")
-                    }
-                }
-                
-                SectionView(title: LocalizedString.text("statistics_section")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        InfoRow(label: LocalizedString.text("total_nodes"), value: "\(appState.currentProject?.workflows.first?.nodes.count ?? 0)")
-                        InfoRow(label: LocalizedString.text("total_connections"), value: "\(appState.currentProject?.workflows.first?.edges.count ?? 0)")
-                        InfoRow(label: LocalizedString.text("total_boundaries"), value: "\(appState.currentProject?.workflows.first?.boundaries.count ?? 0)")
-                        InfoRow(label: LocalizedString.text("project_size"), value: LocalizedString.text("compact_size"))
-                    }
-                }
-                
-                SectionView(title: LocalizedString.text("export_section")) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(LocalizedString.text("export_project_sharing_hint"))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
-                        HStack {
-                            Button(LocalizedString.text("export_as_json")) {
-                                exportProjectAsJSON()
-                            }
-                            
-                            Button(LocalizedString.text("export_as_image")) {
-                                // 导出为图片功能
-                            }
-                            .disabled(true)
-                        }
-                    }
-                }
+                projectInfoSection
+                taskDataSection
+                workflowRoutingSection
+                launchVerificationSection
+                memoryBackupSection
+                statisticsSection
+                exportSection
             }
             .padding()
         }
@@ -1144,10 +894,298 @@ struct ProjectPropertiesView: View {
         }
     }
 
+    @ViewBuilder
+    private var projectInfoSection: some View {
+        SectionView(title: LocalizedString.text("project_info")) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(LocalizedString.text("project_name_label"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    TextField(LocalizedString.text("project_name_label"), text: $projectName)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .onAppear {
+                            projectName = appState.currentProject?.name ?? ""
+                        }
+                        .onChange(of: projectName) { _, newValue in
+                            appState.currentProject?.name = newValue
+                        }
+                }
+
+                if let project = appState.currentProject {
+                    Divider()
+                    InfoRow(label: LocalizedString.text("created_label"), value: project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    InfoRow(label: LocalizedString.text("last_updated"), value: project.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                    InfoRow(label: LocalizedString.agents, value: "\(project.agents.count)")
+                    InfoRow(label: LocalizedString.workflows, value: "\(project.workflows.count)")
+                    InfoRow(label: "OpenClaw", value: project.openClaw.config.deploymentSummary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var taskDataSection: some View {
+        SectionView(title: LocalizedString.text("task_data")) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(workspaceRootPath)
+                    .font(.caption)
+                    .textSelection(.enabled)
+
+                HStack {
+                    Button(LocalizedString.text("choose_folder")) {
+                        appState.chooseTaskDataRootDirectory()
+                    }
+                    Button(LocalizedString.text("reset_default")) {
+                        appState.resetTaskDataRootDirectory()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workflowRoutingSection: some View {
+        SectionView(title: LocalizedString.text("workflow_routing")) {
+            VStack(alignment: .leading, spacing: 12) {
+                if workflows.isEmpty {
+                    Text(LocalizedString.text("no_workflows_in_project"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(LocalizedString.text("workflow_label"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Picker(LocalizedString.text("workflow_label"), selection: workflowSelectionBinding) {
+                            ForEach(workflows) { workflow in
+                                Text(workflow.name).tag(workflow.id as UUID?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+
+                    if let workflow = selectedWorkflow {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(LocalizedString.text("fallback_routing_policy"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Picker(
+                                LocalizedString.text("fallback_routing_policy"),
+                                selection: fallbackRoutingPolicyBinding(for: workflow)
+                            ) {
+                                ForEach(WorkflowFallbackRoutingPolicy.allCases, id: \.self) { policy in
+                                    Text(policy.displayName).tag(policy)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
+
+                        Text(workflow.fallbackRoutingPolicy.detail)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var launchVerificationSection: some View {
+        SectionView(title: LocalizedString.text("launch_verification")) {
+            VStack(alignment: .leading, spacing: 12) {
+                launchVerificationHeader
+
+                if isRunningLaunchVerification {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(LocalizedString.text("running_launch_verification"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if let report = selectedWorkflow?.lastLaunchVerificationReport {
+                    launchVerificationReportView(report)
+                } else {
+                    Text(LocalizedString.text("no_launch_verification_report"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .confirmationDialog(
+                LocalizedString.text("run_launch_verification_confirm"),
+                isPresented: $showLaunchVerificationConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(LocalizedString.text("start_verification")) {
+                    startLaunchVerification()
+                }
+                Button(LocalizedString.cancel, role: .cancel) { }
+            } message: {
+                Text(LocalizedString.text("launch_verification_confirm_message"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var memoryBackupSection: some View {
+        SectionView(title: LocalizedString.text("memory_backup_section")) {
+            VStack(alignment: .leading, spacing: 8) {
+                InfoRow(label: LocalizedString.text("mode_label"), value: appState.currentProject?.memoryData.backupOnly == true ? LocalizedString.text("backup_only") : LocalizedString.text("managed_mode"))
+                InfoRow(label: LocalizedString.text("task_memories"), value: "\(appState.currentProject?.memoryData.taskExecutionMemories.count ?? 0)")
+                InfoRow(label: LocalizedString.text("agent_memories"), value: "\(appState.currentProject?.memoryData.agentMemories.count ?? 0)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statisticsSection: some View {
+        SectionView(title: LocalizedString.text("statistics_section")) {
+            VStack(alignment: .leading, spacing: 8) {
+                InfoRow(label: LocalizedString.text("total_nodes"), value: "\(appState.currentProject?.workflows.first?.nodes.count ?? 0)")
+                InfoRow(label: LocalizedString.text("total_connections"), value: "\(appState.currentProject?.workflows.first?.edges.count ?? 0)")
+                InfoRow(label: LocalizedString.text("total_boundaries"), value: "\(appState.currentProject?.workflows.first?.boundaries.count ?? 0)")
+                InfoRow(label: LocalizedString.text("project_size"), value: LocalizedString.text("compact_size"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var exportSection: some View {
+        SectionView(title: LocalizedString.text("export_section")) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(LocalizedString.text("export_project_sharing_hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    Button(LocalizedString.text("export_as_json")) {
+                        exportProjectAsJSON()
+                    }
+
+                    Button(LocalizedString.text("export_as_image")) {
+                        // 导出为图片功能
+                    }
+                    .disabled(true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var launchVerificationHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(LocalizedString.text("manual_check"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(LocalizedString.text("launch_verification_manual_hint"))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Button(isRunningLaunchVerification ? LocalizedString.text("execution_running") : LocalizedString.text("launch_verification")) {
+                showLaunchVerificationConfirmation = true
+            }
+            .disabled(selectedWorkflow == nil || isRunningLaunchVerification || appState.openClawService.isExecuting)
+        }
+    }
+
+    @ViewBuilder
+    private func launchVerificationReportView(_ report: WorkflowLaunchVerificationReport) -> some View {
+        HStack {
+            Text(LocalizedString.text("last_result"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(report.status.displayName)
+                .font(.caption2)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(verificationColor(report.status).opacity(0.14))
+                .foregroundColor(verificationColor(report.status))
+                .clipShape(Capsule())
+        }
+
+        InfoRow(label: LocalizedString.text("started_label"), value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
+        InfoRow(label: LocalizedString.text("completed_label"), value: report.completedAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedString.text("execution_running"))
+        InfoRow(label: LocalizedString.text("cases_label"), value: "\(report.testCaseReports.count)")
+
+        if !report.staticFindings.isEmpty {
+            verificationList(title: LocalizedString.text("static_findings"), items: report.staticFindings, color: .orange)
+        }
+
+        if !report.runtimeFindings.isEmpty {
+            verificationList(title: LocalizedString.text("runtime_findings"), items: Array(report.runtimeFindings.prefix(5)), color: .blue)
+        }
+
+        if !report.testCaseReports.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(LocalizedString.text("case_results"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                ForEach(report.testCaseReports) { caseReport in
+                    launchVerificationCaseRow(caseReport)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func launchVerificationCaseRow(_ caseReport: WorkflowLaunchTestCaseReport) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(caseReport.name)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(caseReport.status.displayName)
+                    .font(.caption2)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(verificationColor(caseReport.status).opacity(0.14))
+                    .foregroundColor(verificationColor(caseReport.status))
+                    .clipShape(Capsule())
+            }
+            Text(LocalizedString.format("case_result_summary", caseReport.actualStepCount, caseReport.actualAgents.joined(separator: ", ")))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            if !caseReport.notes.isEmpty {
+                Text(caseReport.notes.joined(separator: " | "))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     private var workflowSelectionBinding: Binding<UUID?> {
         Binding(
             get: { selectedWorkflowID ?? workflows.first?.id },
             set: { selectedWorkflowID = $0 }
+        )
+    }
+
+    private func fallbackRoutingPolicyBinding(for workflow: Workflow) -> Binding<WorkflowFallbackRoutingPolicy> {
+        Binding(
+            get: { workflow.fallbackRoutingPolicy },
+            set: { newPolicy in
+                var updatedWorkflow = workflow
+                updatedWorkflow.fallbackRoutingPolicy = newPolicy
+                appState.updateWorkflow(updatedWorkflow)
+            }
         )
     }
     
@@ -1178,6 +1216,19 @@ struct ProjectPropertiesView: View {
         case .pass: return .green
         case .warn: return .orange
         case .fail: return .red
+        }
+    }
+
+    private func startLaunchVerification() {
+        guard let workflow = selectedWorkflow else { return }
+        isRunningLaunchVerification = true
+        let started = appState.runWorkflowLaunchVerification(workflowID: workflow.id) { _ in
+            DispatchQueue.main.async {
+                isRunningLaunchVerification = false
+            }
+        }
+        if !started {
+            isRunningLaunchVerification = false
         }
     }
 

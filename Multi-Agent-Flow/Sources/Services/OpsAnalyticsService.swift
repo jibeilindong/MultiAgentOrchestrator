@@ -439,7 +439,7 @@ final class OpsAnalyticsService: ObservableObject {
                     routingAction: result.routingAction,
                     outputType: result.outputType,
                     sourceLabel: "Runtime",
-                    previewText: result.output.compactSingleLinePreview(limit: 160)
+                    previewText: runtimePreviewText(for: result)
                 )
             }
 
@@ -472,6 +472,7 @@ final class OpsAnalyticsService: ObservableObject {
             failedExecutions: failedResults.count,
             warningLogCount: warningLogs.count,
             errorLogCount: errorLogs.count,
+            executionResults: executionResults,
             cronSummary: persistenceSummary?.cronSummary
         )
 
@@ -558,12 +559,19 @@ final class OpsAnalyticsService: ObservableObject {
         failedExecutions: Int,
         warningLogCount: Int,
         errorLogCount: Int,
+        executionResults: [ExecutionResult],
         cronSummary: OpsCronReliabilitySummary?
     ) -> [OpsGoalCard] {
         let totalExecutions = completedExecutions + failedExecutions
         let reliabilityRate = totalExecutions > 0 ? Double(completedExecutions) / Double(totalExecutions) : nil
         let engagementRate = totalAgents > 0 ? Double(activeAgents) / Double(totalAgents) : nil
         let memoryRate = totalAgents > 0 ? Double(trackedMemoryAgents) / Double(totalAgents) : nil
+        let gatewayExecutions = executionResults.filter { ($0.transportKind ?? "").hasPrefix("gateway_") }
+        let gatewayAdoptionRate = totalExecutions > 0 ? Double(gatewayExecutions.count) / Double(totalExecutions) : nil
+        let firstChunkLatencies = executionResults.compactMap(\.firstChunkLatencyMs).map(Double.init)
+        let averageFirstChunkLatencyMs = firstChunkLatencies.isEmpty
+            ? nil
+            : firstChunkLatencies.reduce(0, +) / Double(firstChunkLatencies.count)
 
         var cards = [
             OpsGoalCard(
@@ -600,6 +608,22 @@ final class OpsAnalyticsService: ObservableObject {
                 valueText: "\(errorLogCount)",
                 detailText: "\(warningLogCount) warnings in recent runtime logs",
                 status: makeErrorBudgetStatus(errorCount: errorLogCount, warningCount: warningLogCount)
+            ),
+            OpsGoalCard(
+                id: "gateway_adoption",
+                title: "Gateway Adoption",
+                valueText: gatewayAdoptionRate.map { "\($0.percentageString)" } ?? "No data",
+                detailText: "\(gatewayExecutions.count) of \(totalExecutions) runs used native gateway transport",
+                status: makeRateStatus(gatewayAdoptionRate, healthy: 0.8, warning: 0.4)
+            ),
+            OpsGoalCard(
+                id: "first_response_latency",
+                title: "First Response",
+                valueText: averageFirstChunkLatencyMs.map { formatLatency(milliseconds: $0) } ?? "No data",
+                detailText: firstChunkLatencies.isEmpty
+                    ? "No streamed runs captured yet"
+                    : "Average across \(firstChunkLatencies.count) streamed runs",
+                status: makeLatencyStatus(milliseconds: averageFirstChunkLatencyMs, healthyUpperBound: 1200, warningUpperBound: 3000)
             )
         ]
 
@@ -725,6 +749,17 @@ final class OpsAnalyticsService: ObservableObject {
         return .critical
     }
 
+    private func makeLatencyStatus(
+        milliseconds: Double?,
+        healthyUpperBound: Double,
+        warningUpperBound: Double
+    ) -> OpsHealthStatus {
+        guard let milliseconds else { return .neutral }
+        if milliseconds <= healthyUpperBound { return .healthy }
+        if milliseconds <= warningUpperBound { return .warning }
+        return .critical
+    }
+
     private func makeAgentStatus(isActive: Bool, hasErrors: Bool, hasTrackedMemory: Bool) -> OpsHealthStatus {
         if hasErrors { return .critical }
         if isActive { return .healthy }
@@ -740,6 +775,10 @@ final class OpsAnalyticsService: ObservableObject {
     }
 }
 
+private func runtimePreviewText(for result: ExecutionResult) -> String {
+    result.previewText
+}
+
 private extension Array where Element == TimeInterval {
     var average: TimeInterval? {
         guard !isEmpty else { return nil }
@@ -751,6 +790,13 @@ private extension Double {
     var percentageString: String {
         "\(Int((self * 100).rounded()))%"
     }
+}
+
+private func formatLatency(milliseconds: Double) -> String {
+    if milliseconds >= 1000 {
+        return String(format: "%.1fs", milliseconds / 1000.0)
+    }
+    return "\(Int(milliseconds.rounded()))ms"
 }
 
 extension String {

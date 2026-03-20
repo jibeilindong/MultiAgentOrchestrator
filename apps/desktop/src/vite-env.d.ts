@@ -4,6 +4,7 @@ import type {
   ExecutionOutputType,
   MAProject,
   OpenClawConfig,
+  OpenClawRuntimeEvent,
   ProjectOpenClawAgentRecord,
   ProjectOpenClawDetectedAgentRecord
 } from "@multi-agent-flow/domain";
@@ -61,6 +62,8 @@ declare global {
     rawStdout: string;
     rawStderr: string;
     routingDecision: OpenClawRoutingDecision | null;
+    runtimeEvents: OpenClawRuntimeEvent[];
+    primaryRuntimeEvent: OpenClawRuntimeEvent | null;
   }
 
   interface Window {

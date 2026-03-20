@@ -23,11 +23,18 @@ struct CanvasContentView: View {
     @Binding var tempConnectionEnd: CGPoint?
     var isConnectMode: Bool = false
     var connectFromAgentID: UUID?
+    var batchSourceNodeIDs: Set<UUID> = []
+    var batchTargetNodeIDs: Set<UUID> = []
+    var batchPreview: BatchConnectionPreview?
+    var batchCreatedEdgeIDs: Set<UUID> = []
+    var isBatchConnectMode: Bool = false
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
     var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
+    var onAssignBatchSources: (() -> Void)?
+    var onAssignBatchTargets: (() -> Void)?
 
     @State private var isDraggingOverCanvas: Bool = false
     @State private var rightMouseLassoStart: CGPoint?
@@ -102,6 +109,8 @@ struct CanvasContentView: View {
                     textScale: appState.canvasDisplaySettings.textScale,
                     textColor: .black,
                     selectedEdgeID: $selectedEdgeID,
+                    previewCandidates: batchPreview?.newEdges ?? [],
+                    recentlyCreatedEdgeIDs: batchCreatedEdgeIDs,
                     onEdgeSelected: { edge in
                         suppressCanvasTapClear = true
                         selectedNodeID = nil
@@ -164,6 +173,8 @@ struct CanvasContentView: View {
                     geometry: geometry,
                     isConnectMode: isConnectMode,
                     connectFromAgentID: connectFromAgentID,
+                    batchSourceNodeIDs: batchSourceNodeIDs,
+                    batchTargetNodeIDs: batchTargetNodeIDs,
                     onNodeClick: onNodeClick,
                     onNodeSelected: onNodeSelected
                 )
@@ -193,12 +204,24 @@ struct CanvasContentView: View {
             interactiveCanvas
             .coordinateSpace(name: CanvasOverlayFramePreferenceKey.coordinateSpaceName)
             .overlay(alignment: .topLeading) {
-                CanvasGroupLegendView(
-                    workflow: currentWorkflow,
-                    selectedNodeIDs: selectedNodeIDs,
-                    selectedEdgeID: selectedEdgeID,
-                    textScale: appState.canvasDisplaySettings.textScale
-                )
+                VStack(alignment: .leading, spacing: 10) {
+                    CanvasGroupLegendView(
+                        workflow: currentWorkflow,
+                        selectedNodeIDs: selectedNodeIDs,
+                        selectedEdgeID: selectedEdgeID,
+                        textScale: appState.canvasDisplaySettings.textScale
+                    )
+
+                    if isBatchConnectMode {
+                        BatchCanvasQuickBar(
+                            selectionCount: selectedNodeIDs.isEmpty ? (selectedNodeID == nil ? 0 : 1) : selectedNodeIDs.count,
+                            sourceCount: batchSourceNodeIDs.count,
+                            targetCount: batchTargetNodeIDs.count,
+                            onAssignSources: onAssignBatchSources,
+                            onAssignTargets: onAssignBatchTargets
+                        )
+                    }
+                }
                 .padding(.top, 14)
                 .padding(.leading, 14)
                 .background(
@@ -1649,6 +1672,90 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
             }
             monitor = nil
             tracking = false
+        }
+    }
+}
+
+private struct BatchCanvasQuickBar: View {
+    @ObservedObject private var localizationManager = LocalizationManager.shared
+
+    let selectionCount: Int
+    let sourceCount: Int
+    let targetCount: Int
+    var onAssignSources: (() -> Void)?
+    var onAssignTargets: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Label(batchTitle, systemImage: "square.stack.3d.up.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Text(summaryText)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                Button(sourceButtonTitle) {
+                    onAssignSources?()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(selectionCount == 0)
+
+                Button(targetButtonTitle) {
+                    onAssignTargets?()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(selectionCount == 0)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(NSColor.windowBackgroundColor).opacity(0.94))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
+    }
+
+    private var batchTitle: String {
+        switch localizationManager.currentLanguage {
+        case .english: return "Batch Connect"
+        case .traditionalChinese: return "批量連線"
+        case .simplifiedChinese: return "批量连接"
+        }
+    }
+
+    private var sourceButtonTitle: String {
+        switch localizationManager.currentLanguage {
+        case .english: return "Set Sources"
+        case .traditionalChinese: return "設為來源"
+        case .simplifiedChinese: return "设为来源"
+        }
+    }
+
+    private var targetButtonTitle: String {
+        switch localizationManager.currentLanguage {
+        case .english: return "Set Targets"
+        case .traditionalChinese: return "設為目標"
+        case .simplifiedChinese: return "设为目标"
+        }
+    }
+
+    private var summaryText: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "Selected \(selectionCount) / From \(sourceCount) / To \(targetCount)"
+        case .traditionalChinese:
+            return "已選 \(selectionCount) / 來源 \(sourceCount) / 目標 \(targetCount)"
+        case .simplifiedChinese:
+            return "已选 \(selectionCount) / 来源 \(sourceCount) / 目标 \(targetCount)"
         }
     }
 }

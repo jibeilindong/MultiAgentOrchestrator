@@ -481,6 +481,76 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
     }
 }
 
+enum BatchConnectionCandidateStatus: Hashable {
+    case new
+    case duplicate
+    case invalid
+}
+
+enum BatchConnectionCandidateReason: Hashable {
+    case existingRelationship
+    case selfConnection
+    case unsupportedSource
+    case unsupportedTarget
+    case missingSourceNode
+    case missingTargetNode
+}
+
+struct BatchConnectionCandidate: Identifiable, Hashable {
+    let id: String
+    let fromNodeID: UUID
+    let toNodeID: UUID
+    let status: BatchConnectionCandidateStatus
+    let reason: BatchConnectionCandidateReason?
+    let existingEdgeID: UUID?
+
+    init(
+        fromNodeID: UUID,
+        toNodeID: UUID,
+        status: BatchConnectionCandidateStatus,
+        reason: BatchConnectionCandidateReason? = nil,
+        existingEdgeID: UUID? = nil
+    ) {
+        self.fromNodeID = fromNodeID
+        self.toNodeID = toNodeID
+        self.status = status
+        self.reason = reason
+        self.existingEdgeID = existingEdgeID
+        self.id = "\(fromNodeID.uuidString)->\(toNodeID.uuidString)-\(String(describing: status))"
+    }
+}
+
+struct BatchConnectionPreview: Hashable {
+    let sourceNodeIDs: [UUID]
+    let targetNodeIDs: [UUID]
+    let candidates: [BatchConnectionCandidate]
+
+    var newEdges: [BatchConnectionCandidate] {
+        candidates.filter { $0.status == .new }
+    }
+
+    var duplicateEdges: [BatchConnectionCandidate] {
+        candidates.filter { $0.status == .duplicate }
+    }
+
+    var invalidPairs: [BatchConnectionCandidate] {
+        candidates.filter { $0.status == .invalid }
+    }
+
+    var newEdgeCount: Int { newEdges.count }
+    var duplicateCount: Int { duplicateEdges.count }
+    var invalidCount: Int { invalidPairs.count }
+    var hasActionableEdges: Bool { newEdgeCount > 0 }
+}
+
+struct BatchConnectionResult: Hashable {
+    let preview: BatchConnectionPreview
+    let createdEdgeIDs: [UUID]
+    let createdCount: Int
+    let duplicateCount: Int
+    let invalidCount: Int
+}
+
 struct WorkflowNodeConnectionCounts: Hashable {
     var incoming: Int = 0
     var outgoing: Int = 0

@@ -2362,7 +2362,7 @@ struct MonitoringDashboardView: View {
                                 .font(.caption)
                                 .foregroundColor(result.status == .completed ? .green : .red)
                                 .frame(width: 80, alignment: .leading)
-                            Text(result.output.isEmpty ? LocalizedString.text("no_output") : result.output)
+                            Text(result.summaryText.isEmpty ? LocalizedString.text("no_output") : result.summaryText)
                                 .font(.caption)
                                 .lineLimit(2)
                             Spacer()
@@ -5201,8 +5201,8 @@ private struct DashboardMetrics {
         var usageByModel: [String: (input: Int, output: Int)] = [:]
 
         for message in relevantMessages {
-            let role = message.metadata["role"]?.lowercased()
-            let kind = message.metadata["kind"]?.lowercased()
+            let role = message.inferredRole
+            let kind = message.inferredKind
 
             if message.fromAgentID == message.toAgentID {
                 if role == "assistant" || kind == "output" {
@@ -5356,7 +5356,7 @@ private struct DashboardMetrics {
            value >= 0 {
             return value
         }
-        return estimatedTokens(for: message.content)
+        return estimatedTokens(for: message.summaryText)
     }
 
     private nonisolated static func estimatedTokens(for text: String) -> Int {

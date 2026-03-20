@@ -655,7 +655,7 @@ struct RealtimeInfoPanel: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
-                        Text(message.content)
+                        Text(message.summaryText)
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .lineLimit(2)

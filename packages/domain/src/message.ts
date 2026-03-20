@@ -1,4 +1,5 @@
 import type { SwiftDate } from "./types";
+import type { OpenClawRuntimeEvent } from "./openclaw-runtime";
 
 export const MESSAGE_STATUSES = [
   "Pending",
@@ -24,6 +25,7 @@ export interface Message {
   timestamp: SwiftDate;
   status: MessageStatus;
   metadata: Record<string, string>;
+  runtimeEvent?: OpenClawRuntimeEvent | null;
   requiresApproval: boolean;
   approvedBy?: string | null;
   approvalTimestamp?: SwiftDate | null;

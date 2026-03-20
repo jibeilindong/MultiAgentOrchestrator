@@ -66,7 +66,10 @@ export function normalizeProject(input: Partial<MAProject>): MAProject {
       messageQueue: Array.isArray(runtimeStateInput?.messageQueue)
         ? runtimeStateInput.messageQueue
         : base.runtimeState.messageQueue,
-      agentStates: isRecord(runtimeStateInput?.agentStates) ? runtimeStateInput.agentStates : base.runtimeState.agentStates
+      agentStates: isRecord(runtimeStateInput?.agentStates) ? runtimeStateInput.agentStates : base.runtimeState.agentStates,
+      runtimeEvents: Array.isArray(runtimeStateInput?.runtimeEvents)
+        ? runtimeStateInput.runtimeEvents
+        : base.runtimeState.runtimeEvents
     }
   };
 }
