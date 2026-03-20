@@ -8,7 +8,7 @@
 import Foundation
 import Combine
 
-enum ExecutionStatus: String, Codable {
+enum ExecutionStatus: String, Codable, Hashable {
     case idle = "Idle"
     case running = "Running"
     case completed = "Completed"
@@ -16,7 +16,7 @@ enum ExecutionStatus: String, Codable {
     case waiting = "Waiting"
 }
 
-enum ExecutionOutputType: String, Codable {
+enum ExecutionOutputType: String, Codable, Hashable {
     case agentFinalResponse = "agent_final_response"
     case runtimeLog = "runtime_log"
     case errorSummary = "error_summary"
@@ -35,6 +35,9 @@ struct ExecutionResult: Codable, Identifiable {
     let status: ExecutionStatus
     let output: String
     let outputType: ExecutionOutputType
+    let routingAction: String?
+    let routingTargets: [String]
+    let routingReason: String?
     let startedAt: Date
     let completedAt: Date?
     let duration: TimeInterval?
@@ -46,6 +49,9 @@ struct ExecutionResult: Codable, Identifiable {
         case status
         case output
         case outputType
+        case routingAction
+        case routingTargets
+        case routingReason
         case startedAt
         case completedAt
         case duration
@@ -56,7 +62,10 @@ struct ExecutionResult: Codable, Identifiable {
         agentID: UUID,
         status: ExecutionStatus,
         output: String = "",
-        outputType: ExecutionOutputType = .empty
+        outputType: ExecutionOutputType = .empty,
+        routingAction: String? = nil,
+        routingTargets: [String] = [],
+        routingReason: String? = nil
     ) {
         self.id = UUID()
         self.nodeID = nodeID
@@ -64,6 +73,9 @@ struct ExecutionResult: Codable, Identifiable {
         self.status = status
         self.output = output
         self.outputType = outputType
+        self.routingAction = routingAction
+        self.routingTargets = routingTargets
+        self.routingReason = routingReason
         self.startedAt = Date()
         self.completedAt = status == .completed ? Date() : nil
         self.duration = self.completedAt?.timeIntervalSince(self.startedAt)
@@ -77,6 +89,9 @@ struct ExecutionResult: Codable, Identifiable {
         status = try container.decode(ExecutionStatus.self, forKey: .status)
         output = try container.decodeIfPresent(String.self, forKey: .output) ?? ""
         outputType = try container.decodeIfPresent(ExecutionOutputType.self, forKey: .outputType) ?? .runtimeLog
+        routingAction = try container.decodeIfPresent(String.self, forKey: .routingAction)
+        routingTargets = try container.decodeIfPresent([String].self, forKey: .routingTargets) ?? []
+        routingReason = try container.decodeIfPresent(String.self, forKey: .routingReason)
         startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
         completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
@@ -90,6 +105,9 @@ struct ExecutionResult: Codable, Identifiable {
         try container.encode(status, forKey: .status)
         try container.encode(output, forKey: .output)
         try container.encode(outputType, forKey: .outputType)
+        try container.encodeIfPresent(routingAction, forKey: .routingAction)
+        try container.encode(routingTargets, forKey: .routingTargets)
+        try container.encodeIfPresent(routingReason, forKey: .routingReason)
         try container.encode(startedAt, forKey: .startedAt)
         try container.encodeIfPresent(completedAt, forKey: .completedAt)
         try container.encodeIfPresent(duration, forKey: .duration)
@@ -141,6 +159,21 @@ struct ExecutionLogEntry: Identifiable, Codable {
         self.message = message
         self.nodeID = nodeID
     }
+
+    var routingBadge: String? {
+        let normalized = message.lowercased()
+        if normalized.hasPrefix("routing decision:") { return "ROUTE" }
+        if normalized.hasPrefix("queued downstream node") { return "QUEUE" }
+        if normalized.hasPrefix("no routing decision emitted") { return "STOP" }
+        if normalized.hasPrefix("ignored unknown downstream targets") { return "MISS" }
+        if normalized.hasPrefix("routing decision requested selected targets") { return "WARN" }
+        if normalized.hasPrefix("routing decision did not match any reachable downstream agent") { return "WARN" }
+        return nil
+    }
+
+    var isRoutingEvent: Bool {
+        routingBadge != nil
+    }
 }
 
 // 执行状态跟踪（用于回滚）
@@ -174,6 +207,7 @@ class OpenClawService: ObservableObject {
     @Published var isExecuting = false
     @Published var currentStep = 0
     @Published var totalSteps = 0
+    @Published var currentNodeID: UUID?
     @Published var lastError: String?
     @Published var isConnected = false
     @Published var executionState: ExecutionState?
@@ -200,6 +234,30 @@ class OpenClawService: ObservableObject {
     private var agentCLICapabilitiesCache: [String: AgentCLICapabilities] = [:]
     private var loggedCapabilityKeys: Set<String> = []
 
+    private struct WorkflowRoutingDecision {
+        enum Action: String {
+            case stop
+            case all
+            case selected
+        }
+
+        let action: Action
+        let targets: [String]
+        let reason: String?
+    }
+
+    private struct ParsedAgentOutput {
+        let text: String
+        let type: ExecutionOutputType
+        let routingDecision: WorkflowRoutingDecision?
+    }
+
+    private struct RoutingTargetDescriptor {
+        let node: WorkflowNode
+        let agent: Agent
+        let resolvedIdentifier: String
+    }
+
     private struct AgentCLICapabilities {
         var supportsQuiet: Bool
         var supportsLogLevel: Bool
@@ -223,6 +281,7 @@ class OpenClawService: ObservableObject {
         isExecuting = false
         currentStep = 0
         totalSteps = 0
+        currentNodeID = nil
         lastError = nil
     }
 
@@ -233,6 +292,7 @@ class OpenClawService: ObservableObject {
         isExecuting = false
         currentStep = 0
         totalSteps = 0
+        currentNodeID = nil
         lastError = nil
     }
     
@@ -442,7 +502,7 @@ class OpenClawService: ObservableObject {
     ) {
         // 检查连接状态
         let managerConnected = OpenClawManager.shared.isConnected
-        guard managerConnected || isConnected || agentConfig.useLocal else {
+        guard managerConnected else {
             lastError = "Not connected to OpenClaw Gateway"
             addLog(.error, "Cannot execute: Not connected to OpenClaw Gateway")
             completion([])
@@ -453,15 +513,15 @@ class OpenClawService: ObservableObject {
         executionResults.removeAll()
         lastError = nil
         
-        let agentNodes = executionPlan(for: workflow)
-        let entryNodeIDs = entryAgentNodeIDs(in: workflow)
-        totalSteps = agentNodes.count
+        let entryNodes = entryAgentNodes(in: workflow)
+        totalSteps = entryNodes.count
         currentStep = 0
-        
+        currentNodeID = nil
+
         // 初始化执行状态（用于回滚）
         executionState = ExecutionState(workflowID: workflow.id, totalSteps: totalSteps)
-        addLog(.info, "Starting workflow execution: \(workflow.name) with \(totalSteps) agent nodes")
-        
+        addLog(.info, "Starting workflow execution: \(workflow.name) with \(totalSteps) queued entry node(s)")
+
         var results: [ExecutionResult] = []
         
         // 设置超时监控
@@ -472,11 +532,11 @@ class OpenClawService: ObservableObject {
         
         // 按连接顺序执行
         executeNodesSequentially(
-            agentNodes,
+            entryNodes,
             workflow: workflow,
             agents: agents,
             prompt: prompt,
-            entryNodeIDs: entryNodeIDs,
+            entryNodeIDs: entryAgentNodeIDs(in: workflow),
             agentOutputMode: agentOutputMode,
             onNodeStream: onNodeStream,
             onNodeCompleted: onNodeCompleted
@@ -484,6 +544,7 @@ class OpenClawService: ObservableObject {
             results = nodeResults
             self.executionResults = results
             self.isExecuting = false
+            self.currentNodeID = nil
             self.stopTimeoutTimer()
             
             // 清理执行状态
@@ -576,19 +637,44 @@ class OpenClawService: ObservableObject {
     }
 
     private func entryAgentNodeIDs(in workflow: Workflow) -> Set<UUID> {
+        Set(entryAgentNodes(in: workflow).map(\.id))
+    }
+
+    private func entryAgentNodes(in workflow: Workflow) -> [WorkflowNode] {
         let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-        guard let startNode = workflow.nodes.first(where: { $0.type == .start }) else {
-            return []
+        let startNodes = workflow.nodes
+            .filter { $0.type == .start }
+            .sorted(by: nodeSort)
+
+        if !startNodes.isEmpty {
+            let connectedNodeIDs = startNodes.flatMap { startNode in
+                workflow.edges.compactMap { edge -> UUID? in
+                    guard edge.isOutgoing(from: startNode.id) else { return nil }
+                    let targetNodeID = edge.fromNodeID == startNode.id ? edge.toNodeID : edge.fromNodeID
+                    guard let node = nodeByID[targetNodeID], node.type == .agent else { return nil }
+                    return targetNodeID
+                }
+            }
+            let orderedIDs = orderedUniqueNodeIDs(connectedNodeIDs, nodeByID: nodeByID)
+            return orderedIDs.compactMap { nodeByID[$0] }
         }
 
-        let connectedNodeIDs = workflow.edges
-            .filter { $0.isOutgoing(from: startNode.id) }
-            .compactMap { edge -> UUID? in
-                let targetNodeID = edge.fromNodeID == startNode.id ? edge.toNodeID : edge.fromNodeID
-                guard let node = nodeByID[targetNodeID], node.type == .agent else { return nil }
-                return node.id
+        return workflow.nodes
+            .filter { node in
+                node.type == .agent && !workflow.edges.contains(where: { $0.isIncoming(to: node.id) })
             }
-        return Set(connectedNodeIDs)
+            .sorted(by: nodeSort)
+    }
+
+    private func orderedUniqueNodeIDs(_ nodeIDs: [UUID], nodeByID: [UUID: WorkflowNode]) -> [UUID] {
+        var seen = Set<UUID>()
+        let unique = nodeIDs.filter { seen.insert($0).inserted }
+        return unique.sorted { lhs, rhs in
+            guard let leftNode = nodeByID[lhs], let rightNode = nodeByID[rhs] else {
+                return lhs.uuidString < rhs.uuidString
+            }
+            return nodeSort(leftNode, rightNode)
+        }
     }
     
     private func executeNodesSequentially(
@@ -603,8 +689,41 @@ class OpenClawService: ObservableObject {
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
         var results: [ExecutionResult] = []
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        let sortedEdges = workflow.edges.sorted { lhs, rhs in
+            guard let leftTarget = nodeByID[lhs.toNodeID], let rightTarget = nodeByID[rhs.toNodeID] else {
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            return nodeSort(leftTarget, rightTarget)
+        }
+        var outgoingEdges: [UUID: [WorkflowEdge]] = [:]
+        for edge in sortedEdges {
+            outgoingEdges[edge.fromNodeID, default: []].append(edge)
+            if edge.isBidirectional {
+                outgoingEdges[edge.toNodeID, default: []].append(edge.reversed())
+            }
+        }
+
         var remainingNodes = nodes
-        
+        var scheduledVisitCounts = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, 1) })
+
+        func enqueue(_ node: WorkflowNode, because reason: String) {
+            let allowedVisits = max(1, node.loopEnabled ? node.maxIterations : 1)
+            let nextVisitCount = scheduledVisitCounts[node.id, default: 0] + 1
+            let nodeLabel = node.title.isEmpty ? String(node.id.uuidString.prefix(8)) : node.title
+            guard nextVisitCount <= allowedVisits else {
+                addLog(.warning, "Skipping route to \(nodeLabel) because it exceeds loop limit.", nodeID: node.id)
+                return
+            }
+
+            scheduledVisitCounts[node.id] = nextVisitCount
+            remainingNodes.append(node)
+            totalSteps += 1
+            executionState?.totalSteps = totalSteps
+            addLog(.info, "Queued downstream node \(nodeLabel): \(reason)", nodeID: node.id)
+        }
+
         func executeNext() {
             // 检查是否暂停
             if let state = executionState, state.isPaused {
@@ -616,19 +735,21 @@ class OpenClawService: ObservableObject {
                 completion(results)
                 return
             }
-            
+
             remainingNodes.removeFirst()
             currentStep += 1
-            
+            currentNodeID = node.id
+
             // 更新执行状态
             executionState?.currentStep = currentStep
             executionState?.lastUpdated = Date()
+            executionState?.totalSteps = totalSteps
             saveExecutionState()
-            
+
             addLog(.info, "Executing node \(currentStep)/\(totalSteps)", nodeID: node.id)
             
             guard let agentID = node.agentID,
-                  let agent = agents.first(where: { $0.id == agentID }) else {
+                  let agent = agentByID[agentID] else {
                 let result = ExecutionResult(
                     nodeID: node.id,
                     agentID: UUID(),
@@ -649,6 +770,7 @@ class OpenClawService: ObservableObject {
                 agent: agent,
                 prompt: prompt,
                 isEntryNode: entryNodeIDs.contains(node.id),
+                downstreamTargets: routingTargets(for: node, workflow: workflow, agents: agents, outgoingEdges: outgoingEdges),
                 outputMode: agentOutputMode,
                 onStream: { chunk in
                     onNodeStream?(
@@ -659,25 +781,37 @@ class OpenClawService: ObservableObject {
                         )
                     )
                 }
-            ) { result in
+            ) { result, routingDecision in
                 results.append(result)
                 self.executionResults.append(result)
                 onNodeCompleted?(result)
-                
+
                 // 更新执行状态
                 if result.status == .completed {
                     self.executionState?.completedNodes.append(node.id)
                     self.addLog(.success, "Node completed: \(agent.name)", nodeID: node.id)
+
+                    let downstreamTargets = self.routingTargets(for: node, workflow: workflow, agents: agents, outgoingEdges: outgoingEdges)
+                    let selectedTargets = self.resolveRoutingTargets(
+                        from: routingDecision,
+                        availableTargets: downstreamTargets,
+                        node: node,
+                        outputType: result.outputType,
+                        fallbackPolicy: workflow.fallbackRoutingPolicy
+                    )
+                    for target in selectedTargets {
+                        enqueue(target.node, because: routingDecision?.reason ?? "routed by \(agent.name)")
+                    }
                 } else {
                     self.executionState?.failedNodes.append(node.id)
                     self.addLog(.error, "Node failed: \(agent.name) - \(result.output)", nodeID: node.id)
                 }
-                
+
                 self.saveExecutionState()
                 executeNext()
             }
         }
-        
+
         executeNext()
     }
     
@@ -687,35 +821,51 @@ class OpenClawService: ObservableObject {
         agent: Agent,
         prompt: String?,
         isEntryNode: Bool = false,
+        downstreamTargets: [RoutingTargetDescriptor] = [],
         outputMode: AgentOutputMode = .structuredJSON,
         onStream: ((String) -> Void)? = nil,
-        completion: @escaping (ExecutionResult) -> Void
+        completion: @escaping (ExecutionResult, WorkflowRoutingDecision?) -> Void
     ) {
         // 构建执行指令
-        let instruction = buildInstruction(for: node, agent: agent, prompt: prompt, isEntryNode: isEntryNode)
+        let instruction = buildInstruction(
+            for: node,
+            agent: agent,
+            prompt: prompt,
+            isEntryNode: isEntryNode,
+            downstreamTargets: downstreamTargets
+        )
         let targetAgentID = resolvedAgentIdentifier(for: agent)
-        
+
         // 调用openclaw agent命令
         callOpenClawAgent(
             instruction: instruction,
             agentIdentifier: targetAgentID,
             outputMode: outputMode,
             onPartial: onStream
-        ) { success, output, outputType in
+        ) { success, parsedOutput in
             let status: ExecutionStatus = success ? .completed : .failed
             let result = ExecutionResult(
                 nodeID: node.id,
                 agentID: agent.id,
                 status: status,
-                output: output,
-                outputType: outputType
+                output: parsedOutput.text,
+                outputType: parsedOutput.type,
+                routingAction: parsedOutput.routingDecision?.action.rawValue,
+                routingTargets: parsedOutput.routingDecision?.targets ?? [],
+                routingReason: parsedOutput.routingDecision?.reason
             )
-            completion(result)
+            completion(result, parsedOutput.routingDecision)
         }
     }
-    
+
     // 构建Agent指令
-    private func buildInstruction(for node: WorkflowNode, agent: Agent, prompt: String?, isEntryNode: Bool) -> String {
+    private func buildInstruction(
+        for node: WorkflowNode,
+        agent: Agent,
+        prompt: String?,
+        isEntryNode: Bool,
+        downstreamTargets: [RoutingTargetDescriptor]
+    ) -> String {
         var instruction = "Execute agent task:\n"
         instruction += "Agent: \(agent.name)\n"
         instruction += "Node ID: \(node.id.uuidString)\n"
@@ -740,8 +890,172 @@ class OpenClawService: ObservableObject {
             """
             instruction += "\n"
         }
-        
+
+        let candidateLines: [String]
+        if downstreamTargets.isEmpty {
+            candidateLines = ["- No downstream agents are available from this node."]
+        } else {
+            candidateLines = downstreamTargets.map { target in
+                let title = target.node.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let nodeLabel = title.isEmpty ? target.node.id.uuidString : title
+                return "- \(target.agent.name) (agent_id: \(target.resolvedIdentifier), node: \(nodeLabel))"
+            }
+        }
+
+        instruction += """
+
+        Workflow Routing Policy:
+        - Downstream routing is opt-in, never automatic.
+        - If you can finish the task yourself, stop and do not route further.
+        - Only route when you genuinely need help from a downstream agent in this workflow.
+        - You may only choose downstream agents from the list below.
+
+        Downstream Candidates:
+        \(candidateLines.joined(separator: "\n"))
+
+        Routing Output Contract:
+        - After your normal visible reply, append exactly one valid single-line JSON object as the last non-empty line.
+        - Use this schema:
+          {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
+        - Allowed action values:
+          - "stop": do not trigger any downstream agent.
+          - "selected": trigger only the listed downstream agents by name, agent_id, or node title.
+          - "all": trigger every available downstream agent.
+        - Keep the JSON line separate from the user-facing answer.
+        - Do not wrap the JSON in Markdown code fences.
+        """
+
         return instruction
+    }
+
+    private func routingTargets(
+        for node: WorkflowNode,
+        workflow: Workflow,
+        agents: [Agent],
+        outgoingEdges: [UUID: [WorkflowEdge]]
+    ) -> [RoutingTargetDescriptor] {
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        let edges = selectOutgoingEdges(for: node, edges: outgoingEdges[node.id, default: []], workflow: workflow)
+
+        var targets: [RoutingTargetDescriptor] = []
+        var seen = Set<UUID>()
+
+        for edge in edges {
+            guard let candidateNode = nodeByID[edge.toNodeID],
+                  candidateNode.type == .agent,
+                  let agentID = candidateNode.agentID,
+                  let candidateAgent = agentByID[agentID],
+                  seen.insert(candidateNode.id).inserted else {
+                continue
+            }
+
+            targets.append(
+                RoutingTargetDescriptor(
+                    node: candidateNode,
+                    agent: candidateAgent,
+                    resolvedIdentifier: resolvedAgentIdentifier(for: candidateAgent)
+                )
+            )
+        }
+
+        return targets.sorted { lhs, rhs in
+            nodeSort(lhs.node, rhs.node)
+        }
+    }
+
+    private func resolveRoutingTargets(
+        from decision: WorkflowRoutingDecision?,
+        availableTargets: [RoutingTargetDescriptor],
+        node: WorkflowNode,
+        outputType: ExecutionOutputType,
+        fallbackPolicy: WorkflowFallbackRoutingPolicy
+    ) -> [RoutingTargetDescriptor] {
+        guard !availableTargets.isEmpty else { return [] }
+
+        guard let decision else {
+            if outputType != .runtimeLog {
+                switch fallbackPolicy {
+                case .stop:
+                    addLog(.info, "No routing decision emitted; stopping at current node by default.", nodeID: node.id)
+                    return []
+                case .firstAvailable:
+                    if availableTargets.count == 1 {
+                        let target = availableTargets[0]
+                        addLog(.info, "No routing decision emitted; fallback policy routed to single downstream agent \(target.agent.name).", nodeID: node.id)
+                        return [target]
+                    }
+                    addLog(.info, "No routing decision emitted; fallback policy requires exactly one downstream agent, so execution stopped.", nodeID: node.id)
+                    return []
+                case .allAvailable:
+                    let names = availableTargets.map(\.agent.name).joined(separator: ", ")
+                    addLog(.info, "No routing decision emitted; fallback policy routed to all downstream agents: \(names)", nodeID: node.id)
+                    return availableTargets
+                }
+            }
+            return []
+        }
+
+        switch decision.action {
+        case .stop:
+            addLog(.info, "Routing decision: stop.", nodeID: node.id)
+            return []
+        case .all:
+            addLog(.info, "Routing decision: fan out to all downstream agents.", nodeID: node.id)
+            return availableTargets
+        case .selected:
+            if decision.targets.isEmpty {
+                addLog(.warning, "Routing decision requested selected targets, but no targets were provided.", nodeID: node.id)
+                return []
+            }
+
+            let resolved = availableTargets.filter { target in
+                routeTargetMatches(decision.targets, candidate: target)
+            }
+
+            let unresolved = decision.targets.filter { requested in
+                !availableTargets.contains { target in
+                    routeTargetMatches([requested], candidate: target)
+                }
+            }
+            if !unresolved.isEmpty {
+                addLog(.warning, "Ignored unknown downstream targets: \(unresolved.joined(separator: ", "))", nodeID: node.id)
+            }
+
+            if resolved.isEmpty {
+                addLog(.warning, "Routing decision did not match any reachable downstream agent.", nodeID: node.id)
+            } else {
+                let names = resolved.map { $0.agent.name }.joined(separator: ", ")
+                addLog(.info, "Routing decision: \(names)", nodeID: node.id)
+            }
+            return resolved
+        }
+    }
+
+    private func routeTargetMatches(_ requestedTargets: [String], candidate: RoutingTargetDescriptor) -> Bool {
+        let candidateKeys = routeMatchKeys(for: candidate)
+        return requestedTargets.contains { requested in
+            let normalized = normalizedRouteKey(requested)
+            return !normalized.isEmpty && candidateKeys.contains(normalized)
+        }
+    }
+
+    private func routeMatchKeys(for candidate: RoutingTargetDescriptor) -> Set<String> {
+        var keys: Set<String> = [
+            normalizedRouteKey(candidate.agent.name),
+            normalizedRouteKey(candidate.resolvedIdentifier),
+            normalizedRouteKey(candidate.node.title),
+            normalizedRouteKey(candidate.node.id.uuidString),
+            normalizedRouteKey(String(candidate.node.id.uuidString.prefix(8)))
+        ]
+        keys = keys.filter { !$0.isEmpty }
+        return keys
+    }
+
+    private func normalizedRouteKey(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
     
     // 调用OpenClaw Agent
@@ -750,7 +1064,7 @@ class OpenClawService: ObservableObject {
         agentIdentifier: String,
         outputMode: AgentOutputMode = .structuredJSON,
         onPartial: ((String) -> Void)? = nil,
-        completion: @escaping (Bool, String, ExecutionOutputType) -> Void
+        completion: @escaping (Bool, ParsedAgentOutput) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -767,7 +1081,14 @@ class OpenClawService: ObservableObject {
 
             if connectionConfig.deploymentKind == .remoteServer {
                 DispatchQueue.main.async {
-                    completion(false, "当前连接模式为远程网关，工作台对话暂不支持直接执行 agent CLI。", .errorSummary)
+                    completion(
+                        false,
+                        ParsedAgentOutput(
+                            text: "当前连接模式为远程网关，工作台对话暂不支持直接执行 agent CLI。",
+                            type: .errorSummary,
+                            routingDecision: nil
+                        )
+                    )
                 }
                 return
             }
@@ -834,17 +1155,7 @@ class OpenClawService: ObservableObject {
                 let stderr = String(data: result.standardError, encoding: .utf8) ?? ""
                 let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
                 let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                let parsedOutput: (text: String, type: ExecutionOutputType)
-                switch outputMode {
-                case .structuredJSON:
-                    parsedOutput = self.extractAgentResponse(from: stdoutTrimmed)
-                case .plainStreaming:
-                    let text = self.extractVisiblePlainResponse(from: stdoutTrimmed)
-                    parsedOutput = (
-                        text,
-                        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .runtimeLog : .agentFinalResponse
-                    )
-                }
+                let parsedOutput = self.parseAgentOutput(from: stdoutTrimmed, outputMode: outputMode)
 
                 if !stderrTrimmed.isEmpty {
                     let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
@@ -853,21 +1164,53 @@ class OpenClawService: ObservableObject {
 
                 DispatchQueue.main.async {
                     if result.terminationStatus == 0 {
-                        completion(true, parsedOutput.text, parsedOutput.type)
+                        completion(true, parsedOutput)
                     } else {
                         let fallback = self.executionFailureSummary(
                             exitCode: result.terminationStatus,
                             stderr: stderrTrimmed,
                             stdout: stdoutTrimmed
                         )
-                        completion(false, fallback, .errorSummary)
+                        completion(
+                            false,
+                            ParsedAgentOutput(
+                                text: fallback,
+                                type: .errorSummary,
+                                routingDecision: nil
+                            )
+                        )
                     }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    completion(false, "Error: \(error.localizedDescription)", .errorSummary)
+                    completion(
+                        false,
+                        ParsedAgentOutput(
+                            text: "Error: \(error.localizedDescription)",
+                            type: .errorSummary,
+                            routingDecision: nil
+                        )
+                    )
                 }
             }
+        }
+    }
+
+    private func parseAgentOutput(from stdout: String, outputMode: AgentOutputMode) -> ParsedAgentOutput {
+        switch outputMode {
+        case .structuredJSON:
+            let parsed = extractAgentResponse(from: stdout)
+            let routingDecision = extractRoutingDecision(from: stdout) ?? extractRoutingDecision(from: parsed.text)
+            let sanitizedText = stripRoutingDirective(from: parsed.text)
+            return ParsedAgentOutput(text: sanitizedText, type: parsed.type, routingDecision: routingDecision)
+        case .plainStreaming:
+            let text = extractVisiblePlainResponse(from: stdout)
+            let routingDecision = extractRoutingDecision(from: stdout) ?? extractRoutingDecision(from: text)
+            let sanitizedText = stripRoutingDirective(from: text)
+            let outputType: ExecutionOutputType = sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .runtimeLog
+                : .agentFinalResponse
+            return ParsedAgentOutput(text: sanitizedText, type: outputType, routingDecision: routingDecision)
         }
     }
 
@@ -1117,6 +1460,119 @@ class OpenClawService: ObservableObject {
         }
 
         return (trimmed, .agentFinalResponse)
+    }
+
+    private func extractRoutingDecision(from text: String) -> WorkflowRoutingDecision? {
+        let payloads = extractJSONPayloads(from: text)
+        for payload in payloads.reversed() {
+            guard let data = payload.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data),
+                  let decision = routingDecision(from: json) else {
+                continue
+            }
+            return decision
+        }
+        return nil
+    }
+
+    private func stripRoutingDirective(from text: String) -> String {
+        let normalized = text.replacingOccurrences(of: "\r", with: "")
+        let lines = normalized.components(separatedBy: .newlines)
+        guard let lastIndex = lines.lastIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            return text
+        }
+
+        let candidate = lines[lastIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard extractRoutingDecision(from: candidate) != nil else {
+            return text
+        }
+
+        var trimmedLines = lines
+        trimmedLines.remove(at: lastIndex)
+        return trimmedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func routingDecision(from json: Any) -> WorkflowRoutingDecision? {
+        if let dict = json as? [String: Any] {
+            if let nested = dict["workflow_route"] {
+                return routingDecision(fromRouteObject: nested)
+            }
+            if let nested = dict["route"] {
+                return routingDecision(fromRouteObject: nested)
+            }
+            if let nested = dict["routing"] {
+                return routingDecision(fromRouteObject: nested)
+            }
+            return routingDecision(fromRouteObject: dict)
+        }
+
+        if let array = json as? [Any] {
+            for item in array.reversed() {
+                if let decision = routingDecision(from: item) {
+                    return decision
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func routingDecision(fromRouteObject object: Any) -> WorkflowRoutingDecision? {
+        guard let dict = object as? [String: Any] else { return nil }
+
+        let rawAction = firstNonEmptyString(in: dict, keys: ["action", "mode", "decision", "type"])?.lowercased()
+        let action: WorkflowRoutingDecision.Action
+        switch rawAction {
+        case "all", "broadcast", "fanout":
+            action = .all
+        case "selected", "select", "route", "delegate", "handoff", "handover":
+            action = .selected
+        case "stop", "none", "finish", "done":
+            action = .stop
+        case nil:
+            if let continueValue = dict["continue"] as? Bool {
+                action = continueValue ? .selected : .stop
+            } else {
+                let nextAgents = stringArray(from: dict["targets"] ?? dict["next_agents"] ?? dict["nextAgents"])
+                action = nextAgents.isEmpty ? .stop : .selected
+            }
+        default:
+            return nil
+        }
+
+        let targets = stringArray(from: dict["targets"] ?? dict["next_agents"] ?? dict["nextAgents"] ?? dict["agents"])
+        let reason = firstNonEmptyString(in: dict, keys: ["reason", "why", "note", "summary"])
+        return WorkflowRoutingDecision(action: action, targets: targets, reason: reason)
+    }
+
+    private func stringArray(from value: Any?) -> [String] {
+        guard let value else { return [] }
+
+        if let strings = value as? [String] {
+            return strings.compactMap(normalizedNonEmpty)
+        }
+
+        if let array = value as? [Any] {
+            return array.compactMap { item in
+                if let text = item as? String {
+                    return normalizedNonEmpty(text)
+                }
+                if let dict = item as? [String: Any] {
+                    return firstNonEmptyString(in: dict, keys: ["name", "agent", "agent_id", "id", "node", "target"])
+                }
+                return nil
+            }
+        }
+
+        if let string = value as? String {
+            let parts = string
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .compactMap(normalizedNonEmpty)
+            return parts
+        }
+
+        return []
     }
 
     private func extractFinalResponseCandidate(from json: Any) -> String? {
@@ -1479,7 +1935,9 @@ class OpenClawService: ObservableObject {
     
     // 执行单个节点
     func executeNode(_ node: WorkflowNode, agent: Agent, completion: @escaping (ExecutionResult) -> Void) {
-        executeNodeOnOpenClaw(node: node, agent: agent, prompt: nil, completion: completion)
+        executeNodeOnOpenClaw(node: node, agent: agent, prompt: nil) { result, _ in
+            completion(result)
+        }
     }
     
     // 获取节点的执行结果
@@ -1500,6 +1958,7 @@ class OpenClawService: ObservableObject {
     // 清理结果
     func clearResults() {
         executionResults.removeAll()
+        currentNodeID = nil
         lastError = nil
     }
 

@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 
 struct CanvasView: View {
     @EnvironmentObject var appState: AppState
+    let isActive: Bool
     @Binding var zoomScale: CGFloat
     @Binding var offset: CGSize
     @Binding var lastOffset: CGSize
@@ -26,6 +27,7 @@ struct CanvasView: View {
     @State private var isTransientLassoMode: Bool = false
     @State private var lassoRect: CGRect?
     @State private var suppressCanvasTapClear: Bool = false
+    @State private var scrollEventMonitor: Any?
 
     var onNodeClickInConnectMode: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
@@ -35,6 +37,7 @@ struct CanvasView: View {
     var onDropAgent: ((String, CGPoint) -> Void)?
 
     init(
+        isActive: Bool = true,
         zoomScale: Binding<CGFloat> = .constant(1),
         offset: Binding<CGSize> = .constant(.zero),
         lastOffset: Binding<CGSize> = .constant(.zero),
@@ -53,6 +56,7 @@ struct CanvasView: View {
         onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil,
         onDropAgent: ((String, CGPoint) -> Void)? = nil
     ) {
+        self.isActive = isActive
         self._zoomScale = zoomScale
         self._offset = offset
         self._lastOffset = lastOffset
@@ -73,40 +77,46 @@ struct CanvasView: View {
     }
 
     var body: some View {
-        CanvasContentView(
-            scale: $scale,
-            offset: $offset,
-            lastOffset: $lastOffset,
-            selectedNodeID: $selectedNodeID,
-            selectedNodeIDs: $selectedNodeIDs,
-            selectedEdgeID: $selectedEdgeID,
-            selectedBoundaryIDs: $selectedBoundaryIDs,
-            suppressCanvasTapClear: $suppressCanvasTapClear,
-            isLassoMode: $isLassoMode,
-            isTransientLassoMode: $isTransientLassoMode,
-            lassoRect: $lassoRect,
-            connectingFromNode: $connectingFromNode,
-            tempConnectionEnd: $tempConnectionEnd,
-            isConnectMode: isConnectMode,
-            connectFromAgentID: connectFromAgentID,
-            onNodeClick: onNodeClickInConnectMode,
-            onNodeSelected: { node in
-                suppressCanvasTapClear = true
-                onNodeSelected?(node)
-            },
-            onNodeSecondarySelected: { node in
-                suppressCanvasTapClear = true
-                onNodeSecondarySelected?(node)
-            },
-            onEdgeSelected: { edge in
-                suppressCanvasTapClear = true
-                onEdgeSelected?(edge)
-            },
-            onEdgeSecondarySelected: { edge in
-                suppressCanvasTapClear = true
-                onEdgeSecondarySelected?(edge)
+        Group {
+            if isActive {
+                CanvasContentView(
+                    scale: $scale,
+                    offset: $offset,
+                    lastOffset: $lastOffset,
+                    selectedNodeID: $selectedNodeID,
+                    selectedNodeIDs: $selectedNodeIDs,
+                    selectedEdgeID: $selectedEdgeID,
+                    selectedBoundaryIDs: $selectedBoundaryIDs,
+                    suppressCanvasTapClear: $suppressCanvasTapClear,
+                    isLassoMode: $isLassoMode,
+                    isTransientLassoMode: $isTransientLassoMode,
+                    lassoRect: $lassoRect,
+                    connectingFromNode: $connectingFromNode,
+                    tempConnectionEnd: $tempConnectionEnd,
+                    isConnectMode: isConnectMode,
+                    connectFromAgentID: connectFromAgentID,
+                    onNodeClick: onNodeClickInConnectMode,
+                    onNodeSelected: { node in
+                        suppressCanvasTapClear = true
+                        onNodeSelected?(node)
+                    },
+                    onNodeSecondarySelected: { node in
+                        suppressCanvasTapClear = true
+                        onNodeSecondarySelected?(node)
+                    },
+                    onEdgeSelected: { edge in
+                        suppressCanvasTapClear = true
+                        onEdgeSelected?(edge)
+                    },
+                    onEdgeSecondarySelected: { edge in
+                        suppressCanvasTapClear = true
+                        onEdgeSecondarySelected?(edge)
+                    }
+                )
+            } else {
+                Color.clear
             }
-        )
+        }
         .onChange(of: selectedEdgeID) { _, newValue in
             if newValue != nil {
                 suppressCanvasTapClear = true
@@ -114,7 +124,38 @@ struct CanvasView: View {
         }
         .onAppear {
             scale = zoomScale
-            NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            updateScrollMonitor(isEnabled: isActive)
+            setupDefaultNodes()
+        }
+        .onDisappear {
+            updateScrollMonitor(isEnabled: false)
+        }
+        .onChange(of: zoomScale) { _, newValue in
+            scale = newValue
+        }
+        .onChange(of: isActive) { _, newValue in
+            updateScrollMonitor(isEnabled: newValue)
+
+            if !newValue {
+                connectingFromNode = nil
+                tempConnectionEnd = nil
+                lassoRect = nil
+                isTransientLassoMode = false
+                suppressCanvasTapClear = false
+            }
+        }
+        .onChange(of: isConnectMode) { _, newValue in
+            if !newValue {
+                connectFromAgentID = nil
+            }
+        }
+        .clipped()
+    }
+
+    private func updateScrollMonitor(isEnabled: Bool) {
+        if isEnabled {
+            guard scrollEventMonitor == nil else { return }
+            scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                 if event.modifierFlags.contains(.command) {
                     let delta = event.scrollingDeltaY * 0.01
                     let newScale = max(0.05, min(20.0, self.scale + delta))
@@ -124,18 +165,13 @@ struct CanvasView: View {
                 }
                 return event
             }
+            return
+        }
 
-            setupDefaultNodes()
+        if let scrollEventMonitor {
+            NSEvent.removeMonitor(scrollEventMonitor)
+            self.scrollEventMonitor = nil
         }
-        .onChange(of: zoomScale) { _, newValue in
-            scale = newValue
-        }
-        .onChange(of: isConnectMode) { _, newValue in
-            if !newValue {
-                connectFromAgentID = nil
-            }
-        }
-        .clipped()
     }
 
     private func setupDefaultNodes() {

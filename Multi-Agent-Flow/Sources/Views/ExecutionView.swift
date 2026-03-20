@@ -9,12 +9,15 @@ import SwiftUI
 
 struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     @EnvironmentObject var appState: AppState
-    @StateObject private var openClawService = OpenClawService()
     
     @State private var selectedWorkflowID: UUID?
     @State private var isExecuting = false
     @State private var showResults = false
     @State private var showLogs = false
+
+    private var openClawService: OpenClawService {
+        appState.openClawService
+    }
     
     var workflows: [Workflow] {
         appState.currentProject?.workflows ?? []
@@ -98,9 +101,8 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                     .foregroundColor(.secondary)
                 
                 if let workflow = selectedWorkflow {
-                    let agentNodes = workflow.nodes.filter { $0.type == .agent }
-                    if openClawService.currentStep > 0 && openClawService.currentStep <= agentNodes.count {
-                        let currentNode = agentNodes[openClawService.currentStep - 1]
+                    if let currentNodeID = openClawService.currentNodeID,
+                       let currentNode = workflow.nodes.first(where: { $0.id == currentNodeID }) {
                         if let agentID = currentNode.agentID,
                            let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
                             VStack {
@@ -283,12 +285,12 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     
     private func executeWorkflow() {
         guard let workflow = selectedWorkflow,
-              let agents = appState.currentProject?.agents else { return }
+              appState.currentProject != nil else { return }
         
         isExecuting = true
         showResults = false
         
-        openClawService.executeWorkflow(workflow, agents: agents) { results in
+        appState.startWorkflowExecutionWithVerification(workflowID: workflow.id) { _, results in
             isExecuting = false
             showResults = true
         }
@@ -311,13 +313,26 @@ struct LogEntryView: View {
                 .fontWeight(.bold)
                 .foregroundColor(levelColor)
                 .frame(width: 50)
+
+            if let routingBadge = entry.routingBadge {
+                Text(routingBadge)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(routingBadgeColor.opacity(0.14))
+                    .foregroundColor(routingBadgeColor)
+                    .clipShape(Capsule())
+            }
             
             Text(entry.message)
                 .font(.caption)
-                .foregroundColor(.primary)
+                .foregroundColor(entry.isRoutingEvent ? routingBadgeColor : .primary)
                 .lineLimit(2)
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(entry.isRoutingEvent ? routingBadgeColor.opacity(0.06) : Color.clear)
+        .cornerRadius(8)
     }
     
     private var levelColor: Color {
@@ -326,6 +341,16 @@ struct LogEntryView: View {
         case .warning: return .orange
         case .error: return .red
         case .success: return .green
+        }
+    }
+
+    private var routingBadgeColor: Color {
+        switch entry.routingBadge {
+        case "STOP": return .orange
+        case "WARN", "MISS": return .red
+        case "QUEUE": return .blue
+        case "ROUTE": return .purple
+        default: return .secondary
         }
     }
 }

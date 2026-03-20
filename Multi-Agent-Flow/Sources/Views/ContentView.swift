@@ -183,7 +183,7 @@ struct ContentView: View {
                 Circle()
                     .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
                     .frame(width: 8, height: 8)
-                Text(appState.openClawManager.isConnected ? "OpenClaw Connected" : "OpenClaw Disconnected")
+                Text(appState.openClawManager.isConnected ? "OpenClaw 已连接" : "OpenClaw 未连接")
                     .font(.caption)
                     .fontWeight(.medium)
                 Text(appState.openClawManager.config.deploymentSummary)
@@ -241,7 +241,7 @@ struct ContentView: View {
             Circle()
                 .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
-            Text(appState.openClawManager.isConnected ? "Connected" : "Disconnected")
+            Text(appState.openClawManager.isConnected ? "已连接" : "未连接")
         }
         .padding(.vertical, 4)
     }
@@ -688,12 +688,25 @@ struct RealtimeInfoPanel: View {
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundColor(logLevelColor(entry.level))
                             .frame(width: 52, alignment: .leading)
+                        if let routingBadge = entry.routingBadge {
+                            Text(routingBadge)
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(routingLogColor(entry).opacity(0.14))
+                                .foregroundColor(routingLogColor(entry))
+                                .clipShape(Capsule())
+                        }
                         Text(entry.message)
                             .font(.caption2)
+                            .foregroundColor(entry.isRoutingEvent ? routingLogColor(entry) : .primary)
                             .lineLimit(2)
                         Spacer(minLength: 0)
                     }
-                    .padding(.vertical, 1)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(entry.isRoutingEvent ? routingLogColor(entry).opacity(0.06) : Color.clear)
+                    .cornerRadius(8)
                 }
             }
         }
@@ -727,6 +740,16 @@ struct RealtimeInfoPanel: View {
         case .warning: return .orange
         case .error: return .red
         case .success: return .green
+        }
+    }
+
+    private func routingLogColor(_ entry: ExecutionLogEntry) -> Color {
+        switch entry.routingBadge {
+        case "STOP": return .orange
+        case "WARN", "MISS": return .red
+        case "QUEUE": return .blue
+        case "ROUTE": return .purple
+        default: return logLevelColor(entry.level)
         }
     }
 }

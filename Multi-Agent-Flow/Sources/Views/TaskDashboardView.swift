@@ -154,6 +154,36 @@ struct MonitoringDashboardView: View {
                     systemImage: "gauge.with.dots.needle.33percent",
                     description: Text("仪表盘会基于当前 project 展示工作流运行态、任务状态和 OpenClaw 干预入口。")
                 )
+            } else if !appState.openClawManager.isConnected {
+                VStack(spacing: 16) {
+                    Image(systemName: "cable.connector")
+                        .font(.system(size: 44))
+                        .foregroundColor(.accentColor)
+
+                    Text("先连接 OpenClaw")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+
+                    Text("仪表盘中的工作流运行态、Agent 在线状态和干预能力都依赖实时 OpenClaw 连接。连接成功后才会展示这些信息。")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 520)
+
+                    HStack(spacing: 12) {
+                        Button("连接 OpenClaw") {
+                            appState.connectOpenClaw()
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("打开设置") {
+                            NotificationCenter.default.post(name: .openSettings, object: nil)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(32)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -179,7 +209,7 @@ struct MonitoringDashboardView: View {
             HStack(spacing: 16) {
                 monitoringCard(
                     title: "OpenClaw",
-                    value: appState.openClawManager.isConnected ? "Connected" : "Disconnected",
+                    value: appState.openClawManager.isConnected ? "已连接" : "未连接",
                     detail: appState.openClawManager.config.deploymentSummary,
                     color: appState.openClawManager.isConnected ? .green : .red
                 )
@@ -516,11 +546,25 @@ struct MonitoringDashboardView: View {
                                 .font(.caption2)
                                 .foregroundColor(logColor(for: entry.level))
                                 .frame(width: 56, alignment: .leading)
+                            if let routingBadge = entry.routingBadge {
+                                Text(routingBadge)
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(routingColor(for: entry).opacity(0.14))
+                                    .foregroundColor(routingColor(for: entry))
+                                    .clipShape(Capsule())
+                            }
                             Text(entry.message)
                                 .font(.caption)
+                                .foregroundColor(entry.isRoutingEvent ? routingColor(for: entry) : .primary)
                                 .lineLimit(2)
                             Spacer()
                         }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(entry.isRoutingEvent ? routingColor(for: entry).opacity(0.06) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                 }
             }
@@ -576,7 +620,21 @@ struct MonitoringDashboardView: View {
         }
     }
 
+    private func routingColor(for entry: ExecutionLogEntry) -> Color {
+        switch entry.routingBadge {
+        case "STOP": return .orange
+        case "WARN", "MISS": return .red
+        case "QUEUE": return .blue
+        case "ROUTE": return .purple
+        default: return logColor(for: entry.level)
+        }
+    }
+
     private func onlineState(for agent: Agent, in project: MAProject) -> AgentOnlineState {
+        guard appState.openClawManager.isConnected else {
+            return .idle
+        }
+
         let runtimeState = project.runtimeState.agentStates[agent.id.uuidString]?.lowercased() ?? ""
         let openClawState = appState.openClawManager.activeAgents[agent.id]?.status.lowercased() ?? ""
         let hasRunningTask = appState.taskManager.tasks.contains {

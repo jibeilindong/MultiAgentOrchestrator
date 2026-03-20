@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct ExecutionResultView: View {
+    @EnvironmentObject var appState: AppState
     let result: ExecutionResult
     
     var body: some View {
@@ -30,6 +31,10 @@ struct ExecutionResultView: View {
                 Text("Agent: \(agent.name)")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            if hasRoutingDetails {
+                routingDetailsView
             }
             
             Divider()
@@ -91,8 +96,65 @@ struct ExecutionResultView: View {
     }
     
     private func getAgent() -> Agent? {
-        // 在实际应用中，这里应该通过AppState获取Agent
-        return nil
+        appState.currentProject?.agents.first { $0.id == result.agentID }
+    }
+
+    private var hasRoutingDetails: Bool {
+        result.routingAction != nil || !result.routingTargets.isEmpty || result.routingReason != nil
+    }
+
+    private var routingDetailsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Routing")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.orange)
+                if let action = result.routingAction {
+                    Text(routingActionLabel(action))
+                        .font(.caption2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(routingActionColor(action).opacity(0.16))
+                        .foregroundColor(routingActionColor(action))
+                        .clipShape(Capsule())
+                }
+            }
+
+            if !result.routingTargets.isEmpty {
+                Text("Targets: \(result.routingTargets.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            if let reason = result.routingReason,
+               !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Reason: \(reason)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.08))
+        .cornerRadius(8)
+    }
+
+    private func routingActionLabel(_ action: String) -> String {
+        switch action.lowercased() {
+        case "stop": return "Stop"
+        case "selected": return "Selected"
+        case "all": return "All"
+        default: return action
+        }
+    }
+
+    private func routingActionColor(_ action: String) -> Color {
+        switch action.lowercased() {
+        case "stop": return .orange
+        case "selected": return .blue
+        case "all": return .purple
+        default: return .secondary
+        }
     }
     
     private func formatDuration(_ duration: TimeInterval) -> String {

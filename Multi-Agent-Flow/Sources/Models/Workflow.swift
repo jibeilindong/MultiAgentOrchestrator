@@ -9,6 +9,159 @@ import Foundation
 import CoreGraphics
 import Combine
 
+enum WorkflowFallbackRoutingPolicy: String, Codable, CaseIterable, Hashable {
+    case stop = "stop"
+    case firstAvailable = "first_available"
+    case allAvailable = "all_available"
+
+    var displayName: String {
+        switch self {
+        case .stop:
+            return "无指令即停止"
+        case .firstAvailable:
+            return "无指令时单下游自动继续"
+        case .allAvailable:
+            return "无指令时沿全部下游继续"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .stop:
+            return "只有 agent 明确输出路由指令时，才继续触发下游节点。"
+        case .firstAvailable:
+            return "当 agent 没给路由指令且只有一个可达下游时，自动继续；多个下游时仍停止。"
+        case .allAvailable:
+            return "当 agent 没给路由指令时，自动触发当前节点的全部可达下游。"
+        }
+    }
+}
+
+enum WorkflowVerificationStatus: String, Codable, Hashable {
+    case pass
+    case warn
+    case fail
+
+    var displayName: String {
+        switch self {
+        case .pass: return "PASS"
+        case .warn: return "WARN"
+        case .fail: return "FAIL"
+        }
+    }
+}
+
+struct WorkflowLaunchTestCase: Identifiable, Codable, Hashable {
+    let id: UUID
+    var name: String
+    var prompt: String
+    var requiredAgentNames: [String]
+    var forbiddenAgentNames: [String]
+    var expectedRoutingActions: [String]
+    var expectedOutputTypes: [String]
+    var maxSteps: Int?
+    var notes: String
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        prompt: String,
+        requiredAgentNames: [String] = [],
+        forbiddenAgentNames: [String] = [],
+        expectedRoutingActions: [String] = [],
+        expectedOutputTypes: [String] = [],
+        maxSteps: Int? = nil,
+        notes: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.prompt = prompt
+        self.requiredAgentNames = requiredAgentNames
+        self.forbiddenAgentNames = forbiddenAgentNames
+        self.expectedRoutingActions = expectedRoutingActions
+        self.expectedOutputTypes = expectedOutputTypes
+        self.maxSteps = maxSteps
+        self.notes = notes
+    }
+}
+
+struct WorkflowLaunchTestCaseReport: Identifiable, Codable, Hashable {
+    let id: UUID
+    var testCaseID: UUID
+    var name: String
+    var prompt: String
+    var status: WorkflowVerificationStatus
+    var actualStepCount: Int
+    var actualAgents: [String]
+    var actualRoutingActions: [String]
+    var actualRoutingTargets: [String]
+    var actualOutputTypes: [String]
+    var notes: [String]
+
+    init(
+        id: UUID = UUID(),
+        testCaseID: UUID,
+        name: String,
+        prompt: String,
+        status: WorkflowVerificationStatus,
+        actualStepCount: Int,
+        actualAgents: [String],
+        actualRoutingActions: [String],
+        actualRoutingTargets: [String],
+        actualOutputTypes: [String],
+        notes: [String]
+    ) {
+        self.id = id
+        self.testCaseID = testCaseID
+        self.name = name
+        self.prompt = prompt
+        self.status = status
+        self.actualStepCount = actualStepCount
+        self.actualAgents = actualAgents
+        self.actualRoutingActions = actualRoutingActions
+        self.actualRoutingTargets = actualRoutingTargets
+        self.actualOutputTypes = actualOutputTypes
+        self.notes = notes
+    }
+}
+
+struct WorkflowLaunchVerificationReport: Identifiable, Codable, Hashable {
+    let id: UUID
+    var workflowID: UUID
+    var workflowName: String
+    var workflowSignature: String
+    var startedAt: Date
+    var completedAt: Date?
+    var status: WorkflowVerificationStatus
+    var staticFindings: [String]
+    var runtimeFindings: [String]
+    var testCaseReports: [WorkflowLaunchTestCaseReport]
+
+    init(
+        id: UUID = UUID(),
+        workflowID: UUID,
+        workflowName: String,
+        workflowSignature: String,
+        startedAt: Date = Date(),
+        completedAt: Date? = nil,
+        status: WorkflowVerificationStatus = .pass,
+        staticFindings: [String] = [],
+        runtimeFindings: [String] = [],
+        testCaseReports: [WorkflowLaunchTestCaseReport] = []
+    ) {
+        self.id = id
+        self.workflowID = workflowID
+        self.workflowName = workflowName
+        self.workflowSignature = workflowSignature
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.status = status
+        self.staticFindings = staticFindings
+        self.runtimeFindings = runtimeFindings
+        self.testCaseReports = testCaseReports
+    }
+}
+
 struct WorkflowBoundary: Identifiable, Codable, Hashable {
     let id: UUID
     var title: String
@@ -331,6 +484,9 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
 struct Workflow: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
+    var fallbackRoutingPolicy: WorkflowFallbackRoutingPolicy
+    var launchTestCases: [WorkflowLaunchTestCase]
+    var lastLaunchVerificationReport: WorkflowLaunchVerificationReport?
     var nodes: [WorkflowNode]
     var edges: [WorkflowEdge]
     var boundaries: [WorkflowBoundary]
@@ -344,6 +500,9 @@ struct Workflow: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id
         case name
+        case fallbackRoutingPolicy
+        case launchTestCases
+        case lastLaunchVerificationReport
         case nodes
         case edges
         case boundaries
@@ -357,6 +516,9 @@ struct Workflow: Codable, Identifiable, Hashable {
     init(name: String) {
         self.id = UUID()
         self.name = name
+        self.fallbackRoutingPolicy = .stop
+        self.launchTestCases = []
+        self.lastLaunchVerificationReport = nil
         self.nodes = []
         self.edges = []
         self.boundaries = []
@@ -368,6 +530,9 @@ struct Workflow: Codable, Identifiable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        fallbackRoutingPolicy = try container.decodeIfPresent(WorkflowFallbackRoutingPolicy.self, forKey: .fallbackRoutingPolicy) ?? .stop
+        launchTestCases = try container.decodeIfPresent([WorkflowLaunchTestCase].self, forKey: .launchTestCases) ?? []
+        lastLaunchVerificationReport = try container.decodeIfPresent(WorkflowLaunchVerificationReport.self, forKey: .lastLaunchVerificationReport)
         nodes = try container.decodeIfPresent([WorkflowNode].self, forKey: .nodes) ?? []
         edges = try container.decodeIfPresent([WorkflowEdge].self, forKey: .edges) ?? []
         boundaries = try container.decodeIfPresent([WorkflowBoundary].self, forKey: .boundaries) ?? []

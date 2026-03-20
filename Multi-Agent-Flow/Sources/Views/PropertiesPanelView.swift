@@ -842,9 +842,19 @@ struct ProjectPropertiesView: View {
     @EnvironmentObject var appState: AppState
     @State private var projectName: String = ""
     @State private var showExportPanel = false
+    @State private var selectedWorkflowID: UUID?
 
     private var workspaceRootPath: String {
         appState.currentProject?.taskData.workspaceRootPath ?? appState.projectManager.defaultWorkspaceRootDirectory.path
+    }
+
+    private var workflows: [Workflow] {
+        appState.currentProject?.workflows ?? []
+    }
+
+    private var selectedWorkflow: Workflow? {
+        let resolvedID = selectedWorkflowID ?? workflows.first?.id
+        return workflows.first { $0.id == resolvedID }
     }
     
     var body: some View {
@@ -895,6 +905,134 @@ struct ProjectPropertiesView: View {
                     }
                 }
 
+                SectionView(title: "Workflow Routing") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if workflows.isEmpty {
+                            Text("当前项目还没有工作流。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Workflow")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Picker("Workflow", selection: workflowSelectionBinding) {
+                                    ForEach(workflows) { workflow in
+                                        Text(workflow.name).tag(workflow.id as UUID?)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            }
+
+                            if let workflow = selectedWorkflow {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Fallback Routing Policy")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Picker(
+                                        "Fallback Routing Policy",
+                                        selection: Binding(
+                                            get: { workflow.fallbackRoutingPolicy },
+                                            set: { newPolicy in
+                                                var updatedWorkflow = workflow
+                                                updatedWorkflow.fallbackRoutingPolicy = newPolicy
+                                                appState.updateWorkflow(updatedWorkflow)
+                                            }
+                                        )
+                                    ) {
+                                        ForEach(WorkflowFallbackRoutingPolicy.allCases, id: \.self) { policy in
+                                            Text(policy.displayName).tag(policy)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                }
+
+                                Text(workflow.fallbackRoutingPolicy.detail)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color(.controlBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                        }
+                    }
+                }
+
+                SectionView(title: "Launch Verification") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let report = selectedWorkflow?.lastLaunchVerificationReport {
+                            HStack {
+                                Text("Last Result")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(report.status.displayName)
+                                    .font(.caption2)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(verificationColor(report.status).opacity(0.14))
+                                    .foregroundColor(verificationColor(report.status))
+                                    .clipShape(Capsule())
+                            }
+
+                            InfoRow(label: "Started", value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
+                            InfoRow(label: "Completed", value: report.completedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Running")
+                            InfoRow(label: "Cases", value: "\(report.testCaseReports.count)")
+
+                            if !report.staticFindings.isEmpty {
+                                verificationList(title: "Static Findings", items: report.staticFindings, color: .orange)
+                            }
+
+                            if !report.runtimeFindings.isEmpty {
+                                verificationList(title: "Runtime Findings", items: Array(report.runtimeFindings.prefix(5)), color: .blue)
+                            }
+
+                            if !report.testCaseReports.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Case Results")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+
+                                    ForEach(report.testCaseReports) { caseReport in
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            HStack {
+                                                Text(caseReport.name)
+                                                    .font(.caption)
+                                                    .fontWeight(.semibold)
+                                                Spacer()
+                                                Text(caseReport.status.displayName)
+                                                    .font(.caption2)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 3)
+                                                    .background(verificationColor(caseReport.status).opacity(0.14))
+                                                    .foregroundColor(verificationColor(caseReport.status))
+                                                    .clipShape(Capsule())
+                                            }
+                                            Text("Steps: \(caseReport.actualStepCount) | Agents: \(caseReport.actualAgents.joined(separator: ", "))")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                            if !caseReport.notes.isEmpty {
+                                                Text(caseReport.notes.joined(separator: " | "))
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                        .padding(10)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(Color(.controlBackgroundColor))
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                    }
+                                }
+                            }
+                        } else {
+                            Text("还没有启动验证报告。第一次运行工作流时会自动生成。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 SectionView(title: "Memory Backup") {
                     VStack(alignment: .leading, spacing: 8) {
                         InfoRow(label: "Mode", value: appState.currentProject?.memoryData.backupOnly == true ? "Backup Only" : "Managed")
@@ -933,6 +1071,33 @@ struct ProjectPropertiesView: View {
             }
             .padding()
         }
+        .onAppear {
+            projectName = appState.currentProject?.name ?? ""
+            if selectedWorkflowID == nil {
+                selectedWorkflowID = workflows.first?.id
+            }
+        }
+        .onChange(of: appState.currentProject?.id) { _, _ in
+            projectName = appState.currentProject?.name ?? ""
+            selectedWorkflowID = workflows.first?.id
+        }
+        .onChange(of: workflows.map(\.id)) { _, workflowIDs in
+            guard !workflowIDs.isEmpty else {
+                selectedWorkflowID = nil
+                return
+            }
+            if let selectedWorkflowID, workflowIDs.contains(selectedWorkflowID) {
+                return
+            }
+            selectedWorkflowID = workflowIDs.first
+        }
+    }
+
+    private var workflowSelectionBinding: Binding<UUID?> {
+        Binding(
+            get: { selectedWorkflowID ?? workflows.first?.id },
+            set: { selectedWorkflowID = $0 }
+        )
     }
     
     private func exportProjectAsJSON() {
@@ -953,6 +1118,32 @@ struct ProjectPropertiesView: View {
                 } catch {
                     print("导出失败: \(error)")
                 }
+            }
+        }
+    }
+
+    private func verificationColor(_ status: WorkflowVerificationStatus) -> Color {
+        switch status {
+        case .pass: return .green
+        case .warn: return .orange
+        case .fail: return .red
+        }
+    }
+
+    @ViewBuilder
+    private func verificationList(title: String, items: [String], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            ForEach(items, id: \.self) { item in
+                Text(item)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(color.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }

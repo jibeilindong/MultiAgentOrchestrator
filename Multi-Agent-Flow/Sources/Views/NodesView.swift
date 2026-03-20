@@ -26,11 +26,14 @@ struct NodesView: View {
     @State private var dragOriginPositions: [UUID: CGPoint] = [:]
 
     var body: some View {
+        let workflow = currentWorkflow
         let focusedNodeIDs = activeFocusedNodeIDs()
-        let relatedNodeIDs = connectedNodeIDs(for: focusedNodeIDs)
+        let nodeConnectionCounts = connectionCountsByNodeID(in: workflow)
+        let connectedNodeIDs = allConnectedNodeIDs(in: workflow)
+        let relatedNodeIDs = relatedNodeIDs(for: focusedNodeIDs, in: workflow)
 
-        ForEach(currentWorkflow?.nodes ?? []) { node in
-            let counts = connectionCounts(for: node.id)
+        ForEach(workflow?.nodes ?? []) { node in
+            let counts = nodeConnectionCounts[node.id] ?? .zero
             NodeView(
                 node: node,
                 isSelected: selectedNodeIDs.contains(node.id) || node.id == selectedNodeID,
@@ -41,7 +44,7 @@ struct NodesView: View {
                 isConnectSource: connectFromAgentID == node.id,
                 isRelatedToSelection: relatedNodeIDs.contains(node.id) && !focusedNodeIDs.contains(node.id) && node.type == .agent,
                 onTap: { handleSingleTap(node) },
-                accentColor: displayColor(for: node),
+                accentColor: displayColor(for: node, connectedNodeIDs: connectedNodeIDs),
                 textScale: appState.canvasDisplaySettings.textScale,
                 textColor: .black
             )
@@ -96,8 +99,8 @@ struct NodesView: View {
         return []
     }
 
-    private func connectedNodeIDs(for focusedNodeIDs: Set<UUID>) -> Set<UUID> {
-        guard let workflow = currentWorkflow, !focusedNodeIDs.isEmpty else { return [] }
+    private func relatedNodeIDs(for focusedNodeIDs: Set<UUID>, in workflow: Workflow?) -> Set<UUID> {
+        guard let workflow, !focusedNodeIDs.isEmpty else { return [] }
 
         var result: Set<UUID> = []
         for edge in workflow.edges {
@@ -111,15 +114,30 @@ struct NodesView: View {
         return result
     }
 
-    private func connectionCounts(for nodeID: UUID) -> (incoming: Int, outgoing: Int) {
-        guard let workflow = currentWorkflow else { return (0, 0) }
-        let incoming = workflow.edges.reduce(into: 0) { partial, edge in
-            if edge.isIncoming(to: nodeID) { partial += 1 }
+    private func connectionCountsByNodeID(in workflow: Workflow?) -> [UUID: NodeConnectionCounts] {
+        guard let workflow else { return [:] }
+
+        var counts: [UUID: NodeConnectionCounts] = [:]
+        counts.reserveCapacity(workflow.nodes.count)
+
+        for edge in workflow.edges {
+            counts[edge.toNodeID, default: .zero].incoming += 1
+            counts[edge.fromNodeID, default: .zero].outgoing += 1
         }
-        let outgoing = workflow.edges.reduce(into: 0) { partial, edge in
-            if edge.isOutgoing(from: nodeID) { partial += 1 }
+
+        return counts
+    }
+
+    private func allConnectedNodeIDs(in workflow: Workflow?) -> Set<UUID> {
+        guard let workflow else { return [] }
+
+        var nodeIDs: Set<UUID> = []
+        nodeIDs.reserveCapacity(workflow.edges.count * 2)
+        for edge in workflow.edges {
+            nodeIDs.insert(edge.fromNodeID)
+            nodeIDs.insert(edge.toNodeID)
         }
-        return (incoming, outgoing)
+        return nodeIDs
     }
 
     private func updateNodePositions(for node: WorkflowNode, translation: CGSize) {
@@ -168,7 +186,7 @@ struct NodesView: View {
         }
     }
 
-    private func displayColor(for node: WorkflowNode) -> Color? {
+    private func displayColor(for node: WorkflowNode, connectedNodeIDs: Set<UUID>) -> Color? {
         guard node.type == .agent else { return nil }
 
         if let customColor = CanvasStylePalette.color(from: node.displayColorHex) {
@@ -181,10 +199,16 @@ struct NodesView: View {
             return customColor
         }
 
-        let connectedNodeIDs = Set((currentWorkflow?.edges ?? []).flatMap { [$0.fromNodeID, $0.toNodeID] })
         if !connectedNodeIDs.contains(node.id) {
             return .red
         }
         return nil
     }
+}
+
+private struct NodeConnectionCounts {
+    var incoming: Int = 0
+    var outgoing: Int = 0
+
+    static let zero = NodeConnectionCounts()
 }

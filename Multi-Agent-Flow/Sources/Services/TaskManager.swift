@@ -68,6 +68,26 @@ class TaskManager: ObservableObject {
             updateStatistics()
         }
     }
+
+    @discardableResult
+    func blockActiveTasks(where shouldBlock: (Task) -> Bool) -> Int {
+        var blockedCount = 0
+
+        for index in tasks.indices {
+            guard tasks[index].status == .inProgress, shouldBlock(tasks[index]) else {
+                continue
+            }
+
+            tasks[index].block()
+            blockedCount += 1
+        }
+
+        if blockedCount > 0 {
+            updateStatistics()
+        }
+
+        return blockedCount
+    }
     
     func assignTask(_ taskID: UUID, to agentID: UUID?) {
         if let index = tasks.firstIndex(where: { $0.id == taskID }) {

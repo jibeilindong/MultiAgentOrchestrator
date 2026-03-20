@@ -505,8 +505,8 @@ class AppState: ObservableObject {
             .store(in: &cancellables)
 
         openClawManager.$isConnected
-            .sink { [weak self] _ in
-                self?.syncCurrentProjectFromManagers()
+            .sink { [weak self] isConnected in
+                self?.handleOpenClawConnectionChange(isConnected)
             }
             .store(in: &cancellables)
     }
@@ -531,6 +531,39 @@ class AppState: ObservableObject {
         project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         currentProject = project
+    }
+
+    private func handleOpenClawConnectionChange(_ isConnected: Bool) {
+        if !isConnected {
+            clearTransientRuntimeState()
+        }
+        syncCurrentProjectFromManagers()
+    }
+
+    private func clearTransientRuntimeState() {
+        let blockedCount = taskManager.blockActiveTasks { task in
+            task.metadata["source"] == "workbench"
+        }
+
+        if var project = currentProject {
+            project.runtimeState.messageQueue.removeAll()
+            project.runtimeState.agentStates.removeAll()
+            project.runtimeState.lastUpdated = Date()
+            currentProject = project
+        }
+
+        if blockedCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "OpenClaw disconnected. \(blockedCount) active workbench task(s) were marked as blocked."
+            )
+        }
+
+        openClawService.restoreExecutionSnapshot(
+            results: openClawService.executionResults,
+            logs: openClawService.executionLogs,
+            state: nil
+        )
     }
 
     private func syncConversationPermissions(for workflows: [Workflow], in project: inout MAProject) {
@@ -2206,6 +2239,374 @@ class AppState: ObservableObject {
         return project.workflows.first
     }
 
+    func startWorkflowExecutionWithVerification(
+        workflowID: UUID? = nil,
+        prompt: String? = nil,
+        agentOutputMode: AgentOutputMode = .structuredJSON,
+        onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
+        onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
+        completion: @escaping (WorkflowLaunchVerificationReport, [ExecutionResult]) -> Void
+    ) {
+        guard let project = currentProject,
+              let workflow = self.workflow(for: workflowID) else {
+            return
+        }
+
+        verifyWorkflowBeforeLaunch(workflow, agents: project.agents) { [weak self] report in
+            guard let self else { return }
+
+            switch report.status {
+            case .fail:
+                self.openClawService.addLog(.error, "Workflow launch verification failed for \(workflow.name). Execution was blocked.")
+                completion(report, [])
+            case .warn:
+                self.openClawService.addLog(.warning, "Workflow launch verification completed with warnings for \(workflow.name). Proceeding with execution.")
+                self.openClawService.executeWorkflow(
+                    workflow,
+                    agents: project.agents,
+                    prompt: prompt,
+                    agentOutputMode: agentOutputMode,
+                    onNodeStream: onNodeStream,
+                    onNodeCompleted: onNodeCompleted
+                ) { results in
+                    completion(report, results)
+                }
+            case .pass:
+                self.openClawService.addLog(.success, "Workflow launch verification passed for \(workflow.name).")
+                self.openClawService.executeWorkflow(
+                    workflow,
+                    agents: project.agents,
+                    prompt: prompt,
+                    agentOutputMode: agentOutputMode,
+                    onNodeStream: onNodeStream,
+                    onNodeCompleted: onNodeCompleted
+                ) { results in
+                    completion(report, results)
+                }
+            }
+        }
+    }
+
+    private func verifyWorkflowBeforeLaunch(
+        _ workflow: Workflow,
+        agents: [Agent],
+        completion: @escaping (WorkflowLaunchVerificationReport) -> Void
+    ) {
+        let signature = workflowVerificationSignature(for: workflow, agents: agents)
+        var report = WorkflowLaunchVerificationReport(
+            workflowID: workflow.id,
+            workflowName: workflow.name,
+            workflowSignature: signature
+        )
+
+        let staticEvaluation = staticVerificationFindings(for: workflow, agents: agents)
+        report.staticFindings = staticEvaluation.findings
+        report.status = staticEvaluation.status
+
+        let testCases = effectiveLaunchTestCases(for: workflow, agents: agents)
+        if workflow.launchTestCases.isEmpty {
+            openClawService.addLog(.info, "Workflow \(workflow.name) 未配置自定义启动验证用例，已使用系统自动生成的默认用例集。")
+        }
+
+        guard staticEvaluation.status != .fail else {
+            report.completedAt = Date()
+            persistLaunchVerificationReport(report, for: workflow.id)
+            completion(report)
+            return
+        }
+
+        guard !testCases.isEmpty else {
+            report.completedAt = Date()
+            persistLaunchVerificationReport(report, for: workflow.id)
+            completion(report)
+            return
+        }
+
+        openClawService.addLog(.info, "Starting launch verification for workflow \(workflow.name) with \(testCases.count) test case(s).")
+
+        func runCase(at index: Int) {
+            if index >= testCases.count {
+                report.completedAt = Date()
+                report.status = aggregateVerificationStatus(
+                    initial: staticEvaluation.status,
+                    report.runtimeFindings,
+                    caseReports: report.testCaseReports
+                )
+                persistLaunchVerificationReport(report, for: workflow.id)
+                completion(report)
+                return
+            }
+
+            let testCase = testCases[index]
+            let logStartIndex = openClawService.executionLogs.count
+            openClawService.addLog(.info, "Launch verification case \(index + 1)/\(testCases.count): \(testCase.name)")
+
+            openClawService.executeWorkflow(
+                workflow,
+                agents: agents,
+                prompt: testCase.prompt,
+                agentOutputMode: .structuredJSON
+            ) { [weak self] results in
+                guard let self else { return }
+
+                let caseLogs = Array(self.openClawService.executionLogs.dropFirst(logStartIndex))
+                let caseReport = self.evaluateLaunchTestCase(
+                    testCase,
+                    workflow: workflow,
+                    agents: agents,
+                    results: results,
+                    logs: caseLogs
+                )
+                report.testCaseReports.append(caseReport)
+
+                if caseReport.status == .fail {
+                    self.openClawService.addLog(.error, "Launch verification case failed: \(testCase.name)")
+                } else if caseReport.status == .warn {
+                    self.openClawService.addLog(.warning, "Launch verification case warned: \(testCase.name)")
+                } else {
+                    self.openClawService.addLog(.success, "Launch verification case passed: \(testCase.name)")
+                }
+
+                let routingWarnings = caseLogs.compactMap { entry -> String? in
+                    guard entry.isRoutingEvent || entry.level == .error else { return nil }
+                    return entry.message
+                }
+                report.runtimeFindings.append(contentsOf: routingWarnings)
+                runCase(at: index + 1)
+            }
+        }
+
+        runCase(at: 0)
+    }
+
+    private func effectiveLaunchTestCases(for workflow: Workflow, agents: [Agent]) -> [WorkflowLaunchTestCase] {
+        if !workflow.launchTestCases.isEmpty {
+            return workflow.launchTestCases
+        }
+        return defaultLaunchTestCases(for: workflow, agents: agents)
+    }
+
+    private func defaultLaunchTestCases(for workflow: Workflow, agents: [Agent]) -> [WorkflowLaunchTestCase] {
+        let entryNodes = entryConnectedAgentNodes(in: workflow)
+        let entryAgentIDs = Set(entryNodes.compactMap(\.agentID))
+        let entryAgentNames = agents
+            .filter { entryAgentIDs.contains($0.id) }
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let nonEntryAgentNames = agents
+            .filter { !entryAgentIDs.contains($0.id) }
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+        let strictStepLimit = max(1, entryAgentNames.count)
+        var cases: [WorkflowLaunchTestCase] = [
+            WorkflowLaunchTestCase(
+                name: "Greeting Smoke",
+                prompt: "你好",
+                requiredAgentNames: entryAgentNames,
+                forbiddenAgentNames: nonEntryAgentNames,
+                expectedRoutingActions: ["stop"],
+                expectedOutputTypes: [ExecutionOutputType.agentFinalResponse.rawValue],
+                maxSteps: strictStepLimit,
+                notes: "简单问候不应误触发下游协作。"
+            ),
+            WorkflowLaunchTestCase(
+                name: "Direct Reply Smoke",
+                prompt: "请用一句话确认你已准备就绪；如果不需要下游协作，就不要联系任何下游。",
+                requiredAgentNames: entryAgentNames,
+                forbiddenAgentNames: nonEntryAgentNames,
+                expectedRoutingActions: ["stop"],
+                expectedOutputTypes: [ExecutionOutputType.agentFinalResponse.rawValue],
+                maxSteps: strictStepLimit,
+                notes: "入口 agent 应能直接回复并显式停止路由。"
+            )
+        ]
+
+        if !nonEntryAgentNames.isEmpty {
+            cases.append(
+                WorkflowLaunchTestCase(
+                    name: "Routing Contract Smoke",
+                    prompt: "如果完成任务确实需要下游协作，请只选择最少必要的下游，并在最终回复后附加有效的路由 JSON。",
+                    requiredAgentNames: entryAgentNames,
+                    expectedOutputTypes: [ExecutionOutputType.agentFinalResponse.rawValue],
+                    notes: "验证 OpenClaw 运行时仍能稳定产出可解析的路由指令。"
+                )
+            )
+        }
+
+        return cases
+    }
+
+    private func staticVerificationFindings(
+        for workflow: Workflow,
+        agents: [Agent]
+    ) -> (status: WorkflowVerificationStatus, findings: [String]) {
+        var failures: [String] = []
+        var warnings: [String] = []
+
+        if !openClawManager.isConnected {
+            failures.append("OpenClaw 当前未连接，无法执行启动验证。")
+        }
+
+        let entryNodes = entryConnectedAgentNodes(in: workflow)
+        if entryNodes.isEmpty {
+            failures.append("工作流没有连接到 Start 的入口 agent。")
+        }
+
+        let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        let agentNodes = workflow.nodes.filter { $0.type == .agent }
+        let missingAgentNodes = agentNodes.filter { node in
+            guard let agentID = node.agentID else { return true }
+            return agentByID[agentID] == nil
+        }
+        if !missingAgentNodes.isEmpty {
+            failures.append("存在 \(missingAgentNodes.count) 个 agent 节点没有绑定有效的 agent。")
+        }
+
+        let invalidIdentifiers = agents.filter { agent in
+            agent.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if !invalidIdentifiers.isEmpty {
+            failures.append("存在 \(invalidIdentifiers.count) 个 agent 缺少可用的 OpenClaw 标识。")
+        }
+
+        let reachableAgentIDs = Set(openClawService.executionPlan(for: workflow).map(\.id))
+        let unreachableAgents = agentNodes.filter { !reachableAgentIDs.contains($0.id) }
+        if !unreachableAgents.isEmpty {
+            warnings.append("存在 \(unreachableAgents.count) 个 agent 节点当前从入口不可达，启动时不会被触发。")
+        }
+
+        if workflow.fallbackRoutingPolicy != .stop {
+            warnings.append("当前工作流启用了 '\(workflow.fallbackRoutingPolicy.displayName)' 兜底策略，未输出路由指令时仍可能继续触发下游。")
+        }
+
+        let findings = failures + warnings
+        if !failures.isEmpty {
+            return (.fail, findings)
+        }
+        if !warnings.isEmpty {
+            return (.warn, findings)
+        }
+        return (.pass, findings)
+    }
+
+    private func evaluateLaunchTestCase(
+        _ testCase: WorkflowLaunchTestCase,
+        workflow: Workflow,
+        agents: [Agent],
+        results: [ExecutionResult],
+        logs: [ExecutionLogEntry]
+    ) -> WorkflowLaunchTestCaseReport {
+        let agentNameByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0.name) })
+        let actualAgents = results.map { agentNameByID[$0.agentID] ?? String($0.agentID.uuidString.prefix(8)) }
+        let actualRoutingActions = results.compactMap(\.routingAction).map { $0.lowercased() }
+        let actualRoutingTargets = Array(Set(results.flatMap(\.routingTargets))).sorted()
+        let actualOutputTypes = results.map { $0.outputType.rawValue }
+
+        var failures: [String] = []
+        var warnings: [String] = []
+
+        if results.isEmpty {
+            failures.append("未返回任何执行结果。")
+        }
+
+        let failedResults = results.filter { $0.status == .failed }
+        if !failedResults.isEmpty {
+            failures.append("有 \(failedResults.count) 个节点执行失败。")
+        }
+
+        for required in testCase.requiredAgentNames where !actualAgents.contains(required) {
+            failures.append("缺少必需 agent: \(required)")
+        }
+
+        for forbidden in testCase.forbiddenAgentNames where actualAgents.contains(forbidden) {
+            failures.append("命中了禁止触发的 agent: \(forbidden)")
+        }
+
+        if let maxSteps = testCase.maxSteps, results.count > maxSteps {
+            failures.append("实际步数 \(results.count) 超过上限 \(maxSteps)。")
+        }
+
+        for expectedAction in testCase.expectedRoutingActions.map({ $0.lowercased() }) where !actualRoutingActions.contains(expectedAction) {
+            failures.append("未观测到期望的路由动作: \(expectedAction)")
+        }
+
+        for expectedOutputType in testCase.expectedOutputTypes where !actualOutputTypes.contains(expectedOutputType) {
+            failures.append("未观测到期望的输出类型: \(expectedOutputType)")
+        }
+
+        if !testCase.expectedRoutingActions.isEmpty && actualRoutingActions.isEmpty {
+            warnings.append("本用例未捕获到任何显式路由指令，说明 agent 可能依赖了兜底策略。")
+        }
+
+        let interestingLogs = logs.filter { $0.isRoutingEvent || $0.level == .error }
+        for entry in interestingLogs where entry.level == .error {
+            warnings.append(entry.message)
+        }
+        if interestingLogs.contains(where: { $0.routingBadge == "MISS" || $0.routingBadge == "WARN" }) {
+            warnings.append("执行日志中出现了路由匹配异常或目标缺失。")
+        }
+
+        let notes = failures + warnings
+        let status: WorkflowVerificationStatus
+        if !failures.isEmpty {
+            status = .fail
+        } else if !warnings.isEmpty {
+            status = .warn
+        } else {
+            status = .pass
+        }
+
+        return WorkflowLaunchTestCaseReport(
+            testCaseID: testCase.id,
+            name: testCase.name,
+            prompt: testCase.prompt,
+            status: status,
+            actualStepCount: results.count,
+            actualAgents: actualAgents,
+            actualRoutingActions: actualRoutingActions,
+            actualRoutingTargets: actualRoutingTargets,
+            actualOutputTypes: actualOutputTypes,
+            notes: notes
+        )
+    }
+
+    private func workflowVerificationSignature(for workflow: Workflow, agents: [Agent]) -> String {
+        let agentIDs = agents
+            .map { "\($0.id.uuidString):\($0.name):\($0.openClawDefinition.agentIdentifier)" }
+            .sorted()
+            .joined(separator: "|")
+        return [
+            workflow.id.uuidString,
+            workflow.name,
+            workflow.fallbackRoutingPolicy.rawValue,
+            "nodes:\(workflow.nodes.count)",
+            "edges:\(workflow.edges.count)",
+            agentIDs
+        ].joined(separator: "::")
+    }
+
+    private func aggregateVerificationStatus(
+        initial: WorkflowVerificationStatus,
+        _ runtimeFindings: [String],
+        caseReports: [WorkflowLaunchTestCaseReport]
+    ) -> WorkflowVerificationStatus {
+        if initial == .fail || caseReports.contains(where: { $0.status == .fail }) {
+            return .fail
+        }
+        if initial == .warn || caseReports.contains(where: { $0.status == .warn }) || !runtimeFindings.isEmpty {
+            return .warn
+        }
+        return .pass
+    }
+
+    private func persistLaunchVerificationReport(_ report: WorkflowLaunchVerificationReport, for workflowID: UUID) {
+        guard var workflow = workflow(for: workflowID) else { return }
+        workflow.lastLaunchVerificationReport = report
+        updateWorkflow(workflow)
+    }
+
     @discardableResult
     func submitWorkbenchPrompt(_ prompt: String, workflowID: UUID? = nil) -> Bool {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2213,6 +2614,14 @@ class AppState: ObservableObject {
               !openClawService.isExecuting,
               let project = currentProject,
               let workflow = self.workflow(for: workflowID) else {
+            return false
+        }
+
+        guard openClawManager.isConnected else {
+            openClawService.addLog(
+                .error,
+                "Workbench publish failed: OpenClaw is not connected."
+            )
             return false
         }
 
@@ -2239,49 +2648,50 @@ class AppState: ObservableObject {
             )
         }
 
-        var task = Task(
-            title: workbenchTaskTitle(from: trimmedPrompt),
-            description: trimmedPrompt,
-            status: .todo,
-            priority: .high,
-            assignedAgentID: leadAgent.id,
-            workflowNodeID: leadNode.id,
-            createdBy: nil,
-            tags: ["workbench", workflow.name]
-        )
-        task.metadata["source"] = "workbench"
-        task.metadata["workflowID"] = workflow.id.uuidString
-        task.metadata["entryAgentID"] = leadAgent.id.uuidString
-        task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
-        taskManager.addTask(task)
-
-        var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
-        userMessage.status = .read
-        userMessage.metadata["channel"] = "workbench"
-        userMessage.metadata["role"] = "user"
-        userMessage.metadata["kind"] = "input"
-        userMessage.metadata["workflowID"] = workflow.id.uuidString
-        userMessage.metadata["taskID"] = task.id.uuidString
-        userMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: trimmedPrompt))
-        messageManager.appendMessage(userMessage)
-
-        taskManager.moveTask(task.id, to: .inProgress)
-        openClawService.addLog(.info, "Workbench published task '\(task.title)' to workflow \(workflow.name)")
-
-        if var mutableProject = currentProject {
-            mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
-            mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
-            mutableProject.runtimeState.lastUpdated = Date()
-            mutableProject.updatedAt = Date()
-            currentProject = mutableProject
-        }
-
-        var entryReplySent = false
-        var streamingMessageIDByAgent: [UUID: UUID] = [:]
-        var streamingContentByAgent: [UUID: String] = [:]
-
-        let startWorkflowExecution: () -> Void = { [weak self] in
+        let beginWorkbenchExecution: () -> Void = { [weak self] in
             guard let self else { return }
+
+            var task = Task(
+                title: workbenchTaskTitle(from: trimmedPrompt),
+                description: trimmedPrompt,
+                status: .todo,
+                priority: .high,
+                assignedAgentID: leadAgent.id,
+                workflowNodeID: leadNode.id,
+                createdBy: nil,
+                tags: ["workbench", workflow.name]
+            )
+            task.metadata["source"] = "workbench"
+            task.metadata["workflowID"] = workflow.id.uuidString
+            task.metadata["entryAgentID"] = leadAgent.id.uuidString
+            task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
+            self.taskManager.addTask(task)
+
+            var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
+            userMessage.status = .read
+            userMessage.metadata["channel"] = "workbench"
+            userMessage.metadata["role"] = "user"
+            userMessage.metadata["kind"] = "input"
+            userMessage.metadata["workflowID"] = workflow.id.uuidString
+            userMessage.metadata["taskID"] = task.id.uuidString
+            userMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: trimmedPrompt))
+            self.messageManager.appendMessage(userMessage)
+
+            self.taskManager.moveTask(task.id, to: .inProgress)
+            self.openClawService.addLog(.info, "Workbench published task '\(task.title)' to workflow \(workflow.name)")
+
+            if var mutableProject = self.currentProject {
+                mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
+                mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
+                mutableProject.runtimeState.lastUpdated = Date()
+                mutableProject.updatedAt = Date()
+                self.currentProject = mutableProject
+            }
+
+            var entryReplySent = false
+            var streamingMessageIDByAgent: [UUID: UUID] = [:]
+            var streamingContentByAgent: [UUID: String] = [:]
+
             self.openClawService.executeWorkflow(
                 workflow,
                 agents: project.agents,
@@ -2458,7 +2868,19 @@ class AppState: ObservableObject {
             }
         }
 
-        startWorkflowExecution()
+        verifyWorkflowBeforeLaunch(workflow, agents: project.agents) { [weak self] report in
+            guard let self else { return }
+            switch report.status {
+            case .fail:
+                self.openClawService.addLog(.error, "Workbench launch blocked: workflow \(workflow.name) failed launch verification.")
+            case .warn:
+                self.openClawService.addLog(.warning, "Workbench launch verification warned for workflow \(workflow.name); continuing.")
+                beginWorkbenchExecution()
+            case .pass:
+                self.openClawService.addLog(.success, "Workbench launch verification passed for workflow \(workflow.name).")
+                beginWorkbenchExecution()
+            }
+        }
 
         return true
     }

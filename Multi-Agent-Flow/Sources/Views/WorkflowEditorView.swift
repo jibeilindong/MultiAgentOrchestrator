@@ -31,6 +31,11 @@ struct WorkflowEditorView: View {
     @State private var testExecution: WorkflowTestExecution?
     @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
+    @State private var agentCollectionSnapshot: AgentCollectionSnapshot = .empty
+    @State private var agentCollectionRefreshWorkItem: DispatchWorkItem?
+    @State private var agentCollectionRefreshToken = UUID()
+    @State private var hasActivatedListView = false
+    @State private var hasActivatedGridView = false
     
     enum ConnectionType: String, CaseIterable {
         case unidirectional = "→"
@@ -113,37 +118,48 @@ struct WorkflowEditorView: View {
             Divider()
             
             ZStack {
-                switch viewMode {
-                case .list:
+                ArchitectureView(
+                    isActive: viewMode == .architecture,
+                    zoomScale: $zoomScale,
+                    offset: $canvasOffset,
+                    lastOffset: $canvasLastOffset,
+                    isConnectMode: $isConnectMode,
+                    connectFromAgentID: $connectFromAgentID,
+                    connectionType: $connectionType,
+                    selectedNodeID: $selectedNodeID,
+                    selectedNodeIDs: $selectedNodeIDs,
+                    selectedEdgeID: $selectedEdgeID,
+                    selectedBoundaryIDs: $selectedBoundaryIDs,
+                    isLassoMode: $isLassoMode,
+                    onConnect: handleAgentConnection,
+                    testExecution: testExecution
+                )
+                .modifier(EditorPaneVisibility(isVisible: viewMode == .architecture))
+
+                if hasActivatedListView || viewMode == .list {
                     AgentListView(
+                        snapshot: agentCollectionSnapshot,
+                        collectionSignature: agentCollectionSignature,
+                        isActive: viewMode == .list,
                         selectedAgentID: $selectedAgentID,
                         isConnectMode: isConnectMode,
                         connectFromAgentID: connectFromAgentID,
                         onConnect: handleAgentConnection
                     )
-                case .grid:
+                    .modifier(EditorPaneVisibility(isVisible: viewMode == .list))
+                }
+
+                if hasActivatedGridView || viewMode == .grid {
                     AgentGridView(
+                        snapshot: agentCollectionSnapshot,
+                        collectionSignature: agentCollectionSignature,
+                        isActive: viewMode == .grid,
                         selectedAgentID: $selectedAgentID,
                         isConnectMode: isConnectMode,
                         connectFromAgentID: connectFromAgentID,
                         onConnect: handleAgentConnection
                     )
-                case .architecture:
-                    ArchitectureView(
-                        zoomScale: $zoomScale,
-                        offset: $canvasOffset,
-                        lastOffset: $canvasLastOffset,
-                        isConnectMode: $isConnectMode,
-                        connectFromAgentID: $connectFromAgentID,
-                        connectionType: $connectionType,
-                        selectedNodeID: $selectedNodeID,
-                        selectedNodeIDs: $selectedNodeIDs,
-                        selectedEdgeID: $selectedEdgeID,
-                        selectedBoundaryIDs: $selectedBoundaryIDs,
-                        isLassoMode: $isLassoMode,
-                        onConnect: handleAgentConnection,
-                        testExecution: testExecution
-                    )
+                    .modifier(EditorPaneVisibility(isVisible: viewMode == .grid))
                 }
             }
             
@@ -154,11 +170,63 @@ struct WorkflowEditorView: View {
             }
         }
         .onChange(of: viewMode) { _, newValue in
+            if newValue == .list {
+                hasActivatedListView = true
+            } else if newValue == .grid {
+                hasActivatedGridView = true
+            }
+
             if newValue != .architecture {
                 isConnectMode = false
                 connectFromAgentID = nil
                 isLassoMode = false
+                if agentCollectionSnapshot.items.isEmpty {
+                    refreshAgentCollectionSnapshot(immediate: true)
+                }
             }
+        }
+        .onAppear {
+            hasActivatedListView = true
+            hasActivatedGridView = true
+            refreshAgentCollectionSnapshot(immediate: true)
+        }
+        .onChange(of: agentCollectionSignature) { _, _ in
+            refreshAgentCollectionSnapshot()
+        }
+    }
+
+    private var agentCollectionSignature: AgentCollectionSignature {
+        makeAgentCollectionSignature(project: appState.currentProject)
+    }
+
+    private func refreshAgentCollectionSnapshot(immediate: Bool = false) {
+        agentCollectionRefreshWorkItem?.cancel()
+
+        let refreshToken = UUID()
+        agentCollectionRefreshToken = refreshToken
+
+        let update = DispatchWorkItem {
+            guard let context = makeAgentCollectionSnapshotContext(appState: appState) else {
+                if agentCollectionRefreshToken == refreshToken {
+                    agentCollectionSnapshot = .empty
+                }
+                return
+            }
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                let snapshot = makeAgentCollectionSnapshot(context: context)
+                DispatchQueue.main.async {
+                    guard agentCollectionRefreshToken == refreshToken else { return }
+                    agentCollectionSnapshot = snapshot
+                }
+            }
+        }
+        agentCollectionRefreshWorkItem = update
+
+        if immediate {
+            update.perform()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: update)
         }
     }
     
@@ -191,7 +259,7 @@ struct WorkflowEditorView: View {
         testExecution = WorkflowTestExecution(workflow: workflow, agents: project.agents)
         
         // 调用OpenClaw执行工作流
-        appState.openClawService.executeWorkflow(workflow, agents: project.agents) { results in
+        appState.startWorkflowExecutionWithVerification(workflowID: workflow.id) { _, results in
             DispatchQueue.main.async {
                 self.isRunning = false
                 // 显示执行结果
@@ -650,6 +718,18 @@ struct WorkflowEditorView: View {
 
         let fallbackX: CGFloat = preferredIndex == 0 ? -180 : 180
         return appState.ensureAgentNode(agentID: identifier, suggestedPosition: CGPoint(x: fallbackX, y: 0))
+    }
+}
+
+private struct EditorPaneVisibility: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
+            .zIndex(isVisible ? 1 : 0)
     }
 }
 
@@ -1506,6 +1586,13 @@ private struct AgentCollectionSnapshot {
     )
 }
 
+private struct AgentCollectionSnapshotContext {
+    let project: MAProject
+    let detectedRecords: [ProjectOpenClawDetectedAgentRecord]
+    let mirrorRootPaths: [String]
+    let workspacePathsByAgentID: [UUID: String]
+}
+
 private struct AgentCollectionSignature: Equatable {
     let projectID: UUID?
     let projectUpdatedAt: Date?
@@ -1534,12 +1621,50 @@ private func makeAgentCollectionSignature(project: MAProject?) -> AgentCollectio
     )
 }
 
-private func makeAgentCollectionSnapshot(appState: AppState) -> AgentCollectionSnapshot {
-    guard let project = appState.currentProject else { return .empty }
+private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentCollectionSnapshotContext? {
+    guard let project = appState.currentProject else { return nil }
+
+    let detectedRecords = project.openClaw.detectedAgents.isEmpty
+        ? appState.openClawManager.discoveryResults
+        : project.openClaw.detectedAgents
+
+    var mirrorRootPaths: [String] = []
+    var workspacePathsByAgentID: [UUID: String] = [:]
+    workspacePathsByAgentID.reserveCapacity(project.agents.count)
+
+    let preferredMirrorRoot = ProjectManager.shared.openClawMirrorDirectory(for: project.id).path
+    mirrorRootPaths.append(preferredMirrorRoot)
+    if let previousMirrorPath = project.openClaw.sessionMirrorPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !previousMirrorPath.isEmpty,
+       !mirrorRootPaths.contains(previousMirrorPath) {
+        mirrorRootPaths.append(previousMirrorPath)
+    }
+
+    for agent in project.agents {
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ]
+        if let workspacePath = appState.openClawManager.localAgentWorkspacePath(matching: candidateNames) {
+            workspacePathsByAgentID[agent.id] = workspacePath
+        }
+    }
+
+    return AgentCollectionSnapshotContext(
+        project: project,
+        detectedRecords: detectedRecords,
+        mirrorRootPaths: mirrorRootPaths,
+        workspacePathsByAgentID: workspacePathsByAgentID
+    )
+}
+
+private func makeAgentCollectionSnapshot(context: AgentCollectionSnapshotContext) -> AgentCollectionSnapshot {
+    let project = context.project
 
     let workflow = project.workflows.first
     let nodes = workflow?.nodes ?? []
     let edges = workflow?.edges ?? []
+    let soulSourcePaths = makeAgentCollectionSoulSourcePaths(context: context)
 
     var nodeIDsByAgentID: [UUID: UUID] = [:]
     for node in nodes where node.type == .agent {
@@ -1556,7 +1681,7 @@ private func makeAgentCollectionSnapshot(appState: AppState) -> AgentCollectionS
 
     let items = project.agents.map { agent in
         let nodeID = nodeIDsByAgentID[agent.id]
-        let soulPath = appState.agentSoulFileURL(for: agent.id)?.path
+        let soulPath = soulSourcePaths[agent.id] ?? nil
         let rawStatus = project.runtimeState.agentStates[agent.id.uuidString]
         let status = runtimePresentation(for: rawStatus)
 
@@ -1591,6 +1716,153 @@ private func makeAgentCollectionSnapshot(appState: AppState) -> AgentCollectionS
         withSoulCount: counts.withSoul,
         attentionCount: counts.attention
     )
+}
+
+private func makeAgentCollectionSoulSourcePaths(context: AgentCollectionSnapshotContext) -> [UUID: String?] {
+    let project = context.project
+    let detectedRecords = context.detectedRecords
+    let detectedRootsByNormalizedName = Dictionary(
+        grouping: detectedRecords,
+        by: { normalizeAgentCollectionKey($0.name) }
+    )
+
+    return Dictionary(uniqueKeysWithValues: project.agents.map { agent in
+        (
+            agent.id,
+            fastAgentCollectionSoulSourcePath(
+                for: agent,
+                context: context,
+                detectedRootsByNormalizedName: detectedRootsByNormalizedName
+            )
+        )
+    })
+}
+
+private func fastAgentCollectionSoulSourcePath(
+    for agent: Agent,
+    context: AgentCollectionSnapshotContext,
+    detectedRootsByNormalizedName: [String: [ProjectOpenClawDetectedAgentRecord]]
+) -> String? {
+    let candidateNames = [agent.openClawDefinition.agentIdentifier, agent.name]
+        .map(normalizeAgentCollectionKey)
+        .filter { !$0.isEmpty }
+
+    if let directPath = agent.openClawDefinition.soulSourcePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !directPath.isEmpty {
+        let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
+        if FileManager.default.fileExists(atPath: directURL.path) {
+            return directURL.path
+        }
+        if let nearbySoulURL = fastExistingAgentCollectionSoulURL(in: directURL.deletingLastPathComponent()) {
+            return nearbySoulURL.path
+        }
+    }
+
+    for mirrorPath in fastMirrorSoulCandidatePaths(for: agent, mirrorRootPaths: context.mirrorRootPaths) {
+        if FileManager.default.fileExists(atPath: mirrorPath) {
+            return mirrorPath
+        }
+    }
+
+    for name in candidateNames {
+        if let records = detectedRootsByNormalizedName[name] {
+            for record in records {
+                let roots = [
+                    record.copiedToProjectPath,
+                    record.directoryPath,
+                    record.workspacePath
+                ]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .map { URL(fileURLWithPath: $0, isDirectory: true) }
+
+                for root in roots {
+                    if let soulURL = fastExistingAgentCollectionSoulURL(in: root) {
+                        return soulURL.path
+                    }
+                }
+            }
+        }
+    }
+
+    if let workspacePath = context.workspacePathsByAgentID[agent.id],
+       let soulURL = fastExistingAgentCollectionSoulURL(in: URL(fileURLWithPath: workspacePath, isDirectory: true)) {
+        return soulURL.path
+    }
+
+    if let memoryBackupPath = agent.openClawDefinition.memoryBackupPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !memoryBackupPath.isEmpty {
+        let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
+        let rootURL = privateURL.lastPathComponent == "private" ? privateURL.deletingLastPathComponent() : privateURL
+        if let soulURL = fastExistingAgentCollectionSoulURL(in: rootURL) {
+            return soulURL.path
+        }
+    }
+
+    return nil
+}
+
+private func fastExistingAgentCollectionSoulURL(in rootURL: URL) -> URL? {
+    let fileManager = FileManager.default
+    let parentURL = rootURL.deletingLastPathComponent()
+    let candidates = [
+        rootURL.appendingPathComponent("SOUL.md", isDirectory: false),
+        rootURL.appendingPathComponent("soul.md", isDirectory: false),
+        parentURL.appendingPathComponent("SOUL.md", isDirectory: false),
+        parentURL.appendingPathComponent("soul.md", isDirectory: false)
+    ]
+
+    var seen = Set<String>()
+    for candidate in candidates where seen.insert(candidate.path).inserted {
+        if fileManager.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+    }
+    return nil
+}
+
+private func fastMirrorSoulCandidatePaths(for agent: Agent, mirrorRootPaths: [String]) -> [String] {
+    let identifiers = [
+        fastNormalizedTargetIdentifier(for: agent),
+        agent.name
+    ]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+
+    var candidatePaths: [String] = []
+    var seen = Set<String>()
+
+    for mirrorRootPath in mirrorRootPaths {
+        let mirrorRootURL = URL(fileURLWithPath: mirrorRootPath, isDirectory: true)
+        for identifier in identifiers {
+            let path = mirrorRootURL
+                .appendingPathComponent("agents", isDirectory: true)
+                .appendingPathComponent(fastSafeAgentCollectionPathComponent(identifier), isDirectory: true)
+                .appendingPathComponent("SOUL.md", isDirectory: false)
+                .path
+            if seen.insert(path).inserted {
+                candidatePaths.append(path)
+            }
+        }
+    }
+
+    return candidatePaths
+}
+
+private func fastNormalizedTargetIdentifier(for agent: Agent) -> String {
+    let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+    return identifier.isEmpty ? agent.name : identifier
+}
+
+private func fastSafeAgentCollectionPathComponent(_ value: String) -> String {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+    let cleaned = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+    let result = String(cleaned)
+    return result.isEmpty ? "agent" : result
+}
+
+private func normalizeAgentCollectionKey(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
 private func runtimePresentation(for rawStatus: String?) -> (label: String, systemImage: String, color: Color, isProblem: Bool) {
@@ -1875,8 +2147,11 @@ private struct AgentContextMenuContent: View {
 }
 
 // MARK: - 列表视图
-struct AgentListView: View {
+private struct AgentListView: View {
     @EnvironmentObject var appState: AppState
+    let snapshot: AgentCollectionSnapshot
+    let collectionSignature: AgentCollectionSignature
+    let isActive: Bool
     @Binding var selectedAgentID: UUID?
     var isConnectMode: Bool
     var connectFromAgentID: UUID?
@@ -1890,18 +2165,12 @@ struct AgentListView: View {
     @State private var permissionsAgent: Agent?
     @State private var deleteCandidate: Agent?
     @State private var feedback: AgentActionFeedback?
-    @State private var collectionSnapshot: AgentCollectionSnapshot = .empty
+    @State private var visibleItems: [AgentCollectionItem] = []
+    @State private var canPasteFromPasteboard = false
+    @State private var pendingVisibleItemsRefresh = false
 
     private var items: [AgentCollectionItem] {
-        collectionSnapshot.items
-    }
-
-    private var visibleItems: [AgentCollectionItem] {
-        filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
-    }
-
-    private var collectionSignature: AgentCollectionSignature {
-        makeAgentCollectionSignature(project: appState.currentProject)
+        snapshot.items
     }
 
     var body: some View {
@@ -1910,7 +2179,7 @@ struct AgentListView: View {
                 searchText: $searchText,
                 filter: $filter,
                 sort: $sort,
-                snapshot: collectionSnapshot,
+                snapshot: snapshot,
                 visibleCount: visibleItems.count,
                 feedback: feedback
             )
@@ -1954,7 +2223,7 @@ struct AgentListView: View {
                             .contextMenu {
                                 AgentContextMenuContent(
                                     item: item,
-                                    canPaste: NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil),
+                                    canPaste: canPasteFromPasteboard,
                                     onOpen: { selectAgent(item.agent.id, focusNode: true) },
                                     onRevealSoul: { revealSoul(for: item.agent.id) },
                                     onOpenWorkspace: { openWorkspace(for: item.agent.id) },
@@ -2003,9 +2272,27 @@ struct AgentListView: View {
         } message: {
             Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
         }
-        .onAppear(perform: refreshCollectionSnapshot)
+        .onAppear {
+            canPasteFromPasteboard = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
+            handleVisibleItemsChange(force: true)
+        }
         .onChange(of: collectionSignature) { _, _ in
-            refreshCollectionSnapshot()
+            handleVisibleItemsChange()
+        }
+        .onChange(of: searchText) { _, _ in
+            handleVisibleItemsChange()
+        }
+        .onChange(of: filter) { _, _ in
+            handleVisibleItemsChange()
+        }
+        .onChange(of: sort) { _, _ in
+            handleVisibleItemsChange()
+        }
+        .onChange(of: isActive) { _, newValue in
+            guard newValue else { return }
+            if pendingVisibleItemsRefresh || visibleItems.isEmpty {
+                refreshVisibleItems()
+            }
         }
     }
 
@@ -2140,8 +2427,17 @@ struct AgentListView: View {
         }
     }
 
-    private func refreshCollectionSnapshot() {
-        collectionSnapshot = makeAgentCollectionSnapshot(appState: appState)
+    private func refreshVisibleItems() {
+        visibleItems = filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
+        pendingVisibleItemsRefresh = false
+    }
+
+    private func handleVisibleItemsChange(force: Bool = false) {
+        if force || isActive {
+            refreshVisibleItems()
+        } else {
+            pendingVisibleItemsRefresh = true
+        }
     }
 }
 
@@ -2275,8 +2571,11 @@ private struct AgentListRow: View {
 }
 
 // MARK: - 网格视图
-struct AgentGridView: View {
+private struct AgentGridView: View {
     @EnvironmentObject var appState: AppState
+    let snapshot: AgentCollectionSnapshot
+    let collectionSignature: AgentCollectionSignature
+    let isActive: Bool
     @Binding var selectedAgentID: UUID?
     var isConnectMode: Bool
     var connectFromAgentID: UUID?
@@ -2292,18 +2591,12 @@ struct AgentGridView: View {
     @State private var permissionsAgent: Agent?
     @State private var deleteCandidate: Agent?
     @State private var feedback: AgentActionFeedback?
-    @State private var collectionSnapshot: AgentCollectionSnapshot = .empty
+    @State private var visibleItems: [AgentCollectionItem] = []
+    @State private var canPasteFromPasteboard = false
+    @State private var pendingVisibleItemsRefresh = false
 
     private var items: [AgentCollectionItem] {
-        collectionSnapshot.items
-    }
-
-    private var visibleItems: [AgentCollectionItem] {
-        filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
-    }
-
-    private var collectionSignature: AgentCollectionSignature {
-        makeAgentCollectionSignature(project: appState.currentProject)
+        snapshot.items
     }
 
     var body: some View {
@@ -2312,7 +2605,7 @@ struct AgentGridView: View {
                 searchText: $searchText,
                 filter: $filter,
                 sort: $sort,
-                snapshot: collectionSnapshot,
+                snapshot: snapshot,
                 visibleCount: visibleItems.count,
                 feedback: feedback
             )
@@ -2345,7 +2638,7 @@ struct AgentGridView: View {
                             .contextMenu {
                                 AgentContextMenuContent(
                                     item: item,
-                                    canPaste: NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil),
+                                    canPaste: canPasteFromPasteboard,
                                     onOpen: { focusAgent(item.agent.id) },
                                     onRevealSoul: { revealSoul(for: item.agent.id) },
                                     onOpenWorkspace: { openWorkspace(for: item.agent.id) },
@@ -2394,9 +2687,27 @@ struct AgentGridView: View {
         } message: {
             Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
         }
-        .onAppear(perform: refreshCollectionSnapshot)
+        .onAppear {
+            canPasteFromPasteboard = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
+            handleVisibleItemsChange(force: true)
+        }
         .onChange(of: collectionSignature) { _, _ in
-            refreshCollectionSnapshot()
+            handleVisibleItemsChange()
+        }
+        .onChange(of: searchText) { _, _ in
+            handleVisibleItemsChange()
+        }
+        .onChange(of: filter) { _, _ in
+            handleVisibleItemsChange()
+        }
+        .onChange(of: sort) { _, _ in
+            handleVisibleItemsChange()
+        }
+        .onChange(of: isActive) { _, newValue in
+            guard newValue else { return }
+            if pendingVisibleItemsRefresh || visibleItems.isEmpty {
+                refreshVisibleItems()
+            }
         }
     }
 
@@ -2524,8 +2835,17 @@ struct AgentGridView: View {
         }
     }
 
-    private func refreshCollectionSnapshot() {
-        collectionSnapshot = makeAgentCollectionSnapshot(appState: appState)
+    private func refreshVisibleItems() {
+        visibleItems = filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
+        pendingVisibleItemsRefresh = false
+    }
+
+    private func handleVisibleItemsChange(force: Bool = false) {
+        if force || isActive {
+            refreshVisibleItems()
+        } else {
+            pendingVisibleItemsRefresh = true
+        }
     }
 }
 
@@ -2647,6 +2967,7 @@ private struct AgentGridCard: View {
 // MARK: - 架构视图（带Agent库和隔离框）
 struct ArchitectureView: View {
     @EnvironmentObject var appState: AppState
+    let isActive: Bool
     @Binding var zoomScale: CGFloat
     @Binding var offset: CGSize
     @Binding var lastOffset: CGSize
@@ -2670,6 +2991,7 @@ struct ArchitectureView: View {
         GeometryReader { _ in
             HStack(spacing: 0) {
                 CanvasView(
+                    isActive: isActive,
                     zoomScale: $zoomScale,
                     offset: $offset,
                     lastOffset: $lastOffset,

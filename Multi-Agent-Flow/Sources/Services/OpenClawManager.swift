@@ -8,6 +8,7 @@ import Combine
 
 class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
+    private let fileManager = FileManager.default
     
     @Published var isConnected: Bool = false
     @Published var agents: [String] = []
@@ -15,6 +16,8 @@ class OpenClawManager: ObservableObject {
     @Published var activeAgents: [UUID: ActiveAgentRuntime] = [:]
     @Published var status: OpenClawStatus = .disconnected
     @Published var config: OpenClawConfig = .load()
+    private var cachedLocalWorkspaceMap: [String: String] = [:]
+    private var cachedLocalWorkspaceConfigModificationDate: Date?
     
     var backupDirectory: URL {
         let openclawPath = NSHomeDirectory() + "/.openclaw"
@@ -1850,6 +1853,13 @@ class OpenClawManager: ObservableObject {
     }
     private func localAgentWorkspaceMap() -> [String: String] {
         let configURL = localOpenClawRootURL().appendingPathComponent("openclaw.json")
+        let currentModificationDate = (try? fileManager.attributesOfItem(atPath: configURL.path)[.modificationDate] as? Date) ?? nil
+
+        if cachedLocalWorkspaceConfigModificationDate == currentModificationDate,
+           !cachedLocalWorkspaceMap.isEmpty {
+            return cachedLocalWorkspaceMap
+        }
+
         guard
             let data = try? Data(contentsOf: configURL),
             let json = try? JSONSerialization.jsonObject(with: data),
@@ -1857,6 +1867,8 @@ class OpenClawManager: ObservableObject {
             let agents = root["agents"] as? [String: Any],
             let list = agents["list"] as? [[String: Any]]
         else {
+            cachedLocalWorkspaceMap = [:]
+            cachedLocalWorkspaceConfigModificationDate = currentModificationDate
             return [:]
         }
 
@@ -1868,6 +1880,8 @@ class OpenClawManager: ObservableObject {
             }
             map[normalizeAgentKey(id)] = workspace
         }
+        cachedLocalWorkspaceMap = map
+        cachedLocalWorkspaceConfigModificationDate = currentModificationDate
         return map
     }
 

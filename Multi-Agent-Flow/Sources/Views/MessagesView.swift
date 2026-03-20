@@ -33,6 +33,10 @@ struct WorkbenchConversationView: View {
         return workflows.first
     }
 
+    private var isOpenClawConnected: Bool {
+        appState.openClawManager.isConnected
+    }
+
     private var workbenchMessages: [Message] {
         messageManager.workbenchMessages(for: selectedWorkflow?.id)
     }
@@ -141,6 +145,15 @@ struct WorkbenchConversationView: View {
                     secondaryTitle: "新建项目",
                     secondaryAction: { appState.createNewProject() }
                 )
+            } else if !isOpenClawConnected {
+                WorkbenchEmptyState(
+                    title: "先连接 OpenClaw，再进入工作台",
+                    description: "工作台对话、工作流执行和 Agent 运行态都依赖实时 OpenClaw 连接。未连接时，不会发布任务，也不会展示运行中的工作流状态。历史记录仍保存在项目中，重新连接后可继续查看和协作。",
+                    primaryTitle: "连接 OpenClaw",
+                    primaryAction: { appState.connectOpenClaw() },
+                    secondaryTitle: "打开设置",
+                    secondaryAction: { NotificationCenter.default.post(name: .openSettings, object: nil) }
+                )
             } else if workflows.isEmpty {
                 WorkbenchEmptyState(
                     title: "Project 里还没有工作流",
@@ -242,9 +255,10 @@ struct WorkbenchConversationView: View {
                     .disabled(dashboardLayout == .dashboardOnly)
                 }
 
+                statusBadge(title: "OpenClaw 已连接", color: .green)
                 statusBadge(
-                    title: appState.openClawService.isExecuting ? "执行中" : "待命",
-                    color: appState.openClawService.isExecuting ? .orange : .green
+                    title: appState.openClawService.isExecuting ? "工作流执行中" : "工作流待命",
+                    color: appState.openClawService.isExecuting ? .orange : .secondary
                 )
 
                 Button("保存项目") {
@@ -574,10 +588,15 @@ struct WorkbenchConversationView: View {
             return
         }
 
+        guard isOpenClawConnected else {
+            errorText = "请先连接 OpenClaw，连接成功后才能向工作流发布任务。"
+            return
+        }
+
         guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID) else {
             errorText = appState.openClawService.isExecuting
                 ? "当前已有工作流在执行，请等待本轮完成后再发布新任务。"
-                : "任务发布失败，请检查工作流结构和 OpenClaw 配置。"
+                : "任务发布失败，请检查工作流结构和 OpenClaw 连接状态。"
             return
         }
 
