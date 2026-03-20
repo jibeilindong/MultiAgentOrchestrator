@@ -8,10 +8,28 @@
 import SwiftUI
 import Charts
 
+private enum OpsCenterPage: String, CaseIterable, Identifiable {
+    case liveOverview
+    case projectHistory
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .liveOverview: return "Live Ops"
+        case .projectHistory: return "Project History"
+        }
+    }
+}
+
 struct MonitoringDashboardView: View {
     @EnvironmentObject var appState: AppState
     @State private var metrics = DashboardMetrics()
+    @State private var opsSnapshot: OpsAnalyticsSnapshot = .empty
     @State private var pendingMetricsRefreshWorkItem: DispatchWorkItem?
+    @State private var selectedOpsCenterPage: OpsCenterPage = .liveOverview
+    @State private var selectedHistoryMetric: OpsHistoryMetric = .workflowReliability
+    @State private var selectedTraceDetail: OpsTraceDetail?
 
     private var project: MAProject? { appState.currentProject }
     private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
@@ -38,6 +56,9 @@ struct MonitoringDashboardView: View {
     }
     private var idleAgentCount: Int {
         metrics.idleAgentCount
+    }
+    private var selectedHistorySeries: OpsMetricHistorySeries? {
+        opsSnapshot.historicalSeries.first { $0.metric == selectedHistoryMetric }
     }
     private var dashboardRefreshSignature: String {
         let projectSignature = project.map {
@@ -109,6 +130,15 @@ struct MonitoringDashboardView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
+                        opsCenterHeaderSection
+                        if selectedOpsCenterPage == .liveOverview {
+                            opsOverviewSection
+                            opsDailyActivitySection
+                            opsAgentHealthSection
+                        } else {
+                            opsProjectHistorySection
+                        }
+                        opsTraceSection
                         overviewSection
                         conversationMonitoringSection
                         executionSection
@@ -122,7 +152,11 @@ struct MonitoringDashboardView: View {
             }
         }
         .onAppear {
+            opsSnapshot = appState.opsAnalytics.snapshot
             scheduleMetricsRefresh(immediately: true)
+        }
+        .onReceive(appState.opsAnalytics.$snapshot) { snapshot in
+            opsSnapshot = snapshot
         }
         .onChange(of: dashboardRefreshSignature) { _, _ in
             scheduleMetricsRefresh(immediately: false)
@@ -130,6 +164,9 @@ struct MonitoringDashboardView: View {
         .onDisappear {
             pendingMetricsRefreshWorkItem?.cancel()
             pendingMetricsRefreshWorkItem = nil
+        }
+        .sheet(item: $selectedTraceDetail) { detail in
+            OpsTraceDetailSheet(detail: detail)
         }
     }
 
@@ -164,6 +201,321 @@ struct MonitoringDashboardView: View {
                     color: .purple
                 )
             }
+        }
+    }
+
+    private var opsCenterHeaderSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Ops Center")
+                    .font(.headline)
+
+                Spacer()
+
+                if opsSnapshot.generatedAt != .distantPast {
+                    Text("Updated \(opsSnapshot.generatedAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Picker("Ops Center Page", selection: $selectedOpsCenterPage) {
+                ForEach(OpsCenterPage.allCases) { page in
+                    Text(page.title).tag(page)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var opsOverviewSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Current Posture")
+                .font(.headline)
+
+            if opsSnapshot.goalCards.isEmpty {
+                Text("Ops analytics will appear after a project is loaded.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
+                    ForEach(opsSnapshot.goalCards) { card in
+                        monitoringCard(
+                            title: card.title,
+                            value: card.valueText,
+                            detail: card.detailText,
+                            color: opsColor(for: card.status)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private var opsProjectHistorySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Project History")
+                        .font(.headline)
+                    Text("30-day project-level trend view inspired by OA CLI goal metrics.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Text("Window: 30d")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if opsSnapshot.historicalSeries.allSatisfy({ $0.points.isEmpty }) {
+                Text("Project history will populate after the first analytics sync.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
+                    ForEach(opsSnapshot.historicalSeries) { series in
+                        Button {
+                            selectedHistoryMetric = series.metric
+                        } label: {
+                            historyMetricCard(series: series, isSelected: selectedHistoryMetric == series.metric)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if let series = selectedHistorySeries, !series.points.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(series.metric.windowDescription)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Chart {
+                            ForEach(series.points) { point in
+                                AreaMark(
+                                    x: .value("Day", point.date, unit: .day),
+                                    y: .value(series.metric.title, point.value)
+                                )
+                                .interpolationMethod(.catmullRom)
+                                .foregroundStyle(historyColor(for: series.metric).opacity(0.14))
+
+                                LineMark(
+                                    x: .value("Day", point.date, unit: .day),
+                                    y: .value(series.metric.title, point.value)
+                                )
+                                .interpolationMethod(.catmullRom)
+                                .foregroundStyle(historyColor(for: series.metric))
+                                .lineStyle(StrokeStyle(lineWidth: 2.5))
+
+                                PointMark(
+                                    x: .value("Day", point.date, unit: .day),
+                                    y: .value(series.metric.title, point.value)
+                                )
+                                .foregroundStyle(historyColor(for: series.metric))
+                            }
+                        }
+                        .chartYAxis {
+                            AxisMarks(position: .leading)
+                        }
+                        .frame(height: 260)
+
+                        HStack(spacing: 16) {
+                            historyStatPill(
+                                title: "Latest",
+                                value: series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "-"
+                            )
+                            historyStatPill(
+                                title: "Previous",
+                                value: series.previousPoint.map { series.metric.formattedValue($0.value) } ?? "-"
+                            )
+                            historyStatPill(
+                                title: "Delta",
+                                value: historyDeltaText(for: series)
+                            )
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+    }
+
+    private var opsDailyActivitySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Reliability Trend")
+                .font(.headline)
+
+            if opsSnapshot.dailyActivity.isEmpty {
+                Text("No historical execution activity is available yet.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                Chart {
+                    ForEach(opsSnapshot.dailyActivity) { point in
+                        BarMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Completed", point.completedCount)
+                        )
+                        .foregroundStyle(Color.green.gradient)
+
+                        BarMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Failed", point.failedCount)
+                        )
+                        .foregroundStyle(Color.red.gradient)
+
+                        LineMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Errors", point.errorCount)
+                        )
+                        .foregroundStyle(Color.orange)
+                        .symbol(.circle)
+                    }
+                }
+                .frame(height: 220)
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
+    private var opsAgentHealthSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Agent Health")
+                .font(.headline)
+
+            VStack(spacing: 8) {
+                if opsSnapshot.agentRows.isEmpty {
+                    Text("No agents available to analyze.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(opsSnapshot.agentRows) { row in
+                        HStack(spacing: 12) {
+                            Text(row.agentName)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .frame(width: 140, alignment: .leading)
+
+                            monitoringPill(title: row.stateText, color: opsColor(for: row.status))
+                                .frame(width: 128, alignment: .leading)
+
+                            Text("Done \(row.completedCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 70, alignment: .leading)
+
+                            Text("Fail \(row.failedCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 64, alignment: .leading)
+
+                            Text(row.averageDuration.map { "Avg \(formatOpsDuration($0))" } ?? "Avg -")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 92, alignment: .leading)
+
+                            Text(row.hasTrackedMemory ? "Memory tracked" : "Memory missing")
+                                .font(.caption)
+                                .foregroundColor(row.hasTrackedMemory ? .secondary : .orange)
+                                .frame(width: 110, alignment: .leading)
+
+                            Text(row.lastActivityAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "No activity")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.4))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var opsTraceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent Traces")
+                .font(.headline)
+
+            VStack(spacing: 8) {
+                if opsSnapshot.traceRows.isEmpty {
+                    Text("No execution traces are available yet.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(opsSnapshot.traceRows) { row in
+                        Button {
+                            openTraceDetail(for: row)
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(row.startedAt.formatted(date: .omitted, time: .standard))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 72, alignment: .leading)
+
+                                monitoringPill(title: row.status.displayName, color: traceStatusColor(for: row.status))
+                                    .frame(width: 92, alignment: .leading)
+
+                                Text(row.agentName)
+                                    .font(.caption)
+                                    .frame(width: 120, alignment: .leading)
+
+                                Text(row.duration.map(formatOpsDuration) ?? "-")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 56, alignment: .leading)
+
+                                Text(row.routingAction?.uppercased() ?? row.outputType.rawValue)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 116, alignment: .leading)
+
+                                Text(row.previewText)
+                                    .font(.caption)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.4))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 
@@ -538,6 +890,53 @@ struct MonitoringDashboardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    private func historyMetricCard(series: OpsMetricHistorySeries, isSelected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(series.metric.title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Circle()
+                    .fill(historyColor(for: series.metric))
+                    .frame(width: 8, height: 8)
+            }
+
+            Text(series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "No data")
+                .font(.title2)
+                .fontWeight(.semibold)
+                .foregroundColor(isSelected ? historyColor(for: series.metric) : .primary)
+
+            Text(historyDeltaText(for: series))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isSelected ? historyColor(for: series.metric) : Color.clear, lineWidth: 2)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func historyStatPill(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     private func monitoringPill(title: String, color: Color) -> some View {
         Text(title)
             .font(.caption)
@@ -546,6 +945,25 @@ struct MonitoringDashboardView: View {
             .background(color.opacity(0.12))
             .foregroundColor(color)
             .clipShape(Capsule())
+    }
+
+    private func historyDeltaText(for series: OpsMetricHistorySeries) -> String {
+        guard let latest = series.latestPoint?.value else {
+            return "No historical samples yet"
+        }
+
+        guard let previous = series.previousPoint?.value else {
+            return "First sample: \(series.metric.formattedValue(latest))"
+        }
+
+        let delta = latest - previous
+        if series.metric == .errorBudget {
+            let sign = delta > 0 ? "+" : ""
+            return "Changed \(sign)\(Int(delta.rounded())) since previous sample"
+        }
+
+        let sign = delta > 0 ? "+" : ""
+        return "Changed \(sign)\(Int(delta.rounded())) pts since previous sample"
     }
 
     private func logColor(for level: ExecutionLogEntry.LogLevel) -> Color {
@@ -565,6 +983,75 @@ struct MonitoringDashboardView: View {
         case "ROUTE": return .purple
         default: return logColor(for: entry.level)
         }
+    }
+
+    private func opsColor(for status: OpsHealthStatus) -> Color {
+        switch status {
+        case .healthy: return .green
+        case .warning: return .orange
+        case .critical: return .red
+        case .neutral: return .secondary
+        }
+    }
+
+    private func historyColor(for metric: OpsHistoryMetric) -> Color {
+        switch metric {
+        case .workflowReliability: return .green
+        case .agentEngagement: return .blue
+        case .memoryDiscipline: return .orange
+        case .errorBudget: return .red
+        }
+    }
+
+    private func traceStatusColor(for status: ExecutionStatus) -> Color {
+        switch status {
+        case .completed: return .green
+        case .failed: return .red
+        case .running: return .orange
+        case .waiting: return .blue
+        case .idle: return .secondary
+        }
+    }
+
+    private func formatOpsDuration(_ duration: TimeInterval) -> String {
+        if duration >= 60 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            return "\(minutes)m \(seconds)s"
+        }
+        return String(format: "%.1fs", duration)
+    }
+
+    private func openTraceDetail(for row: OpsTraceSummaryRow) {
+        guard let projectID = project?.id else { return }
+
+        if let detail = appState.opsAnalytics.traceDetail(projectID: projectID, traceID: row.id) {
+            selectedTraceDetail = detail
+            return
+        }
+
+        selectedTraceDetail = OpsTraceDetail(
+            id: row.id,
+            traceID: row.id.uuidString.replacingOccurrences(of: "-", with: ""),
+            parentSpanID: nil,
+            spanName: row.agentName,
+            service: "multi-agent-flow.execution",
+            statusText: row.status == .failed ? "error" : "ok",
+            agentName: row.agentName,
+            executionStatus: row.status,
+            outputType: row.outputType,
+            routingAction: row.routingAction,
+            routingReason: nil,
+            routingTargets: [],
+            nodeID: nil,
+            startedAt: row.startedAt,
+            completedAt: row.duration.map { row.startedAt.addingTimeInterval($0) },
+            duration: row.duration,
+            previewText: row.previewText,
+            outputText: row.previewText,
+            attributes: [:],
+            eventsText: nil
+        )
     }
 
     private func scheduleMetricsRefresh(immediately: Bool) {
@@ -629,6 +1116,151 @@ struct MonitoringDashboardView: View {
         return rootsByAgent.mapValues { roots in
             Array(Dictionary(uniqueKeysWithValues: roots.map { ($0.standardizedFileURL.path, $0) }).values)
         }
+    }
+}
+
+private struct OpsTraceDetailSheet: View {
+    let detail: OpsTraceDetail
+
+    private var visibleAttributeKeys: [String] {
+        detail.attributes.keys
+            .filter { key in
+                !["output_text", "preview_text"].contains(key)
+            }
+            .sorted()
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(detail.spanName)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                        Text(detail.traceID)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    Spacer()
+
+                    Text(detail.executionStatus.displayName)
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(traceStatusColor(detail.executionStatus).opacity(0.12))
+                        .foregroundColor(traceStatusColor(detail.executionStatus))
+                        .clipShape(Capsule())
+                }
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+                    detailCard(title: "Agent", value: detail.agentName)
+                    detailCard(title: "Output", value: detail.outputType.rawValue)
+                    detailCard(title: "Route", value: detail.routingAction ?? "N/A")
+                    detailCard(title: "Duration", value: detail.duration.map(formatOpsDuration) ?? "N/A")
+                    detailCard(title: "Started", value: detail.startedAt.formatted(date: .abbreviated, time: .standard))
+                    detailCard(title: "Completed", value: detail.completedAt?.formatted(date: .abbreviated, time: .standard) ?? "In progress")
+                }
+
+                if let reason = detail.routingReason, !reason.isEmpty {
+                    detailSection(title: "Routing Reason", text: reason)
+                }
+
+                if !detail.routingTargets.isEmpty {
+                    detailSection(title: "Routing Targets", text: detail.routingTargets.joined(separator: ", "))
+                }
+
+                detailSection(title: "Preview", text: detail.previewText)
+
+                if !detail.outputText.isEmpty {
+                    detailSection(title: "Raw Output", text: detail.outputText, monospaced: true)
+                }
+
+                if !visibleAttributeKeys.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Attributes")
+                            .font(.headline)
+
+                        ForEach(visibleAttributeKeys, id: \.self) { key in
+                            HStack(alignment: .top, spacing: 12) {
+                                Text(key)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 140, alignment: .leading)
+
+                                Text(detail.attributes[key] ?? "")
+                                    .font(.caption)
+                                    .textSelection(.enabled)
+
+                                Spacer()
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                if let eventsText = detail.eventsText, !eventsText.isEmpty {
+                    detailSection(title: "Events", text: eventsText, monospaced: true)
+                }
+            }
+            .padding()
+        }
+        .frame(minWidth: 760, minHeight: 560)
+    }
+
+    private func detailCard(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .textSelection(.enabled)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func detailSection(title: String, text: String, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+
+            Text(text)
+                .font(monospaced ? .system(.body, design: .monospaced) : .body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding()
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func traceStatusColor(_ status: ExecutionStatus) -> Color {
+        switch status {
+        case .completed: return .green
+        case .failed: return .red
+        case .running: return .orange
+        case .waiting: return .blue
+        case .idle: return .secondary
+        }
+    }
+
+    private func formatOpsDuration(_ duration: TimeInterval) -> String {
+        if duration >= 60 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            return "\(minutes)m \(seconds)s"
+        }
+        return String(format: "%.1fs", duration)
     }
 }
 

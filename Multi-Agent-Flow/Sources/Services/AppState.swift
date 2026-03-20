@@ -62,6 +62,10 @@ class ProjectManager: ObservableObject {
     var autoSaveDirectory: URL {
         appSupportRootDirectory.appendingPathComponent("AutoSave", isDirectory: true)
     }
+
+    var analyticsRootDirectory: URL {
+        appSupportRootDirectory.appendingPathComponent("Analytics", isDirectory: true)
+    }
     
     private init() {
         migrateLegacyStorageIfNeeded()
@@ -75,6 +79,7 @@ class ProjectManager: ObservableObject {
         try? fileManager.createDirectory(at: openClawSessionRootDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: analyticsRootDirectory, withIntermediateDirectories: true)
     }
     
     func loadProjectList() {
@@ -161,6 +166,10 @@ class ProjectManager: ObservableObject {
 
     func openClawImportedAgentsDirectory(for projectID: UUID) -> URL {
         openClawProjectRoot(for: projectID).appendingPathComponent("agents", isDirectory: true)
+    }
+
+    func analyticsDatabaseURL(for projectID: UUID) -> URL {
+        analyticsRootDirectory.appendingPathComponent("\(projectID.uuidString).sqlite", isDirectory: false)
     }
 
     private func migrateLegacyStorageIfNeeded() {
@@ -391,6 +400,9 @@ class AppState: ObservableObject {
         willSet {
             objectWillChange.send()
         }
+        didSet {
+            refreshOpsAnalytics()
+        }
     }
     @Published var currentProjectFileURL: URL?
     
@@ -408,6 +420,7 @@ class AppState: ObservableObject {
     
     // OpenClaw 执行服务
     @Published var openClawService = OpenClawService()
+    let opsAnalytics = OpsAnalyticsService()
     @Published var canvasDisplaySettings = CanvasDisplaySettings()
     @Published var orderedToolbarItems = ContentToolbarItem.defaultOrder
     @Published var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
@@ -537,6 +550,17 @@ class AppState: ObservableObject {
         project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         currentProject = project
+    }
+
+    private func refreshOpsAnalytics() {
+        opsAnalytics.refresh(
+            project: currentProject,
+            tasks: taskManager.tasks,
+            executionResults: openClawService.executionResults,
+            executionLogs: openClawService.executionLogs,
+            activeAgents: openClawManager.activeAgents,
+            isConnected: openClawManager.isConnected
+        )
     }
 
     private func handleOpenClawConnectionChange(_ isConnected: Bool) {
