@@ -1,6 +1,9 @@
 import type {
   Agent,
   MAProject,
+  Task,
+  TaskPriority,
+  TaskStatus,
   Workflow,
   WorkflowFallbackRoutingPolicy,
   WorkflowNodeType
@@ -60,6 +63,143 @@ function createAgent(name: string, index: number): Agent {
   };
 }
 
+interface TaskDraft {
+  title?: string;
+  description?: string;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  assignedAgentID?: string | null;
+  workflowNodeID?: string | null;
+  createdBy?: string | null;
+  estimatedDuration?: number | null;
+  actualDuration?: number | null;
+  tags?: string[];
+  metadata?: Record<string, string>;
+}
+
+function sanitizeTaskTags(tags: string[] | undefined): string[] {
+  if (!tags) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      tags
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function sanitizeTaskMetadata(metadata: Record<string, string> | undefined): Record<string, string> {
+  if (!metadata) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(metadata)
+      .map(([key, value]) => [key.trim(), value.trim()])
+      .filter(([key, value]) => key.length > 0 && value.length > 0)
+  );
+}
+
+function sanitizeDuration(value: number | null | undefined): number | null {
+  if (value == null || Number.isNaN(value)) {
+    return null;
+  }
+
+  return Math.max(0, Math.round(value));
+}
+
+function reconcileTaskLifecycle(task: Task, previousTask?: Task): Task {
+  if (previousTask?.status === task.status) {
+    return task;
+  }
+
+  const now = toSwiftDate();
+
+  switch (task.status) {
+    case "To Do":
+      return {
+        ...task,
+        startedAt: null,
+        completedAt: null,
+        actualDuration: null
+      };
+    case "In Progress":
+      return {
+        ...task,
+        startedAt: task.startedAt ?? previousTask?.startedAt ?? now,
+        completedAt: null,
+        actualDuration: null
+      };
+    case "Done": {
+      const startedAt = task.startedAt ?? previousTask?.startedAt ?? now;
+      const completedAt = now;
+      return {
+        ...task,
+        startedAt,
+        completedAt,
+        actualDuration: Math.max(0, Math.round(completedAt - startedAt))
+      };
+    }
+    case "Blocked":
+      return {
+        ...task,
+        startedAt: task.startedAt ?? previousTask?.startedAt ?? null,
+        completedAt: null,
+        actualDuration: null
+      };
+  }
+}
+
+function createTaskRecord(draft: TaskDraft = {}): Task {
+  const now = toSwiftDate();
+
+  return reconcileTaskLifecycle(
+    {
+      id: createUUID(),
+      title: draft.title?.trim() || "Untitled Task",
+      description: draft.description?.trim() ?? "",
+      status: draft.status ?? "To Do",
+      priority: draft.priority ?? "Medium",
+      assignedAgentID: draft.assignedAgentID ?? null,
+      workflowNodeID: draft.workflowNodeID ?? null,
+      createdBy: draft.createdBy ?? null,
+      createdAt: now,
+      startedAt: null,
+      completedAt: null,
+      estimatedDuration: sanitizeDuration(draft.estimatedDuration),
+      actualDuration: sanitizeDuration(draft.actualDuration),
+      tags: sanitizeTaskTags(draft.tags),
+      metadata: sanitizeTaskMetadata(draft.metadata)
+    },
+    undefined
+  );
+}
+
+function patchTaskRecord(task: Task, patch: TaskDraft): Task {
+  return reconcileTaskLifecycle(
+    {
+      ...task,
+      title: patch.title === undefined ? task.title : patch.title.trim() || "Untitled Task",
+      description: patch.description === undefined ? task.description : patch.description.trim(),
+      status: patch.status ?? task.status,
+      priority: patch.priority ?? task.priority,
+      assignedAgentID: patch.assignedAgentID === undefined ? task.assignedAgentID ?? null : patch.assignedAgentID,
+      workflowNodeID: patch.workflowNodeID === undefined ? task.workflowNodeID ?? null : patch.workflowNodeID,
+      createdBy: patch.createdBy === undefined ? task.createdBy ?? null : patch.createdBy,
+      estimatedDuration:
+        patch.estimatedDuration === undefined ? task.estimatedDuration ?? null : sanitizeDuration(patch.estimatedDuration),
+      actualDuration:
+        patch.actualDuration === undefined ? task.actualDuration ?? null : sanitizeDuration(patch.actualDuration),
+      tags: patch.tags === undefined ? task.tags : sanitizeTaskTags(patch.tags),
+      metadata: patch.metadata === undefined ? task.metadata : sanitizeTaskMetadata(patch.metadata)
+    },
+    task
+  );
+}
+
 function updateWorkflow(project: MAProject, workflowId: string, mutate: (workflow: Workflow) => Workflow): MAProject {
   return withUpdatedAt({
     ...project,
@@ -85,6 +225,131 @@ export function addAgentToProject(project: MAProject, baseName = "New Agent"): M
   return withUpdatedAt({
     ...project,
     agents: [...project.agents, createAgent(name, project.agents.length)]
+  });
+}
+
+export function addTaskToProject(project: MAProject, draft: TaskDraft = {}): MAProject {
+  return withUpdatedAt({
+    ...project,
+    tasks: [...project.tasks, createTaskRecord(draft)]
+  });
+}
+
+export function updateTaskInProject(
+  project: MAProject,
+  taskId: string,
+  patch: TaskDraft
+): MAProject {
+  let didChange = false;
+
+  const nextTasks = project.tasks.map((task) => {
+    if (task.id !== taskId) {
+      return task;
+    }
+
+    const nextTask = patchTaskRecord(task, patch);
+    if (JSON.stringify(nextTask) !== JSON.stringify(task)) {
+      didChange = true;
+    }
+    return nextTask;
+  });
+
+  if (!didChange) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    tasks: nextTasks
+  });
+}
+
+export function removeTaskFromProject(project: MAProject, taskId: string): MAProject {
+  const nextTasks = project.tasks.filter((task) => task.id !== taskId);
+  if (nextTasks.length === project.tasks.length) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    tasks: nextTasks
+  });
+}
+
+export function moveTaskToStatus(
+  project: MAProject,
+  taskId: string,
+  status: TaskStatus
+): MAProject {
+  return updateTaskInProject(project, taskId, { status });
+}
+
+export function assignTaskToAgent(
+  project: MAProject,
+  taskId: string,
+  agentId: string | null
+): MAProject {
+  return updateTaskInProject(project, taskId, { assignedAgentID: agentId });
+}
+
+export function generateTasksFromWorkflow(
+  project: MAProject,
+  workflowId: string
+): MAProject {
+  const workflow = project.workflows.find((item) => item.id === workflowId);
+  if (!workflow) {
+    return project;
+  }
+
+  const agentNodes = workflow.nodes.filter((node) => node.type === "agent");
+  const agentNodeIds = new Set(agentNodes.map((node) => node.id));
+  const preservedTasks = project.tasks.filter((task) =>
+    !task.workflowNodeID || !agentNodeIds.has(task.workflowNodeID)
+  );
+
+  const generatedTasks = agentNodes.flatMap((node) => {
+    if (!node.agentID) {
+      return [];
+    }
+
+    const agent = project.agents.find((item) => item.id === node.agentID);
+    if (!agent) {
+      return [];
+    }
+
+    const existingTask = project.tasks.find((task) => task.workflowNodeID === node.id);
+    const title = `Execute: ${agent.name}`;
+    const description = `Execute workflow node "${node.title || agent.name}" for ${agent.name}.`;
+
+    if (existingTask) {
+      return [
+        patchTaskRecord(existingTask, {
+          title,
+          description,
+          assignedAgentID: agent.id,
+          workflowNodeID: node.id
+        })
+      ];
+    }
+
+    return [
+      createTaskRecord({
+        title,
+        description,
+        priority: "Medium",
+        status: "To Do",
+        assignedAgentID: agent.id,
+        workflowNodeID: node.id,
+        metadata: {
+          workflowId
+        }
+      })
+    ];
+  });
+
+  return withUpdatedAt({
+    ...project,
+    tasks: [...preservedTasks, ...generatedTasks]
   });
 }
 
@@ -188,12 +453,26 @@ export function assignAgentToNode(
   nodeId: string,
   agentId: string | null
 ): MAProject {
+  return assignAgentToNodes(project, workflowId, [nodeId], agentId);
+}
+
+export function assignAgentToNodes(
+  project: MAProject,
+  workflowId: string,
+  nodeIds: string[],
+  agentId: string | null
+): MAProject {
+  const nodeIdSet = new Set(nodeIds);
+  if (nodeIdSet.size === 0) {
+    return project;
+  }
+
   const agentName = project.agents.find((agent) => agent.id === agentId)?.name;
 
   return updateWorkflow(project, workflowId, (workflow) => ({
     ...workflow,
     nodes: workflow.nodes.map((node) =>
-      node.id === nodeId
+      nodeIdSet.has(node.id)
         ? {
             ...node,
             agentID: agentId,
@@ -249,15 +528,63 @@ export function repositionWorkflowNode(
   }));
 }
 
+export function repositionWorkflowNodes(
+  project: MAProject,
+  workflowId: string,
+  updates: Array<{ nodeId: string; x: number; y: number }>
+): MAProject {
+  if (updates.length === 0) {
+    return project;
+  }
+
+  const updateMap = new Map(
+    updates.map((update) => [
+      update.nodeId,
+      {
+        x: Math.max(24, Math.round(update.x)),
+        y: Math.max(24, Math.round(update.y))
+      }
+    ])
+  );
+
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    nodes: workflow.nodes.map((node) => {
+      const nextPosition = updateMap.get(node.id);
+      if (!nextPosition) {
+        return node;
+      }
+
+      return {
+        ...node,
+        position: nextPosition
+      };
+    })
+  }));
+}
+
 export function removeNodeFromWorkflow(
   project: MAProject,
   workflowId: string,
   nodeId: string
 ): MAProject {
+  return removeNodesFromWorkflow(project, workflowId, [nodeId]);
+}
+
+export function removeNodesFromWorkflow(
+  project: MAProject,
+  workflowId: string,
+  nodeIds: string[]
+): MAProject {
+  const nodeIdSet = new Set(nodeIds);
+  if (nodeIdSet.size === 0) {
+    return project;
+  }
+
   return updateWorkflow(project, workflowId, (workflow) => ({
     ...workflow,
-    nodes: workflow.nodes.filter((node) => node.id !== nodeId),
-    edges: workflow.edges.filter((edge) => edge.fromNodeID !== nodeId && edge.toNodeID !== nodeId)
+    nodes: workflow.nodes.filter((node) => !nodeIdSet.has(node.id)),
+    edges: workflow.edges.filter((edge) => !nodeIdSet.has(edge.fromNodeID) && !nodeIdSet.has(edge.toNodeID))
   }));
 }
 

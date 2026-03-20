@@ -187,6 +187,39 @@ struct OpsCronRunRow: Identifiable {
     let duration: TimeInterval?
     let deliveryStatus: String?
     let summaryText: String
+    let jobID: String?
+    let runID: String?
+    let sourcePath: String?
+
+    var linkedSessionSpanID: UUID? {
+        runID.flatMap(UUID.init(uuidString:))
+    }
+}
+
+struct OpsCronDetail {
+    let cronName: String
+    let summary: OpsCronReliabilitySummary?
+    let historySeries: [OpsMetricHistorySeries]
+    let runs: [OpsCronRunRow]
+    let anomalies: [OpsAnomalyRow]
+}
+
+struct OpsToolSpanRow: Identifiable {
+    let id: UUID
+    let title: String
+    let service: String
+    let statusText: String
+    let agentName: String
+    let startedAt: Date
+    let duration: TimeInterval?
+    let summaryText: String
+}
+
+struct OpsToolDetail {
+    let toolIdentifier: String
+    let historySeries: [OpsMetricHistorySeries]
+    let spans: [OpsToolSpanRow]
+    let anomalies: [OpsAnomalyRow]
 }
 
 struct OpsAnomalySummary {
@@ -211,6 +244,43 @@ struct OpsAnomalyRow: Identifiable {
     let statusText: String
     let sourceService: String?
     let linkedSpanID: UUID?
+    let relatedRunID: String?
+    let relatedJobID: String?
+    let relatedSourcePath: String?
+
+    var linkedSessionSpanID: UUID? {
+        linkedSpanID ?? relatedRunID.flatMap(UUID.init(uuidString:))
+    }
+
+    init(
+        id: String,
+        title: String,
+        sourceLabel: String,
+        detailText: String,
+        fullDetailText: String,
+        occurredAt: Date,
+        status: OpsHealthStatus,
+        statusText: String,
+        sourceService: String?,
+        linkedSpanID: UUID?,
+        relatedRunID: String? = nil,
+        relatedJobID: String? = nil,
+        relatedSourcePath: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.sourceLabel = sourceLabel
+        self.detailText = detailText
+        self.fullDetailText = fullDetailText
+        self.occurredAt = occurredAt
+        self.status = status
+        self.statusText = statusText
+        self.sourceService = sourceService
+        self.linkedSpanID = linkedSpanID
+        self.relatedRunID = relatedRunID
+        self.relatedJobID = relatedJobID
+        self.relatedSourcePath = relatedSourcePath
+    }
 }
 
 struct OpsTraceDetail: Identifiable {
@@ -429,6 +499,54 @@ final class OpsAnalyticsService: ObservableObject {
 
     func traceDetail(projectID: UUID, traceID: UUID) -> OpsTraceDetail? {
         store.loadTraceDetail(projectID: projectID, spanID: traceID)
+    }
+
+    func cronDetail(
+        projectID: UUID,
+        cronName: String,
+        days: Int,
+        runLimit: Int,
+        anomalyLimit: Int
+    ) -> OpsCronDetail? {
+        store.loadCronDetail(
+            projectID: projectID,
+            cronName: cronName,
+            days: days,
+            runLimit: runLimit,
+            anomalyLimit: anomalyLimit
+        )
+    }
+
+    func toolDetail(
+        projectID: UUID,
+        toolIdentifier: String,
+        days: Int,
+        spanLimit: Int,
+        anomalyLimit: Int
+    ) -> OpsToolDetail? {
+        store.loadToolDetail(
+            projectID: projectID,
+            toolIdentifier: toolIdentifier,
+            days: days,
+            spanLimit: spanLimit,
+            anomalyLimit: anomalyLimit
+        )
+    }
+
+    func scopedHistorySeries(
+        projectID: UUID,
+        days: Int,
+        scopeKind: String,
+        scopeValue: String,
+        scopeMatchKey: String
+    ) -> [OpsMetricHistorySeries] {
+        store.loadScopedHistorySeries(
+            projectID: projectID,
+            days: days,
+            scopeKind: scopeKind,
+            scopeValue: scopeValue,
+            scopeMatchKey: scopeMatchKey
+        )
     }
 
     private func makeGoalCards(

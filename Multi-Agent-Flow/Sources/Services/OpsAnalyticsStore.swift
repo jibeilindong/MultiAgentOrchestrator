@@ -161,6 +161,131 @@ final class OpsAnalyticsStore {
         }
     }
 
+    func loadScopedHistorySeries(
+        projectID: UUID,
+        days: Int,
+        scopeKind: String,
+        scopeValue: String,
+        scopeMatchKey: String
+    ) -> [OpsMetricHistorySeries] {
+        queue.sync {
+            let dbURL = ProjectManager.shared.analyticsDatabaseURL(for: projectID)
+            guard let db = openDatabase(at: dbURL) else { return emptyHistorySeries() }
+            defer { sqlite3_close(db) }
+
+            guard createSchema(in: db) else { return emptyHistorySeries() }
+            return loadScopedHistorySeries(
+                db: db,
+                projectID: projectID,
+                days: days,
+                scopeKind: scopeKind,
+                scopeValue: scopeValue,
+                scopeMatchKey: scopeMatchKey
+            )
+        }
+    }
+
+    func loadCronDetail(
+        projectID: UUID,
+        cronName: String,
+        days: Int,
+        runLimit: Int,
+        anomalyLimit: Int
+    ) -> OpsCronDetail? {
+        queue.sync {
+            let dbURL = ProjectManager.shared.analyticsDatabaseURL(for: projectID)
+            guard let db = openDatabase(at: dbURL) else { return nil }
+            defer { sqlite3_close(db) }
+
+            guard createSchema(in: db) else { return nil }
+
+            let historySeries = loadCronScopedHistorySeries(
+                db: db,
+                projectID: projectID,
+                days: days,
+                cronName: cronName
+            )
+            let runs = loadRecentCronRuns(
+                db: db,
+                projectID: projectID,
+                cronName: cronName,
+                limit: runLimit
+            )
+            let anomalies = loadRecentCronAnomalyRows(
+                db: db,
+                projectID: projectID,
+                cronName: cronName,
+                limit: anomalyLimit
+            )
+            let summary = loadCronReliabilitySummary(
+                db: db,
+                projectID: projectID,
+                days: min(days, 30),
+                cronName: cronName
+            )
+
+            let hasHistory = historySeries.contains { !$0.points.isEmpty }
+            guard summary != nil || !runs.isEmpty || !anomalies.isEmpty || hasHistory else {
+                return nil
+            }
+
+            return OpsCronDetail(
+                cronName: cronName,
+                summary: summary,
+                historySeries: historySeries,
+                runs: runs,
+                anomalies: anomalies
+            )
+        }
+    }
+
+    func loadToolDetail(
+        projectID: UUID,
+        toolIdentifier: String,
+        days: Int,
+        spanLimit: Int,
+        anomalyLimit: Int
+    ) -> OpsToolDetail? {
+        queue.sync {
+            let dbURL = ProjectManager.shared.analyticsDatabaseURL(for: projectID)
+            guard let db = openDatabase(at: dbURL) else { return nil }
+            defer { sqlite3_close(db) }
+
+            guard createSchema(in: db) else { return nil }
+
+            let historySeries = loadToolScopedHistorySeries(
+                db: db,
+                projectID: projectID,
+                days: days,
+                toolIdentifier: toolIdentifier
+            )
+            let spans = loadRecentToolSpans(
+                db: db,
+                projectID: projectID,
+                toolIdentifier: toolIdentifier,
+                limit: spanLimit
+            )
+            let anomalies = loadRecentToolAnomalyRows(
+                db: db,
+                projectID: projectID,
+                toolIdentifier: toolIdentifier,
+                limit: anomalyLimit
+            )
+
+            let hasHistory = historySeries.contains { !$0.points.isEmpty }
+            guard !spans.isEmpty || !anomalies.isEmpty || hasHistory else {
+                return nil
+            }
+
+            return OpsToolDetail(
+                toolIdentifier: toolIdentifier,
+                historySeries: historySeries,
+                spans: spans,
+                anomalies: anomalies
+            )
+        }
+    }
+
     private func openDatabase(at url: URL) -> OpaquePointer? {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -1072,7 +1197,7 @@ final class OpsAnalyticsStore {
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            return OpsHistoryMetric.allCases.map { OpsMetricHistorySeries(metric: $0, points: []) }
+            return emptyHistorySeries()
         }
         defer { sqlite3_finalize(statement) }
 
@@ -1105,12 +1230,361 @@ final class OpsAnalyticsStore {
             )
         }
 
-        return OpsHistoryMetric.allCases.map { metric in
+        return buildHistorySeries(from: pointsByMetric)
+    }
+
+    private func loadScopedHistorySeries(
+        db: OpaquePointer,
+        projectID: UUID,
+        days: Int,
+        scopeKind: String,
+        scopeValue: String,
+        scopeMatchKey: String
+    ) -> [OpsMetricHistorySeries] {
+        switch scopeKind {
+        case "project":
+            return loadGoalMetricSeries(db: db, projectID: projectID, days: days)
+        case "agent":
+            return loadAgentScopedHistorySeries(
+                db: db,
+                projectID: projectID,
+                days: days,
+                agentID: scopeValue,
+                agentName: scopeMatchKey
+            )
+        case "tool":
+            return loadToolScopedHistorySeries(
+                db: db,
+                projectID: projectID,
+                days: days,
+                toolIdentifier: scopeValue
+            )
+        case "cron":
+            return loadCronScopedHistorySeries(
+                db: db,
+                projectID: projectID,
+                days: days,
+                cronName: scopeValue
+            )
+        default:
+            return emptyHistorySeries()
+        }
+    }
+
+    private func loadAgentScopedHistorySeries(
+        db: OpaquePointer,
+        projectID: UUID,
+        days: Int,
+        agentID: String,
+        agentName: String
+    ) -> [OpsMetricHistorySeries] {
+        var pointsByMetric: [OpsHistoryMetric: [OpsMetricHistoryPoint]] = [:]
+        let projectIDText = projectID.uuidString
+        let normalizedAgentName = agentName.lowercased()
+
+        let reliabilitySQL = """
+        SELECT date(start_time), status, COUNT(*)
+        FROM spans
+        WHERE project_id = ?
+          AND service IN ('multi-agent-flow.execution', 'openclaw.external-session')
+          AND lower(COALESCE(json_extract(attributes, '$.agent_name'), '')) = ?
+          AND date(start_time) >= date('now', ?)
+        GROUP BY date(start_time), status
+        ORDER BY date(start_time) ASC;
+        """
+
+        let reliabilityRows = groupedCountsByDate(
+            db: db,
+            sql: reliabilitySQL,
+            bindings: [projectIDText, normalizedAgentName, "-\(days) days"]
+        )
+        pointsByMetric[.workflowReliability] = ratePoints(
+            from: reliabilityRows,
+            successKeys: ["ok"],
+            failureKeys: ["error"]
+        )
+        pointsByMetric[.errorBudget] = countPoints(
+            db: db,
+            sql: """
+            SELECT date(start_time), COUNT(*)
+            FROM spans
+            WHERE project_id = ?
+              AND lower(COALESCE(json_extract(attributes, '$.agent_name'), '')) = ?
+              AND date(start_time) >= date('now', ?)
+              AND (
+                status = 'error'
+                OR lower(COALESCE(events, '')) LIKE '%timeout%'
+                OR lower(COALESCE(attributes, '')) LIKE '%timeout%'
+              )
+            GROUP BY date(start_time)
+            ORDER BY date(start_time) ASC;
+            """,
+            bindings: [projectIDText, normalizedAgentName, "-\(days) days"]
+        )
+        pointsByMetric[.agentEngagement] = countPoints(
+            db: db,
+            sql: """
+            SELECT date, CASE WHEN session_count > 0 THEN 100 ELSE 0 END
+            FROM daily_agent_activity
+            WHERE project_id = ?
+              AND agent_id = ?
+              AND date >= date('now', ?)
+            ORDER BY date ASC;
+            """,
+            bindings: [projectIDText, agentID, "-\(days) days"]
+        )
+        pointsByMetric[.memoryDiscipline] = countPoints(
+            db: db,
+            sql: """
+            SELECT date, CASE WHEN memory_logged = 1 THEN 100 ELSE 0 END
+            FROM daily_agent_activity
+            WHERE project_id = ?
+              AND agent_id = ?
+              AND date >= date('now', ?)
+            ORDER BY date ASC;
+            """,
+            bindings: [projectIDText, agentID, "-\(days) days"]
+        )
+        pointsByMetric[.cronReliability] = ratePoints(
+            from: groupedCountsByDate(
+                db: db,
+                sql: """
+                SELECT date, lower(COALESCE(status, 'unknown')), COUNT(*)
+                FROM cron_runs
+                WHERE project_id = ?
+                  AND date >= date('now', ?)
+                  AND (
+                    lower(cron_name) LIKE '%' || ? || '%'
+                    OR lower(COALESCE(summary, '')) LIKE '%' || ? || '%'
+                  )
+                GROUP BY date, lower(COALESCE(status, 'unknown'))
+                ORDER BY date ASC;
+                """,
+                bindings: [projectIDText, "-\(days) days", normalizedAgentName, normalizedAgentName]
+            ),
+            successKeys: ["ok", "success", "completed", "delivered"],
+            failureKeys: ["error", "failed", "timeout"]
+        )
+
+        return buildHistorySeries(from: pointsByMetric)
+    }
+
+    private func loadToolScopedHistorySeries(
+        db: OpaquePointer,
+        projectID: UUID,
+        days: Int,
+        toolIdentifier: String
+    ) -> [OpsMetricHistorySeries] {
+        var pointsByMetric: [OpsHistoryMetric: [OpsMetricHistoryPoint]] = [:]
+        let projectIDText = projectID.uuidString
+        let normalizedToolIdentifier = toolIdentifier.lowercased()
+
+        let groupedRows = groupedCountsByDate(
+            db: db,
+            sql: """
+            SELECT date(start_time), status, COUNT(*)
+            FROM spans
+            WHERE project_id = ?
+              AND service LIKE '%tool%'
+              AND date(start_time) >= date('now', ?)
+              AND (
+                lower(service) LIKE '%' || ? || '%'
+                OR lower(name) LIKE '%' || ? || '%'
+                OR lower(COALESCE(attributes, '')) LIKE '%' || ? || '%'
+              )
+            GROUP BY date(start_time), status
+            ORDER BY date(start_time) ASC;
+            """,
+            bindings: [
+                projectIDText,
+                "-\(days) days",
+                normalizedToolIdentifier,
+                normalizedToolIdentifier,
+                normalizedToolIdentifier
+            ]
+        )
+
+        pointsByMetric[.workflowReliability] = ratePoints(
+            from: groupedRows,
+            successKeys: ["ok"],
+            failureKeys: ["error"]
+        )
+        pointsByMetric[.errorBudget] = countPoints(
+            db: db,
+            sql: """
+            SELECT date(start_time), COUNT(*)
+            FROM spans
+            WHERE project_id = ?
+              AND service LIKE '%tool%'
+              AND date(start_time) >= date('now', ?)
+              AND (
+                lower(service) LIKE '%' || ? || '%'
+                OR lower(name) LIKE '%' || ? || '%'
+                OR lower(COALESCE(attributes, '')) LIKE '%' || ? || '%'
+              )
+              AND (
+                status = 'error'
+                OR lower(COALESCE(events, '')) LIKE '%timeout%'
+                OR lower(COALESCE(attributes, '')) LIKE '%timeout%'
+              )
+            GROUP BY date(start_time)
+            ORDER BY date(start_time) ASC;
+            """,
+            bindings: [
+                projectIDText,
+                "-\(days) days",
+                normalizedToolIdentifier,
+                normalizedToolIdentifier,
+                normalizedToolIdentifier
+            ]
+        )
+
+        return buildHistorySeries(from: pointsByMetric)
+    }
+
+    private func loadCronScopedHistorySeries(
+        db: OpaquePointer,
+        projectID: UUID,
+        days: Int,
+        cronName: String
+    ) -> [OpsMetricHistorySeries] {
+        var pointsByMetric: [OpsHistoryMetric: [OpsMetricHistoryPoint]] = [:]
+        let projectIDText = projectID.uuidString
+        let normalizedCronName = cronName.lowercased()
+
+        let groupedRows = groupedCountsByDate(
+            db: db,
+            sql: """
+            SELECT date, lower(COALESCE(status, 'unknown')), COUNT(*)
+            FROM cron_runs
+            WHERE project_id = ?
+              AND date >= date('now', ?)
+              AND lower(cron_name) = ?
+            GROUP BY date, lower(COALESCE(status, 'unknown'))
+            ORDER BY date ASC;
+            """,
+            bindings: [projectIDText, "-\(days) days", normalizedCronName]
+        )
+
+        pointsByMetric[.cronReliability] = ratePoints(
+            from: groupedRows,
+            successKeys: ["ok", "success", "completed", "delivered"],
+            failureKeys: ["error", "failed", "timeout"]
+        )
+        pointsByMetric[.errorBudget] = countPoints(
+            db: db,
+            sql: """
+            SELECT date, COUNT(*)
+            FROM cron_runs
+            WHERE project_id = ?
+              AND date >= date('now', ?)
+              AND lower(cron_name) = ?
+              AND lower(COALESCE(status, 'unknown')) NOT IN ('ok', 'success', 'completed', 'delivered')
+            GROUP BY date
+            ORDER BY date ASC;
+            """,
+            bindings: [projectIDText, "-\(days) days", normalizedCronName]
+        )
+
+        return buildHistorySeries(from: pointsByMetric)
+    }
+
+    private func groupedCountsByDate(
+        db: OpaquePointer,
+        sql: String,
+        bindings: [String]
+    ) -> [String: [String: Int]] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [:] }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, value) in bindings.enumerated() {
+            bindText(value, to: Int32(index + 1), in: statement)
+        }
+
+        var rows: [String: [String: Int]] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let dateCString = sqlite3_column_text(statement, 0),
+                  let keyCString = sqlite3_column_text(statement, 1) else {
+                continue
+            }
+
+            let date = String(cString: dateCString)
+            let key = String(cString: keyCString).lowercased()
+            let count = Int(sqlite3_column_int(statement, 2))
+            rows[date, default: [:]][key, default: 0] += count
+        }
+        return rows
+    }
+
+    private func ratePoints(
+        from groupedRows: [String: [String: Int]],
+        successKeys: Set<String>,
+        failureKeys: Set<String>
+    ) -> [OpsMetricHistoryPoint] {
+        groupedRows.keys.sorted().compactMap { dateString in
+            guard let date = dayFormatter.date(from: dateString),
+                  let row = groupedRows[dateString] else {
+                return nil
+            }
+
+            let successCount = row
+                .filter { successKeys.contains($0.key) }
+                .map(\.value)
+                .reduce(0, +)
+            let failureCount = row
+                .filter { failureKeys.contains($0.key) }
+                .map(\.value)
+                .reduce(0, +)
+            let total = successCount + failureCount
+            guard total > 0 else { return nil }
+
+            return OpsMetricHistoryPoint(
+                date: date,
+                value: (Double(successCount) / Double(total)) * 100.0
+            )
+        }
+    }
+
+    private func countPoints(
+        db: OpaquePointer,
+        sql: String,
+        bindings: [String]
+    ) -> [OpsMetricHistoryPoint] {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, value) in bindings.enumerated() {
+            bindText(value, to: Int32(index + 1), in: statement)
+        }
+
+        var points: [OpsMetricHistoryPoint] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let dateCString = sqlite3_column_text(statement, 0),
+                  let date = dayFormatter.date(from: String(cString: dateCString)) else {
+                continue
+            }
+
+            let value = sqlite3_column_double(statement, 1)
+            points.append(OpsMetricHistoryPoint(date: date, value: value))
+        }
+        return points.sorted { $0.date < $1.date }
+    }
+
+    private func buildHistorySeries(
+        from pointsByMetric: [OpsHistoryMetric: [OpsMetricHistoryPoint]]
+    ) -> [OpsMetricHistorySeries] {
+        OpsHistoryMetric.allCases.map { metric in
             OpsMetricHistorySeries(
                 metric: metric,
                 points: pointsByMetric[metric, default: []].sorted { $0.date < $1.date }
             )
         }
+    }
+
+    private func emptyHistorySeries() -> [OpsMetricHistorySeries] {
+        OpsHistoryMetric.allCases.map { OpsMetricHistorySeries(metric: $0, points: []) }
     }
 
     private func loadTraceDetail(
@@ -1295,6 +1769,59 @@ final class OpsAnalyticsStore {
         )
     }
 
+    private func loadCronReliabilitySummary(
+        db: OpaquePointer,
+        projectID: UUID,
+        days: Int,
+        cronName: String
+    ) -> OpsCronReliabilitySummary? {
+        let sql = """
+        SELECT status, COALESCE(run_at, slot_time, created_at)
+        FROM cron_runs
+        WHERE project_id = ?
+          AND date >= date('now', ?)
+          AND lower(cron_name) = ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        bindText("-\(days) days", to: 2, in: statement)
+        bindText(cronName.lowercased(), to: 3, in: statement)
+
+        var successfulRuns = 0
+        var failedRuns = 0
+        var latestRunAt: Date?
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let statusCString = sqlite3_column_text(statement, 0) else { continue }
+
+            let status = String(cString: statusCString)
+            if isSuccessfulCronStatus(status) {
+                successfulRuns += 1
+            } else {
+                failedRuns += 1
+            }
+
+            if let runDateCString = sqlite3_column_text(statement, 1),
+               let runDate = iso8601.date(from: String(cString: runDateCString)) {
+                latestRunAt = max(latestRunAt ?? .distantPast, runDate)
+            }
+        }
+
+        let totalRuns = successfulRuns + failedRuns
+        guard totalRuns > 0 else { return nil }
+
+        return OpsCronReliabilitySummary(
+            successRate: (Double(successfulRuns) / Double(totalRuns)) * 100.0,
+            successfulRuns: successfulRuns,
+            failedRuns: failedRuns,
+            latestRunAt: latestRunAt
+        )
+    }
+
     private func loadRecentCronRuns(
         db: OpaquePointer,
         projectID: UUID,
@@ -1309,7 +1836,10 @@ final class OpsAnalyticsStore {
             duration_ms,
             delivery_status,
             summary,
-            error
+            error,
+            job_id,
+            run_id,
+            source_path
         FROM cron_runs
         WHERE project_id = ?
         ORDER BY COALESCE(run_at, slot_time, created_at) DESC
@@ -1337,6 +1867,9 @@ final class OpsAnalyticsStore {
             let deliveryStatus = sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 5))
             let summary = sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 6))
             let error = sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 7))
+            let jobID = sqlite3_column_type(statement, 8) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 8))
+            let runID = sqlite3_column_type(statement, 9) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 9))
+            let sourcePath = sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 10))
 
             rows.append(
                 OpsCronRunRow(
@@ -1346,7 +1879,152 @@ final class OpsAnalyticsStore {
                     runAt: runAt,
                     duration: durationMs.map { $0 / 1000.0 },
                     deliveryStatus: emptyToNil(deliveryStatus),
-                    summaryText: emptyToNil(summary) ?? emptyToNil(error) ?? "No summary captured"
+                    summaryText: emptyToNil(summary) ?? emptyToNil(error) ?? "No summary captured",
+                    jobID: emptyToNil(jobID),
+                    runID: emptyToNil(runID),
+                    sourcePath: emptyToNil(sourcePath)
+                )
+            )
+        }
+
+        return rows
+    }
+
+    private func loadRecentCronRuns(
+        db: OpaquePointer,
+        projectID: UUID,
+        cronName: String,
+        limit: Int
+    ) -> [OpsCronRunRow] {
+        let sql = """
+        SELECT
+            COALESCE(external_id, run_id, job_id, cron_name || '-' || COALESCE(run_at, slot_time, created_at)),
+            cron_name,
+            status,
+            COALESCE(run_at, slot_time, created_at),
+            duration_ms,
+            delivery_status,
+            summary,
+            error,
+            job_id,
+            run_id,
+            source_path
+        FROM cron_runs
+        WHERE project_id = ?
+          AND lower(cron_name) = ?
+        ORDER BY COALESCE(run_at, slot_time, created_at) DESC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        bindText(cronName.lowercased(), to: 2, in: statement)
+        sqlite3_bind_int(statement, 3, Int32(limit))
+
+        var rows: [OpsCronRunRow] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idCString = sqlite3_column_text(statement, 0),
+                  let cronNameCString = sqlite3_column_text(statement, 1),
+                  let statusCString = sqlite3_column_text(statement, 2),
+                  let runAtCString = sqlite3_column_text(statement, 3),
+                  let runAt = iso8601.date(from: String(cString: runAtCString)) else {
+                continue
+            }
+
+            let durationMs = sqlite3_column_type(statement, 4) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 4)
+            let deliveryStatus = sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 5))
+            let summary = sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 6))
+            let error = sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 7))
+            let jobID = sqlite3_column_type(statement, 8) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 8))
+            let runID = sqlite3_column_type(statement, 9) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 9))
+            let sourcePath = sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 10))
+
+            rows.append(
+                OpsCronRunRow(
+                    id: String(cString: idCString),
+                    cronName: String(cString: cronNameCString),
+                    statusText: formattedCronStatus(String(cString: statusCString)),
+                    runAt: runAt,
+                    duration: durationMs.map { $0 / 1000.0 },
+                    deliveryStatus: emptyToNil(deliveryStatus),
+                    summaryText: emptyToNil(summary) ?? emptyToNil(error) ?? "No summary captured",
+                    jobID: emptyToNil(jobID),
+                    runID: emptyToNil(runID),
+                    sourcePath: emptyToNil(sourcePath)
+                )
+            )
+        }
+
+        return rows
+    }
+
+    private func loadRecentToolSpans(
+        db: OpaquePointer,
+        projectID: UUID,
+        toolIdentifier: String,
+        limit: Int
+    ) -> [OpsToolSpanRow] {
+        let normalizedToolIdentifier = toolIdentifier.lowercased()
+        let sql = """
+        SELECT span_id, name, service, status, start_time, duration_ms, attributes, events
+        FROM spans
+        WHERE project_id = ?
+          AND service LIKE '%tool%'
+          AND (
+            lower(service) LIKE '%' || ? || '%'
+            OR lower(name) LIKE '%' || ? || '%'
+            OR lower(COALESCE(attributes, '')) LIKE '%' || ? || '%'
+          )
+        ORDER BY start_time DESC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        bindText(normalizedToolIdentifier, to: 2, in: statement)
+        bindText(normalizedToolIdentifier, to: 3, in: statement)
+        bindText(normalizedToolIdentifier, to: 4, in: statement)
+        sqlite3_bind_int(statement, 5, Int32(limit))
+
+        var rows: [OpsToolSpanRow] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let spanCString = sqlite3_column_text(statement, 0),
+                  let nameCString = sqlite3_column_text(statement, 1),
+                  let serviceCString = sqlite3_column_text(statement, 2),
+                  let statusCString = sqlite3_column_text(statement, 3),
+                  let startCString = sqlite3_column_text(statement, 4),
+                  let id = UUID(uuidString: String(cString: spanCString)),
+                  let startedAt = iso8601.date(from: String(cString: startCString)) else {
+                continue
+            }
+
+            let durationMs = sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 5)
+            let attributes = sqlite3_column_type(statement, 6) == SQLITE_NULL
+                ? [:]
+                : dictionary(from: String(cString: sqlite3_column_text(statement, 6)))
+            let eventsText = sqlite3_column_type(statement, 7) == SQLITE_NULL
+                ? nil
+                : String(cString: sqlite3_column_text(statement, 7))
+            let summaryText = emptyToNil(attributes["preview_text"])
+                ?? emptyToNil(eventsText?.compactSingleLinePreview(limit: 180))
+                ?? String(cString: nameCString)
+
+            rows.append(
+                OpsToolSpanRow(
+                    id: id,
+                    title: String(cString: nameCString),
+                    service: String(cString: serviceCString),
+                    statusText: String(cString: statusCString),
+                    agentName: attributes["agent_name"] ?? "Unknown Agent",
+                    startedAt: startedAt,
+                    duration: durationMs.map { $0 / 1000.0 },
+                    summaryText: summaryText
                 )
             )
         }
@@ -1418,7 +2096,10 @@ final class OpsAnalyticsStore {
             cron_name,
             COALESCE(status, 'unknown'),
             COALESCE(error, summary, 'Cron anomaly'),
-            COALESCE(run_at, slot_time, created_at)
+            COALESCE(run_at, slot_time, created_at),
+            job_id,
+            run_id,
+            source_path
         FROM cron_runs
         WHERE project_id = ?
           AND status NOT IN ('ok', 'success', 'completed', 'delivered')
@@ -1443,6 +2124,9 @@ final class OpsAnalyticsStore {
                 }
 
                 let rawStatus = String(cString: statusCString)
+                let jobID = sqlite3_column_type(cronStatement, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(cronStatement, 5))
+                let runID = sqlite3_column_type(cronStatement, 6) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(cronStatement, 6))
+                let sourcePath = sqlite3_column_type(cronStatement, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(cronStatement, 7))
                 let detailText = String(cString: detailCString)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let normalizedDetail = detailText.isEmpty ? "Cron anomaly" : detailText
@@ -1458,7 +2142,10 @@ final class OpsAnalyticsStore {
                         status: cronAnomalyStatus(for: rawStatus),
                         statusText: formattedCronStatus(rawStatus),
                         sourceService: nil,
-                        linkedSpanID: nil
+                        linkedSpanID: nil,
+                        relatedRunID: emptyToNil(runID),
+                        relatedJobID: emptyToNil(jobID),
+                        relatedSourcePath: emptyToNil(sourcePath)
                     )
                 )
             }
@@ -1526,6 +2213,152 @@ final class OpsAnalyticsStore {
             }
             .prefix(limit)
         )
+    }
+
+    private func loadRecentCronAnomalyRows(
+        db: OpaquePointer,
+        projectID: UUID,
+        cronName: String,
+        limit: Int
+    ) -> [OpsAnomalyRow] {
+        let sql = """
+        SELECT
+            COALESCE(external_id, run_id, job_id, cron_name || '-' || COALESCE(run_at, slot_time, created_at)),
+            cron_name,
+            COALESCE(status, 'unknown'),
+            COALESCE(error, summary, 'Cron anomaly'),
+            COALESCE(run_at, slot_time, created_at),
+            job_id,
+            run_id,
+            source_path
+        FROM cron_runs
+        WHERE project_id = ?
+          AND lower(cron_name) = ?
+          AND lower(COALESCE(status, 'unknown')) NOT IN ('ok', 'success', 'completed', 'delivered')
+        ORDER BY COALESCE(run_at, slot_time, created_at) DESC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        bindText(cronName.lowercased(), to: 2, in: statement)
+        sqlite3_bind_int(statement, 3, Int32(limit))
+
+        var rows: [OpsAnomalyRow] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idCString = sqlite3_column_text(statement, 0),
+                  let nameCString = sqlite3_column_text(statement, 1),
+                  let statusCString = sqlite3_column_text(statement, 2),
+                  let detailCString = sqlite3_column_text(statement, 3),
+                  let dateCString = sqlite3_column_text(statement, 4),
+                  let occurredAt = iso8601.date(from: String(cString: dateCString)) else {
+                continue
+            }
+
+            let rawStatus = String(cString: statusCString)
+            let jobID = sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 5))
+            let runID = sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 6))
+            let sourcePath = sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 7))
+            let detailText = String(cString: detailCString)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedDetail = detailText.isEmpty ? "Cron anomaly" : detailText
+
+            rows.append(
+                OpsAnomalyRow(
+                    id: "cron-\(String(cString: idCString))",
+                    title: String(cString: nameCString),
+                    sourceLabel: "Cron",
+                    detailText: normalizedDetail.compactSingleLinePreview(limit: 180),
+                    fullDetailText: normalizedDetail,
+                    occurredAt: occurredAt,
+                    status: cronAnomalyStatus(for: rawStatus),
+                    statusText: formattedCronStatus(rawStatus),
+                    sourceService: nil,
+                    linkedSpanID: nil,
+                    relatedRunID: emptyToNil(runID),
+                    relatedJobID: emptyToNil(jobID),
+                    relatedSourcePath: emptyToNil(sourcePath)
+                )
+            )
+        }
+
+        return rows
+    }
+
+    private func loadRecentToolAnomalyRows(
+        db: OpaquePointer,
+        projectID: UUID,
+        toolIdentifier: String,
+        limit: Int
+    ) -> [OpsAnomalyRow] {
+        let normalizedToolIdentifier = toolIdentifier.lowercased()
+        let sql = """
+        SELECT span_id, name, service, status, start_time, COALESCE(events, json_extract(attributes, '$.preview_text'), 'Tool anomaly')
+        FROM spans
+        WHERE project_id = ?
+          AND service LIKE '%tool%'
+          AND (
+            lower(service) LIKE '%' || ? || '%'
+            OR lower(name) LIKE '%' || ? || '%'
+            OR lower(COALESCE(attributes, '')) LIKE '%' || ? || '%'
+          )
+          AND (
+            status = 'error'
+            OR lower(COALESCE(events, '')) LIKE '%timeout%'
+            OR lower(COALESCE(attributes, '')) LIKE '%timeout%'
+          )
+        ORDER BY start_time DESC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        bindText(normalizedToolIdentifier, to: 2, in: statement)
+        bindText(normalizedToolIdentifier, to: 3, in: statement)
+        bindText(normalizedToolIdentifier, to: 4, in: statement)
+        sqlite3_bind_int(statement, 5, Int32(limit))
+
+        var rows: [OpsAnomalyRow] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idCString = sqlite3_column_text(statement, 0),
+                  let nameCString = sqlite3_column_text(statement, 1),
+                  let serviceCString = sqlite3_column_text(statement, 2),
+                  let statusCString = sqlite3_column_text(statement, 3),
+                  let dateCString = sqlite3_column_text(statement, 4),
+                  let occurredAt = iso8601.date(from: String(cString: dateCString)) else {
+                continue
+            }
+
+            let detailText = sqlite3_column_type(statement, 5) == SQLITE_NULL
+                ? "Tool anomaly"
+                : String(cString: sqlite3_column_text(statement, 5))
+            let normalizedDetail = detailText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let spanID = UUID(uuidString: String(cString: idCString))
+            let rawStatus = String(cString: statusCString)
+
+            rows.append(
+                OpsAnomalyRow(
+                    id: "tool-\(String(cString: idCString))",
+                    title: String(cString: nameCString),
+                    sourceLabel: "Tool",
+                    detailText: (normalizedDetail.isEmpty ? "Tool anomaly" : normalizedDetail).compactSingleLinePreview(limit: 180),
+                    fullDetailText: normalizedDetail.isEmpty ? "Tool anomaly" : normalizedDetail,
+                    occurredAt: occurredAt,
+                    status: rawStatus == "error" ? .critical : .warning,
+                    statusText: rawStatus,
+                    sourceService: String(cString: serviceCString),
+                    linkedSpanID: spanID
+                )
+            )
+        }
+
+        return rows
     }
 
     private func summarizeRelatedSpan(name: String, attributes: [String: String]) -> String {

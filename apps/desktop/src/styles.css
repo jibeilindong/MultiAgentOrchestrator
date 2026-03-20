@@ -185,7 +185,8 @@ body {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   border: 1px solid rgba(16, 33, 50, 0.12);
   border-radius: 14px;
@@ -193,6 +194,11 @@ body {
   background: rgba(255, 255, 255, 0.94);
   color: #13283c;
   font: inherit;
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 120px;
 }
 
 .inlineForm input {
@@ -314,6 +320,20 @@ body {
   stroke: rgba(37, 99, 235, 0.78);
   stroke-width: 3;
   stroke-dasharray: 10 8;
+}
+
+.canvasSelectionBox {
+  fill: rgba(37, 99, 235, 0.12);
+  stroke: rgba(37, 99, 235, 0.72);
+  stroke-width: 2;
+  stroke-dasharray: 8 6;
+}
+
+.canvasGuideLine {
+  stroke: rgba(245, 158, 11, 0.9);
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+  pointer-events: none;
 }
 
 .canvasEdgeHitArea {
@@ -519,6 +539,32 @@ body {
   gap: 14px;
 }
 
+.inspectorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.inspectorActions button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: #0f766e;
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.inspectorActions button:hover {
+  opacity: 0.94;
+}
+
+.inspectorActions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .checkboxField {
   display: flex;
   gap: 10px;
@@ -541,6 +587,189 @@ body {
   color: #13283c;
   font-size: 0.95rem;
   font-weight: 600;
+}
+
+.taskBoard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.taskColumn {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.taskColumn-todo {
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.08);
+}
+
+.taskColumn-in-progress {
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.1);
+}
+
+.taskColumn-done {
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.1);
+}
+
+.taskColumn-blocked {
+  box-shadow: inset 0 0 0 1px rgba(180, 35, 24, 0.1);
+}
+
+.taskColumnHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.taskColumnHeader strong {
+  display: block;
+  color: #13283c;
+}
+
+.taskColumnHeader span {
+  color: #52708a;
+  font-size: 0.88rem;
+}
+
+.taskColumnBody {
+  display: grid;
+  gap: 12px;
+}
+
+.taskCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.taskCard:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(20, 40, 60, 0.08);
+}
+
+.taskCardSelected {
+  border-color: rgba(15, 118, 110, 0.3);
+  box-shadow: 0 16px 32px rgba(15, 118, 110, 0.12);
+}
+
+.taskCardHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.taskCardHeader strong {
+  color: #13283c;
+}
+
+.taskCard p {
+  margin: 0;
+  color: #35506a;
+  line-height: 1.5;
+}
+
+.taskMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.taskMeta span {
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(16, 33, 50, 0.06);
+  color: #35506a;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.taskPriorityBadge {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.taskPriority-low {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.taskPriority-medium {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+}
+
+.taskPriority-high {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.taskPriority-critical {
+  background: rgba(180, 35, 24, 0.14);
+  color: #b42318;
+}
+
+.taskQuickActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.taskQuickActions button {
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 12px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #13283c;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.taskQuickActions button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.taskTimeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.taskTimeline div {
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.taskTimeline dt {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #52708a;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.taskTimeline dd {
+  margin: 8px 0 0;
+  color: #13283c;
 }
 
 .card ul,

@@ -16,6 +16,8 @@ artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 
 mac:
   category: public.app-category.productivity
+  icon: buildResources/icon.icns
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
   target:
     - target: dmg
       arch:
@@ -23,6 +25,8 @@ mac:
         - arm64
 
 win:
+  icon: buildResources/icon.ico
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
   target:
     - target: nsis
       arch:

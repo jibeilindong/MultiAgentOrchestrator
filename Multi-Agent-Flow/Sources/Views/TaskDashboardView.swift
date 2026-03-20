@@ -211,10 +211,14 @@ struct MonitoringDashboardView: View {
     @State private var selectedHistoryMetric: OpsHistoryMetric = .workflowReliability
     @State private var selectedHistoryFocusMode: OpsHistoryFocusMode = .project
     @State private var selectedHistoryFocusID: String = "project"
+    @State private var selectedHistoryDateID: String = ""
+    @State private var scopedHistoricalSeries: [OpsMetricHistorySeries] = []
     @State private var selectedTraceSourceFilter: OpsTraceSourceFilter = .all
     @State private var traceSearchText: String = ""
     @State private var selectedTracePanel: OpsTracePanelModel?
     @State private var selectedAnomalyPanel: OpsAnomalyPanelModel?
+    @State private var selectedCronPanel: OpsCronPanelModel?
+    @State private var selectedToolPanel: OpsToolPanelModel?
     @State private var selectedAnomalySourceFilter: OpsAnomalySourceFilter = .all
     @State private var selectedAnomalySeverityFilter: OpsAnomalySeverityFilter = .all
     @State private var selectedAnomalyTimeWindow: OpsAnomalyTimeWindow = .last7Days
@@ -247,6 +251,9 @@ struct MonitoringDashboardView: View {
     private var idleAgentCount: Int {
         metrics.idleAgentCount
     }
+    private var sourceHistoricalSeries: [OpsMetricHistorySeries] {
+        selectedHistoryFocusMode == .project ? opsSnapshot.historicalSeries : scopedHistoricalSeries
+    }
     private var filteredHistoricalSeries: [OpsMetricHistorySeries] {
         let cutoffDate = historyCalendar.date(
             byAdding: .day,
@@ -254,7 +261,7 @@ struct MonitoringDashboardView: View {
             to: historyCalendar.startOfDay(for: Date())
         ) ?? .distantPast
 
-        return opsSnapshot.historicalSeries
+        return sourceHistoricalSeries
             .filter { series in
                 selectedHistoryCategory == .all || series.metric.category == selectedHistoryCategory
             }
@@ -265,13 +272,31 @@ struct MonitoringDashboardView: View {
                 )
             }
     }
+    private var visibleHistoricalSeries: [OpsMetricHistorySeries] {
+        filteredHistoricalSeries.filter { !$0.points.isEmpty }
+    }
     private var effectiveSelectedHistoryMetric: OpsHistoryMetric {
-        filteredHistoricalSeries.first(where: { $0.metric == selectedHistoryMetric })?.metric
-            ?? filteredHistoricalSeries.first?.metric
+        visibleHistoricalSeries.first(where: { $0.metric == selectedHistoryMetric })?.metric
+            ?? visibleHistoricalSeries.first?.metric
             ?? selectedHistoryMetric
     }
     private var selectedHistorySeries: OpsMetricHistorySeries? {
-        filteredHistoricalSeries.first { $0.metric == effectiveSelectedHistoryMetric }
+        visibleHistoricalSeries.first { $0.metric == effectiveSelectedHistoryMetric }
+    }
+    private var historyDateOptions: [OpsHistoryDateOption] {
+        guard let series = selectedHistorySeries else { return [] }
+        return series.points
+            .sorted { $0.date > $1.date }
+            .map {
+                OpsHistoryDateOption(
+                    id: historyDateID(for: $0.date),
+                    date: $0.date,
+                    title: $0.date.formatted(date: .abbreviated, time: .omitted)
+                )
+            }
+    }
+    private var effectiveSelectedHistoryDateOption: OpsHistoryDateOption? {
+        historyDateOptions.first(where: { $0.id == selectedHistoryDateID }) ?? historyDateOptions.first
     }
     private var historyFocusOptions: [OpsHistoryFocusOption] {
         historyFocusOptions(for: selectedHistoryFocusMode)
@@ -283,7 +308,8 @@ struct MonitoringDashboardView: View {
                 id: "project",
                 title: project?.name ?? "Project",
                 subtitle: "Project-wide context",
-                matchKey: project?.name.lowercased() ?? "project"
+                matchKey: project?.name.lowercased() ?? "project",
+                scopeValue: "project"
             )
     }
     private var anomalyWindowStart: Date? {
@@ -472,15 +498,35 @@ struct MonitoringDashboardView: View {
         }
         .onAppear {
             opsSnapshot = appState.opsAnalytics.snapshot
+            reloadScopedHistorySeries()
+            normalizeHistoryDateSelection()
             scheduleMetricsRefresh(immediately: true)
         }
         .onReceive(appState.opsAnalytics.$snapshot) { snapshot in
             opsSnapshot = snapshot
+            reloadScopedHistorySeries()
+            normalizeHistoryDateSelection()
         }
         .onChange(of: selectedHistoryFocusMode) { _, newMode in
             let options = historyFocusOptions(for: newMode)
             if !options.contains(where: { $0.id == selectedHistoryFocusID }) {
                 selectedHistoryFocusID = options.first?.id ?? "project"
+            }
+            reloadScopedHistorySeries()
+            normalizeHistoryDateSelection()
+        }
+        .onChange(of: selectedHistoryFocusID) { _, _ in
+            reloadScopedHistorySeries()
+            normalizeHistoryDateSelection()
+        }
+        .onChange(of: selectedHistoryMetric) { _, _ in
+            if !historyDateOptions.contains(where: { $0.id == selectedHistoryDateID }) {
+                selectedHistoryDateID = historyDateOptions.first?.id ?? ""
+            }
+        }
+        .onChange(of: selectedHistoryWindow) { _, _ in
+            if !historyDateOptions.contains(where: { $0.id == selectedHistoryDateID }) {
+                selectedHistoryDateID = historyDateOptions.first?.id ?? ""
             }
         }
         .onChange(of: dashboardRefreshSignature) { _, _ in
@@ -495,6 +541,14 @@ struct MonitoringDashboardView: View {
         }
         .sheet(item: $selectedAnomalyPanel) { panel in
             OpsAnomalyDetailSheet(panel: panel)
+        }
+        .sheet(item: $selectedCronPanel) { panel in
+            OpsCronDetailSheet(panel: panel)
+                .environmentObject(appState)
+        }
+        .sheet(item: $selectedToolPanel) { panel in
+            OpsToolDetailSheet(panel: panel)
+                .environmentObject(appState)
         }
     }
 
@@ -696,12 +750,26 @@ struct MonitoringDashboardView: View {
 
                 Spacer()
 
+                if selectedHistoryFocusMode == .tool {
+                    Button("Open Tool Detail") {
+                        openToolDetail(for: effectiveSelectedHistoryFocus.scopeValue)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if selectedHistoryFocusMode == .cron {
+                    Button("Open Cron Detail") {
+                        openCronDetail(for: effectiveSelectedHistoryFocus.scopeValue)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 Text(effectiveSelectedHistoryFocus.subtitle)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
 
-            if filteredHistoricalSeries.allSatisfy({ $0.points.isEmpty }) {
+            if visibleHistoricalSeries.isEmpty {
                 Text("Project history will populate after the first analytics sync.")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -711,7 +779,7 @@ struct MonitoringDashboardView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
-                    ForEach(filteredHistoricalSeries) { series in
+                    ForEach(visibleHistoricalSeries) { series in
                         Button {
                             selectedHistoryMetric = series.metric
                         } label: {
@@ -750,10 +818,27 @@ struct MonitoringDashboardView: View {
                                 )
                                 .foregroundStyle(historyColor(for: series.metric))
                             }
+
+                            if let selectedDate = effectiveSelectedHistoryDateOption,
+                               let selectedPoint = series.points.first(where: {
+                                   historyCalendar.isDate($0.date, inSameDayAs: selectedDate.date)
+                               }) {
+                                RuleMark(x: .value("Selected Day", selectedDate.date, unit: .day))
+                                    .foregroundStyle(historyColor(for: series.metric).opacity(0.35))
+                                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+
+                                PointMark(
+                                    x: .value("Day", selectedPoint.date, unit: .day),
+                                    y: .value(series.metric.title, selectedPoint.value)
+                                )
+                                .symbolSize(110)
+                                .foregroundStyle(historyColor(for: series.metric))
+                            }
                         }
                         .chartYAxis {
                             AxisMarks(position: .leading)
                         }
+                        .chartXSelection(value: historyChartDateSelectionBinding)
                         .frame(height: 260)
 
                         HStack(spacing: 16) {
@@ -769,6 +854,10 @@ struct MonitoringDashboardView: View {
                                 title: "Delta",
                                 value: historyDeltaText(for: series)
                             )
+                        }
+
+                        if let selectedDate = effectiveSelectedHistoryDateOption {
+                            historyDayDrillDownSection(for: series, selectedDate: selectedDate)
                         }
 
                         opsHistoryContextSection(for: series)
@@ -931,42 +1020,51 @@ struct MonitoringDashboardView: View {
 
                 VStack(spacing: 8) {
                     ForEach(opsSnapshot.cronRuns) { row in
-                        HStack(alignment: .top, spacing: 10) {
-                            Text(row.runAt.formatted(date: .omitted, time: .standard))
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .frame(width: 72, alignment: .leading)
+                        Button {
+                            openCronDetail(for: row.cronName)
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(row.runAt.formatted(date: .omitted, time: .standard))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 72, alignment: .leading)
 
-                            monitoringPill(
-                                title: row.statusText,
-                                color: row.statusText == "OK" ? .green : .red
-                            )
-                            .frame(width: 78, alignment: .leading)
+                                monitoringPill(
+                                    title: row.statusText,
+                                    color: row.statusText == "OK" ? .green : .red
+                                )
+                                .frame(width: 78, alignment: .leading)
 
-                            Text(row.cronName)
-                                .font(.caption)
-                                .frame(width: 110, alignment: .leading)
+                                Text(row.cronName)
+                                    .font(.caption)
+                                    .frame(width: 110, alignment: .leading)
 
-                            Text(row.duration.map(formatOpsDuration) ?? "-")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(width: 56, alignment: .leading)
+                                Text(row.duration.map(formatOpsDuration) ?? "-")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 56, alignment: .leading)
 
-                            Text(row.deliveryStatus ?? "-")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .frame(width: 76, alignment: .leading)
+                                Text(row.deliveryStatus ?? "-")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 76, alignment: .leading)
 
-                            Text(row.summaryText)
-                                .font(.caption)
-                                .lineLimit(2)
+                                Text(row.summaryText)
+                                    .font(.caption)
+                                    .lineLimit(2)
 
-                            Spacer()
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.4))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.4))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding()
@@ -1662,7 +1760,8 @@ struct MonitoringDashboardView: View {
                     id: "project",
                     title: project?.name ?? "Project",
                     subtitle: "Project-wide context",
-                    matchKey: project?.name.lowercased() ?? "project"
+                    matchKey: project?.name.lowercased() ?? "project",
+                    scopeValue: "project"
                 )
             ]
         case .agent:
@@ -1673,7 +1772,8 @@ struct MonitoringDashboardView: View {
                             id: "agent:\($0.agentName.lowercased())",
                             title: $0.agentName,
                             subtitle: $0.stateText,
-                            matchKey: $0.agentName.lowercased()
+                            matchKey: $0.agentName.lowercased(),
+                            scopeValue: $0.id.uuidString
                         ))
                     }
                 ).values
@@ -1693,7 +1793,8 @@ struct MonitoringDashboardView: View {
                     id: "tool:\(identifier.lowercased())",
                     title: historyFocusDisplayName(forToolIdentifier: identifier),
                     subtitle: "Tool-service scoped context",
-                    matchKey: identifier.lowercased()
+                    matchKey: identifier.lowercased(),
+                    scopeValue: identifier.lowercased()
                 )
             }
         case .cron:
@@ -1707,10 +1808,32 @@ struct MonitoringDashboardView: View {
                     id: "cron:\(identifier.lowercased())",
                     title: identifier,
                     subtitle: "Scheduled run scoped context",
-                    matchKey: identifier.lowercased()
+                    matchKey: identifier.lowercased(),
+                    scopeValue: identifier.lowercased()
                 )
             }
         }
+    }
+
+    private func reloadScopedHistorySeries() {
+        guard let projectID = project?.id else {
+            scopedHistoricalSeries = []
+            return
+        }
+
+        guard selectedHistoryFocusMode != .project else {
+            scopedHistoricalSeries = []
+            return
+        }
+
+        let focus = effectiveSelectedHistoryFocus
+        scopedHistoricalSeries = appState.opsAnalytics.scopedHistorySeries(
+            projectID: projectID,
+            days: 30,
+            scopeKind: selectedHistoryFocusMode.rawValue,
+            scopeValue: focus.scopeValue,
+            scopeMatchKey: focus.matchKey
+        )
     }
 
     private func historyFocusDisplayName(forToolIdentifier identifier: String) -> String {
@@ -1791,6 +1914,146 @@ struct MonitoringDashboardView: View {
         }
     }
 
+    private func historyDateID(for date: Date) -> String {
+        String(Int(date.timeIntervalSinceReferenceDate))
+    }
+
+    private func normalizeHistoryDateSelection() {
+        if !historyDateOptions.contains(where: { $0.id == selectedHistoryDateID }) {
+            selectedHistoryDateID = historyDateOptions.first?.id ?? ""
+        }
+    }
+
+    private func nearestHistoryDateOption(to date: Date) -> OpsHistoryDateOption? {
+        historyDateOptions.min { lhs, rhs in
+            abs(lhs.date.timeIntervalSince(date)) < abs(rhs.date.timeIntervalSince(date))
+        }
+    }
+
+    private var historyDateSelectionBinding: Binding<String> {
+        Binding(
+            get: { effectiveSelectedHistoryDateOption?.id ?? selectedHistoryDateID },
+            set: { selectedHistoryDateID = $0 }
+        )
+    }
+
+    private var historyChartDateSelectionBinding: Binding<Date?> {
+        Binding(
+            get: { effectiveSelectedHistoryDateOption?.date },
+            set: { newValue in
+                guard let newValue,
+                      let nearestOption = nearestHistoryDateOption(to: newValue) else {
+                    return
+                }
+
+                selectedHistoryDateID = nearestOption.id
+            }
+        )
+    }
+
+    private func historyDayDrillDownSection(
+        for series: OpsMetricHistorySeries,
+        selectedDate: OpsHistoryDateOption
+    ) -> some View {
+        let dayRows = historyDayDrillDownRows(for: series.metric, date: selectedDate.date)
+        let selectedPoint = series.points.first { historyCalendar.isDate($0.date, inSameDayAs: selectedDate.date) }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Day Drill-Down")
+                        .font(.headline)
+                    Text("Inspect the selected sample day and jump straight into its related signals.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Picker("Sample Day", selection: historyDateSelectionBinding) {
+                    ForEach(historyDateOptions) { option in
+                        Text(option.title).tag(option.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 180)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
+                ForEach(historyDaySummaryCards(for: series.metric, point: selectedPoint, rows: dayRows, selectedDate: selectedDate.date)) { card in
+                    monitoringCard(
+                        title: card.title,
+                        value: card.value,
+                        detail: card.detail,
+                        color: card.color
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Signals On \(selectedDate.title)")
+                    .font(.headline)
+
+                if dayRows.isEmpty {
+                    Text("No related signals were captured for this day in the current scope.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(dayRows) { row in
+                        historySignalRowView(row)
+                    }
+                }
+            }
+            .padding()
+            .background(Color.white.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .padding(.top, 4)
+    }
+
+    private func historyDaySummaryCards(
+        for metric: OpsHistoryMetric,
+        point: OpsMetricHistoryPoint?,
+        rows: [OpsHistorySignalRow],
+        selectedDate: Date
+    ) -> [OpsContextCard] {
+        let signalCount = rows.count
+        let actionableCount = rows.filter { $0.anomaly != nil || $0.trace != nil || $0.cronRun != nil }.count
+        let criticalCount = rows.filter { $0.badge == "Critical" || $0.badge == "Error" }.count
+
+        return [
+            OpsContextCard(
+                id: "day-sample",
+                title: "Sample",
+                value: point.map { metric.formattedValue($0.value) } ?? "-",
+                detail: selectedDate.formatted(date: .abbreviated, time: .omitted),
+                color: historyColor(for: metric)
+            ),
+            OpsContextCard(
+                id: "day-signals",
+                title: "Signals",
+                value: "\(signalCount)",
+                detail: "Rows captured for this day",
+                color: signalCount == 0 ? .secondary : .blue
+            ),
+            OpsContextCard(
+                id: "day-actionable",
+                title: "Actionable",
+                value: "\(actionableCount)",
+                detail: "Rows that can open detail panels",
+                color: actionableCount == 0 ? .secondary : .teal
+            ),
+            OpsContextCard(
+                id: "day-critical",
+                title: "Critical",
+                value: "\(criticalCount)",
+                detail: "High-risk signals on this day",
+                color: criticalCount == 0 ? .green : .red
+            )
+        ]
+    }
+
     private func historyContextCards(for metric: OpsHistoryMetric) -> [OpsContextCard] {
         let focusedTraceRows = opsSnapshot.traceRows.filter(matchesHistoryFocus)
         let focusedAnomalyRows = opsSnapshot.anomalyRows.filter(matchesHistoryFocus)
@@ -1841,6 +2104,20 @@ struct MonitoringDashboardView: View {
     }
 
     private func historySignalRows(for metric: OpsHistoryMetric) -> [OpsHistorySignalRow] {
+        Array(historySignalPool(for: metric).prefix(6))
+    }
+
+    private func historyDayDrillDownRows(for metric: OpsHistoryMetric, date: Date) -> [OpsHistorySignalRow] {
+        historySignalPool(for: metric)
+            .filter { row in
+                guard let occurredAt = row.occurredAt else { return false }
+                return historyCalendar.isDate(occurredAt, inSameDayAs: date)
+            }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private func historySignalPool(for metric: OpsHistoryMetric) -> [OpsHistorySignalRow] {
         let focusedAnomalyRows = opsSnapshot.anomalyRows.filter(matchesHistoryFocus)
         let focusedTraceRows = opsSnapshot.traceRows.filter(matchesHistoryFocus)
         let focusedAgentRows = opsSnapshot.agentRows.filter(matchesHistoryFocus)
@@ -1850,7 +2127,6 @@ struct MonitoringDashboardView: View {
         case .workflowReliability:
             let anomalySignals = focusedAnomalyRows
                 .filter { $0.sourceLabel != "Cron" }
-                .prefix(4)
                 .map { anomaly in
                     OpsHistorySignalRow(
                         id: "anomaly-\(anomaly.id)",
@@ -1860,13 +2136,13 @@ struct MonitoringDashboardView: View {
                         occurredAt: anomaly.occurredAt,
                         color: anomalySourceColor(for: anomaly.sourceLabel),
                         anomaly: anomaly,
-                        trace: nil
+                        trace: nil,
+                        cronRun: nil
                     )
                 }
 
             let traceSignals = focusedTraceRows
                 .filter { $0.status == .failed }
-                .prefix(max(0, 6 - anomalySignals.count))
                 .map { trace in
                     OpsHistorySignalRow(
                         id: "trace-\(trace.id.uuidString)",
@@ -1876,11 +2152,13 @@ struct MonitoringDashboardView: View {
                         occurredAt: trace.startedAt,
                         color: traceStatusColor(for: trace.status),
                         anomaly: nil,
-                        trace: trace
+                        trace: trace,
+                        cronRun: nil
                     )
                 }
 
-            return anomalySignals + traceSignals
+            return (anomalySignals + traceSignals)
+                .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
         case .agentEngagement:
             return focusedAgentRows
                 .sorted { lhs, rhs in
@@ -1899,7 +2177,8 @@ struct MonitoringDashboardView: View {
                         occurredAt: row.lastActivityAt,
                         color: opsColor(for: row.status),
                         anomaly: nil,
-                        trace: nil
+                        trace: nil,
+                        cronRun: nil
                     )
                 }
         case .memoryDiscipline:
@@ -1920,7 +2199,8 @@ struct MonitoringDashboardView: View {
                         occurredAt: row.lastActivityAt,
                         color: row.hasTrackedMemory ? .green : .orange,
                         anomaly: nil,
-                        trace: nil
+                        trace: nil,
+                        cronRun: nil
                     )
                 }
         case .errorBudget:
@@ -1941,12 +2221,12 @@ struct MonitoringDashboardView: View {
                         occurredAt: anomaly.occurredAt,
                         color: opsColor(for: anomaly.status),
                         anomaly: anomaly,
-                        trace: nil
+                        trace: nil,
+                        cronRun: nil
                     )
                 }
         case .cronReliability:
             return focusedCronRuns
-                .prefix(6)
                 .map { run in
                     OpsHistorySignalRow(
                         id: "cron-\(run.id)",
@@ -1956,15 +2236,17 @@ struct MonitoringDashboardView: View {
                         occurredAt: run.runAt,
                         color: run.statusText == "OK" ? .green : .red,
                         anomaly: opsSnapshot.anomalyRows.first(where: { $0.sourceLabel == "Cron" && $0.title == run.cronName }),
-                        trace: nil
+                        trace: nil,
+                        cronRun: run
                     )
                 }
+                .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
         }
     }
 
     private func historySignalRowView(_ row: OpsHistorySignalRow) -> some View {
         Group {
-            if row.anomaly != nil || row.trace != nil {
+            if row.anomaly != nil || row.trace != nil || row.cronRun != nil {
                 Button {
                     openHistorySignal(row)
                 } label: {
@@ -1998,7 +2280,7 @@ struct MonitoringDashboardView: View {
 
             Spacer()
 
-            if row.anomaly != nil || row.trace != nil {
+            if row.anomaly != nil || row.trace != nil || row.cronRun != nil {
                 Image(systemName: "chevron.right")
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -2011,6 +2293,10 @@ struct MonitoringDashboardView: View {
     }
 
     private func openHistorySignal(_ row: OpsHistorySignalRow) {
+        if let cronRun = row.cronRun {
+            openCronDetail(for: cronRun.cronName)
+            return
+        }
         if let anomaly = row.anomaly {
             openAnomalyDetail(for: anomaly)
             return
@@ -2316,12 +2602,14 @@ struct MonitoringDashboardView: View {
 
     private func openTraceDetail(for row: OpsTraceSummaryRow) {
         guard let projectID = project?.id else { return }
+        selectedCronPanel = nil
+        selectedToolPanel = nil
 
         if let detail = appState.opsAnalytics.traceDetail(projectID: projectID, traceID: row.id) {
-            selectedTracePanel = OpsTracePanelModel(
+            selectedTracePanel = makeOpsTracePanelModel(
                 detail: detail,
-                relatedLogs: relatedLogs(for: detail),
-                workflowPath: buildWorkflowPath(for: detail)
+                project: project,
+                executionLogs: appState.openClawService.executionLogs
             )
             return
         }
@@ -2349,24 +2637,26 @@ struct MonitoringDashboardView: View {
             eventsText: nil,
             relatedSpans: []
         )
-        selectedTracePanel = OpsTracePanelModel(
+        selectedTracePanel = makeOpsTracePanelModel(
             detail: fallbackDetail,
-            relatedLogs: relatedLogs(for: fallbackDetail),
-            workflowPath: buildWorkflowPath(for: fallbackDetail)
+            project: project,
+            executionLogs: appState.openClawService.executionLogs
         )
     }
 
     private func openAnomalyDetail(for row: OpsAnomalyRow) {
         selectedTracePanel = nil
+        selectedCronPanel = nil
+        selectedToolPanel = nil
 
         if let projectID = project?.id,
            let spanID = row.linkedSpanID,
            let detail = appState.opsAnalytics.traceDetail(projectID: projectID, traceID: spanID) {
             selectedAnomalyPanel = nil
-            selectedTracePanel = OpsTracePanelModel(
+            selectedTracePanel = makeOpsTracePanelModel(
                 detail: detail,
-                relatedLogs: relatedLogs(for: detail),
-                workflowPath: buildWorkflowPath(for: detail)
+                project: project,
+                executionLogs: appState.openClawService.executionLogs
             )
             return
         }
@@ -2374,126 +2664,108 @@ struct MonitoringDashboardView: View {
         selectedAnomalyPanel = OpsAnomalyPanelModel(row: row)
     }
 
-    private func relatedLogs(for detail: OpsTraceDetail) -> [ExecutionLogEntry] {
-        guard detail.service != "openclaw.external-session" else { return [] }
+    private func openCronDetail(for cronName: String) {
+        guard let projectID = project?.id else { return }
 
-        let lowerBound = detail.startedAt.addingTimeInterval(-15)
-        let upperBound = (detail.completedAt ?? detail.startedAt).addingTimeInterval(30)
+        selectedTracePanel = nil
+        selectedAnomalyPanel = nil
+        selectedToolPanel = nil
 
-        return appState.openClawService.executionLogs
-            .filter { entry in
-                if let nodeID = detail.nodeID, entry.nodeID == nodeID {
-                    return true
-                }
-                return entry.timestamp >= lowerBound && entry.timestamp <= upperBound
-            }
-            .sorted { $0.timestamp < $1.timestamp }
-            .suffix(30)
-            .map { $0 }
-    }
-
-    private func buildWorkflowPath(for detail: OpsTraceDetail) -> OpsTraceWorkflowPath? {
-        guard let workflow = project?.workflows.first,
-              let currentNodeID = detail.nodeID else {
-            return nil
+        if let detail = appState.opsAnalytics.cronDetail(
+            projectID: projectID,
+            cronName: cronName,
+            days: 30,
+            runLimit: 24,
+            anomalyLimit: 12
+        ) {
+            selectedCronPanel = OpsCronPanelModel(projectID: projectID, detail: detail)
+            return
         }
 
-        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-        let agentByID = Dictionary(uniqueKeysWithValues: (project?.agents ?? []).map { ($0.id, $0) })
+        let normalizedCronName = cronName.lowercased()
+        let fallbackRuns = opsSnapshot.cronRuns.filter { $0.cronName.lowercased() == normalizedCronName }
+        let fallbackAnomalies = opsSnapshot.anomalyRows.filter {
+            $0.sourceLabel == "Cron" && $0.title.lowercased() == normalizedCronName
+        }
+        let fallbackHistory = appState.opsAnalytics.scopedHistorySeries(
+            projectID: projectID,
+            days: 30,
+            scopeKind: "cron",
+            scopeValue: cronName,
+            scopeMatchKey: normalizedCronName
+        )
+        let successfulRuns = fallbackRuns.filter { $0.statusText == "OK" }.count
+        let failedRuns = max(fallbackRuns.count - successfulRuns, 0)
+        let fallbackSummary: OpsCronReliabilitySummary? = fallbackRuns.isEmpty ? nil : OpsCronReliabilitySummary(
+            successRate: Double(successfulRuns) / Double(fallbackRuns.count) * 100,
+            successfulRuns: successfulRuns,
+            failedRuns: failedRuns,
+            latestRunAt: fallbackRuns.map(\.runAt).max()
+        )
+        let hasHistory = fallbackHistory.contains { !$0.points.isEmpty }
 
-        guard let currentNode = nodeByID[currentNodeID] else { return nil }
-
-        let incomingEdges = workflow.edges.filter { $0.isIncoming(to: currentNodeID) }
-        let outgoingEdges = workflow.edges.filter { $0.isOutgoing(from: currentNodeID) }
-        let requestedTargets = Set(detail.routingTargets.map(normalizedRouteKey))
-
-        let upstreamNodes = incomingEdges.compactMap { edge -> OpsTraceWorkflowPathNode? in
-            let sourceID = edge.toNodeID == currentNodeID ? edge.fromNodeID : edge.toNodeID
-            guard let node = nodeByID[sourceID] else { return nil }
-            return makeWorkflowPathNode(node: node, role: .upstream, state: .normal, agentByID: agentByID)
+        guard fallbackSummary != nil || !fallbackRuns.isEmpty || !fallbackAnomalies.isEmpty || hasHistory else {
+            return
         }
 
-        let downstreamNodes = outgoingEdges.compactMap { edge -> OpsTraceWorkflowPathNode? in
-            let targetID = edge.fromNodeID == currentNodeID ? edge.toNodeID : edge.fromNodeID
-            guard let node = nodeByID[targetID] else { return nil }
-            let state: OpsTraceWorkflowPathNode.State = matchesRouteTarget(node: node, requestedTargets: requestedTargets, agentByID: agentByID)
-                ? .selected
-                : .skipped
-            return makeWorkflowPathNode(node: node, role: .downstream, state: state, agentByID: agentByID)
-        }
-
-        guard let currentPathNode = makeWorkflowPathNode(
-            node: currentNode,
-            role: .current,
-            state: .selected,
-            agentByID: agentByID
-        ) else {
-            return nil
-        }
-
-        return OpsTraceWorkflowPath(
-            upstreamNodes: uniqueWorkflowPathNodes(upstreamNodes),
-            currentNode: currentPathNode,
-            downstreamNodes: uniqueWorkflowPathNodes(downstreamNodes)
+        selectedCronPanel = OpsCronPanelModel(
+            projectID: projectID,
+            detail: OpsCronDetail(
+                cronName: cronName,
+                summary: fallbackSummary,
+                historySeries: fallbackHistory,
+                runs: fallbackRuns,
+                anomalies: fallbackAnomalies
+            )
         )
     }
 
-    private func makeWorkflowPathNode(
-        node: WorkflowNode,
-        role: OpsTraceWorkflowPathNode.Role,
-        state: OpsTraceWorkflowPathNode.State,
-        agentByID: [UUID: Agent]
-    ) -> OpsTraceWorkflowPathNode? {
-        let agentName = node.agentID.flatMap { agentByID[$0]?.name }
-        let title = node.title.isEmpty ? (agentName ?? "Untitled Node") : node.title
-        let subtitle: String
+    private func openToolDetail(for toolIdentifier: String) {
+        guard let projectID = project?.id else { return }
 
-        switch node.type {
-        case .start:
-            subtitle = "Start Node"
-        case .agent:
-            subtitle = agentName ?? "Agent Node"
+        selectedTracePanel = nil
+        selectedAnomalyPanel = nil
+        selectedCronPanel = nil
+
+        if let detail = appState.opsAnalytics.toolDetail(
+            projectID: projectID,
+            toolIdentifier: toolIdentifier,
+            days: 30,
+            spanLimit: 24,
+            anomalyLimit: 12
+        ) {
+            selectedToolPanel = OpsToolPanelModel(projectID: projectID, detail: detail)
+            return
         }
 
-        return OpsTraceWorkflowPathNode(
-            id: node.id,
-            title: title,
-            subtitle: subtitle,
-            role: role,
-            state: state
+        let normalizedToolIdentifier = toolIdentifier.lowercased()
+        let fallbackHistory = appState.opsAnalytics.scopedHistorySeries(
+            projectID: projectID,
+            days: 30,
+            scopeKind: "tool",
+            scopeValue: normalizedToolIdentifier,
+            scopeMatchKey: normalizedToolIdentifier
         )
-    }
-
-    private func uniqueWorkflowPathNodes(_ nodes: [OpsTraceWorkflowPathNode]) -> [OpsTraceWorkflowPathNode] {
-        var seen = Set<UUID>()
-        return nodes.filter { node in
-            seen.insert(node.id).inserted
+        let fallbackAnomalies = opsSnapshot.anomalyRows.filter { row in
+            guard row.sourceLabel == "Tool" else { return false }
+            return [row.title, row.detailText, row.fullDetailText, row.sourceService ?? ""]
+                .joined(separator: " ")
+                .lowercased()
+                .contains(normalizedToolIdentifier)
         }
-    }
+        let hasHistory = fallbackHistory.contains { !$0.points.isEmpty }
 
-    private func matchesRouteTarget(
-        node: WorkflowNode,
-        requestedTargets: Set<String>,
-        agentByID: [UUID: Agent]
-    ) -> Bool {
-        guard !requestedTargets.isEmpty else { return false }
+        guard !fallbackAnomalies.isEmpty || hasHistory else { return }
 
-        var candidates: Set<String> = [
-            normalizedRouteKey(node.id.uuidString),
-            normalizedRouteKey(String(node.id.uuidString.prefix(8))),
-            normalizedRouteKey(node.title)
-        ]
-
-        if let agentID = node.agentID, let agent = agentByID[agentID] {
-            candidates.insert(normalizedRouteKey(agent.name))
-        }
-
-        candidates = candidates.filter { !$0.isEmpty }
-        return !candidates.isDisjoint(with: requestedTargets)
-    }
-
-    private func normalizedRouteKey(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        selectedToolPanel = OpsToolPanelModel(
+            projectID: projectID,
+            detail: OpsToolDetail(
+                toolIdentifier: toolIdentifier,
+                historySeries: fallbackHistory,
+                spans: [],
+                anomalies: fallbackAnomalies
+            )
+        )
     }
 
     private func scheduleMetricsRefresh(immediately: Bool) {
@@ -2575,6 +2847,20 @@ private struct OpsAnomalyPanelModel: Identifiable {
     var id: String { row.id }
 }
 
+private struct OpsCronPanelModel: Identifiable {
+    let projectID: UUID
+    let detail: OpsCronDetail
+
+    var id: String { "\(projectID.uuidString)::\(detail.cronName.lowercased())" }
+}
+
+private struct OpsToolPanelModel: Identifiable {
+    let projectID: UUID
+    let detail: OpsToolDetail
+
+    var id: String { "\(projectID.uuidString)::\(detail.toolIdentifier.lowercased())" }
+}
+
 private struct OpsContextCard: Identifiable {
     let id: String
     let title: String
@@ -2588,6 +2874,13 @@ private struct OpsHistoryFocusOption: Identifiable, Hashable {
     let title: String
     let subtitle: String
     let matchKey: String
+    let scopeValue: String
+}
+
+private struct OpsHistoryDateOption: Identifiable, Hashable {
+    let id: String
+    let date: Date
+    let title: String
 }
 
 private struct OpsHistorySignalRow: Identifiable {
@@ -2599,6 +2892,7 @@ private struct OpsHistorySignalRow: Identifiable {
     let color: Color
     let anomaly: OpsAnomalyRow?
     let trace: OpsTraceSummaryRow?
+    let cronRun: OpsCronRunRow?
 }
 
 private struct OpsAnomalyCluster: Identifiable {
@@ -2640,6 +2934,146 @@ private struct OpsTraceWorkflowPathNode: Identifiable {
     let subtitle: String
     let role: Role
     let state: State
+}
+
+private func makeOpsTracePanelModel(
+    detail: OpsTraceDetail,
+    project: MAProject?,
+    executionLogs: [ExecutionLogEntry]
+) -> OpsTracePanelModel {
+    OpsTracePanelModel(
+        detail: detail,
+        relatedLogs: opsRelatedLogs(for: detail, executionLogs: executionLogs),
+        workflowPath: buildOpsWorkflowPath(for: detail, project: project)
+    )
+}
+
+private func opsRelatedLogs(
+    for detail: OpsTraceDetail,
+    executionLogs: [ExecutionLogEntry]
+) -> [ExecutionLogEntry] {
+    guard detail.service != "openclaw.external-session" else { return [] }
+
+    let lowerBound = detail.startedAt.addingTimeInterval(-15)
+    let upperBound = (detail.completedAt ?? detail.startedAt).addingTimeInterval(30)
+
+    return executionLogs
+        .filter { entry in
+            if let nodeID = detail.nodeID, entry.nodeID == nodeID {
+                return true
+            }
+            return entry.timestamp >= lowerBound && entry.timestamp <= upperBound
+        }
+        .sorted { $0.timestamp < $1.timestamp }
+        .suffix(30)
+        .map { $0 }
+}
+
+private func buildOpsWorkflowPath(
+    for detail: OpsTraceDetail,
+    project: MAProject?
+) -> OpsTraceWorkflowPath? {
+    guard let workflow = project?.workflows.first,
+          let currentNodeID = detail.nodeID else {
+        return nil
+    }
+
+    let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+    let agentByID = Dictionary(uniqueKeysWithValues: (project?.agents ?? []).map { ($0.id, $0) })
+
+    guard let currentNode = nodeByID[currentNodeID] else { return nil }
+
+    let incomingEdges = workflow.edges.filter { $0.isIncoming(to: currentNodeID) }
+    let outgoingEdges = workflow.edges.filter { $0.isOutgoing(from: currentNodeID) }
+    let requestedTargets = Set(detail.routingTargets.map(normalizedOpsRouteKey))
+
+    let upstreamNodes = incomingEdges.compactMap { edge -> OpsTraceWorkflowPathNode? in
+        let sourceID = edge.toNodeID == currentNodeID ? edge.fromNodeID : edge.toNodeID
+        guard let node = nodeByID[sourceID] else { return nil }
+        return makeOpsWorkflowPathNode(node: node, role: .upstream, state: .normal, agentByID: agentByID)
+    }
+
+    let downstreamNodes = outgoingEdges.compactMap { edge -> OpsTraceWorkflowPathNode? in
+        let targetID = edge.fromNodeID == currentNodeID ? edge.toNodeID : edge.fromNodeID
+        guard let node = nodeByID[targetID] else { return nil }
+        let state: OpsTraceWorkflowPathNode.State = matchesOpsRouteTarget(node: node, requestedTargets: requestedTargets, agentByID: agentByID)
+            ? .selected
+            : .skipped
+        return makeOpsWorkflowPathNode(node: node, role: .downstream, state: state, agentByID: agentByID)
+    }
+
+    guard let currentPathNode = makeOpsWorkflowPathNode(
+        node: currentNode,
+        role: .current,
+        state: .selected,
+        agentByID: agentByID
+    ) else {
+        return nil
+    }
+
+    return OpsTraceWorkflowPath(
+        upstreamNodes: uniqueOpsWorkflowPathNodes(upstreamNodes),
+        currentNode: currentPathNode,
+        downstreamNodes: uniqueOpsWorkflowPathNodes(downstreamNodes)
+    )
+}
+
+private func makeOpsWorkflowPathNode(
+    node: WorkflowNode,
+    role: OpsTraceWorkflowPathNode.Role,
+    state: OpsTraceWorkflowPathNode.State,
+    agentByID: [UUID: Agent]
+) -> OpsTraceWorkflowPathNode? {
+    let agentName = node.agentID.flatMap { agentByID[$0]?.name }
+    let title = node.title.isEmpty ? (agentName ?? "Untitled Node") : node.title
+    let subtitle: String
+
+    switch node.type {
+    case .start:
+        subtitle = "Start Node"
+    case .agent:
+        subtitle = agentName ?? "Agent Node"
+    }
+
+    return OpsTraceWorkflowPathNode(
+        id: node.id,
+        title: title,
+        subtitle: subtitle,
+        role: role,
+        state: state
+    )
+}
+
+private func uniqueOpsWorkflowPathNodes(_ nodes: [OpsTraceWorkflowPathNode]) -> [OpsTraceWorkflowPathNode] {
+    var seen = Set<UUID>()
+    return nodes.filter { node in
+        seen.insert(node.id).inserted
+    }
+}
+
+private func matchesOpsRouteTarget(
+    node: WorkflowNode,
+    requestedTargets: Set<String>,
+    agentByID: [UUID: Agent]
+) -> Bool {
+    guard !requestedTargets.isEmpty else { return false }
+
+    var candidates: Set<String> = [
+        normalizedOpsRouteKey(node.id.uuidString),
+        normalizedOpsRouteKey(String(node.id.uuidString.prefix(8))),
+        normalizedOpsRouteKey(node.title)
+    ]
+
+    if let agentID = node.agentID, let agent = agentByID[agentID] {
+        candidates.insert(normalizedOpsRouteKey(agent.name))
+    }
+
+    candidates = candidates.filter { !$0.isEmpty }
+    return !candidates.isDisjoint(with: requestedTargets)
+}
+
+private func normalizedOpsRouteKey(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
 private struct OpsTraceTimelineEntry: Identifiable {
@@ -3206,6 +3640,844 @@ private struct OpsTraceDetailSheet: View {
     }
 
     private func formatOpsDuration(_ duration: TimeInterval) -> String {
+        if duration >= 60 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            return "\(minutes)m \(seconds)s"
+        }
+        return String(format: "%.1fs", duration)
+    }
+}
+
+private struct OpsCronDetailSheet: View {
+    @EnvironmentObject var appState: AppState
+
+    let panel: OpsCronPanelModel
+    @State private var selectedTracePanel: OpsTracePanelModel?
+
+    private var detail: OpsCronDetail { panel.detail }
+    private var currentProject: MAProject? {
+        guard appState.currentProject?.id == panel.projectID else { return nil }
+        return appState.currentProject
+    }
+    private var reliabilitySeries: OpsMetricHistorySeries? {
+        detail.historySeries.first { $0.metric == .cronReliability }
+    }
+    private var errorBudgetSeries: OpsMetricHistorySeries? {
+        detail.historySeries.first { $0.metric == .errorBudget }
+    }
+    private var latestRun: OpsCronRunRow? {
+        detail.runs.max { $0.runAt < $1.runAt }
+    }
+    private var linkedSessionCount: Int {
+        detail.runs.filter { $0.linkedSessionSpanID != nil }.count
+    }
+    private var linkedAnomalyCount: Int {
+        detail.anomalies.filter { $0.linkedSessionSpanID != nil || matchingRun(for: $0)?.linkedSessionSpanID != nil }.count
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                headerSection
+                summarySection
+                trendSection
+                recentRunsSection
+                anomalySection
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 680, minHeight: 560)
+        .sheet(item: $selectedTracePanel) { panel in
+            OpsTraceDetailSheet(panel: panel)
+        }
+    }
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(detail.cronName)
+                .font(.title3.weight(.semibold))
+
+            HStack(spacing: 8) {
+                detailBadge(
+                    latestRun?.statusText ?? "Unknown",
+                    color: statusColor(for: latestRun?.statusText ?? "")
+                )
+                detailBadge("\(detail.runs.count) runs", color: .blue)
+                detailBadge("\(detail.anomalies.count) anomalies", color: detail.anomalies.isEmpty ? .secondary : .red)
+            }
+
+            Text("Cron-scoped runs, anomalies, and retained history ingested from OpenClaw backup artifacts.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var summarySection: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
+            summaryCard(
+                title: "Success Rate",
+                value: summarySuccessRateText,
+                detail: detail.summary.map { "\($0.successfulRuns) successful / \($0.failedRuns) failed" } ?? "Recent retained samples",
+                color: summarySuccessRateColor
+            )
+            summaryCard(
+                title: "Latest Run",
+                value: latestRun.map { $0.runAt.formatted(date: .abbreviated, time: .shortened) } ?? "-",
+                detail: latestRun?.summaryText ?? "No recent run captured",
+                color: .blue
+            )
+            summaryCard(
+                title: "Linked Sessions",
+                value: "\(linkedSessionCount)",
+                detail: "Runs that can open the external session trace",
+                color: linkedSessionCount == 0 ? .secondary : .teal
+            )
+            summaryCard(
+                title: "Linked Anomalies",
+                value: "\(linkedAnomalyCount)",
+                detail: "Anomalies that can jump to the underlying session",
+                color: linkedAnomalyCount == 0 ? .secondary : .orange
+            )
+            summaryCard(
+                title: "Last Error Count",
+                value: latestErrorBudgetText,
+                detail: "Most recent scoped error-budget sample",
+                color: latestErrorBudgetValue == 0 ? .green : .red
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var trendSection: some View {
+        if let reliabilitySeries, !reliabilitySeries.points.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("30-Day Trend")
+                            .font(.headline)
+                        Text("Cron reliability for this named schedule across the retained project history window.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    if let latestPoint = reliabilitySeries.latestPoint {
+                        Text("Latest \(Int(latestPoint.value.rounded()))%")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Chart {
+                    ForEach(reliabilitySeries.points) { point in
+                        AreaMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Success Rate", point.value)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(Color.teal.opacity(0.14))
+
+                        LineMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Success Rate", point.value)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(Color.teal)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5))
+
+                        PointMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Success Rate", point.value)
+                        )
+                        .foregroundStyle(Color.teal)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading)
+                }
+                .chartYScale(domain: 0 ... 100)
+                .frame(height: 220)
+
+                Text("Latest error-budget sample: \(latestErrorBudgetText)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var recentRunsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent Runs")
+                .font(.headline)
+
+            if detail.runs.isEmpty {
+                emptyState("No retained runs were found for this cron.")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(detail.runs.prefix(12))) { run in
+                        Button {
+                            openLinkedSession(for: run)
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(run.runAt.formatted(date: .omitted, time: .standard))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 72, alignment: .leading)
+
+                                detailBadge(run.statusText, color: statusColor(for: run.statusText))
+                                    .frame(width: 76, alignment: .leading)
+
+                                Text(run.duration.map(formatDuration) ?? "-")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 56, alignment: .leading)
+
+                                Text(run.deliveryStatus ?? "-")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 86, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(run.summaryText)
+                                        .font(.caption)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    if let metadata = runMetadataSummary(for: run) {
+                                        Text(metadata)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    if let sourcePath = run.sourcePath, !sourcePath.isEmpty {
+                                        Text(sourcePath)
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
+
+                                if run.linkedSessionSpanID != nil {
+                                    Image(systemName: "arrowshape.turn.up.right")
+                                        .font(.caption2)
+                                        .foregroundColor(.teal)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.45))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
+    private var anomalySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent Anomalies")
+                .font(.headline)
+
+            if detail.anomalies.isEmpty {
+                emptyState("No retained cron anomalies were found for this schedule.")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(detail.anomalies.prefix(10))) { row in
+                        let matchedRun = matchingRun(for: row)
+                        Button {
+                            openLinkedSession(for: row)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text(row.occurredAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+
+                                    detailBadge(row.status == .critical ? "Critical" : "Warning", color: statusColor(for: row.statusText))
+                                    detailBadge(row.statusText, color: .secondary)
+
+                                    if row.linkedSessionSpanID != nil || matchingRun(for: row)?.linkedSessionSpanID != nil {
+                                        detailBadge("Open Session", color: .teal)
+                                    }
+                                }
+
+                                Text(row.detailText)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                if let metadata = anomalyMetadataSummary(for: row, matchedRun: matchedRun) {
+                                    Text(metadata)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                if let sourcePath = row.relatedSourcePath ?? matchedRun?.sourcePath,
+                                   !sourcePath.isEmpty {
+                                    Text(sourcePath)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+
+                                if row.fullDetailText != row.detailText {
+                                    Text(row.fullDetailText)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(4)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.45))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
+    private var summarySuccessRateText: String {
+        if let summary = detail.summary {
+            return "\(Int(summary.successRate.rounded()))%"
+        }
+        if let latestValue = reliabilitySeries?.latestPoint?.value {
+            return "\(Int(latestValue.rounded()))%"
+        }
+        return "-"
+    }
+
+    private var summarySuccessRateColor: Color {
+        if let summary = detail.summary {
+            return summary.successRate >= 90 ? .green : (summary.successRate >= 75 ? .orange : .red)
+        }
+        return .secondary
+    }
+
+    private var latestErrorBudgetValue: Int? {
+        errorBudgetSeries?.latestPoint.map { Int($0.value.rounded()) }
+    }
+
+    private var latestErrorBudgetText: String {
+        latestErrorBudgetValue.map(String.init) ?? "-"
+    }
+
+    private func openLinkedSession(for run: OpsCronRunRow) {
+        guard let spanID = run.linkedSessionSpanID,
+              let detail = appState.opsAnalytics.traceDetail(projectID: panel.projectID, traceID: spanID) else {
+            return
+        }
+
+        selectedTracePanel = makeOpsTracePanelModel(
+            detail: detail,
+            project: currentProject,
+            executionLogs: appState.openClawService.executionLogs
+        )
+    }
+
+    private func openLinkedSession(for anomaly: OpsAnomalyRow) {
+        if let spanID = anomaly.linkedSessionSpanID,
+           let detail = appState.opsAnalytics.traceDetail(projectID: panel.projectID, traceID: spanID) {
+            selectedTracePanel = makeOpsTracePanelModel(
+                detail: detail,
+                project: currentProject,
+                executionLogs: appState.openClawService.executionLogs
+            )
+            return
+        }
+
+        guard let run = matchingRun(for: anomaly) else { return }
+        openLinkedSession(for: run)
+    }
+
+    private func matchingRun(for anomaly: OpsAnomalyRow) -> OpsCronRunRow? {
+        detail.runs.first { run in
+            abs(run.runAt.timeIntervalSince(anomaly.occurredAt)) < 1
+        } ?? detail.runs.first { run in
+            Calendar.autoupdatingCurrent.isDate(run.runAt, equalTo: anomaly.occurredAt, toGranularity: .minute)
+        } ?? detail.runs.first { run in
+            run.summaryText.caseInsensitiveCompare(anomaly.detailText) == .orderedSame
+        }
+    }
+
+    private func runMetadataSummary(for run: OpsCronRunRow) -> String? {
+        var parts: [String] = []
+        if let jobID = run.jobID {
+            parts.append("Job \(jobID)")
+        }
+        if let runID = run.runID {
+            parts.append("Session \(shortIdentifier(runID))")
+        }
+        if let sourcePath = run.sourcePath {
+            parts.append("Artifact \(URL(fileURLWithPath: sourcePath).lastPathComponent)")
+        }
+
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    private func anomalyMetadataSummary(
+        for anomaly: OpsAnomalyRow,
+        matchedRun: OpsCronRunRow?
+    ) -> String? {
+        var parts: [String] = []
+        if let jobID = anomaly.relatedJobID ?? matchedRun?.jobID {
+            parts.append("Matched run \(jobID)")
+        }
+        if let runID = anomaly.relatedRunID ?? matchedRun?.runID {
+            parts.append("Session \(shortIdentifier(runID))")
+        }
+        if let sourcePath = anomaly.relatedSourcePath ?? matchedRun?.sourcePath {
+            parts.append("Artifact \(URL(fileURLWithPath: sourcePath).lastPathComponent)")
+        }
+
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    private func shortIdentifier(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 10 else { return trimmed }
+        return "\(trimmed.prefix(8))...\(trimmed.suffix(4))"
+    }
+
+    private func summaryCard(title: String, value: String, detail: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundColor(color)
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func emptyState(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func detailBadge(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption.weight(.medium))
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func statusColor(for statusText: String) -> Color {
+        switch statusText.uppercased() {
+        case "OK":
+            return .green
+        case "TIMEOUT", "FAILED", "ERROR":
+            return .red
+        default:
+            return .orange
+        }
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        if duration >= 60 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            return "\(minutes)m \(seconds)s"
+        }
+        return String(format: "%.1fs", duration)
+    }
+}
+
+private struct OpsToolDetailSheet: View {
+    @EnvironmentObject var appState: AppState
+
+    let panel: OpsToolPanelModel
+    @State private var selectedTracePanel: OpsTracePanelModel?
+
+    private var detail: OpsToolDetail { panel.detail }
+    private var currentProject: MAProject? {
+        guard appState.currentProject?.id == panel.projectID else { return nil }
+        return appState.currentProject
+    }
+    private var reliabilitySeries: OpsMetricHistorySeries? {
+        detail.historySeries.first { $0.metric == .workflowReliability }
+    }
+    private var errorBudgetSeries: OpsMetricHistorySeries? {
+        detail.historySeries.first { $0.metric == .errorBudget }
+    }
+    private var latestSpan: OpsToolSpanRow? {
+        detail.spans.max { $0.startedAt < $1.startedAt }
+    }
+    private var linkedTraceCount: Int {
+        detail.spans.count + detail.anomalies.filter { $0.linkedSpanID != nil }.count
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                headerSection
+                summarySection
+                trendSection
+                recentSpanSection
+                anomalySection
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 720, minHeight: 580)
+        .sheet(item: $selectedTracePanel) { panel in
+            OpsTraceDetailSheet(panel: panel)
+        }
+    }
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(displayTitle)
+                .font(.title3.weight(.semibold))
+
+            HStack(spacing: 8) {
+                detailBadge(detail.spans.isEmpty ? "No spans" : "\(detail.spans.count) spans", color: .blue)
+                detailBadge("\(detail.anomalies.count) anomalies", color: detail.anomalies.isEmpty ? .secondary : .red)
+                detailBadge(latestSpan?.service ?? detail.toolIdentifier, color: .teal)
+            }
+
+            Text("Tool-scoped spans and anomalies matched from retained OpenClaw runtime traces.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var summarySection: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
+            summaryCard(
+                title: "Success Rate",
+                value: latestReliabilityText,
+                detail: "Latest tool-scoped reliability sample",
+                color: reliabilityColor
+            )
+            summaryCard(
+                title: "Latest Span",
+                value: latestSpan.map { $0.startedAt.formatted(date: .abbreviated, time: .shortened) } ?? "-",
+                detail: latestSpan?.title ?? "No retained tool span",
+                color: .blue
+            )
+            summaryCard(
+                title: "Last Error Count",
+                value: latestErrorBudgetText,
+                detail: "Most recent tool-scoped error-budget sample",
+                color: latestErrorBudgetValue == 0 ? .green : .red
+            )
+            summaryCard(
+                title: "Trace Drill-down",
+                value: "\(linkedTraceCount)",
+                detail: "Retained tool spans and anomalies that open full trace context",
+                color: linkedTraceCount == 0 ? .secondary : .teal
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var trendSection: some View {
+        if let reliabilitySeries, !reliabilitySeries.points.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("30-Day Trend")
+                            .font(.headline)
+                        Text("Tool span reliability derived from the scoped analytics cache.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Text("Latest \(latestReliabilityText)")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+                }
+
+                Chart {
+                    ForEach(reliabilitySeries.points) { point in
+                        AreaMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Success Rate", point.value)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(Color.teal.opacity(0.14))
+
+                        LineMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Success Rate", point.value)
+                        )
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(Color.teal)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5))
+
+                        PointMark(
+                            x: .value("Day", point.date, unit: .day),
+                            y: .value("Success Rate", point.value)
+                        )
+                        .foregroundStyle(Color.teal)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading)
+                }
+                .chartYScale(domain: 0 ... 100)
+                .frame(height: 220)
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    private var recentSpanSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent Tool Spans")
+                .font(.headline)
+
+            if detail.spans.isEmpty {
+                emptyState("No retained tool spans were found for this scope.")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(detail.spans.prefix(12))) { row in
+                        Button {
+                            openTraceDetail(for: row)
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(row.startedAt.formatted(date: .omitted, time: .standard))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 72, alignment: .leading)
+
+                                detailBadge(row.statusText, color: statusColor(for: row.statusText))
+                                    .frame(width: 76, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(row.title)
+                                        .font(.caption.weight(.medium))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text("\(row.agentName) • \(row.service)")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(width: 220, alignment: .leading)
+
+                                Text(row.duration.map(formatDuration) ?? "-")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 56, alignment: .leading)
+
+                                Text(row.summaryText)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.45))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
+    private var anomalySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recent Tool Anomalies")
+                .font(.headline)
+
+            if detail.anomalies.isEmpty {
+                emptyState("No retained tool anomalies were found for this scope.")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(detail.anomalies.prefix(10))) { row in
+                        Button {
+                            openLinkedTrace(for: row)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text(row.occurredAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+
+                                    detailBadge(row.status == .critical ? "Critical" : "Warning", color: statusColor(for: row.statusText))
+                                    detailBadge(row.sourceService ?? "Tool", color: .teal)
+
+                                    if row.linkedSpanID != nil {
+                                        detailBadge("Open Trace", color: .blue)
+                                    }
+                                }
+
+                                Text(row.detailText)
+                                    .font(.caption)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                if row.fullDetailText != row.detailText {
+                                    Text(row.fullDetailText)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(4)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.45))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
+    private var displayTitle: String {
+        let trimmed = detail.toolIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Tool" }
+        if let lastComponent = trimmed.split(separator: ".").last {
+            return String(lastComponent)
+        }
+        return trimmed
+    }
+
+    private var latestReliabilityText: String {
+        if let latestValue = reliabilitySeries?.latestPoint?.value {
+            return "\(Int(latestValue.rounded()))%"
+        }
+        return "-"
+    }
+
+    private var reliabilityColor: Color {
+        guard let latestValue = reliabilitySeries?.latestPoint?.value else { return .secondary }
+        return latestValue >= 90 ? .green : (latestValue >= 75 ? .orange : .red)
+    }
+
+    private var latestErrorBudgetValue: Int? {
+        errorBudgetSeries?.latestPoint.map { Int($0.value.rounded()) }
+    }
+
+    private var latestErrorBudgetText: String {
+        latestErrorBudgetValue.map(String.init) ?? "-"
+    }
+
+    private func openTraceDetail(for row: OpsToolSpanRow) {
+        guard let detail = appState.opsAnalytics.traceDetail(projectID: panel.projectID, traceID: row.id) else {
+            return
+        }
+
+        selectedTracePanel = makeOpsTracePanelModel(
+            detail: detail,
+            project: currentProject,
+            executionLogs: appState.openClawService.executionLogs
+        )
+    }
+
+    private func openLinkedTrace(for row: OpsAnomalyRow) {
+        guard let spanID = row.linkedSpanID,
+              let detail = appState.opsAnalytics.traceDetail(projectID: panel.projectID, traceID: spanID) else {
+            return
+        }
+
+        selectedTracePanel = makeOpsTracePanelModel(
+            detail: detail,
+            project: currentProject,
+            executionLogs: appState.openClawService.executionLogs
+        )
+    }
+
+    private func summaryCard(title: String, value: String, detail: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundColor(color)
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func emptyState(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func detailBadge(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption.weight(.medium))
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func statusColor(for statusText: String) -> Color {
+        switch statusText.lowercased() {
+        case "ok", "success", "completed":
+            return .green
+        case "error", "failed", "timeout":
+            return .red
+        default:
+            return .orange
+        }
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
         if duration >= 60 {
             let minutes = Int(duration) / 60
             let seconds = Int(duration) % 60

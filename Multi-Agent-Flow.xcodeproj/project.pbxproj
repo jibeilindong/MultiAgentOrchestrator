@@ -6,20 +6,43 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		A1B2C3082F6A000100C9480C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 931B0E022F69C94100C9480C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 931B0E092F69C94200C9480C;
+			remoteInfo = "Multi-Agent-Flow";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
-		931B0E0A2F69C94200C9480C /* Multi-Agent-Flow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Multi-Agent-Flow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		931B0E0A2F69C94200C9480C /* Multi-Agent-Flow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Multi-Agent-Flow.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3012F6A000100C9480C /* Multi-Agent-FlowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Multi-Agent-FlowTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		931B0E0C2F69C94200C9480C /* Multi-Agent-Flow */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Multi-Agent-Flow;
+			path = "Multi-Agent-Flow";
+			sourceTree = "<group>";
+		};
+		A1B2C3022F6A000100C9480C /* Multi-Agent-FlowTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Multi-Agent-FlowTests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		931B0E072F69C94200C9480C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3032F6A000100C9480C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				931B0E0C2F69C94200C9480C /* Multi-Agent-Flow */,
+				A1B2C3022F6A000100C9480C /* Multi-Agent-FlowTests */,
 				931B0E0B2F69C94200C9480C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				931B0E0A2F69C94200C9480C /* Multi-Agent-Flow.app */,
+				A1B2C3012F6A000100C9480C /* Multi-Agent-FlowTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -63,12 +88,35 @@
 			fileSystemSynchronizedGroups = (
 				931B0E0C2F69C94200C9480C /* Multi-Agent-Flow */,
 			);
-			name = Multi-Agent-Flow;
+			name = "Multi-Agent-Flow";
 			packageProductDependencies = (
 			);
-			productName = Multi-Agent-Flow;
+			productName = "Multi-Agent-Flow";
 			productReference = 931B0E0A2F69C94200C9480C /* Multi-Agent-Flow.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A1B2C3062F6A000100C9480C /* Multi-Agent-FlowTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C30B2F6A000100C9480C /* Build configuration list for PBXNativeTarget "Multi-Agent-FlowTests" */;
+			buildPhases = (
+				A1B2C3052F6A000100C9480C /* Sources */,
+				A1B2C3032F6A000100C9480C /* Frameworks */,
+				A1B2C3042F6A000100C9480C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1B2C3072F6A000100C9480C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A1B2C3022F6A000100C9480C /* Multi-Agent-FlowTests */,
+			);
+			name = "Multi-Agent-FlowTests";
+			packageProductDependencies = (
+			);
+			productName = "Multi-Agent-FlowTests";
+			productReference = A1B2C3012F6A000100C9480C /* Multi-Agent-FlowTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					931B0E092F69C94200C9480C = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					A1B2C3062F6A000100C9480C = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 931B0E092F69C94200C9480C;
 					};
 				};
 			};
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				931B0E092F69C94200C9480C /* Multi-Agent-Flow */,
+				A1B2C3062F6A000100C9480C /* Multi-Agent-FlowTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		931B0E082F69C94200C9480C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1B2C3042F6A000100C9480C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1B2C3052F6A000100C9480C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3072F6A000100C9480C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 931B0E092F69C94200C9480C /* Multi-Agent-Flow */;
+			targetProxy = A1B2C3082F6A000100C9480C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		931B0E132F69C94200C9480C /* Debug */ = {
@@ -309,6 +384,56 @@
 			};
 			name = Release;
 		};
+		A1B2C3092F6A000100C9480C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4TPD585PDN;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				PRODUCT_BUNDLE_IDENTIFIER = Roney.MultiAgentFlowTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Multi-Agent-Flow.app/Contents/MacOS/Multi-Agent-Flow";
+				TEST_TARGET_NAME = "Multi-Agent-Flow";
+			};
+			name = Debug;
+		};
+		A1B2C30A2F6A000100C9480C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4TPD585PDN;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/../Frameworks",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				PRODUCT_BUNDLE_IDENTIFIER = Roney.MultiAgentFlowTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Multi-Agent-Flow.app/Contents/MacOS/Multi-Agent-Flow";
+				TEST_TARGET_NAME = "Multi-Agent-Flow";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -326,6 +451,15 @@
 			buildConfigurations = (
 				931B0E162F69C94200C9480C /* Debug */,
 				931B0E172F69C94200C9480C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C30B2F6A000100C9480C /* Build configuration list for PBXNativeTarget "Multi-Agent-FlowTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3092F6A000100C9480C /* Debug */,
+				A1B2C30A2F6A000100C9480C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
