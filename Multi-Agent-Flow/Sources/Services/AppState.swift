@@ -24,10 +24,17 @@ class ProjectManager: ObservableObject {
     static let shared = ProjectManager()
     
     @Published var projects: [ProjectFileReference] = []
+
+    private let fileManager = FileManager.default
     
     var projectsDirectory: URL {
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
         return documentsPath.appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+    }
+
+    var legacyProjectsDirectory: URL {
+        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return documentsPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
     }
     
     var backupsDirectory: URL {
@@ -38,21 +45,36 @@ class ProjectManager: ObservableObject {
         return projectsDirectory.appendingPathComponent("openclaw-sessions", isDirectory: true)
     }
 
+    var appSupportRootDirectory: URL {
+        let appSupportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupportPath.appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+    }
+
+    var legacyAppSupportRootDirectory: URL {
+        let appSupportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupportPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
+    }
+
     var defaultWorkspaceRootDirectory: URL {
-        let appSupportPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupportPath.appendingPathComponent("Multi-Agent-Flow/Workspaces", isDirectory: true)
+        appSupportRootDirectory.appendingPathComponent("Workspaces", isDirectory: true)
+    }
+
+    var autoSaveDirectory: URL {
+        appSupportRootDirectory.appendingPathComponent("AutoSave", isDirectory: true)
     }
     
     private init() {
+        migrateLegacyStorageIfNeeded()
         createDirectoriesIfNeeded()
         loadProjectList()
     }
     
     func createDirectoriesIfNeeded() {
-        try? FileManager.default.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: openClawSessionRootDirectory, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: openClawSessionRootDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
     }
     
     func loadProjectList() {
@@ -139,6 +161,53 @@ class ProjectManager: ObservableObject {
 
     func openClawImportedAgentsDirectory(for projectID: UUID) -> URL {
         openClawProjectRoot(for: projectID).appendingPathComponent("agents", isDirectory: true)
+    }
+
+    private func migrateLegacyStorageIfNeeded() {
+        mergeDirectoryIfNeeded(from: legacyProjectsDirectory, to: projectsDirectory)
+        mergeDirectoryIfNeeded(from: legacyAppSupportRootDirectory, to: appSupportRootDirectory)
+    }
+
+    private func mergeDirectoryIfNeeded(from legacyURL: URL, to currentURL: URL) {
+        var isLegacyDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: legacyURL.path, isDirectory: &isLegacyDirectory), isLegacyDirectory.boolValue else {
+            return
+        }
+
+        var isCurrentDirectory: ObjCBool = false
+        if !fileManager.fileExists(atPath: currentURL.path, isDirectory: &isCurrentDirectory) {
+            try? fileManager.moveItem(at: legacyURL, to: currentURL)
+            return
+        }
+
+        guard isCurrentDirectory.boolValue else { return }
+
+        let legacyContents = (try? fileManager.contentsOfDirectory(
+            at: legacyURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        for sourceURL in legacyContents {
+            let destinationURL = currentURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
+            var isSourceDirectory: ObjCBool = false
+
+            if !fileManager.fileExists(atPath: destinationURL.path) {
+                try? fileManager.moveItem(at: sourceURL, to: destinationURL)
+                continue
+            }
+
+            guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isSourceDirectory), isSourceDirectory.boolValue else {
+                continue
+            }
+
+            mergeDirectoryIfNeeded(from: sourceURL, to: destinationURL)
+        }
+
+        let remainingLegacyContents = (try? fileManager.contentsOfDirectory(at: legacyURL, includingPropertiesForKeys: nil)) ?? []
+        if remainingLegacyContents.isEmpty {
+            try? fileManager.removeItem(at: legacyURL)
+        }
     }
 }
 
@@ -481,8 +550,7 @@ class AppState: ObservableObject {
         
         // 保存到用户默认目录
         let fileManager = FileManager.default
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let projectDir = appSupport.appendingPathComponent("Multi-Agent-Flow/AutoSave")
+        let projectDir = projectManager.autoSaveDirectory
         
         do {
             try fileManager.createDirectory(at: projectDir, withIntermediateDirectories: true)
@@ -507,8 +575,7 @@ class AppState: ObservableObject {
     // 加载自动保存的项目
     func loadAutoSavedProject() -> MAProject? {
         let fileManager = FileManager.default
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let projectDir = appSupport.appendingPathComponent("Multi-Agent-Flow/AutoSave")
+        let projectDir = projectManager.autoSaveDirectory
         
         do {
             let files = try fileManager.contentsOfDirectory(at: projectDir, includingPropertiesForKeys: [.contentModificationDateKey])

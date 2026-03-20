@@ -1,6 +1,6 @@
 //
 //  AppState.swift
-//  MultiAgentOrchestrator
+//  Multi-Agent-Flow
 //
 //  Created by 陈荣泽 on 2026/3/18.
 //
@@ -261,7 +261,7 @@ class AppState: ObservableObject {
     
     // 显示帮助
     func showHelp() {
-        if let url = URL(string: "https://github.com/chenrongze/MultiAgentOrchestrator#readme") {
+        if let url = URL(string: "https://github.com/chenrongze/Multi-Agent-Flow#readme") {
             NSWorkspace.shared.open(url)
         }
     }
