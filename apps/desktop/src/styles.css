@@ -266,6 +266,7 @@ body {
   overflow: auto;
   border: 1px solid rgba(16, 33, 50, 0.08);
   border-radius: 20px;
+  cursor: default;
   background:
     linear-gradient(rgba(15, 118, 110, 0.045) 1px, transparent 1px),
     linear-gradient(90deg, rgba(15, 118, 110, 0.045) 1px, transparent 1px),
@@ -273,7 +274,20 @@ body {
   background-size: 28px 28px, 28px 28px, auto;
 }
 
+.canvasPreviewPanReady {
+  cursor: grab;
+}
+
+.canvasPreviewPanning {
+  cursor: grabbing;
+}
+
 .canvasViewport {
+  position: relative;
+  transform-origin: top left;
+}
+
+.canvasViewportSizer {
   position: relative;
 }
 
@@ -290,8 +304,39 @@ body {
   stroke-linecap: round;
 }
 
+.canvasEdgePathSelected {
+  stroke: #2563eb;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 10px rgba(37, 99, 235, 0.24));
+}
+
+.canvasEdgePathDraft {
+  stroke: rgba(37, 99, 235, 0.78);
+  stroke-width: 3;
+  stroke-dasharray: 10 8;
+}
+
+.canvasEdgeHitArea {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+  cursor: pointer;
+}
+
 .canvasEdgeDot {
   fill: #0f766e;
+}
+
+.canvasEdgeDotSelected {
+  fill: #2563eb;
+}
+
+.canvasEdgeLabel {
+  fill: #1d4ed8;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  pointer-events: none;
 }
 
 .canvasNode {
@@ -343,9 +388,44 @@ body {
   font-size: 0.78rem !important;
 }
 
+.canvasConnectHandle {
+  position: absolute;
+  top: 50%;
+  right: -12px;
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(37, 99, 235, 0.4);
+  border-radius: 999px;
+  padding: 0;
+  background: #eff6ff;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.16);
+  cursor: crosshair;
+  transform: translateY(-50%);
+}
+
+.canvasConnectHandle::after {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin: 6px auto 0;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.canvasConnectHandleActive {
+  border-color: #2563eb;
+  background: #dbeafe;
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.24);
+}
+
 .canvasNodeStart {
   background: rgba(240, 253, 250, 0.98);
   border-color: rgba(15, 118, 110, 0.22);
+}
+
+.canvasNodeSelected {
+  outline: 3px solid rgba(15, 118, 110, 0.22);
 }
 
 .canvasNodeFrom {
@@ -422,6 +502,45 @@ body {
   color: #dbeafe;
   font-size: 0.85rem;
   line-height: 1.6;
+}
+
+.inspectorCard {
+  display: grid;
+  gap: 16px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.inspectorGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.checkboxField {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid rgba(16, 33, 50, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.checkboxField input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #0f766e;
+}
+
+.checkboxField span {
+  color: #13283c;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .card ul,

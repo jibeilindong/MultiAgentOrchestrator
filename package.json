@@ -8,6 +8,11 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace @multi-agent-flow/desktop",
+    "validate:compat": "npm run validate:compat --workspace @multi-agent-flow/core",
+    "desktop:pack": "npm run pack --workspace @multi-agent-flow/desktop",
+    "desktop:dist": "npm run dist --workspace @multi-agent-flow/desktop",
+    "desktop:dist:mac": "npm run dist:mac --workspace @multi-agent-flow/desktop",
+    "desktop:dist:win": "npm run dist:win --workspace @multi-agent-flow/desktop",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   }

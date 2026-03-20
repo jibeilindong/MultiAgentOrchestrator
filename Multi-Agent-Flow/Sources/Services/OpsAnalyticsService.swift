@@ -189,6 +189,30 @@ struct OpsCronRunRow: Identifiable {
     let summaryText: String
 }
 
+struct OpsAnomalySummary {
+    let runtimeFailures24h: Int
+    let runtimeFailures7d: Int
+    let cronFailures24h: Int
+    let cronFailures7d: Int
+    let toolFailures24h: Int
+    let toolFailures7d: Int
+    let timeoutCount7d: Int
+    let latestAnomalyAt: Date?
+}
+
+struct OpsAnomalyRow: Identifiable {
+    let id: String
+    let title: String
+    let sourceLabel: String
+    let detailText: String
+    let fullDetailText: String
+    let occurredAt: Date
+    let status: OpsHealthStatus
+    let statusText: String
+    let sourceService: String?
+    let linkedSpanID: UUID?
+}
+
 struct OpsTraceDetail: Identifiable {
     let id: UUID
     let traceID: String
@@ -228,6 +252,8 @@ struct OpsAnalyticsSnapshot {
     let historicalSeries: [OpsMetricHistorySeries]
     let cronSummary: OpsCronReliabilitySummary?
     let cronRuns: [OpsCronRunRow]
+    let anomalySummary: OpsAnomalySummary?
+    let anomalyRows: [OpsAnomalyRow]
     let agentRows: [OpsAgentHealthRow]
     let traceRows: [OpsTraceSummaryRow]
 
@@ -246,6 +272,8 @@ struct OpsAnalyticsSnapshot {
         historicalSeries: [],
         cronSummary: nil,
         cronRuns: [],
+        anomalySummary: nil,
+        anomalyRows: [],
         agentRows: [],
         traceRows: []
     )
@@ -392,6 +420,8 @@ final class OpsAnalyticsService: ObservableObject {
             historicalSeries: persistenceSummary?.historicalSeries ?? [],
             cronSummary: persistenceSummary?.cronSummary,
             cronRuns: persistenceSummary?.cronRuns ?? [],
+            anomalySummary: persistenceSummary?.anomalySummary,
+            anomalyRows: persistenceSummary?.anomalyRows ?? [],
             agentRows: agentRows,
             traceRows: persistenceSummary?.traceRows ?? traceRows
         )

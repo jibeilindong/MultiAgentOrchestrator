@@ -183,8 +183,11 @@ The first implementation batch starts with:
 - [x] Initial platform-agnostic domain model started
 - [x] Initial core serialization helpers started
 - [x] Minimal desktop shell scaffold started
-- [ ] `.maoproj` open/save bridge
+- [x] `.maoproj` open/save bridge
 - [ ] Workflow canvas migration
+- [x] Packaging scaffold started
+- [x] CI packaging workflow started
+- [x] `.maoproj` compatibility regression fixtures started
 - [ ] OpenClaw migration
 - [ ] macOS + Windows packaging
 

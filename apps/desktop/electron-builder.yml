@@ -1,0 +1,36 @@
+appId: com.multiagentflow.desktop
+productName: Multi-Agent-Flow
+asar: true
+publish: null
+electronVersion: 37.10.3
+
+directories:
+  output: release
+  buildResources: buildResources
+
+files:
+  - out/**/*
+  - package.json
+
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  allowElevation: true
+  shortcutName: Multi-Agent-Flow

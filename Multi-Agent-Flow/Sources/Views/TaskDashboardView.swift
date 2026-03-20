@@ -22,6 +22,184 @@ private enum OpsCenterPage: String, CaseIterable, Identifiable {
     }
 }
 
+private enum OpsTraceSourceFilter: String, CaseIterable, Identifiable {
+    case all
+    case runtime
+    case openClaw
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .runtime: return "Runtime"
+        case .openClaw: return "OpenClaw"
+        }
+    }
+
+    func matches(_ row: OpsTraceSummaryRow) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .runtime:
+            return row.sourceLabel == "Runtime"
+        case .openClaw:
+            return row.sourceLabel == "OpenClaw"
+        }
+    }
+}
+
+private enum OpsTraceSpanFilter: String, CaseIterable, Identifiable {
+    case all
+    case conversation
+    case tools
+    case runtime
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .conversation: return "Messages"
+        case .tools: return "Tools"
+        case .runtime: return "Runtime"
+        }
+    }
+
+    func matches(service: String) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .conversation:
+            return service.contains("message")
+        case .tools:
+            return service.contains("tool")
+        case .runtime:
+            return !service.contains("message") && !service.contains("tool")
+        }
+    }
+}
+
+private enum OpsAnomalySourceFilter: String, CaseIterable, Identifiable {
+    case all
+    case runtime
+    case tool
+    case cron
+    case openClaw
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .runtime: return "Runtime"
+        case .tool: return "Tool"
+        case .cron: return "Cron"
+        case .openClaw: return "OpenClaw"
+        }
+    }
+
+    func matches(_ row: OpsAnomalyRow) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .runtime:
+            return row.sourceLabel == "Runtime"
+        case .tool:
+            return row.sourceLabel == "Tool"
+        case .cron:
+            return row.sourceLabel == "Cron"
+        case .openClaw:
+            return row.sourceLabel == "OpenClaw"
+        }
+    }
+}
+
+private enum OpsAnomalySeverityFilter: String, CaseIterable, Identifiable {
+    case all
+    case critical
+    case warning
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .critical: return "Critical"
+        case .warning: return "Warning"
+        }
+    }
+
+    func matches(_ row: OpsAnomalyRow) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .critical:
+            return row.status == .critical
+        case .warning:
+            return row.status == .warning
+        }
+    }
+}
+
+private enum OpsAnomalyTimeWindow: String, CaseIterable, Identifiable {
+    case last24Hours
+    case last3Days
+    case last7Days
+    case last14Days
+    case all
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .last24Hours: return "24h"
+        case .last3Days: return "3d"
+        case .last7Days: return "7d"
+        case .last14Days: return "14d"
+        case .all: return "All"
+        }
+    }
+
+    var dayCount: Int? {
+        switch self {
+        case .last24Hours: return 1
+        case .last3Days: return 3
+        case .last7Days: return 7
+        case .last14Days: return 14
+        case .all: return nil
+        }
+    }
+
+    var detailText: String {
+        switch self {
+        case .last24Hours: return "Signals from the last 24 hours"
+        case .last3Days: return "Signals from the last 3 days"
+        case .last7Days: return "Signals from the last 7 days"
+        case .last14Days: return "Signals from the last 14 days"
+        case .all: return "All retained anomalies in the local cache"
+        }
+    }
+}
+
+private enum OpsHistoryFocusMode: String, CaseIterable, Identifiable {
+    case project
+    case agent
+    case tool
+    case cron
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .project: return "Project"
+        case .agent: return "Agent"
+        case .tool: return "Tool"
+        case .cron: return "Cron"
+        }
+    }
+}
+
 struct MonitoringDashboardView: View {
     @EnvironmentObject var appState: AppState
     @State private var metrics = DashboardMetrics()
@@ -31,7 +209,16 @@ struct MonitoringDashboardView: View {
     @State private var selectedHistoryCategory: OpsHistoryCategory = .all
     @State private var selectedHistoryWindow: OpsHistoryWindow = .last30Days
     @State private var selectedHistoryMetric: OpsHistoryMetric = .workflowReliability
+    @State private var selectedHistoryFocusMode: OpsHistoryFocusMode = .project
+    @State private var selectedHistoryFocusID: String = "project"
+    @State private var selectedTraceSourceFilter: OpsTraceSourceFilter = .all
+    @State private var traceSearchText: String = ""
     @State private var selectedTracePanel: OpsTracePanelModel?
+    @State private var selectedAnomalyPanel: OpsAnomalyPanelModel?
+    @State private var selectedAnomalySourceFilter: OpsAnomalySourceFilter = .all
+    @State private var selectedAnomalySeverityFilter: OpsAnomalySeverityFilter = .all
+    @State private var selectedAnomalyTimeWindow: OpsAnomalyTimeWindow = .last7Days
+    @State private var anomalySearchText: String = ""
 
     private var project: MAProject? { appState.currentProject }
     private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
@@ -85,6 +272,109 @@ struct MonitoringDashboardView: View {
     }
     private var selectedHistorySeries: OpsMetricHistorySeries? {
         filteredHistoricalSeries.first { $0.metric == effectiveSelectedHistoryMetric }
+    }
+    private var historyFocusOptions: [OpsHistoryFocusOption] {
+        historyFocusOptions(for: selectedHistoryFocusMode)
+    }
+    private var effectiveSelectedHistoryFocus: OpsHistoryFocusOption {
+        historyFocusOptions.first(where: { $0.id == selectedHistoryFocusID })
+            ?? historyFocusOptions.first
+            ?? OpsHistoryFocusOption(
+                id: "project",
+                title: project?.name ?? "Project",
+                subtitle: "Project-wide context",
+                matchKey: project?.name.lowercased() ?? "project"
+            )
+    }
+    private var anomalyWindowStart: Date? {
+        guard let dayCount = selectedAnomalyTimeWindow.dayCount else { return nil }
+        return historyCalendar.date(byAdding: .day, value: -dayCount, to: Date())
+    }
+    private var filteredAnomalyRows: [OpsAnomalyRow] {
+        let normalizedSearch = anomalySearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        return opsSnapshot.anomalyRows.filter { row in
+            if let anomalyWindowStart, row.occurredAt < anomalyWindowStart {
+                return false
+            }
+            guard selectedAnomalySourceFilter.matches(row) else { return false }
+            guard selectedAnomalySeverityFilter.matches(row) else { return false }
+            guard !normalizedSearch.isEmpty else { return true }
+
+            let haystack = [
+                row.title,
+                row.detailText,
+                row.fullDetailText,
+                row.sourceLabel,
+                row.sourceService ?? "",
+                row.statusText
+            ]
+            .joined(separator: " ")
+            .lowercased()
+
+            return haystack.contains(normalizedSearch)
+        }
+    }
+    private var anomalyClusters: [OpsAnomalyCluster] {
+        let recent24HourStart = historyCalendar.date(byAdding: .day, value: -1, to: Date()) ?? .distantPast
+
+        let groupedRows = Dictionary(grouping: filteredAnomalyRows, by: anomalyClusterKey(for:))
+        let clusters: [OpsAnomalyCluster] = groupedRows.map { (key: String, rows: [OpsAnomalyRow]) in
+            let latest = rows.max(by: { $0.occurredAt < $1.occurredAt }) ?? rows[0]
+            let firstOccurredAt = rows.map(\.occurredAt).min() ?? latest.occurredAt
+            let lastOccurredAt = rows.map(\.occurredAt).max() ?? latest.occurredAt
+            let criticalCount = rows.filter { $0.status == .critical }.count
+            let linkedTraceCount = rows.filter { $0.linkedSpanID != nil }.count
+            let recent24HourCount = rows.filter { $0.occurredAt >= recent24HourStart }.count
+
+            return OpsAnomalyCluster(
+                id: key,
+                title: latest.title,
+                sourceLabel: latest.sourceLabel,
+                sourceService: latest.sourceService,
+                sampleDetail: latest.detailText,
+                latestOccurredAt: lastOccurredAt,
+                firstOccurredAt: firstOccurredAt,
+                status: criticalCount > 0 ? .critical : .warning,
+                occurrenceCount: rows.count,
+                recent24HourCount: recent24HourCount,
+                linkedTraceCount: linkedTraceCount,
+                latestAnomaly: latest
+            )
+        }
+
+        return clusters.sorted { lhs, rhs in
+                if lhs.occurrenceCount != rhs.occurrenceCount {
+                    return lhs.occurrenceCount > rhs.occurrenceCount
+                }
+                if lhs.latestOccurredAt != rhs.latestOccurredAt {
+                    return lhs.latestOccurredAt > rhs.latestOccurredAt
+                }
+                return lhs.id < rhs.id
+            }
+    }
+    private var hotAnomalyClusters: [OpsAnomalyCluster] {
+        Array(anomalyClusters.prefix(6))
+    }
+    private var filteredTraceRows: [OpsTraceSummaryRow] {
+        let normalizedSearch = traceSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        return opsSnapshot.traceRows.filter { row in
+            guard selectedTraceSourceFilter.matches(row) else { return false }
+            guard !normalizedSearch.isEmpty else { return true }
+
+            let haystack = [
+                row.agentName,
+                row.previewText,
+                row.routingAction ?? "",
+                row.outputType.rawValue,
+                row.sourceLabel
+            ]
+            .joined(separator: " ")
+            .lowercased()
+
+            return haystack.contains(normalizedSearch)
+        }
     }
     private var dashboardRefreshSignature: String {
         let projectSignature = project.map {
@@ -159,6 +449,8 @@ struct MonitoringDashboardView: View {
                         opsCenterHeaderSection
                         if selectedOpsCenterPage == .liveOverview {
                             opsOverviewSection
+                            opsAnomalyOverviewSection
+                            opsAnomalyExplorerSection
                             opsDailyActivitySection
                             opsCronReliabilitySection
                             opsAgentHealthSection
@@ -185,6 +477,12 @@ struct MonitoringDashboardView: View {
         .onReceive(appState.opsAnalytics.$snapshot) { snapshot in
             opsSnapshot = snapshot
         }
+        .onChange(of: selectedHistoryFocusMode) { _, newMode in
+            let options = historyFocusOptions(for: newMode)
+            if !options.contains(where: { $0.id == selectedHistoryFocusID }) {
+                selectedHistoryFocusID = options.first?.id ?? "project"
+            }
+        }
         .onChange(of: dashboardRefreshSignature) { _, _ in
             scheduleMetricsRefresh(immediately: false)
         }
@@ -194,6 +492,9 @@ struct MonitoringDashboardView: View {
         }
         .sheet(item: $selectedTracePanel) { panel in
             OpsTraceDetailSheet(panel: panel)
+        }
+        .sheet(item: $selectedAnomalyPanel) { panel in
+            OpsAnomalyDetailSheet(panel: panel)
         }
     }
 
@@ -279,6 +580,74 @@ struct MonitoringDashboardView: View {
         }
     }
 
+    private var opsAnomalyOverviewSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Project Anomalies")
+                        .font(.headline)
+                    Text("Cross-project failure rollup for runtime, tools, cron, and timeouts.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if let latest = opsSnapshot.anomalySummary?.latestAnomalyAt {
+                    Text("Latest \(latest.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let summary = opsSnapshot.anomalySummary {
+                HStack(spacing: 16) {
+                    monitoringCard(
+                        title: "Runtime Failures",
+                        value: "\(summary.runtimeFailures24h)",
+                        detail: "24h / 7d: \(summary.runtimeFailures24h) / \(summary.runtimeFailures7d)",
+                        color: summary.runtimeFailures24h == 0 ? .green : .red
+                    )
+                    monitoringCard(
+                        title: "Tool Failures",
+                        value: "\(summary.toolFailures24h)",
+                        detail: "24h / 7d: \(summary.toolFailures24h) / \(summary.toolFailures7d)",
+                        color: summary.toolFailures24h == 0 ? .green : .orange
+                    )
+                    monitoringCard(
+                        title: "Cron Errors",
+                        value: "\(summary.cronFailures24h)",
+                        detail: "24h / 7d: \(summary.cronFailures24h) / \(summary.cronFailures7d)",
+                        color: summary.cronFailures24h == 0 ? .green : .red
+                    )
+                    monitoringCard(
+                        title: "Timeouts",
+                        value: "\(summary.timeoutCount7d)",
+                        detail: "Across cron and trace artifacts in 7d",
+                        color: summary.timeoutCount7d == 0 ? .green : .orange
+                    )
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(opsSnapshot.anomalyRows) { row in
+                        anomalyRowButton(row)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                Text("No project-level anomalies are currently aggregated.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+    }
+
     private var opsProjectHistorySection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -308,6 +677,28 @@ struct MonitoringDashboardView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 180)
+            }
+
+            HStack(spacing: 12) {
+                Picker("History Focus", selection: $selectedHistoryFocusMode) {
+                    ForEach(OpsHistoryFocusMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("History Scope", selection: $selectedHistoryFocusID) {
+                    ForEach(historyFocusOptions) { option in
+                        Text(option.title).tag(option.id)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Spacer()
+
+                Text(effectiveSelectedHistoryFocus.subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             if filteredHistoricalSeries.allSatisfy({ $0.points.isEmpty }) {
@@ -379,12 +770,120 @@ struct MonitoringDashboardView: View {
                                 value: historyDeltaText(for: series)
                             )
                         }
+
+                        opsHistoryContextSection(for: series)
                     }
                     .padding()
                     .background(Color(.controlBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
+        }
+    }
+
+    private var opsAnomalyExplorerSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Anomaly Explorer")
+                        .font(.headline)
+                    Text("Filter and triage runtime, tool, cron, and OpenClaw anomalies from one queue.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Text("\(filteredAnomalyRows.count) matching")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                Picker("Source", selection: $selectedAnomalySourceFilter) {
+                    ForEach(OpsAnomalySourceFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("Severity", selection: $selectedAnomalySeverityFilter) {
+                    ForEach(OpsAnomalySeverityFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("Window", selection: $selectedAnomalyTimeWindow) {
+                    ForEach(OpsAnomalyTimeWindow.allCases) { window in
+                        Text(window.title).tag(window)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Spacer()
+            }
+
+            TextField("Search anomaly title, source, service, or captured detail", text: $anomalySearchText)
+                .textFieldStyle(.roundedBorder)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
+                ForEach(anomalyExplorerCards) { card in
+                    monitoringCard(
+                        title: card.title,
+                        value: card.value,
+                        detail: card.detail,
+                        color: card.color
+                    )
+                }
+            }
+
+            if !hotAnomalyClusters.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Hot Clusters")
+                            .font(.headline)
+                        Spacer()
+                        Text(selectedAnomalyTimeWindow.detailText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    ForEach(hotAnomalyClusters) { cluster in
+                        anomalyClusterButton(cluster)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            VStack(spacing: 8) {
+                if filteredAnomalyRows.isEmpty {
+                    Text("No anomalies match the current explorer filters.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    HStack {
+                        Text("Recent Matches")
+                            .font(.headline)
+                        Spacer()
+                        Text("Sorted by latest occurrence")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 2)
+
+                    ForEach(filteredAnomalyRows) { row in
+                        anomalyRowButton(row)
+                    }
+                }
+            }
+            .padding()
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 
@@ -593,17 +1092,37 @@ struct MonitoringDashboardView: View {
 
     private var opsTraceSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Traces")
-                .font(.headline)
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Recent Traces")
+                        .font(.headline)
+                    Text("Merged runtime and OpenClaw backup traces.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Picker("Trace Source", selection: $selectedTraceSourceFilter) {
+                    ForEach(OpsTraceSourceFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+            }
+
+            TextField("Search agent, output, route, or source", text: $traceSearchText)
+                .textFieldStyle(.roundedBorder)
 
             VStack(spacing: 8) {
-                if opsSnapshot.traceRows.isEmpty {
-                    Text("No execution traces are available yet.")
+                if filteredTraceRows.isEmpty {
+                    Text(traceSearchText.isEmpty ? "No execution traces are available yet." : "No traces match the current search.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    ForEach(opsSnapshot.traceRows) { row in
+                    ForEach(filteredTraceRows) { row in
                         Button {
                             openTraceDetail(for: row)
                         } label: {
@@ -1087,6 +1606,621 @@ struct MonitoringDashboardView: View {
             .clipShape(Capsule())
     }
 
+    private var anomalyExplorerCards: [OpsContextCard] {
+        let rows = filteredAnomalyRows
+        let criticalCount = rows.filter { $0.status == .critical }.count
+        let cronCount = rows.filter { $0.sourceLabel == "Cron" }.count
+        let linkedTraceCount = rows.filter { $0.linkedSpanID != nil }.count
+        let repeatedClusters = anomalyClusters.filter { $0.occurrenceCount > 1 }.count
+
+        return [
+            OpsContextCard(
+                id: "matching",
+                title: "Matching",
+                value: "\(rows.count)",
+                detail: selectedAnomalyTimeWindow.detailText,
+                color: rows.isEmpty ? .secondary : .blue
+            ),
+            OpsContextCard(
+                id: "critical",
+                title: "Critical",
+                value: "\(criticalCount)",
+                detail: "Highest-severity anomalies in scope",
+                color: criticalCount == 0 ? .green : .red
+            ),
+            OpsContextCard(
+                id: "cron",
+                title: "Cron Impact",
+                value: "\(cronCount)",
+                detail: "Scheduled run anomalies in scope",
+                color: cronCount == 0 ? .green : .orange
+            ),
+            OpsContextCard(
+                id: "clusters",
+                title: "Repeated Clusters",
+                value: "\(repeatedClusters)",
+                detail: "\(linkedTraceCount) trace-linked rows retained",
+                color: repeatedClusters == 0 ? .secondary : .teal
+            )
+        ]
+    }
+
+    private func anomalyClusterKey(for row: OpsAnomalyRow) -> String {
+        [
+            row.sourceLabel.lowercased(),
+            (row.sourceService ?? row.sourceLabel).lowercased(),
+            row.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        ]
+        .joined(separator: "::")
+    }
+
+    private func historyFocusOptions(for mode: OpsHistoryFocusMode) -> [OpsHistoryFocusOption] {
+        switch mode {
+        case .project:
+            return [
+                OpsHistoryFocusOption(
+                    id: "project",
+                    title: project?.name ?? "Project",
+                    subtitle: "Project-wide context",
+                    matchKey: project?.name.lowercased() ?? "project"
+                )
+            ]
+        case .agent:
+            let uniqueAgents = Array(
+                Dictionary(
+                    uniqueKeysWithValues: opsSnapshot.agentRows.map {
+                        ($0.agentName.lowercased(), OpsHistoryFocusOption(
+                            id: "agent:\($0.agentName.lowercased())",
+                            title: $0.agentName,
+                            subtitle: $0.stateText,
+                            matchKey: $0.agentName.lowercased()
+                        ))
+                    }
+                ).values
+            )
+            return uniqueAgents.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .tool:
+            let identifiers = Set(
+                opsSnapshot.anomalyRows.compactMap { row -> String? in
+                    guard row.sourceLabel == "Tool" else { return nil }
+                    return (row.sourceService ?? row.title).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .filter { !$0.isEmpty }
+            )
+
+            return identifiers.sorted().map { identifier in
+                OpsHistoryFocusOption(
+                    id: "tool:\(identifier.lowercased())",
+                    title: historyFocusDisplayName(forToolIdentifier: identifier),
+                    subtitle: "Tool-service scoped context",
+                    matchKey: identifier.lowercased()
+                )
+            }
+        case .cron:
+            let identifiers = Set(
+                opsSnapshot.cronRuns.map(\.cronName) +
+                opsSnapshot.anomalyRows.filter { $0.sourceLabel == "Cron" }.map(\.title)
+            )
+
+            return identifiers.sorted().map { identifier in
+                OpsHistoryFocusOption(
+                    id: "cron:\(identifier.lowercased())",
+                    title: identifier,
+                    subtitle: "Scheduled run scoped context",
+                    matchKey: identifier.lowercased()
+                )
+            }
+        }
+    }
+
+    private func historyFocusDisplayName(forToolIdentifier identifier: String) -> String {
+        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Tool" }
+
+        if let lastComponent = trimmed.split(separator: ".").last {
+            return String(lastComponent)
+        }
+        return trimmed
+    }
+
+    private func opsHistoryContextSection(for series: OpsMetricHistorySeries) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Metric Lens")
+                    .font(.headline)
+                Text("Scope: \(effectiveSelectedHistoryFocus.title)")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(historyColor(for: series.metric))
+                Text(historyNarrative(for: series))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
+                ForEach(historyContextCards(for: series.metric)) { card in
+                    monitoringCard(
+                        title: card.title,
+                        value: card.value,
+                        detail: card.detail,
+                        color: card.color
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Related Signals")
+                    .font(.headline)
+
+                let rows = historySignalRows(for: series.metric)
+                if rows.isEmpty {
+                    Text("No supporting signals are available for this metric yet.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    ForEach(rows) { row in
+                        historySignalRowView(row)
+                    }
+                }
+            }
+            .padding()
+            .background(Color.white.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .padding(.top, 6)
+    }
+
+    private func historyNarrative(for series: OpsMetricHistorySeries) -> String {
+        let latestText = series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "no sample"
+        let deltaText = historyDeltaText(for: series)
+        let focusText = selectedHistoryFocusMode == .project
+            ? "Project-wide"
+            : "\(effectiveSelectedHistoryFocus.title)"
+
+        switch series.metric {
+        case .workflowReliability:
+            return "\(focusText) workflow reliability is currently \(latestText). \(deltaText), with recent runtime and tool anomalies shown below for faster root-cause review."
+        case .agentEngagement:
+            return "\(focusText) agent engagement is currently \(latestText). \(deltaText), and the signal rows highlight which agents are carrying or losing activity."
+        case .memoryDiscipline:
+            return "\(focusText) memory discipline is currently \(latestText). \(deltaText), with contributor rows showing which agents are covered by tracked memory backups."
+        case .errorBudget:
+            return "\(focusText) error budget is currently \(latestText). \(deltaText), so the rows below focus on the newest failure, timeout, and escalation signals."
+        case .cronReliability:
+            return "\(focusText) cron reliability is currently \(latestText). \(deltaText), and the related signals below show the latest scheduled runs feeding this trend."
+        }
+    }
+
+    private func historyContextCards(for metric: OpsHistoryMetric) -> [OpsContextCard] {
+        let focusedTraceRows = opsSnapshot.traceRows.filter(matchesHistoryFocus)
+        let focusedAnomalyRows = opsSnapshot.anomalyRows.filter(matchesHistoryFocus)
+        let focusedAgentRows = opsSnapshot.agentRows.filter(matchesHistoryFocus)
+        let focusedCronRuns = opsSnapshot.cronRuns.filter(matchesHistoryFocus)
+
+        switch metric {
+        case .workflowReliability:
+            let failed = focusedTraceRows.filter { $0.status == .failed }.count
+            let openClaw = focusedTraceRows.filter { $0.sourceLabel == "OpenClaw" }.count
+            let runtimeAnomalies = focusedAnomalyRows.filter { $0.sourceLabel == "Runtime" || $0.sourceLabel == "Tool" }.count
+            return [
+                OpsContextCard(id: "wf-failed", title: "Failed Traces", value: "\(failed)", detail: "\(effectiveSelectedHistoryFocus.title) traces in current scope", color: failed == 0 ? .green : .red),
+                OpsContextCard(id: "wf-openclaw", title: "OpenClaw Share", value: "\(openClaw)", detail: "External traces matching this scope", color: .teal),
+                OpsContextCard(id: "wf-runtime", title: "Runtime Signals", value: "\(runtimeAnomalies)", detail: "Runtime and tool anomalies in scope", color: runtimeAnomalies == 0 ? .green : .orange)
+            ]
+        case .agentEngagement:
+            return [
+                OpsContextCard(id: "eng-active", title: "Scoped Agents", value: "\(focusedAgentRows.count)", detail: "Agents matching the current focus", color: focusedAgentRows.isEmpty ? .secondary : .blue),
+                OpsContextCard(id: "eng-total", title: "Total Agents", value: "\(opsSnapshot.totalAgents)", detail: "Agents defined for this project", color: .secondary),
+                OpsContextCard(id: "eng-completed", title: "Completed Runs", value: "\(focusedAgentRows.reduce(0) { $0 + $1.completedCount })", detail: "Completed runs in scope", color: .green)
+            ]
+        case .memoryDiscipline:
+            let scopedTracked = focusedAgentRows.filter(\.hasTrackedMemory).count
+            let untracked = max(focusedAgentRows.count - scopedTracked, 0)
+            return [
+                OpsContextCard(id: "mem-tracked", title: "Tracked Memory", value: "\(scopedTracked)", detail: "Agents in scope with backup coverage", color: scopedTracked == 0 ? .secondary : .green),
+                OpsContextCard(id: "mem-gap", title: "Coverage Gaps", value: "\(untracked)", detail: "Agents in scope missing tracked memory", color: untracked == 0 ? .green : .orange),
+                OpsContextCard(id: "mem-total", title: "Coverage Rate", value: focusedAgentRows.isEmpty ? "-" : "\(Int((Double(scopedTracked) / Double(focusedAgentRows.count) * 100).rounded()))%", detail: "Current memory discipline posture", color: untracked == 0 ? .green : .blue)
+            ]
+        case .errorBudget:
+            let critical = focusedAnomalyRows.filter { $0.status == .critical }.count
+            let timeouts = focusedAnomalyRows.filter { $0.detailText.localizedCaseInsensitiveContains("timeout") || $0.fullDetailText.localizedCaseInsensitiveContains("timeout") }.count
+            return [
+                OpsContextCard(id: "err-critical", title: "Critical Alerts", value: "\(critical)", detail: "Critical anomalies currently retained", color: critical == 0 ? .green : .red),
+                OpsContextCard(id: "err-timeout", title: "Timeout Signals", value: "\(timeouts)", detail: "Timeout-tagged anomalies in scope", color: timeouts == 0 ? .green : .orange),
+                OpsContextCard(id: "err-failed", title: "Failed Executions", value: "\(focusedTraceRows.filter { $0.status == .failed }.count)", detail: "Recent failed traces in scope", color: focusedTraceRows.contains(where: { $0.status == .failed }) ? .red : .green)
+            ]
+        case .cronReliability:
+            let failedRuns = focusedCronRuns.filter { $0.statusText != "OK" }.count
+            let successRate = focusedCronRuns.isEmpty ? nil : Double(focusedCronRuns.filter { $0.statusText == "OK" }.count) / Double(focusedCronRuns.count) * 100
+            return [
+                OpsContextCard(id: "cron-rate", title: "Success Rate", value: successRate.map { "\(Int($0.rounded()))%" } ?? "-", detail: "Scoped cron reliability from retained runs", color: (successRate ?? 0) >= 90 ? .green : .orange),
+                OpsContextCard(id: "cron-failed", title: "Failed Runs", value: "\(failedRuns)", detail: "Failed or timed-out cron runs in scope", color: failedRuns == 0 ? .green : .red),
+                OpsContextCard(id: "cron-latest", title: "Recent Samples", value: "\(focusedCronRuns.count)", detail: "Most recent ingested cron runs in scope", color: .blue)
+            ]
+        }
+    }
+
+    private func historySignalRows(for metric: OpsHistoryMetric) -> [OpsHistorySignalRow] {
+        let focusedAnomalyRows = opsSnapshot.anomalyRows.filter(matchesHistoryFocus)
+        let focusedTraceRows = opsSnapshot.traceRows.filter(matchesHistoryFocus)
+        let focusedAgentRows = opsSnapshot.agentRows.filter(matchesHistoryFocus)
+        let focusedCronRuns = opsSnapshot.cronRuns.filter(matchesHistoryFocus)
+
+        switch metric {
+        case .workflowReliability:
+            let anomalySignals = focusedAnomalyRows
+                .filter { $0.sourceLabel != "Cron" }
+                .prefix(4)
+                .map { anomaly in
+                    OpsHistorySignalRow(
+                        id: "anomaly-\(anomaly.id)",
+                        title: anomaly.title,
+                        badge: anomaly.sourceLabel,
+                        detail: anomaly.detailText,
+                        occurredAt: anomaly.occurredAt,
+                        color: anomalySourceColor(for: anomaly.sourceLabel),
+                        anomaly: anomaly,
+                        trace: nil
+                    )
+                }
+
+            let traceSignals = focusedTraceRows
+                .filter { $0.status == .failed }
+                .prefix(max(0, 6 - anomalySignals.count))
+                .map { trace in
+                    OpsHistorySignalRow(
+                        id: "trace-\(trace.id.uuidString)",
+                        title: trace.agentName,
+                        badge: trace.sourceLabel,
+                        detail: trace.previewText,
+                        occurredAt: trace.startedAt,
+                        color: traceStatusColor(for: trace.status),
+                        anomaly: nil,
+                        trace: trace
+                    )
+                }
+
+            return anomalySignals + traceSignals
+        case .agentEngagement:
+            return focusedAgentRows
+                .sorted { lhs, rhs in
+                    if lhs.completedCount != rhs.completedCount {
+                        return lhs.completedCount > rhs.completedCount
+                    }
+                    return (lhs.lastActivityAt ?? .distantPast) > (rhs.lastActivityAt ?? .distantPast)
+                }
+                .prefix(6)
+                .map { row in
+                    OpsHistorySignalRow(
+                        id: "agent-\(row.id.uuidString)",
+                        title: row.agentName,
+                        badge: row.stateText,
+                        detail: "Completed \(row.completedCount) • Failed \(row.failedCount) • Last \(row.lastActivityAt?.formatted(date: .omitted, time: .shortened) ?? "inactive")",
+                        occurredAt: row.lastActivityAt,
+                        color: opsColor(for: row.status),
+                        anomaly: nil,
+                        trace: nil
+                    )
+                }
+        case .memoryDiscipline:
+            return focusedAgentRows
+                .sorted { lhs, rhs in
+                    if lhs.hasTrackedMemory != rhs.hasTrackedMemory {
+                        return !lhs.hasTrackedMemory && rhs.hasTrackedMemory
+                    }
+                    return lhs.agentName < rhs.agentName
+                }
+                .prefix(6)
+                .map { row in
+                    OpsHistorySignalRow(
+                        id: "memory-\(row.id.uuidString)",
+                        title: row.agentName,
+                        badge: row.hasTrackedMemory ? "Tracked" : "Gap",
+                        detail: row.hasTrackedMemory ? "Memory backup path is configured for this agent." : "This agent is missing tracked memory backup coverage.",
+                        occurredAt: row.lastActivityAt,
+                        color: row.hasTrackedMemory ? .green : .orange,
+                        anomaly: nil,
+                        trace: nil
+                    )
+                }
+        case .errorBudget:
+            return focusedAnomalyRows
+                .sorted { lhs, rhs in
+                    if lhs.status != rhs.status {
+                        return lhs.status == .critical && rhs.status != .critical
+                    }
+                    return lhs.occurredAt > rhs.occurredAt
+                }
+                .prefix(6)
+                .map { anomaly in
+                    OpsHistorySignalRow(
+                        id: "budget-\(anomaly.id)",
+                        title: anomaly.title,
+                        badge: anomaly.status == .critical ? "Critical" : anomaly.sourceLabel,
+                        detail: anomaly.detailText,
+                        occurredAt: anomaly.occurredAt,
+                        color: opsColor(for: anomaly.status),
+                        anomaly: anomaly,
+                        trace: nil
+                    )
+                }
+        case .cronReliability:
+            return focusedCronRuns
+                .prefix(6)
+                .map { run in
+                    OpsHistorySignalRow(
+                        id: "cron-\(run.id)",
+                        title: run.cronName,
+                        badge: run.statusText,
+                        detail: "\(run.duration.map(formatOpsDuration) ?? "-") • \(run.summaryText)",
+                        occurredAt: run.runAt,
+                        color: run.statusText == "OK" ? .green : .red,
+                        anomaly: opsSnapshot.anomalyRows.first(where: { $0.sourceLabel == "Cron" && $0.title == run.cronName }),
+                        trace: nil
+                    )
+                }
+        }
+    }
+
+    private func historySignalRowView(_ row: OpsHistorySignalRow) -> some View {
+        Group {
+            if row.anomaly != nil || row.trace != nil {
+                Button {
+                    openHistorySignal(row)
+                } label: {
+                    historySignalRowContent(row)
+                }
+                .buttonStyle(.plain)
+            } else {
+                historySignalRowContent(row)
+            }
+        }
+    }
+
+    private func historySignalRowContent(_ row: OpsHistorySignalRow) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(row.occurredAt?.formatted(date: .omitted, time: .standard) ?? "-")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .frame(width: 72, alignment: .leading)
+
+            monitoringPill(title: row.badge, color: row.color)
+                .frame(width: 92, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(row.title)
+                    .font(.caption.weight(.medium))
+                Text(row.detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            if row.anomaly != nil || row.trace != nil {
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func openHistorySignal(_ row: OpsHistorySignalRow) {
+        if let anomaly = row.anomaly {
+            openAnomalyDetail(for: anomaly)
+            return
+        }
+        if let trace = row.trace {
+            openTraceDetail(for: trace)
+        }
+    }
+
+    private func anomalyRowButton(_ row: OpsAnomalyRow) -> some View {
+        Button {
+            openAnomalyDetail(for: row)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Text(row.occurredAt.formatted(date: .omitted, time: .standard))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(width: 72, alignment: .leading)
+
+                monitoringPill(title: row.sourceLabel, color: anomalySourceColor(for: row.sourceLabel))
+                    .frame(width: 84, alignment: .leading)
+
+                monitoringPill(title: row.status == .critical ? "Critical" : "Warning", color: opsColor(for: row.status))
+                    .frame(width: 74, alignment: .leading)
+
+                Text(row.title)
+                    .font(.caption)
+                    .frame(width: 128, alignment: .leading)
+
+                Text(row.detailText)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer()
+
+                Image(systemName: row.linkedSpanID == nil ? "doc.text.magnifyingglass" : "point.topleft.down.curvedto.point.bottomright.up")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func matchesHistoryFocus(_ row: OpsAnomalyRow) -> Bool {
+        switch selectedHistoryFocusMode {
+        case .project:
+            return true
+        case .agent:
+            return historyFocusMatchesAnyText([
+                row.title,
+                row.detailText,
+                row.fullDetailText,
+                row.sourceService ?? ""
+            ])
+        case .tool:
+            guard row.sourceLabel == "Tool" else { return false }
+            return historyFocusMatchesAnyText([
+                row.title,
+                row.detailText,
+                row.fullDetailText,
+                row.sourceService ?? ""
+            ])
+        case .cron:
+            guard row.sourceLabel == "Cron" else { return false }
+            return row.title.lowercased() == effectiveSelectedHistoryFocus.matchKey
+        }
+    }
+
+    private func matchesHistoryFocus(_ row: OpsTraceSummaryRow) -> Bool {
+        switch selectedHistoryFocusMode {
+        case .project:
+            return true
+        case .agent:
+            return row.agentName.lowercased() == effectiveSelectedHistoryFocus.matchKey
+        case .tool:
+            return historyFocusMatchesAnyText([
+                row.previewText,
+                row.routingAction ?? "",
+                row.outputType.rawValue
+            ])
+        case .cron:
+            return false
+        }
+    }
+
+    private func matchesHistoryFocus(_ row: OpsAgentHealthRow) -> Bool {
+        switch selectedHistoryFocusMode {
+        case .project:
+            return true
+        case .agent:
+            return row.agentName.lowercased() == effectiveSelectedHistoryFocus.matchKey
+        case .tool, .cron:
+            return false
+        }
+    }
+
+    private func matchesHistoryFocus(_ row: OpsCronRunRow) -> Bool {
+        switch selectedHistoryFocusMode {
+        case .project:
+            return true
+        case .agent:
+            return historyFocusMatchesAnyText([
+                row.cronName,
+                row.summaryText
+            ])
+        case .tool:
+            return historyFocusMatchesAnyText([
+                row.summaryText,
+                row.cronName
+            ])
+        case .cron:
+            return row.cronName.lowercased() == effectiveSelectedHistoryFocus.matchKey
+        }
+    }
+
+    private func historyFocusMatchesAnyText(_ texts: [String]) -> Bool {
+        let needle = effectiveSelectedHistoryFocus.matchKey
+        guard !needle.isEmpty else { return true }
+        return texts
+            .joined(separator: " ")
+            .lowercased()
+            .contains(needle)
+    }
+
+    private func clusterTrendText(_ cluster: OpsAnomalyCluster) -> String {
+        if selectedAnomalyTimeWindow == .last24Hours {
+            return "24h \(cluster.recent24HourCount)"
+        }
+
+        let olderCount = max(cluster.occurrenceCount - cluster.recent24HourCount, 0)
+        return "24h \(cluster.recent24HourCount) • earlier \(olderCount)"
+    }
+
+    private func anomalyClusterButton(_ cluster: OpsAnomalyCluster) -> some View {
+        Button {
+            openAnomalyDetail(for: cluster.latestAnomaly)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Text(cluster.latestOccurredAt.formatted(date: .omitted, time: .standard))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(width: 72, alignment: .leading)
+
+                monitoringPill(title: cluster.sourceLabel, color: anomalySourceColor(for: cluster.sourceLabel))
+                    .frame(width: 84, alignment: .leading)
+
+                monitoringPill(title: cluster.status == .critical ? "Critical" : "Warning", color: opsColor(for: cluster.status))
+                    .frame(width: 74, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Text(cluster.title)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+
+                        Text("\(cluster.occurrenceCount)x")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(opsColor(for: cluster.status).opacity(0.12))
+                            .foregroundColor(opsColor(for: cluster.status))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(cluster.sampleDetail)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+
+                    HStack(spacing: 10) {
+                        Text(cluster.sourceService ?? cluster.sourceLabel)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(clusterTrendText(cluster))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text("First \(cluster.firstOccurredAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        if cluster.linkedTraceCount > 0 {
+                            Text("\(cluster.linkedTraceCount) trace-linked")
+                                .font(.caption2)
+                                .foregroundColor(.teal)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: cluster.latestAnomaly.linkedSpanID == nil ? "chevron.right.circle" : "arrowshape.turn.up.right.circle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
     private func historyDeltaText(for series: OpsMetricHistorySeries) -> String {
         guard let latest = series.latestPoint?.value else {
             return "No historical samples yet"
@@ -1148,6 +2282,19 @@ struct MonitoringDashboardView: View {
         sourceLabel == "OpenClaw" ? .teal : .blue
     }
 
+    private func anomalySourceColor(for sourceLabel: String) -> Color {
+        switch sourceLabel {
+        case "Cron":
+            return .red
+        case "Tool":
+            return .teal
+        case "OpenClaw":
+            return .orange
+        default:
+            return .blue
+        }
+    }
+
     private func traceStatusColor(for status: ExecutionStatus) -> Color {
         switch status {
         case .completed: return .green
@@ -1207,6 +2354,24 @@ struct MonitoringDashboardView: View {
             relatedLogs: relatedLogs(for: fallbackDetail),
             workflowPath: buildWorkflowPath(for: fallbackDetail)
         )
+    }
+
+    private func openAnomalyDetail(for row: OpsAnomalyRow) {
+        selectedTracePanel = nil
+
+        if let projectID = project?.id,
+           let spanID = row.linkedSpanID,
+           let detail = appState.opsAnalytics.traceDetail(projectID: projectID, traceID: spanID) {
+            selectedAnomalyPanel = nil
+            selectedTracePanel = OpsTracePanelModel(
+                detail: detail,
+                relatedLogs: relatedLogs(for: detail),
+                workflowPath: buildWorkflowPath(for: detail)
+            )
+            return
+        }
+
+        selectedAnomalyPanel = OpsAnomalyPanelModel(row: row)
     }
 
     private func relatedLogs(for detail: OpsTraceDetail) -> [ExecutionLogEntry] {
@@ -1404,6 +2569,53 @@ private struct OpsTracePanelModel: Identifiable {
     var id: UUID { detail.id }
 }
 
+private struct OpsAnomalyPanelModel: Identifiable {
+    let row: OpsAnomalyRow
+
+    var id: String { row.id }
+}
+
+private struct OpsContextCard: Identifiable {
+    let id: String
+    let title: String
+    let value: String
+    let detail: String
+    let color: Color
+}
+
+private struct OpsHistoryFocusOption: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let matchKey: String
+}
+
+private struct OpsHistorySignalRow: Identifiable {
+    let id: String
+    let title: String
+    let badge: String
+    let detail: String
+    let occurredAt: Date?
+    let color: Color
+    let anomaly: OpsAnomalyRow?
+    let trace: OpsTraceSummaryRow?
+}
+
+private struct OpsAnomalyCluster: Identifiable {
+    let id: String
+    let title: String
+    let sourceLabel: String
+    let sourceService: String?
+    let sampleDetail: String
+    let latestOccurredAt: Date
+    let firstOccurredAt: Date
+    let status: OpsHealthStatus
+    let occurrenceCount: Int
+    let recent24HourCount: Int
+    let linkedTraceCount: Int
+    let latestAnomaly: OpsAnomalyRow
+}
+
 private struct OpsTraceWorkflowPath {
     let upstreamNodes: [OpsTraceWorkflowPathNode]
     let currentNode: OpsTraceWorkflowPathNode
@@ -1430,8 +2642,18 @@ private struct OpsTraceWorkflowPathNode: Identifiable {
     let state: State
 }
 
+private struct OpsTraceTimelineEntry: Identifiable {
+    let span: OpsTraceRelatedSpan
+    let depth: Int
+
+    var id: String { span.id }
+}
+
 private struct OpsTraceDetailSheet: View {
     let panel: OpsTracePanelModel
+    @State private var selectedSpanFilter: OpsTraceSpanFilter = .all
+    @State private var spanSearchText: String = ""
+    @State private var prioritizeAnomalies: Bool = true
 
     private var detail: OpsTraceDetail { panel.detail }
 
@@ -1441,6 +2663,63 @@ private struct OpsTraceDetailSheet: View {
                 !["output_text", "preview_text"].contains(key)
             }
             .sorted()
+    }
+    private var filteredTimelineEntries: [OpsTraceTimelineEntry] {
+        let normalizedSearch = spanSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let spans = detail.relatedSpans.filter { span in
+            guard selectedSpanFilter.matches(service: span.service) else { return false }
+            guard !normalizedSearch.isEmpty else { return true }
+
+            let haystack = [
+                span.name,
+                span.service,
+                span.summaryText,
+                span.statusText
+            ]
+            .joined(separator: " ")
+            .lowercased()
+
+            return haystack.contains(normalizedSearch)
+        }
+        let spanByID = Dictionary(uniqueKeysWithValues: spans.map { ($0.id, $0) })
+
+        func depth(for span: OpsTraceRelatedSpan) -> Int {
+            var currentParentID = span.parentSpanID
+            var currentDepth = 0
+            var visited: Set<String> = []
+
+            while let parentID = currentParentID,
+                  parentID != detail.id.uuidString,
+                  let parentSpan = spanByID[parentID],
+                  visited.insert(parentID).inserted {
+                currentDepth += 1
+                currentParentID = parentSpan.parentSpanID
+            }
+
+            return currentDepth
+        }
+
+        let entries = spans.map { OpsTraceTimelineEntry(span: $0, depth: depth(for: $0)) }
+
+        guard prioritizeAnomalies else { return entries }
+
+        return entries.sorted { lhs, rhs in
+            let leftIsAnomalous = isAnomalous(lhs.span)
+            let rightIsAnomalous = isAnomalous(rhs.span)
+            if leftIsAnomalous != rightIsAnomalous {
+                return leftIsAnomalous && !rightIsAnomalous
+            }
+            if lhs.depth != rhs.depth {
+                return lhs.depth < rhs.depth
+            }
+            if lhs.span.startedAt != rhs.span.startedAt {
+                return lhs.span.startedAt < rhs.span.startedAt
+            }
+            return lhs.span.id < rhs.span.id
+        }
+    }
+    private var anomalyCount: Int {
+        detail.relatedSpans.filter(isAnomalous).count
     }
 
     var body: some View {
@@ -1534,11 +2813,64 @@ private struct OpsTraceDetailSheet: View {
 
                 if !detail.relatedSpans.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Span Timeline")
-                            .font(.headline)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Span Timeline")
+                                    .font(.headline)
+                                Text("Filter by message, tool, or runtime activity and inspect parent-child depth.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
 
-                        ForEach(detail.relatedSpans) { span in
+                            Spacer()
+
+                            Picker("Span Filter", selection: $selectedSpanFilter) {
+                                ForEach(OpsTraceSpanFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 250)
+                        }
+
+                        HStack(spacing: 12) {
+                            TextField("Search spans, tools, services, or errors", text: $spanSearchText)
+                                .textFieldStyle(.roundedBorder)
+
+                            Toggle("Prioritize anomalies", isOn: $prioritizeAnomalies)
+                                .toggleStyle(.switch)
+                                .frame(maxWidth: 180)
+                        }
+
+                        if anomalyCount > 0 {
+                            Text("\(anomalyCount) anomalous span(s) highlighted")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+
+                        if filteredTimelineEntries.isEmpty {
+                            Text(spanSearchText.isEmpty ? "No spans match the current filter." : "No spans match the current search.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.vertical, 4)
+                        }
+
+                        ForEach(filteredTimelineEntries) { entry in
+                            let span = entry.span
+
                             HStack(alignment: .top, spacing: 12) {
+                                Color.clear
+                                    .frame(width: CGFloat(entry.depth) * 18)
+
+                                if entry.depth > 0 {
+                                    Image(systemName: "arrow.turn.down.right")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .frame(width: 10, alignment: .leading)
+                                } else {
+                                    Color.clear.frame(width: 10)
+                                }
+
                                 Rectangle()
                                     .fill(span.statusText == "error" ? Color.red : Color.blue)
                                     .frame(width: 3)
@@ -1555,9 +2887,19 @@ private struct OpsTraceDetailSheet: View {
                                             .foregroundColor(.secondary)
                                     }
 
-                                    Text(span.service)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                    HStack(spacing: 8) {
+                                        Text(spanTimelineCategoryLabel(for: span.service))
+                                            .font(.caption2)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 3)
+                                            .background(spanTimelineCategoryColor(for: span.service).opacity(0.12))
+                                            .foregroundColor(spanTimelineCategoryColor(for: span.service))
+                                            .clipShape(Capsule())
+
+                                        Text(span.service)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
 
                                     Text(span.summaryText)
                                         .font(.caption)
@@ -1567,7 +2909,14 @@ private struct OpsTraceDetailSheet: View {
                                         .foregroundColor(.secondary)
                                 }
                             }
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 4)
+                            .background(isAnomalous(span) ? Color.orange.opacity(0.09) : Color.clear)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(isAnomalous(span) ? Color.orange.opacity(0.45) : Color.clear, lineWidth: 1)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
                     }
                     .padding()
@@ -1759,6 +3108,49 @@ private struct OpsTraceDetailSheet: View {
         }
     }
 
+    private func spanTimelineCategoryLabel(for service: String) -> String {
+        if service.contains("message") {
+            return "Message"
+        }
+        if service.contains("tool") {
+            return "Tool"
+        }
+        if service.contains("routing") {
+            return "Routing"
+        }
+        if service.contains("output") {
+            return "Output"
+        }
+        return "Runtime"
+    }
+
+    private func spanTimelineCategoryColor(for service: String) -> Color {
+        if service.contains("message") {
+            return .blue
+        }
+        if service.contains("tool") {
+            return .teal
+        }
+        if service.contains("routing") {
+            return .purple
+        }
+        if service.contains("output") {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private func isAnomalous(_ span: OpsTraceRelatedSpan) -> Bool {
+        let summary = span.summaryText.lowercased()
+        let status = span.statusText.lowercased()
+        return status.contains("error")
+            || status.contains("fail")
+            || summary.contains("error")
+            || summary.contains("failed")
+            || summary.contains("timeout")
+            || summary.contains("timed out")
+    }
+
     private func workflowPathBadgeText(_ node: OpsTraceWorkflowPathNode) -> String {
         switch node.role {
         case .current:
@@ -1820,6 +3212,126 @@ private struct OpsTraceDetailSheet: View {
             return "\(minutes)m \(seconds)s"
         }
         return String(format: "%.1fs", duration)
+    }
+}
+
+private struct OpsAnomalyDetailSheet: View {
+    let panel: OpsAnomalyPanelModel
+
+    private var row: OpsAnomalyRow { panel.row }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(row.title)
+                        .font(.title3.weight(.semibold))
+
+                    HStack(spacing: 8) {
+                        detailBadge(row.sourceLabel, color: sourceColor)
+                        detailBadge(row.status == .critical ? "Critical" : "Warning", color: statusColor)
+                        detailBadge(row.statusText.isEmpty ? "Unknown" : row.statusText.capitalized, color: .secondary)
+                    }
+                }
+
+                detailGrid
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Captured Detail")
+                        .font(.headline)
+
+                    Text(row.fullDetailText.isEmpty ? "No additional detail captured." : row.fullDetailText)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(Color(.controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 560, minHeight: 420)
+    }
+
+    private var detailGrid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+            GridRow {
+                detailKey("Occurred")
+                detailValue(row.occurredAt.formatted(date: .abbreviated, time: .standard))
+            }
+
+            GridRow {
+                detailKey("Source")
+                detailValue(row.sourceService ?? row.sourceLabel)
+            }
+
+            GridRow {
+                detailKey("Navigation")
+                detailValue(row.linkedSpanID == nil ? "Detail view only" : "Linked trace available")
+            }
+
+            if let spanID = row.linkedSpanID {
+                GridRow {
+                    detailKey("Span ID")
+                    detailValue(spanID.uuidString)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var sourceColor: Color {
+        switch row.sourceLabel {
+        case "Cron":
+            return .red
+        case "Tool":
+            return .teal
+        case "OpenClaw":
+            return .orange
+        default:
+            return .blue
+        }
+    }
+
+    private var statusColor: Color {
+        switch row.status {
+        case .healthy:
+            return .green
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        case .neutral:
+            return .secondary
+        }
+    }
+
+    private func detailBadge(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.caption.weight(.medium))
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func detailKey(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundColor(.secondary)
+            .frame(width: 88, alignment: .leading)
+    }
+
+    private func detailValue(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

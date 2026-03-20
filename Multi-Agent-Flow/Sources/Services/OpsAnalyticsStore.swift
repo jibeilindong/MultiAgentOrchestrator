@@ -6,6 +6,8 @@ struct OpsAnalyticsPersistenceSummary {
     let historicalSeries: [OpsMetricHistorySeries]
     let cronSummary: OpsCronReliabilitySummary?
     let cronRuns: [OpsCronRunRow]
+    let anomalySummary: OpsAnomalySummary?
+    let anomalyRows: [OpsAnomalyRow]
     let traceRows: [OpsTraceSummaryRow]
 }
 
@@ -43,6 +45,20 @@ private struct ExternalSessionTraceArtifact {
     let durationMs: Double?
     let previewText: String
     let outputText: String
+    let attributes: [String: String]
+    let eventsText: String?
+    let childSpans: [ExternalSessionChildSpanArtifact]
+}
+
+private struct ExternalSessionChildSpanArtifact {
+    let spanID: String
+    let parentSpanID: String?
+    let name: String
+    let service: String
+    let status: String
+    let startedAt: Date
+    let completedAt: Date?
+    let durationMs: Double?
     let attributes: [String: String]
     let eventsText: String?
 }
@@ -127,6 +143,8 @@ final class OpsAnalyticsStore {
                 historicalSeries: loadGoalMetricSeries(db: db, projectID: project.id, days: 30),
                 cronSummary: loadCronReliabilitySummary(db: db, projectID: project.id, days: 14),
                 cronRuns: loadRecentCronRuns(db: db, projectID: project.id, limit: 8),
+                anomalySummary: loadAnomalySummary(db: db, projectID: project.id),
+                anomalyRows: loadRecentAnomalyRows(db: db, projectID: project.id, limit: 24),
                 traceRows: loadRecentTraceRows(db: db, projectID: project.id, limit: 10)
             )
         }
@@ -823,7 +841,7 @@ final class OpsAnalyticsStore {
         projectID: String,
         artifacts: [ExternalSessionTraceArtifact]
     ) {
-        let deleteSQL = "DELETE FROM spans WHERE project_id = ? AND service = 'openclaw.external-session';"
+        let deleteSQL = "DELETE FROM spans WHERE project_id = ? AND service LIKE 'openclaw.external-%';"
         var deleteStatement: OpaquePointer?
         if sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK, let deleteStatement {
             bindText(projectID, to: 1, in: deleteStatement)
@@ -847,6 +865,24 @@ final class OpsAnalyticsStore {
                 attributes: artifact.attributes,
                 eventsText: artifact.eventsText
             )
+
+            for child in artifact.childSpans {
+                upsertSpan(
+                    db: db,
+                    spanID: child.spanID,
+                    projectID: projectID,
+                    traceID: artifact.traceID,
+                    parentSpanID: child.parentSpanID,
+                    name: child.name,
+                    service: child.service,
+                    status: child.status,
+                    startTime: child.startedAt,
+                    endTime: child.completedAt,
+                    durationMs: child.durationMs,
+                    attributes: child.attributes,
+                    eventsText: child.eventsText
+                )
+            }
         }
     }
 
@@ -1318,6 +1354,180 @@ final class OpsAnalyticsStore {
         return rows
     }
 
+    private func loadAnomalySummary(
+        db: OpaquePointer,
+        projectID: UUID
+    ) -> OpsAnomalySummary? {
+        let projectIDText = projectID.uuidString
+        let cronFailures24h = countCronFailures(db: db, projectID: projectIDText, window: "-1 day")
+        let cronFailures7d = countCronFailures(db: db, projectID: projectIDText, window: "-7 days")
+        let runtimeFailures24h = countSpanFailures(
+            db: db,
+            projectID: projectIDText,
+            services: ["multi-agent-flow.execution", "openclaw.external-session"],
+            window: "-1 day"
+        )
+        let runtimeFailures7d = countSpanFailures(
+            db: db,
+            projectID: projectIDText,
+            services: ["multi-agent-flow.execution", "openclaw.external-session"],
+            window: "-7 days"
+        )
+        let toolFailures24h = countSpanFailures(
+            db: db,
+            projectID: projectIDText,
+            services: ["openclaw.external-tool-result"],
+            window: "-1 day"
+        )
+        let toolFailures7d = countSpanFailures(
+            db: db,
+            projectID: projectIDText,
+            services: ["openclaw.external-tool-result"],
+            window: "-7 days"
+        )
+        let timeoutCount7d = countTimeouts(db: db, projectID: projectIDText, window: "-7 days")
+        let latestAnomalyAt = latestAnomalyDate(db: db, projectID: projectIDText)
+
+        guard runtimeFailures7d > 0 || cronFailures7d > 0 || toolFailures7d > 0 || timeoutCount7d > 0 || latestAnomalyAt != nil else {
+            return nil
+        }
+
+        return OpsAnomalySummary(
+            runtimeFailures24h: runtimeFailures24h,
+            runtimeFailures7d: runtimeFailures7d,
+            cronFailures24h: cronFailures24h,
+            cronFailures7d: cronFailures7d,
+            toolFailures24h: toolFailures24h,
+            toolFailures7d: toolFailures7d,
+            timeoutCount7d: timeoutCount7d,
+            latestAnomalyAt: latestAnomalyAt
+        )
+    }
+
+    private func loadRecentAnomalyRows(
+        db: OpaquePointer,
+        projectID: UUID,
+        limit: Int
+    ) -> [OpsAnomalyRow] {
+        let projectIDText = projectID.uuidString
+        var rows: [OpsAnomalyRow] = []
+
+        let cronSQL = """
+        SELECT
+            COALESCE(external_id, run_id, job_id, cron_name || '-' || COALESCE(run_at, slot_time, created_at)),
+            cron_name,
+            COALESCE(status, 'unknown'),
+            COALESCE(error, summary, 'Cron anomaly'),
+            COALESCE(run_at, slot_time, created_at)
+        FROM cron_runs
+        WHERE project_id = ?
+          AND status NOT IN ('ok', 'success', 'completed', 'delivered')
+        ORDER BY COALESCE(run_at, slot_time, created_at) DESC
+        LIMIT ?;
+        """
+
+        var cronStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, cronSQL, -1, &cronStatement, nil) == SQLITE_OK, let cronStatement {
+            defer { sqlite3_finalize(cronStatement) }
+            bindText(projectIDText, to: 1, in: cronStatement)
+            sqlite3_bind_int(cronStatement, 2, Int32(limit))
+
+            while sqlite3_step(cronStatement) == SQLITE_ROW {
+                guard let idCString = sqlite3_column_text(cronStatement, 0),
+                      let nameCString = sqlite3_column_text(cronStatement, 1),
+                      let statusCString = sqlite3_column_text(cronStatement, 2),
+                      let detailCString = sqlite3_column_text(cronStatement, 3),
+                      let dateCString = sqlite3_column_text(cronStatement, 4),
+                      let occurredAt = iso8601.date(from: String(cString: dateCString)) else {
+                    continue
+                }
+
+                let rawStatus = String(cString: statusCString)
+                let detailText = String(cString: detailCString)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedDetail = detailText.isEmpty ? "Cron anomaly" : detailText
+
+                rows.append(
+                    OpsAnomalyRow(
+                        id: "cron-\(String(cString: idCString))",
+                        title: String(cString: nameCString),
+                        sourceLabel: "Cron",
+                        detailText: normalizedDetail.compactSingleLinePreview(limit: 180),
+                        fullDetailText: normalizedDetail,
+                        occurredAt: occurredAt,
+                        status: cronAnomalyStatus(for: rawStatus),
+                        statusText: formattedCronStatus(rawStatus),
+                        sourceService: nil,
+                        linkedSpanID: nil
+                    )
+                )
+            }
+        }
+
+        let spanSQL = """
+        SELECT span_id, name, service, status, start_time, COALESCE(events, json_extract(attributes, '$.preview_text'), 'Trace anomaly')
+        FROM spans
+        WHERE project_id = ?
+          AND (
+            status = 'error'
+            OR lower(COALESCE(events, '')) LIKE '%timeout%'
+            OR lower(COALESCE(attributes, '')) LIKE '%timeout%'
+          )
+        ORDER BY start_time DESC
+        LIMIT ?;
+        """
+
+        var spanStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, spanSQL, -1, &spanStatement, nil) == SQLITE_OK, let spanStatement {
+            defer { sqlite3_finalize(spanStatement) }
+            bindText(projectIDText, to: 1, in: spanStatement)
+            sqlite3_bind_int(spanStatement, 2, Int32(limit * 2))
+
+            while sqlite3_step(spanStatement) == SQLITE_ROW {
+                guard let idCString = sqlite3_column_text(spanStatement, 0),
+                      let nameCString = sqlite3_column_text(spanStatement, 1),
+                      let serviceCString = sqlite3_column_text(spanStatement, 2),
+                      let statusCString = sqlite3_column_text(spanStatement, 3),
+                      let dateCString = sqlite3_column_text(spanStatement, 4),
+                      let occurredAt = iso8601.date(from: String(cString: dateCString)) else {
+                    continue
+                }
+
+                let detailText = sqlite3_column_type(spanStatement, 5) == SQLITE_NULL
+                    ? "Trace anomaly"
+                    : String(cString: sqlite3_column_text(spanStatement, 5))
+                let normalizedDetail = detailText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let spanID = UUID(uuidString: String(cString: idCString))
+                let rawStatus = String(cString: statusCString)
+
+                rows.append(
+                    OpsAnomalyRow(
+                        id: "span-\(String(cString: idCString))",
+                        title: String(cString: nameCString),
+                        sourceLabel: anomalySourceLabel(forService: String(cString: serviceCString)),
+                        detailText: (normalizedDetail.isEmpty ? "Trace anomaly" : normalizedDetail).compactSingleLinePreview(limit: 180),
+                        fullDetailText: normalizedDetail.isEmpty ? "Trace anomaly" : normalizedDetail,
+                        occurredAt: occurredAt,
+                        status: rawStatus == "error" ? .critical : .warning,
+                        statusText: rawStatus,
+                        sourceService: String(cString: serviceCString),
+                        linkedSpanID: spanID
+                    )
+                )
+            }
+        }
+
+        return Array(
+            rows.sorted { lhs, rhs in
+                if lhs.occurredAt != rhs.occurredAt {
+                    return lhs.occurredAt > rhs.occurredAt
+                }
+                return lhs.id < rhs.id
+            }
+            .prefix(limit)
+        )
+    }
+
     private func summarizeRelatedSpan(name: String, attributes: [String: String]) -> String {
         if name == "Routing Decision" {
             let action = emptyToNil(attributes["routing_action"]) ?? "none"
@@ -1332,6 +1542,163 @@ final class OpsAnalyticsStore {
         }
 
         return emptyToNil(attributes["preview_text"]) ?? name
+    }
+
+    private func countCronFailures(
+        db: OpaquePointer,
+        projectID: String,
+        window: String
+    ) -> Int {
+        let sql = """
+        SELECT COUNT(*)
+        FROM cron_runs
+        WHERE project_id = ?
+          AND COALESCE(run_at, slot_time, created_at) >= datetime('now', ?)
+          AND status NOT IN ('ok', 'success', 'completed', 'delivered');
+        """
+
+        return scalarCount(db: db, sql: sql, bindings: [projectID, window])
+    }
+
+    private func countSpanFailures(
+        db: OpaquePointer,
+        projectID: String,
+        services: [String],
+        window: String
+    ) -> Int {
+        guard !services.isEmpty else { return 0 }
+        let placeholders = Array(repeating: "?", count: services.count).joined(separator: ", ")
+        let sql = """
+        SELECT COUNT(*)
+        FROM spans
+        WHERE project_id = ?
+          AND start_time >= datetime('now', ?)
+          AND service IN (\(placeholders))
+          AND status = 'error';
+        """
+
+        return scalarCount(db: db, sql: sql, bindings: [projectID, window] + services)
+    }
+
+    private func countTimeouts(
+        db: OpaquePointer,
+        projectID: String,
+        window: String
+    ) -> Int {
+        let cronSQL = """
+        SELECT COUNT(*)
+        FROM cron_runs
+        WHERE project_id = ?
+          AND COALESCE(run_at, slot_time, created_at) >= datetime('now', ?)
+          AND lower(COALESCE(error, summary, '')) LIKE '%timeout%';
+        """
+
+        let spanSQL = """
+        SELECT COUNT(*)
+        FROM spans
+        WHERE project_id = ?
+          AND start_time >= datetime('now', ?)
+          AND (
+            lower(COALESCE(events, '')) LIKE '%timeout%'
+            OR lower(COALESCE(attributes, '')) LIKE '%timeout%'
+          );
+        """
+
+        return scalarCount(db: db, sql: cronSQL, bindings: [projectID, window])
+            + scalarCount(db: db, sql: spanSQL, bindings: [projectID, window])
+    }
+
+    private func latestAnomalyDate(
+        db: OpaquePointer,
+        projectID: String
+    ) -> Date? {
+        var dates: [Date] = []
+
+        let cronSQL = """
+        SELECT MAX(COALESCE(run_at, slot_time, created_at))
+        FROM cron_runs
+        WHERE project_id = ?
+          AND status NOT IN ('ok', 'success', 'completed', 'delivered');
+        """
+        if let text = scalarText(db: db, sql: cronSQL, bindings: [projectID]),
+           let date = iso8601.date(from: text) {
+            dates.append(date)
+        }
+
+        let spanSQL = """
+        SELECT MAX(start_time)
+        FROM spans
+        WHERE project_id = ?
+          AND (
+            status = 'error'
+            OR lower(COALESCE(events, '')) LIKE '%timeout%'
+            OR lower(COALESCE(attributes, '')) LIKE '%timeout%'
+          );
+        """
+        if let text = scalarText(db: db, sql: spanSQL, bindings: [projectID]),
+           let date = iso8601.date(from: text) {
+            dates.append(date)
+        }
+
+        return dates.max()
+    }
+
+    private func anomalySourceLabel(forService service: String) -> String {
+        if service.contains("tool") {
+            return "Tool"
+        }
+        if service.contains("external") {
+            return "OpenClaw"
+        }
+        return "Runtime"
+    }
+
+    private func cronAnomalyStatus(for status: String) -> OpsHealthStatus {
+        switch normalizedCronStatus(status) {
+        case "timeout", "error", "failed":
+            return .critical
+        default:
+            return .warning
+        }
+    }
+
+    private func scalarCount(
+        db: OpaquePointer,
+        sql: String,
+        bindings: [String]
+    ) -> Int {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return 0 }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, value) in bindings.enumerated() {
+            bindText(value, to: Int32(index + 1), in: statement)
+        }
+
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    private func scalarText(
+        db: OpaquePointer,
+        sql: String,
+        bindings: [String]
+    ) -> String? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, value) in bindings.enumerated() {
+            bindText(value, to: Int32(index + 1), in: statement)
+        }
+
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              sqlite3_column_type(statement, 0) != SQLITE_NULL,
+              let text = sqlite3_column_text(statement, 0) else {
+            return nil
+        }
+
+        return String(cString: text)
     }
 
     private func loadCronArtifacts(from fileURL: URL) -> [ExternalCronRunArtifact] {
@@ -1385,6 +1752,8 @@ final class OpsAnalyticsStore {
         var toolErrors = 0
         var lastAssistantText: String?
         var lastToolText: String?
+        var childSpans: [ExternalSessionChildSpanArtifact] = []
+        var messageIndex = 0
 
         contents.enumerateLines { [self] line, _ in
             guard let object = self.jsonObject(from: line) else { return }
@@ -1418,10 +1787,32 @@ final class OpsAnalyticsStore {
                 return
             }
 
+            messageIndex += 1
             let content = message["content"] as? [[String: Any]] ?? []
+            let messageDate = self.sessionEventDate(from: object) ?? startDate ?? Date()
+            let messageSpanID = "\(sessionID)-message-\(messageIndex)"
             switch role {
             case "user":
                 userMessages += 1
+                let preview = self.previewText(for: content) ?? "User instruction"
+                childSpans.append(
+                    ExternalSessionChildSpanArtifact(
+                        spanID: messageSpanID,
+                        parentSpanID: sessionID,
+                        name: "User Prompt",
+                        service: "openclaw.external-user-message",
+                        status: "ok",
+                        startedAt: messageDate,
+                        completedAt: messageDate,
+                        durationMs: 0,
+                        attributes: [
+                            "agent_name": agentName,
+                            "role": "user",
+                            "preview_text": preview
+                        ],
+                        eventsText: nil
+                    )
+                )
             case "assistant":
                 assistantMessages += 1
                 let assistantText = content.compactMap { item -> String? in
@@ -1432,7 +1823,53 @@ final class OpsAnalyticsStore {
                 if let text = self.emptyToNil(assistantText) {
                     lastAssistantText = text
                 }
-                toolCalls += content.filter { $0["type"] as? String == "toolCall" }.count
+                let toolCallItems = content.filter { $0["type"] as? String == "toolCall" }
+                toolCalls += toolCallItems.count
+                let preview = self.emptyToNil(assistantText)?.compactSingleLinePreview(limit: 180)
+                    ?? (toolCallItems.isEmpty ? "Assistant turn" : "Requested \(toolCallItems.count) tool call(s)")
+
+                childSpans.append(
+                    ExternalSessionChildSpanArtifact(
+                        spanID: messageSpanID,
+                        parentSpanID: sessionID,
+                        name: "Assistant Turn",
+                        service: "openclaw.external-assistant-message",
+                        status: "ok",
+                        startedAt: messageDate,
+                        completedAt: messageDate,
+                        durationMs: 0,
+                        attributes: [
+                            "agent_name": agentName,
+                            "role": "assistant",
+                            "preview_text": preview,
+                            "tool_call_count": "\(toolCallItems.count)"
+                        ],
+                        eventsText: self.emptyToNil(assistantText)
+                    )
+                )
+
+                for (toolIndex, item) in toolCallItems.enumerated() {
+                    let toolName = self.emptyToNil(self.stringValue(item["name"])) ?? "tool"
+                    let argumentsPreview = self.valuePreview(item["arguments"], maxLength: 220) ?? "No arguments"
+                    childSpans.append(
+                        ExternalSessionChildSpanArtifact(
+                            spanID: "\(messageSpanID)-tool-\(toolIndex + 1)",
+                            parentSpanID: messageSpanID,
+                            name: "Tool Call",
+                            service: "openclaw.external-tool-call",
+                            status: "ok",
+                            startedAt: messageDate,
+                            completedAt: messageDate,
+                            durationMs: 0,
+                            attributes: [
+                                "agent_name": agentName,
+                                "tool_name": toolName,
+                                "preview_text": "\(toolName): \(argumentsPreview)"
+                            ],
+                            eventsText: argumentsPreview
+                        )
+                    )
+                }
             case "toolResult":
                 if let isError = message["isError"] as? Bool, isError {
                     toolErrors += 1
@@ -1445,6 +1882,32 @@ final class OpsAnalyticsStore {
                 if let text = self.emptyToNil(toolText) {
                     lastToolText = text
                 }
+                let toolName = self.emptyToNil(self.stringValue(message["toolName"])) ?? "tool"
+                let isError = (message["isError"] as? Bool) == true
+                let preview = self.emptyToNil(toolText)?.compactSingleLinePreview(limit: 180)
+                    ?? (isError ? "Tool failed" : "Tool completed")
+                let detailsPreview = self.valuePreview(message["details"], maxLength: 280)
+
+                childSpans.append(
+                    ExternalSessionChildSpanArtifact(
+                        spanID: messageSpanID,
+                        parentSpanID: sessionID,
+                        name: "Tool Result",
+                        service: "openclaw.external-tool-result",
+                        status: isError ? "error" : "ok",
+                        startedAt: messageDate,
+                        completedAt: messageDate,
+                        durationMs: 0,
+                        attributes: [
+                            "agent_name": agentName,
+                            "tool_name": toolName,
+                            "preview_text": "\(toolName): \(preview)"
+                        ],
+                        eventsText: [self.emptyToNil(toolText), detailsPreview]
+                            .compactMap { $0 }
+                            .joined(separator: "\n\n")
+                    )
+                )
             default:
                 break
             }
@@ -1500,7 +1963,13 @@ final class OpsAnalyticsStore {
             previewText: outputText.compactSingleLinePreview(limit: 160),
             outputText: outputText,
             attributes: attributes,
-            eventsText: emptyToNil(eventsText)
+            eventsText: emptyToNil(eventsText),
+            childSpans: childSpans.sorted { lhs, rhs in
+                if lhs.startedAt == rhs.startedAt {
+                    return lhs.spanID < rhs.spanID
+                }
+                return lhs.startedAt < rhs.startedAt
+            }
         )
     }
 
@@ -1597,6 +2066,34 @@ final class OpsAnalyticsStore {
         }
 
         return nil
+    }
+
+    private func previewText(for content: [[String: Any]]) -> String? {
+        let text = content.compactMap { item -> String? in
+            guard item["type"] as? String == "text" else { return nil }
+            return emptyToNil(stringValue(item["text"]))
+        }
+        .joined(separator: "\n\n")
+
+        return emptyToNil(text)?.compactSingleLinePreview(limit: 180)
+    }
+
+    private func valuePreview(_ value: Any?, maxLength: Int) -> String? {
+        switch value {
+        case nil:
+            return nil
+        case let text as String:
+            return limitedText(text.compactSingleLinePreview(limit: maxLength), maxLength: maxLength)
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            guard JSONSerialization.isValidJSONObject(value as Any),
+                  let data = try? JSONSerialization.data(withJSONObject: value as Any, options: [.sortedKeys]),
+                  let text = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return limitedText(text.compactSingleLinePreview(limit: maxLength), maxLength: maxLength)
+        }
     }
 
     private func limitedText(_ text: String, maxLength: Int) -> String {

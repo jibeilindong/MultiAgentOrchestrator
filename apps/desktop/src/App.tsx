@@ -12,7 +12,10 @@ import {
   renameProject,
   renameWorkflow,
   renameWorkflowNode,
-  setWorkflowFallbackRoutingPolicy
+  setWorkflowEdgeApprovalRequired,
+  setWorkflowEdgeBidirectional,
+  setWorkflowFallbackRoutingPolicy,
+  updateWorkflowEdgeLabel
 } from "@multi-agent-flow/core";
 import type {
   MAProject,
@@ -40,6 +43,24 @@ interface AutosaveInfo {
   savedAt: string;
 }
 
+interface ProjectHistoryState {
+  past: MAProject[];
+  future: MAProject[];
+}
+
+const MIN_CANVAS_ZOOM = 0.5;
+const MAX_CANVAS_ZOOM = 1.8;
+const DEFAULT_CANVAS_ZOOM = 1;
+const MAX_HISTORY_ENTRIES = 60;
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 function requireDesktopApi() {
   const api = window.desktopApi;
   if (!api) {
@@ -51,6 +72,7 @@ function requireDesktopApi() {
 
 export function App() {
   const [projectState, setProjectState] = useState<ProjectFileHandle | null>(null);
+  const [projectHistory, setProjectHistory] = useState<ProjectHistoryState>({ past: [], future: [] });
   const [recentProjects, setRecentProjects] = useState<RecentProjectRecord[]>([]);
   const [autosaveInfo, setAutosaveInfo] = useState<AutosaveInfo | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
@@ -59,6 +81,9 @@ export function App() {
   const [newAgentName, setNewAgentName] = useState("New Agent");
   const [newWorkflowName, setNewWorkflowName] = useState("Workflow");
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [canvasZoom, setCanvasZoom] = useState(DEFAULT_CANVAS_ZOOM);
   const [newNodeType, setNewNodeType] = useState<WorkflowNodeType>("agent");
   const [connectionFromNodeId, setConnectionFromNodeId] = useState("");
   const [connectionToNodeId, setConnectionToNodeId] = useState("");
@@ -66,6 +91,12 @@ export function App() {
   const filePath = projectState?.filePath ?? null;
   const activeWorkflow =
     project?.workflows.find((workflow) => workflow.id === activeWorkflowId) ?? project?.workflows[0] ?? null;
+  const selectedNode =
+    activeWorkflow?.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedEdge =
+    activeWorkflow?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
+  const canUndo = projectHistory.past.length > 0;
+  const canRedo = projectHistory.future.length > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +116,8 @@ export function App() {
           setProjectState(created);
           setRecentProjects(recent);
           setActiveWorkflowId(created.project.workflows[0]?.id ?? null);
+          setSelectedNodeId(null);
+          setSelectedEdgeId(null);
           setStatus("Created an in-memory project. Open or save a `.maoproj` file to continue.");
         });
       } catch (bootstrapError) {
@@ -112,6 +145,72 @@ export function App() {
       setActiveWorkflowId(project.workflows[0]?.id ?? null);
     }
   }, [activeWorkflowId, project]);
+
+  useEffect(() => {
+    if (!activeWorkflow) {
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      return;
+    }
+
+    if (selectedNodeId && !activeWorkflow.nodes.some((node) => node.id === selectedNodeId)) {
+      setSelectedNodeId(null);
+    }
+    if (selectedEdgeId && !activeWorkflow.edges.some((edge) => edge.id === selectedEdgeId)) {
+      setSelectedEdgeId(null);
+    }
+  }, [activeWorkflow, selectedEdgeId, selectedNodeId]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleCanvasBackgroundClick();
+        return;
+      }
+
+      const isModifierPressed = event.metaKey || event.ctrlKey;
+      if (isModifierPressed && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        handleRedo();
+        return;
+      }
+
+      if (event.key !== "Delete" && event.key !== "Backspace") {
+        return;
+      }
+
+      if (selectedEdgeId) {
+        event.preventDefault();
+        handleRemoveEdge(selectedEdgeId);
+        return;
+      }
+
+      if (selectedNodeId) {
+        event.preventDefault();
+        handleRemoveNode(selectedNodeId);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedEdgeId, selectedNodeId, activeWorkflow, connectionFromNodeId, connectionToNodeId, canUndo, canRedo]);
 
   useEffect(() => {
     if (!project) {
@@ -149,15 +248,43 @@ export function App() {
     }
   }
 
-  function updateProject(mutator: (current: MAProject) => MAProject, nextStatus?: string) {
+  function replaceProjectState(nextState: ProjectFileHandle, nextStatus?: string, resetHistory = false) {
+    setProjectState(nextState);
+    if (resetHistory) {
+      setProjectHistory({ past: [], future: [] });
+    }
+    if (nextStatus) {
+      setStatus(nextStatus);
+    }
+  }
+
+  function updateProject(
+    mutator: (current: MAProject) => MAProject,
+    nextStatus?: string,
+    options?: { recordHistory?: boolean }
+  ) {
+    const shouldRecordHistory = options?.recordHistory ?? true;
+
     setProjectState((current) => {
       if (!current) {
         return current;
       }
 
+      const nextProject = mutator(current.project);
+      if (nextProject === current.project) {
+        return current;
+      }
+
+      if (shouldRecordHistory) {
+        setProjectHistory((history) => ({
+          past: [...history.past.slice(-(MAX_HISTORY_ENTRIES - 1)), current.project],
+          future: []
+        }));
+      }
+
       return {
         ...current,
-        project: mutator(current.project)
+        project: nextProject
       };
     });
 
@@ -177,9 +304,10 @@ export function App() {
     await runProjectAction("new", async () => {
       const created = await requireDesktopApi().createProject("Untitled Project");
       startTransition(() => {
-        setProjectState(created);
+        replaceProjectState(created, "Created a new unsaved project.", true);
         setActiveWorkflowId(created.project.workflows[0]?.id ?? null);
-        setStatus("Created a new unsaved project.");
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
       });
     });
   }
@@ -193,9 +321,10 @@ export function App() {
       }
 
       startTransition(() => {
-        setProjectState(opened);
+        replaceProjectState(opened, `Opened ${opened.project.name}.`, true);
         setActiveWorkflowId(opened.project.workflows[0]?.id ?? null);
-        setStatus(`Opened ${opened.project.name}.`);
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
       });
 
       await refreshRecentProjects();
@@ -216,8 +345,7 @@ export function App() {
         }
 
         startTransition(() => {
-          setProjectState(saved);
-          setStatus(`Saved ${saved.project.name}.`);
+          replaceProjectState(saved, `Saved ${saved.project.name}.`);
         });
         await refreshRecentProjects();
         return;
@@ -225,8 +353,7 @@ export function App() {
 
       const saved = await requireDesktopApi().saveProject(project, filePath);
       startTransition(() => {
-        setProjectState(saved);
-        setStatus(`Saved ${saved.project.name}.`);
+        replaceProjectState(saved, `Saved ${saved.project.name}.`);
       });
       await refreshRecentProjects();
     });
@@ -245,8 +372,7 @@ export function App() {
       }
 
       startTransition(() => {
-        setProjectState(saved);
-        setStatus(`Saved ${saved.project.name} to a new location.`);
+        replaceProjectState(saved, `Saved ${saved.project.name} to a new location.`);
       });
       await refreshRecentProjects();
     });
@@ -256,12 +382,55 @@ export function App() {
     await runProjectAction("open", async () => {
       const opened = await requireDesktopApi().openRecentProject(nextFilePath);
       startTransition(() => {
-        setProjectState(opened);
+        replaceProjectState(opened, `Opened ${opened.project.name} from recent projects.`, true);
         setActiveWorkflowId(opened.project.workflows[0]?.id ?? null);
-        setStatus(`Opened ${opened.project.name} from recent projects.`);
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
       });
       await refreshRecentProjects();
     });
+  }
+
+  function handleUndo() {
+    if (!projectState || projectHistory.past.length === 0) {
+      return;
+    }
+
+    const previousProject = projectHistory.past[projectHistory.past.length - 1];
+    setProjectHistory((history) => ({
+      past: history.past.slice(0, -1),
+      future: [projectState.project, ...history.future].slice(0, MAX_HISTORY_ENTRIES)
+    }));
+    setProjectState((current) =>
+      current
+        ? {
+            ...current,
+            project: previousProject
+          }
+        : current
+    );
+    setStatus("Undid the last workflow change.");
+  }
+
+  function handleRedo() {
+    if (!projectState || projectHistory.future.length === 0) {
+      return;
+    }
+
+    const [nextProject, ...remainingFuture] = projectHistory.future;
+    setProjectHistory((history) => ({
+      past: [...history.past, projectState.project].slice(-MAX_HISTORY_ENTRIES),
+      future: remainingFuture
+    }));
+    setProjectState((current) =>
+      current
+        ? {
+            ...current,
+            project: nextProject
+          }
+        : current
+    );
+    setStatus("Redid the last workflow change.");
   }
 
   function handleProjectNameChange(nextName: string) {
@@ -282,6 +451,8 @@ export function App() {
     startTransition(() => {
       setProjectState((current) => (current ? { ...current, project: nextProject } : current));
       setActiveWorkflowId(latestWorkflow?.id ?? null);
+      setSelectedNodeId(latestWorkflow?.nodes[0]?.id ?? null);
+      setSelectedEdgeId(null);
       setStatus("Added a new workflow.");
     });
   }
@@ -291,10 +462,15 @@ export function App() {
       return;
     }
 
-    updateProject(
-      (current) => addNodeToWorkflow(current, activeWorkflow.id, newNodeType),
-      `Added a ${newNodeType} node to ${activeWorkflow.name}.`
-    );
+    const nextProject = addNodeToWorkflow(project!, activeWorkflow.id, newNodeType);
+    const updatedWorkflow = nextProject.workflows.find((workflow) => workflow.id === activeWorkflow.id) ?? null;
+    const latestNode = updatedWorkflow?.nodes[updatedWorkflow.nodes.length - 1] ?? null;
+    startTransition(() => {
+      setProjectState((current) => (current ? { ...current, project: nextProject } : current));
+      setSelectedNodeId(latestNode?.id ?? null);
+      setSelectedEdgeId(null);
+      setStatus(`Added a ${newNodeType} node to ${activeWorkflow.name}.`);
+    });
   }
 
   function handleWorkflowNameChange(nextName: string) {
@@ -330,6 +506,8 @@ export function App() {
       "Removed workflow from the project."
     );
     setActiveWorkflowId(remainingWorkflows[0]?.id ?? null);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
   }
 
   function handleConnectNodes() {
@@ -380,12 +558,34 @@ export function App() {
     setConnectionToNodeId("");
   }
 
-  function handleCanvasBackgroundClick() {
-    if (!connectionFromNodeId && !connectionToNodeId) {
+  function handleCanvasNodeConnect(fromNodeId: string, toNodeId: string) {
+    if (!activeWorkflow || fromNodeId === toNodeId) {
       return;
     }
 
-    clearCanvasConnectionSelection("Cleared canvas edge selection.");
+    updateProject(
+      (current) => connectWorkflowNodes(current, activeWorkflow.id, fromNodeId, toNodeId),
+      "Connected workflow nodes by dragging on the canvas."
+    );
+    setConnectionFromNodeId("");
+    setConnectionToNodeId("");
+    setSelectedEdgeId(null);
+    setSelectedNodeId(toNodeId);
+  }
+
+  function handleCanvasBackgroundClick() {
+    const hadConnectionSelection = Boolean(connectionFromNodeId || connectionToNodeId);
+    const hadObjectSelection = Boolean(selectedNodeId || selectedEdgeId);
+
+    if (!hadConnectionSelection && !hadObjectSelection) {
+      return;
+    }
+
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    clearCanvasConnectionSelection(
+      hadConnectionSelection ? "Cleared canvas edge selection." : "Cleared canvas selection."
+    );
   }
 
   function handleAssignAgent(nodeId: string, agentId: string | null) {
@@ -427,6 +627,13 @@ export function App() {
     if (connectionToNodeId === nodeId) {
       setConnectionToNodeId("");
     }
+
+    if (selectedNodeId === nodeId) {
+      setSelectedNodeId(null);
+    }
+    if (selectedEdgeId && activeWorkflow.edges.some((edge) => edge.id === selectedEdgeId && (edge.fromNodeID === nodeId || edge.toNodeID === nodeId))) {
+      setSelectedEdgeId(null);
+    }
   }
 
   function handleRemoveEdge(edgeId: string) {
@@ -438,6 +645,9 @@ export function App() {
       (current) => removeEdgeFromWorkflow(current, activeWorkflow.id, edgeId),
       "Removed workflow edge."
     );
+    if (selectedEdgeId === edgeId) {
+      setSelectedEdgeId(null);
+    }
   }
 
   function handleNodePositionChange(nodeId: string, x: number, y: number) {
@@ -456,6 +666,88 @@ export function App() {
     updateProject(
       (current) => repositionWorkflowNode(current, activeWorkflow.id, nodeId, x, y),
       "Updated node position."
+    );
+  }
+
+  function handleCanvasNodeSelect(nodeId: string) {
+    setSelectedNodeId(nodeId);
+    setSelectedEdgeId(null);
+  }
+
+  function handleCanvasEdgeSelect(edgeId: string) {
+    setConnectionFromNodeId("");
+    setConnectionToNodeId("");
+    setSelectedEdgeId(edgeId);
+    setSelectedNodeId(null);
+    setStatus("Selected an edge on the canvas.");
+  }
+
+  function updateCanvasZoom(nextZoom: number) {
+    const clampedZoom = Math.min(MAX_CANVAS_ZOOM, Math.max(MIN_CANVAS_ZOOM, Number(nextZoom.toFixed(2))));
+    setCanvasZoom(clampedZoom);
+    setStatus(`Canvas zoom set to ${Math.round(clampedZoom * 100)}%.`);
+  }
+
+  function handleSelectedNodeXChange(nextValue: string) {
+    if (!activeWorkflow || !selectedNode) {
+      return;
+    }
+
+    const parsed = Number(nextValue);
+    if (Number.isNaN(parsed)) {
+      return;
+    }
+
+    updateProject((current) =>
+      repositionWorkflowNode(current, activeWorkflow.id, selectedNode.id, parsed, selectedNode.position.y)
+    );
+  }
+
+  function handleSelectedNodeYChange(nextValue: string) {
+    if (!activeWorkflow || !selectedNode) {
+      return;
+    }
+
+    const parsed = Number(nextValue);
+    if (Number.isNaN(parsed)) {
+      return;
+    }
+
+    updateProject((current) =>
+      repositionWorkflowNode(current, activeWorkflow.id, selectedNode.id, selectedNode.position.x, parsed)
+    );
+  }
+
+  function handleSelectedEdgeLabelChange(nextLabel: string) {
+    if (!activeWorkflow || !selectedEdge) {
+      return;
+    }
+
+    updateProject(
+      (current) => updateWorkflowEdgeLabel(current, activeWorkflow.id, selectedEdge.id, nextLabel),
+      "Updated edge label."
+    );
+  }
+
+  function handleSelectedEdgeApprovalChange(nextValue: boolean) {
+    if (!activeWorkflow || !selectedEdge) {
+      return;
+    }
+
+    updateProject(
+      (current) => setWorkflowEdgeApprovalRequired(current, activeWorkflow.id, selectedEdge.id, nextValue),
+      "Updated edge approval requirement."
+    );
+  }
+
+  function handleSelectedEdgeBidirectionalChange(nextValue: boolean) {
+    if (!activeWorkflow || !selectedEdge) {
+      return;
+    }
+
+    updateProject(
+      (current) => setWorkflowEdgeBidirectional(current, activeWorkflow.id, selectedEdge.id, nextValue),
+      "Updated edge directionality."
     );
   }
 
@@ -486,6 +778,12 @@ export function App() {
           disabled={!project || busyAction !== null}
         >
           {busyAction === "saveAs" ? "Saving..." : "Save As"}
+        </button>
+        <button type="button" onClick={handleUndo} disabled={!canUndo || busyAction !== null}>
+          Undo
+        </button>
+        <button type="button" onClick={handleRedo} disabled={!canRedo || busyAction !== null}>
+          Redo
         </button>
       </section>
 
@@ -642,24 +940,147 @@ export function App() {
                     <span>Nodes: {activeWorkflow.nodes.length}</span>
                     <span>Edges: {activeWorkflow.edges.length}</span>
                     <span>Policy: {activeWorkflow.fallbackRoutingPolicy}</span>
+                    <span>Zoom: {Math.round(canvasZoom * 100)}%</span>
+                    <span>Undo: {projectHistory.past.length}</span>
                   </div>
 
                   <div className="formStack">
                     <span className="sectionLabel">Visual preview</span>
                     <p className="canvasHint">
-                      Click one node to choose a source, click another node to create an edge, or
-                      drag a node to reposition it.
+                      Click one node to choose a source, drag from a node handle to connect directly,
+                      drag nodes to reposition them, hold Space and drag to pan, use zoom controls
+                      plus scrolling to inspect larger workflows, press Esc/Delete for quick canvas
+                      cleanup, and use Cmd/Ctrl+Z to undo changes.
                     </p>
+                    <div className="workflowToolbar">
+                      <button type="button" onClick={() => updateCanvasZoom(canvasZoom - 0.1)}>
+                        Zoom out
+                      </button>
+                      <button type="button" onClick={() => updateCanvasZoom(DEFAULT_CANVAS_ZOOM)}>
+                        Reset zoom
+                      </button>
+                      <button type="button" onClick={() => updateCanvasZoom(canvasZoom + 0.1)}>
+                        Zoom in
+                      </button>
+                      <button type="button" onClick={handleUndo} disabled={!canUndo}>
+                        Undo
+                      </button>
+                      <button type="button" onClick={handleRedo} disabled={!canRedo}>
+                        Redo
+                      </button>
+                    </div>
                     <WorkflowCanvasPreview
                       workflow={activeWorkflow}
                       agents={project.agents}
+                      zoom={canvasZoom}
+                      selectedNodeId={selectedNodeId ?? undefined}
+                      selectedEdgeId={selectedEdgeId ?? undefined}
                       selectedFromNodeId={connectionFromNodeId}
                       selectedToNodeId={connectionToNodeId}
+                      onWheelZoom={(deltaY) => updateCanvasZoom(canvasZoom + (deltaY < 0 ? 0.1 : -0.1))}
+                      onNodeConnect={handleCanvasNodeConnect}
+                      onNodeSelect={handleCanvasNodeSelect}
+                      onEdgeSelect={handleCanvasEdgeSelect}
                       onNodePositionChange={handleNodePositionChange}
                       onNodePositionCommit={handleNodePositionCommit}
                       onNodeClick={handleCanvasNodeClick}
                       onCanvasClick={handleCanvasBackgroundClick}
                     />
+                  </div>
+
+                  <div className="formStack">
+                    <span className="sectionLabel">Selected node</span>
+                    {selectedNode ? (
+                      <div className="inspectorCard">
+                        <div className="inspectorGrid">
+                          <label className="field">
+                            <span>Node title</span>
+                            <input
+                              value={selectedNode.title}
+                              onChange={(event) => handleRenameNode(selectedNode.id, event.target.value)}
+                              placeholder={selectedNode.type === "start" ? "Start" : "Node title"}
+                            />
+                          </label>
+                          <label className="field compactField">
+                            <span>Assigned agent</span>
+                            <select
+                              value={selectedNode.agentID ?? ""}
+                              onChange={(event) => handleAssignAgent(selectedNode.id, event.target.value || null)}
+                            >
+                              <option value="">Unassigned</option>
+                              {project.agents.map((agent) => (
+                                <option key={agent.id} value={agent.id}>
+                                  {agent.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field compactField">
+                            <span>X</span>
+                            <input
+                              type="number"
+                              value={Math.round(selectedNode.position.x)}
+                              onChange={(event) => handleSelectedNodeXChange(event.target.value)}
+                            />
+                          </label>
+                          <label className="field compactField">
+                            <span>Y</span>
+                            <input
+                              type="number"
+                              value={Math.round(selectedNode.position.y)}
+                              onChange={(event) => handleSelectedNodeYChange(event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="metaStrip">
+                          <span>Node type: {selectedNode.type}</span>
+                          <span>ID: {selectedNode.id.slice(0, 8)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="emptyState">Select a node on the canvas to inspect and edit it.</p>
+                    )}
+                  </div>
+
+                  <div className="formStack">
+                    <span className="sectionLabel">Selected edge</span>
+                    {selectedEdge ? (
+                      <div className="inspectorCard">
+                        <div className="inspectorGrid">
+                          <label className="field">
+                            <span>Label</span>
+                            <input
+                              value={selectedEdge.label}
+                              onChange={(event) => handleSelectedEdgeLabelChange(event.target.value)}
+                              placeholder="Optional edge label"
+                            />
+                          </label>
+                          <label className="checkboxField">
+                            <input
+                              type="checkbox"
+                              checked={selectedEdge.requiresApproval}
+                              onChange={(event) => handleSelectedEdgeApprovalChange(event.target.checked)}
+                            />
+                            <span>Requires approval</span>
+                          </label>
+                          <label className="checkboxField">
+                            <input
+                              type="checkbox"
+                              checked={selectedEdge.isBidirectional}
+                              onChange={(event) => handleSelectedEdgeBidirectionalChange(event.target.checked)}
+                            />
+                            <span>Bidirectional</span>
+                          </label>
+                        </div>
+                        <div className="metaStrip">
+                          <span>From: {selectedEdge.fromNodeID.slice(0, 8)}</span>
+                          <span>To: {selectedEdge.toNodeID.slice(0, 8)}</span>
+                          <span>ID: {selectedEdge.id.slice(0, 8)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="emptyState">Select an edge on the canvas to inspect and edit it.</p>
+                    )}
                   </div>
 
                   <div className="listStack">

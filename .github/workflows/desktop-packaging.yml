@@ -1,0 +1,58 @@
+name: Desktop Packaging
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/desktop/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/desktop-packaging.yml"
+
+jobs:
+  package:
+    name: Package (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS
+            os: macos-latest
+            dist_command: npm run dist:mac --workspace @multi-agent-flow/desktop
+          - label: Windows
+            os: windows-latest
+            dist_command: npm run dist:win --workspace @multi-agent-flow/desktop
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck workspace
+        run: npm run typecheck
+
+      - name: Validate .maoproj compatibility
+        run: npm run validate:compat
+
+      - name: Build workspace
+        run: npm run build
+
+      - name: Package desktop app
+        run: ${{ matrix.dist_command }}
+
+      - name: Upload packaging artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.label }}
+          path: apps/desktop/release/**
+          if-no-files-found: error

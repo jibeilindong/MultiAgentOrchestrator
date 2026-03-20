@@ -10,7 +10,11 @@
   "dependencies": {
     "@multi-agent-flow/domain": "0.1.0"
   },
+  "devDependencies": {
+    "tsx": "^4.20.3"
+  },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "validate:compat": "tsx scripts/validate-maoproj-compat.ts"
   }
 }

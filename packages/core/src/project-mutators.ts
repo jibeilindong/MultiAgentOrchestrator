@@ -309,3 +309,60 @@ export function removeEdgeFromWorkflow(
     edges: workflow.edges.filter((edge) => edge.id !== edgeId)
   }));
 }
+
+export function updateWorkflowEdgeLabel(
+  project: MAProject,
+  workflowId: string,
+  edgeId: string,
+  label: string
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    edges: workflow.edges.map((edge) =>
+      edge.id === edgeId
+        ? {
+            ...edge,
+            label
+          }
+        : edge
+    )
+  }));
+}
+
+export function setWorkflowEdgeApprovalRequired(
+  project: MAProject,
+  workflowId: string,
+  edgeId: string,
+  requiresApproval: boolean
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    edges: workflow.edges.map((edge) =>
+      edge.id === edgeId
+        ? {
+            ...edge,
+            requiresApproval
+          }
+        : edge
+    )
+  }));
+}
+
+export function setWorkflowEdgeBidirectional(
+  project: MAProject,
+  workflowId: string,
+  edgeId: string,
+  isBidirectional: boolean
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    edges: workflow.edges.map((edge) =>
+      edge.id === edgeId
+        ? {
+            ...edge,
+            isBidirectional
+          }
+        : edge
+    )
+  }));
+}

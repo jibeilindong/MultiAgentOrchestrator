@@ -1,0 +1,172 @@
+{
+  "id": "fixture-workflow-complex",
+  "fileVersion": "2.0",
+  "name": "Workflow Complex Fixture",
+  "agents": [
+    {
+      "id": "agent-research",
+      "name": "Research Agent",
+      "identity": "researcher",
+      "description": "Finds context and source material.",
+      "soulMD": "# Research Agent",
+      "position": {
+        "x": 120,
+        "y": 160
+      },
+      "createdAt": 120,
+      "updatedAt": 180,
+      "capabilities": [
+        "search",
+        "synthesis"
+      ],
+      "colorHex": "#0f766e",
+      "openClawDefinition": {
+        "agentIdentifier": "research-agent",
+        "modelIdentifier": "MiniMax-M2.5",
+        "runtimeProfile": "default",
+        "memoryBackupPath": null,
+        "soulSourcePath": null,
+        "environment": {}
+      }
+    },
+    {
+      "id": "agent-writer",
+      "name": "Writer Agent",
+      "identity": "writer",
+      "description": "Turns research into a response.",
+      "soulMD": "# Writer Agent",
+      "position": {
+        "x": 360,
+        "y": 160
+      },
+      "createdAt": 240,
+      "updatedAt": 300,
+      "capabilities": [
+        "writing"
+      ],
+      "colorHex": "#2563eb",
+      "openClawDefinition": {
+        "agentIdentifier": "writer-agent",
+        "modelIdentifier": "MiniMax-M2.5",
+        "runtimeProfile": "default",
+        "memoryBackupPath": null,
+        "soulSourcePath": null,
+        "environment": {}
+      }
+    }
+  ],
+  "workflows": [
+    {
+      "id": "workflow-main",
+      "name": "Main Workflow",
+      "fallbackRoutingPolicy": "first_available",
+      "launchTestCases": [],
+      "lastLaunchVerificationReport": null,
+      "nodes": [
+        {
+          "id": "node-start",
+          "agentID": null,
+          "type": "start",
+          "position": {
+            "x": 80,
+            "y": 120
+          },
+          "title": "Start",
+          "displayColorHex": null,
+          "conditionExpression": "",
+          "loopEnabled": false,
+          "maxIterations": 1,
+          "subflowID": null,
+          "nestingLevel": 0,
+          "inputParameters": [],
+          "outputParameters": []
+        },
+        {
+          "id": "node-research",
+          "agentID": "agent-research",
+          "type": "agent",
+          "position": {
+            "x": 280,
+            "y": 120
+          },
+          "title": "Research",
+          "displayColorHex": null,
+          "conditionExpression": "",
+          "loopEnabled": false,
+          "maxIterations": 1,
+          "subflowID": null,
+          "nestingLevel": 0,
+          "inputParameters": [],
+          "outputParameters": []
+        },
+        {
+          "id": "node-write",
+          "agentID": "agent-writer",
+          "type": "agent",
+          "position": {
+            "x": 520,
+            "y": 120
+          },
+          "title": "Write",
+          "displayColorHex": null,
+          "conditionExpression": "",
+          "loopEnabled": false,
+          "maxIterations": 1,
+          "subflowID": null,
+          "nestingLevel": 0,
+          "inputParameters": [],
+          "outputParameters": []
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-kickoff",
+          "fromNodeID": "node-start",
+          "toNodeID": "node-research",
+          "label": "kickoff",
+          "displayColorHex": null,
+          "conditionExpression": "",
+          "requiresApproval": false,
+          "isBidirectional": false,
+          "dataMapping": {}
+        },
+        {
+          "id": "edge-handoff",
+          "fromNodeID": "node-research",
+          "toNodeID": "node-write",
+          "label": "handoff",
+          "displayColorHex": null,
+          "conditionExpression": "",
+          "requiresApproval": true,
+          "isBidirectional": false,
+          "dataMapping": {
+            "brief": "draft"
+          }
+        }
+      ],
+      "boundaries": [],
+      "colorGroups": [],
+      "createdAt": 360,
+      "parentNodeID": null,
+      "inputSchema": [],
+      "outputSchema": []
+    },
+    {
+      "id": "workflow-review",
+      "name": "Review Workflow",
+      "fallbackRoutingPolicy": "stop",
+      "launchTestCases": [],
+      "lastLaunchVerificationReport": null,
+      "nodes": [],
+      "edges": [],
+      "boundaries": [],
+      "colorGroups": [],
+      "createdAt": 420,
+      "parentNodeID": null,
+      "inputSchema": [],
+      "outputSchema": []
+    }
+  ],
+  "createdAt": 60,
+  "updatedAt": 480
+}

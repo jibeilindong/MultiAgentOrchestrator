@@ -1,0 +1,25 @@
+{
+  "id": "fixture-minimal-legacy",
+  "fileVersion": "2.0",
+  "name": "Legacy Minimal Fixture",
+  "agents": [],
+  "workflows": [
+    {
+      "id": "workflow-main",
+      "name": "Main Workflow",
+      "fallbackRoutingPolicy": "stop",
+      "launchTestCases": [],
+      "lastLaunchVerificationReport": null,
+      "nodes": [],
+      "edges": [],
+      "boundaries": [],
+      "colorGroups": [],
+      "createdAt": 0,
+      "parentNodeID": null,
+      "inputSchema": [],
+      "outputSchema": []
+    }
+  ],
+  "createdAt": 0,
+  "updatedAt": 60
+}

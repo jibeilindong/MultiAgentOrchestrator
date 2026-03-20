@@ -15,6 +15,7 @@ const PROJECT_FILTERS = [{ name: "Multi-Agent-Flow Project", extensions: [PROJEC
 const APP_DOCUMENTS_DIR = "Multi-Agent-Flow";
 const APP_AUTOSAVE_DIR = "AutoSave";
 const RECENT_PROJECTS_FILE = "recent-projects.json";
+const APP_ID = "com.multiagentflow.desktop";
 
 interface ProjectFileHandle {
   project: MAProject;
@@ -227,8 +228,8 @@ function registerProjectIpcHandlers() {
     "project:save",
     async (_event, payload: { project: MAProject; filePath: string | null }): Promise<ProjectFileHandle> => {
       if (payload.filePath) {
-      return writeProjectToFile(payload.project, payload.filePath);
-    }
+        return writeProjectToFile(payload.project, payload.filePath);
+      }
 
       throw new Error("Save requires an existing file path. Use Save As for unsaved projects.");
     }
@@ -266,6 +267,10 @@ app.whenReady().then(() => {
     }
   });
 });
+
+if (process.platform === "win32") {
+  app.setAppUserModelId(APP_ID);
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
