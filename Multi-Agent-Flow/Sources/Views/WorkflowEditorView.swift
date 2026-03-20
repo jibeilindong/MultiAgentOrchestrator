@@ -7,6 +7,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct WorkflowEditorView: View {
     @EnvironmentObject var appState: AppState
@@ -827,10 +828,13 @@ struct EditorToolbar: View {
                                 .font(.system(size: 15, weight: .semibold))
                             Text(isRunning ? "Stop" : "Run")
                                 .font(.system(size: 12.5, weight: .semibold))
+                                .lineLimit(1)
                         }
                         .foregroundColor(.white)
                         .padding(.horizontal, 14)
+                        .frame(minWidth: 84)
                         .frame(height: 38)
+                        .fixedSize(horizontal: true, vertical: false)
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(isRunning ? Color.red : Color.accentColor)
@@ -861,8 +865,10 @@ struct EditorToolbar: View {
                                     }
                                 }
                                 Divider()
-                                Button("恢复节点默认色") {
+                                Button(action: {
                                     applyNodeColor(nil)
+                                }) {
+                                    styleMenuResetLabel(title: "恢复节点默认色")
                                 }
                             } label: {
                                 toolbarMenuLabel(title: "节点颜色", systemName: "paintpalette")
@@ -880,8 +886,10 @@ struct EditorToolbar: View {
                                     }
                                 }
                                 Divider()
-                                Button("恢复连线默认色") {
+                                Button(action: {
                                     applyEdgeColor(nil, edgeID: selectedEdgeID)
+                                }) {
+                                    styleMenuResetLabel(title: "恢复连线默认色")
                                 }
                             } label: {
                                 toolbarMenuLabel(title: "连线颜色", systemName: "scribble.variable")
@@ -987,12 +995,71 @@ struct EditorToolbar: View {
     }
 
     private func styleMenuLabel(title: String, color: Color) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(color)
-                .frame(width: 10, height: 10)
+        Label {
             Text(title)
+                .font(.system(size: 12.5, weight: .medium))
+                .lineLimit(1)
+        } icon: {
+            Image(nsImage: menuSwatchImage(color: NSColor(color)))
+                .renderingMode(.original)
         }
+    }
+
+    private func styleMenuResetLabel(title: String) -> some View {
+        Label {
+            Text(title)
+                .font(.system(size: 12.5, weight: .medium))
+                .lineLimit(1)
+        } icon: {
+            Image(nsImage: menuResetSwatchImage())
+                .renderingMode(.original)
+        }
+    }
+
+    private func menuSwatchImage(color: NSColor) -> NSImage {
+        let size = NSSize(width: 14, height: 14)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        let rect = NSRect(origin: .zero, size: size)
+        let path = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3)
+        color.setFill()
+        path.fill()
+
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+
+        image.unlockFocus()
+        return image
+    }
+
+    private func menuResetSwatchImage() -> NSImage {
+        let size = NSSize(width: 14, height: 14)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        let rect = NSRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1)
+        let path = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+        NSColor.clear.setFill()
+        path.fill()
+
+        NSColor.secondaryLabelColor.withAlphaComponent(0.55).setStroke()
+        path.setLineDash([3, 2], count: 2, phase: 0)
+        path.lineWidth = 1
+        path.stroke()
+        path.setLineDash([], count: 0, phase: 0)
+
+        let slash = NSBezierPath()
+        slash.move(to: NSPoint(x: 3.5, y: 3.5))
+        slash.line(to: NSPoint(x: 10.5, y: 10.5))
+        NSColor.secondaryLabelColor.setStroke()
+        slash.lineWidth = 1.4
+        slash.lineCapStyle = .round
+        slash.stroke()
+
+        image.unlockFocus()
+        return image
     }
 
     private func toolbarIconButton(

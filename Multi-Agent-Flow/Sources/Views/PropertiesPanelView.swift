@@ -604,6 +604,7 @@ struct TemplatePickerButton: View {
                         .font(.system(size: 13, weight: .semibold))
                     Text(labelTitle)
                         .font(.system(size: 12.5, weight: .semibold))
+                        .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.secondary)
@@ -611,6 +612,8 @@ struct TemplatePickerButton: View {
                 .foregroundColor(Color.primary.opacity(0.82))
                 .padding(.horizontal, 12)
                 .frame(height: 38)
+                .frame(minWidth: 104, alignment: .center)
+                .fixedSize(horizontal: true, vertical: false)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.black.opacity(0.045))
@@ -623,6 +626,7 @@ struct TemplatePickerButton: View {
         }
         .font(.caption)
         .buttonStyle(.plain)
+        .layoutPriority(1)
         .popover(isPresented: $isPresented, arrowEdge: .top) {
             TemplatePickerPopover(
                 selectedTemplateID: $selectedTemplateID,

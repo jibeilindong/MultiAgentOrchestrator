@@ -624,14 +624,15 @@ struct CanvasContentView: View {
 
     private func routedEdgeLayouts(in geometry: GeometryProxy, workflow: Workflow) -> [RoutedEdgeHitLayout] {
         let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let nodeFramesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, nodeFrame(for: $0, geometry: geometry)) })
         let candidates = workflow.edges.compactMap { edge -> RoutedEdgeHitCandidate? in
             guard let fromNode = nodesByID[edge.fromNodeID],
-                  let toNode = nodesByID[edge.toNodeID] else {
+                  let toNode = nodesByID[edge.toNodeID],
+                  let fromFrame = nodeFramesByID[fromNode.id],
+                  let toFrame = nodeFramesByID[toNode.id] else {
                 return nil
             }
 
-            let fromFrame = nodeFrame(for: fromNode, geometry: geometry)
-            let toFrame = nodeFrame(for: toNode, geometry: geometry)
             let targetSide = WorkflowEdgeRoutePlanner.preferredIncomingSide(
                 for: toFrame,
                 toward: CGPoint(x: fromFrame.midX, y: fromFrame.midY)
@@ -645,6 +646,8 @@ struct CanvasContentView: View {
             )
         }
 
+        let fanoutInfoBySourceID = fanoutLayoutMap(for: candidates, workflow: workflow)
+        let faninInfoByBundleKey = faninLayoutMap(for: candidates)
         let grouped = Dictionary(grouping: candidates) { $0.bundleKey }
         var layouts: [RoutedEdgeHitLayout] = []
 
@@ -660,16 +663,63 @@ struct CanvasContentView: View {
                 let obstacles = workflow.nodes.compactMap { node -> CGRect? in
                     guard node.id != candidate.edge.fromNodeID,
                           node.id != candidate.edge.toNodeID else { return nil }
-                    return nodeFrame(for: node, geometry: geometry)
+                    return nodeFramesByID[node.id]
                 }
 
-                let points = WorkflowEdgeRoutePlanner.route(
-                    from: candidate.fromFrame,
-                    to: candidate.toFrame,
-                    avoiding: obstacles,
-                    preferredAxis: candidate.preferredAxis,
-                    laneOffset: laneOffsets[index]
-                )
+                let points: [CGPoint]
+                if let fanoutInfo = fanoutInfoBySourceID[candidate.edge.fromNodeID] {
+                    if candidate.edge.toNodeID == fanoutInfo.centerTargetID,
+                       abs(candidate.toFrame.midX - candidate.fromFrame.midX) <= 28 {
+                        points = WorkflowEdgeRoutePlanner.centerDownRoute(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            avoiding: obstacles
+                        ) ?? WorkflowEdgeRoutePlanner.route(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            avoiding: obstacles,
+                            preferredAxis: .vertical,
+                            laneOffset: 0
+                        )
+                    } else if let fanoutPath = WorkflowEdgeRoutePlanner.fanoutRoute(
+                        from: candidate.fromFrame,
+                        to: candidate.toFrame,
+                        turnY: fanoutInfo.turnY,
+                        targetAnchorX: fanoutInfo.targetAnchorX(
+                            for: candidate.edge.toNodeID,
+                            default: candidate.toFrame.midX
+                        ),
+                        avoiding: obstacles
+                    ) {
+                        points = fanoutPath
+                    } else {
+                        points = WorkflowEdgeRoutePlanner.route(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            avoiding: obstacles,
+                            preferredAxis: candidate.preferredAxis,
+                            laneOffset: laneOffsets[index]
+                        )
+                    }
+                } else if let faninInfo = faninInfoByBundleKey[candidate.bundleKey],
+                          let mergedPath = WorkflowEdgeRoutePlanner.faninRoute(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            incomingSide: faninInfo.incomingSide,
+                            mergeAxisValue: faninInfo.mergeAxisValue,
+                            trunkAxisValue: faninInfo.trunkAxisValue,
+                            avoiding: obstacles
+                          ) {
+                    points = mergedPath
+                } else {
+                    points = WorkflowEdgeRoutePlanner.route(
+                        from: candidate.fromFrame,
+                        to: candidate.toFrame,
+                        avoiding: obstacles,
+                        preferredAxis: candidate.preferredAxis,
+                        laneOffset: laneOffsets[index]
+                    )
+                }
 
                 layouts.append(RoutedEdgeHitLayout(edge: candidate.edge, points: points))
             }
@@ -679,12 +729,165 @@ struct CanvasContentView: View {
     }
 
     private func laneOffsets(for count: Int) -> [CGFloat] {
+        laneOffsets(for: count, spacing: 14)
+    }
+
+    private func laneOffsets(for count: Int, spacing: CGFloat) -> [CGFloat] {
         guard count > 1 else { return [0] }
-        let spacing: CGFloat = 14
         let center = CGFloat(count - 1) / 2
         return (0..<count).map { index in
             (CGFloat(index) - center) * spacing
         }
+    }
+
+    private func fanoutLayoutMap(
+        for candidates: [RoutedEdgeHitCandidate],
+        workflow: Workflow
+    ) -> [UUID: HitFanoutLayoutInfo] {
+        let groupedBySource = Dictionary(grouping: candidates, by: { $0.edge.fromNodeID })
+        var layoutBySource: [UUID: HitFanoutLayoutInfo] = [:]
+
+        for (sourceID, group) in groupedBySource {
+            guard group.count >= 2,
+                  let sourceFrame = group.first?.fromFrame else { continue }
+
+            let downwardTargets = group.filter { candidate in
+                candidate.toFrame.midY > sourceFrame.midY + 18
+            }
+            guard downwardTargets.count >= 2 else { continue }
+
+            let sourceBottom = sourceFrame.maxY + 10
+            let targetTop = downwardTargets.map { $0.toFrame.minY }.min() ?? .greatestFiniteMagnitude
+            let centeredTarget = closestTarget(to: sourceFrame.midX, in: downwardTargets)
+            let verticalGap = targetTop - sourceBottom
+            guard verticalGap >= 42 else { continue }
+
+            let preferredTurnY = sourceBottom + max(28, min(76, verticalGap * 0.4))
+            let turnY = min(preferredTurnY, targetTop - 18)
+            guard turnY > sourceBottom + 8, turnY < targetTop - 8 else { continue }
+
+            let sortedTargets = downwardTargets.sorted { lhs, rhs in
+                if abs(lhs.toFrame.midX - rhs.toFrame.midX) > 0.5 {
+                    return lhs.toFrame.midX < rhs.toFrame.midX
+                }
+                return lhs.toFrame.midY < rhs.toFrame.midY
+            }
+
+            let fanoutSpacingValue = WorkflowEdgeRoutePlanner.fanoutSpacing(
+                for: sourceFrame,
+                targetCount: sortedTargets.count
+            )
+            let slotOffsets = laneOffsets(for: sortedTargets.count, spacing: fanoutSpacingValue)
+            let targetAnchorXByTargetID = Dictionary(
+                uniqueKeysWithValues: zip(sortedTargets, slotOffsets).map { candidate, slotOffset in
+                    let preferredAnchorX = sourceFrame.midX + slotOffset
+                    let anchorX = WorkflowEdgeRoutePlanner.clampedVerticalEntryX(
+                        for: candidate.toFrame,
+                        preferredX: preferredAnchorX
+                    )
+                    return (candidate.edge.toNodeID, anchorX)
+                }
+            )
+
+            layoutBySource[sourceID] = HitFanoutLayoutInfo(
+                turnY: turnY,
+                centerTargetID: centeredTarget?.edge.toNodeID,
+                targetAnchorXByTargetID: targetAnchorXByTargetID
+            )
+        }
+
+        return layoutBySource
+    }
+
+    private func faninLayoutMap(for candidates: [RoutedEdgeHitCandidate]) -> [RoutedEdgeBundleKey: HitFaninLayoutInfo] {
+        let groupedByBundleKey = Dictionary(grouping: candidates, by: \.bundleKey)
+        var layoutByBundleKey: [RoutedEdgeBundleKey: HitFaninLayoutInfo] = [:]
+
+        for (bundleKey, group) in groupedByBundleKey {
+            guard group.count >= 2,
+                  let targetFrame = group.first?.toFrame else { continue }
+
+            let info: HitFaninLayoutInfo?
+            switch bundleKey.incomingSide {
+            case .bottom:
+                let sources = group.filter { $0.fromFrame.midY > targetFrame.midY + 18 }
+                guard sources.count >= 2 else { continue }
+                let targetBottom = targetFrame.maxY + 10
+                let nearestSourceTop = sources.map { $0.fromFrame.minY }.min() ?? .greatestFiniteMagnitude
+                let verticalGap = nearestSourceTop - targetBottom
+                guard verticalGap >= 34 else { continue }
+                let preferredMergeY = targetBottom + compactMergeOffset(for: verticalGap)
+                let mergeY = min(preferredMergeY, nearestSourceTop - 18)
+                guard mergeY > targetBottom + 8, mergeY < nearestSourceTop - 8 else { continue }
+                info = HitFaninLayoutInfo(incomingSide: .bottom, mergeAxisValue: mergeY, trunkAxisValue: targetFrame.midX)
+
+            case .top:
+                let sources = group.filter { $0.fromFrame.midY < targetFrame.midY - 18 }
+                guard sources.count >= 2 else { continue }
+                let targetTop = targetFrame.minY - 10
+                let nearestSourceBottom = sources.map { $0.fromFrame.maxY }.max() ?? -.greatestFiniteMagnitude
+                let verticalGap = targetTop - nearestSourceBottom
+                guard verticalGap >= 34 else { continue }
+                let preferredMergeY = targetTop - compactMergeOffset(for: verticalGap)
+                let mergeY = max(preferredMergeY, nearestSourceBottom + 18)
+                guard mergeY < targetTop - 8, mergeY > nearestSourceBottom + 8 else { continue }
+                info = HitFaninLayoutInfo(incomingSide: .top, mergeAxisValue: mergeY, trunkAxisValue: targetFrame.midX)
+
+            case .left:
+                let sources = group.filter { $0.fromFrame.midX < targetFrame.midX - 18 }
+                guard sources.count >= 2 else { continue }
+                let targetLeft = targetFrame.minX - 10
+                let nearestSourceRight = sources.map { $0.fromFrame.maxX }.max() ?? -.greatestFiniteMagnitude
+                let horizontalGap = targetLeft - nearestSourceRight
+                guard horizontalGap >= 34 else { continue }
+                let preferredMergeX = targetLeft - compactMergeOffset(for: horizontalGap)
+                let mergeX = max(preferredMergeX, nearestSourceRight + 18)
+                guard mergeX < targetLeft - 8, mergeX > nearestSourceRight + 8 else { continue }
+                info = HitFaninLayoutInfo(incomingSide: .left, mergeAxisValue: mergeX, trunkAxisValue: targetFrame.midY)
+
+            case .right:
+                let sources = group.filter { $0.fromFrame.midX > targetFrame.midX + 18 }
+                guard sources.count >= 2 else { continue }
+                let targetRight = targetFrame.maxX + 10
+                let nearestSourceLeft = sources.map { $0.fromFrame.minX }.min() ?? .greatestFiniteMagnitude
+                let horizontalGap = nearestSourceLeft - targetRight
+                guard horizontalGap >= 34 else { continue }
+                let preferredMergeX = targetRight + compactMergeOffset(for: horizontalGap)
+                let mergeX = min(preferredMergeX, nearestSourceLeft - 18)
+                guard mergeX > targetRight + 8, mergeX < nearestSourceLeft - 8 else { continue }
+                info = HitFaninLayoutInfo(incomingSide: .right, mergeAxisValue: mergeX, trunkAxisValue: targetFrame.midY)
+            }
+
+            if let info {
+                layoutByBundleKey[bundleKey] = info
+            }
+        }
+
+        return layoutByBundleKey
+    }
+
+    private func compactMergeOffset(for gap: CGFloat) -> CGFloat {
+        max(18, min(48, gap * 0.28))
+    }
+
+    private func closestTarget(
+        to sourceMidX: CGFloat,
+        in candidates: [RoutedEdgeHitCandidate]
+    ) -> RoutedEdgeHitCandidate? {
+        guard !candidates.isEmpty else { return nil }
+
+        var bestCandidate = candidates[0]
+        var bestDistance = abs(bestCandidate.toFrame.midX - sourceMidX)
+
+        for candidate in candidates.dropFirst() {
+            let distance = abs(candidate.toFrame.midX - sourceMidX)
+            if distance < bestDistance {
+                bestCandidate = candidate
+                bestDistance = distance
+            }
+        }
+
+        return bestCandidate
     }
 }
 
@@ -747,6 +950,22 @@ private struct RoutedEdgeHitLayout {
         let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
         return hypot(point.x - projection.x, point.y - projection.y)
     }
+}
+
+private struct HitFanoutLayoutInfo {
+    let turnY: CGFloat
+    let centerTargetID: UUID?
+    let targetAnchorXByTargetID: [UUID: CGFloat]
+
+    func targetAnchorX(for targetID: UUID, default defaultX: CGFloat) -> CGFloat {
+        targetAnchorXByTargetID[targetID] ?? defaultX
+    }
+}
+
+private struct HitFaninLayoutInfo {
+    let incomingSide: EdgeAnchorSide
+    let mergeAxisValue: CGFloat
+    let trunkAxisValue: CGFloat
 }
 
 struct WorkflowBoundaryDisplayGroup: Identifiable {
@@ -893,6 +1112,8 @@ private struct CanvasGroupLegendView: View {
     let textScale: CGFloat
 
     @State private var titleDrafts: [String: String] = [:]
+    @State private var editingGroupID: String?
+    @FocusState private var focusedGroupID: String?
 
     private var groups: [CanvasLegendGroup] {
         guard let workflow else { return [] }
@@ -945,32 +1166,7 @@ private struct CanvasGroupLegendView: View {
                     .foregroundColor(.secondary)
 
                 ForEach(groups) { group in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(CanvasStylePalette.color(from: group.colorHex) ?? .secondary)
-                            .frame(width: 12, height: 12)
-
-                        Text(group.kindTitle(language: localizationManager.currentLanguage))
-                            .font(.system(size: 10 * textScale, weight: .semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background((CanvasStylePalette.color(from: group.colorHex) ?? .secondary).opacity(0.12))
-                            .clipShape(Capsule())
-
-                        TextField(
-                            "",
-                            text: binding(for: group),
-                            prompt: Text(group.defaultTitle(language: localizationManager.currentLanguage))
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11 * textScale))
-                        .frame(width: 126)
-
-                        Text("\(group.itemCount)")
-                            .font(.system(size: 10 * textScale, weight: .medium))
-                            .foregroundColor(.secondary)
-                            .frame(minWidth: 18)
-                    }
+                    legendGroupRow(group)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .background(
@@ -1000,6 +1196,89 @@ private struct CanvasGroupLegendView: View {
             .onChange(of: groups.map { "\($0.id)|\($0.title)|\($0.itemCount)" }) { _, _ in
                 syncDrafts()
             }
+            .onChange(of: focusedGroupID) { _, newValue in
+                guard let editingGroupID, newValue != editingGroupID else { return }
+                if let group = groups.first(where: { $0.id == editingGroupID }) {
+                    finishEditing(group)
+                } else {
+                    self.editingGroupID = nil
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func legendGroupRow(_ group: CanvasLegendGroup) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(CanvasStylePalette.color(from: group.colorHex) ?? .secondary)
+                .frame(width: 12, height: 12)
+
+            Text(group.kindTitle(language: localizationManager.currentLanguage))
+                .font(.system(size: 10 * textScale, weight: .semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background((CanvasStylePalette.color(from: group.colorHex) ?? .secondary).opacity(0.12))
+                .clipShape(Capsule())
+
+            editorField(for: group)
+
+            Text("\(group.itemCount)")
+                .font(.system(size: 10 * textScale, weight: .medium))
+                .foregroundColor(.secondary)
+                .frame(minWidth: 18)
+        }
+    }
+
+    @ViewBuilder
+    private func editorField(for group: CanvasLegendGroup) -> some View {
+        if editingGroupID == group.id {
+            TextField(
+                "",
+                text: binding(for: group),
+                prompt: Text(group.defaultTitle(language: localizationManager.currentLanguage))
+            )
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 11 * textScale))
+            .frame(width: 132)
+            .focused($focusedGroupID, equals: group.id)
+            .onAppear {
+                DispatchQueue.main.async {
+                    focusedGroupID = group.id
+                }
+            }
+            .onSubmit {
+                finishEditing(group)
+            }
+        } else {
+            Button {
+                beginEditing(group)
+            } label: {
+                HStack(spacing: 6) {
+                    Text(displayTitle(for: group))
+                        .font(.system(size: 11 * textScale, weight: group.title.isEmpty ? .regular : .medium))
+                        .foregroundColor(group.title.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "pencil")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.8))
+                }
+                .padding(.horizontal, 9)
+                .frame(width: 132, height: 28, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.black.opacity(0.035))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .help(editTitle)
         }
     }
 
@@ -1008,7 +1287,6 @@ private struct CanvasGroupLegendView: View {
             get: { titleDrafts[group.id] ?? group.title },
             set: { newValue in
                 titleDrafts[group.id] = newValue
-                commit(group, title: newValue)
             }
         )
     }
@@ -1023,8 +1301,25 @@ private struct CanvasGroupLegendView: View {
 
         titleDrafts = nextDrafts.reduce(into: [String: String]()) { result, entry in
             guard validIDs.contains(entry.key) else { return }
+            if entry.key != editingGroupID,
+               let latestGroup = groups.first(where: { $0.id == entry.key }) {
+                result[entry.key] = latestGroup.title
+                return
+            }
             result[entry.key] = entry.value
         }
+    }
+
+    private func beginEditing(_ group: CanvasLegendGroup) {
+        titleDrafts[group.id] = titleDrafts[group.id] ?? group.title
+        editingGroupID = group.id
+        focusedGroupID = group.id
+    }
+
+    private func finishEditing(_ group: CanvasLegendGroup) {
+        commit(group, title: titleDrafts[group.id] ?? group.title)
+        focusedGroupID = nil
+        editingGroupID = nil
     }
 
     private func commit(_ group: CanvasLegendGroup, title: String? = nil) {
@@ -1035,6 +1330,11 @@ private struct CanvasGroupLegendView: View {
         )
     }
 
+    private func displayTitle(for group: CanvasLegendGroup) -> String {
+        let title = titleDrafts[group.id] ?? group.title
+        return title.isEmpty ? group.defaultTitle(language: localizationManager.currentLanguage) : title
+    }
+
     private var legendTitle: String {
         switch localizationManager.currentLanguage {
         case .english:
@@ -1043,6 +1343,17 @@ private struct CanvasGroupLegendView: View {
             return "顏色分組"
         case .simplifiedChinese:
             return "颜色分组"
+        }
+    }
+
+    private var editTitle: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "Edit group title"
+        case .traditionalChinese:
+            return "編輯分組標題"
+        case .simplifiedChinese:
+            return "编辑分组标题"
         }
     }
 
