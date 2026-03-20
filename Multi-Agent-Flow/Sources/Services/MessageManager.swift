@@ -104,11 +104,13 @@ class MessageManager: ObservableObject {
     // 模拟消息传递
     private func simulateMessageDelivery(messageId: UUID) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            if let index = self?.messages.firstIndex(where: { $0.id == messageId }) {
-                self?.messages[index].status = MessageStatus.delivered
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self?.messages[index].status = MessageStatus.read
+            self?.updateMessage(messageId) { message in
+                message.status = .delivered
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.updateMessage(messageId) { message in
+                    message.status = .read
                 }
             }
         }
@@ -133,6 +135,7 @@ class MessageManager: ObservableObject {
         var sentMessage = updatedMessage
         sentMessage.status = MessageStatus.sent
         sentMessage.requiresApproval = false
+        messages[messageIndex] = sentMessage
         simulateMessageDelivery(messageId: sentMessage.id)
         
         return true

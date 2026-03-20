@@ -205,7 +205,11 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
     }
     
     init(type: NodeType) {
-        self.id = UUID()
+        self.init(id: UUID(), type: type)
+    }
+
+    init(id: UUID, type: NodeType) {
+        self.id = id
         self.type = type
         self.position = .zero
         self.title = type == .start ? "Start" : ""
@@ -271,7 +275,11 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
     }
     
     init(from: UUID, to: UUID) {
-        self.id = UUID()
+        self.init(id: UUID(), from: from, to: to)
+    }
+
+    init(id: UUID, from: UUID, to: UUID) {
+        self.id = id
         self.fromNodeID = from
         self.toNodeID = to
         self.label = ""

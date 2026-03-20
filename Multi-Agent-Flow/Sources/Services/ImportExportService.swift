@@ -229,7 +229,10 @@ class ImportExportService {
             for nodeExport in workflowExport.nodes {
                 let newNodeID = UUID()
                 nodeIDMapping[nodeExport.id] = newNodeID
-                var node = WorkflowNode(type: WorkflowNode.NodeType(rawValue: nodeExport.type) ?? WorkflowNode.NodeType.decoded(from: nodeExport.type))
+                var node = WorkflowNode(
+                    id: newNodeID,
+                    type: WorkflowNode.NodeType(rawValue: nodeExport.type) ?? WorkflowNode.NodeType.decoded(from: nodeExport.type)
+                )
                 node.agentID = nodeExport.agentID.flatMap { idMapping[$0] }
                 node.position = nodeExport.position
                 node.title = nodeExport.title ?? ""
@@ -241,8 +244,11 @@ class ImportExportService {
             
             // 转换边
             for edgeExport in workflowExport.edges {
-                var edge = WorkflowEdge(from: nodeIDMapping[edgeExport.fromNodeID] ?? edgeExport.fromNodeID,
-                                        to: nodeIDMapping[edgeExport.toNodeID] ?? edgeExport.toNodeID)
+                var edge = WorkflowEdge(
+                    id: edgeExport.id,
+                    from: nodeIDMapping[edgeExport.fromNodeID] ?? edgeExport.fromNodeID,
+                    to: nodeIDMapping[edgeExport.toNodeID] ?? edgeExport.toNodeID
+                )
                 edge.label = edgeExport.label ?? ""
                 edge.conditionExpression = edgeExport.conditionExpression ?? ""
                 edge.requiresApproval = edgeExport.requiresApproval ?? false

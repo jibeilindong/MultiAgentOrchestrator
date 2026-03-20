@@ -74,6 +74,7 @@ class TaskManager: ObservableObject {
             var task = tasks[index]
             task.reassign(to: agentID)
             tasks[index] = task
+            updateStatistics()
         }
     }
     
