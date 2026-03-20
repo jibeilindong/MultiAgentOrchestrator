@@ -50,7 +50,7 @@ struct MultiAgentFlowApp: App {
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About \(LocalizedString.appName)") {
+                Button(LocalizedString.format("about_app", LocalizedString.appName)) {
                     NSApplication.shared.orderFrontStandardAboutPanel(
                         options: [
                             .applicationName: LocalizedString.appName,
@@ -70,11 +70,11 @@ struct MultiAgentFlowApp: App {
             CommandGroup(after: .appSettings) {
                 Divider()
 
-                Button("Customize Toolbar…") {
+                Button(LocalizedString.text("customize_toolbar")) {
                     showingToolbarCustomization = true
                 }
 
-                Button("Reset Toolbar Layout") {
+                Button(LocalizedString.text("reset_toolbar_layout")) {
                     appState.resetToolbarLayout()
                 }
 
@@ -111,19 +111,19 @@ struct MultiAgentFlowApp: App {
                 }
                 .keyboardShortcut("s", modifiers: .command)
 
-                Button("Save Project As…") {
+                Button(LocalizedString.text("save_project_as")) {
                     appState.saveProjectAs()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
             }
 
             CommandGroup(after: .saveItem) {
-                Button("Import Architecture") {
+                Button(LocalizedString.text("import_architecture")) {
                     appState.importData()
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 
-                Button("Export Architecture") {
+                Button(LocalizedString.text("export_architecture")) {
                     appState.exportData()
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
@@ -131,11 +131,11 @@ struct MultiAgentFlowApp: App {
                 if appState.currentProject != nil {
                     Divider()
 
-                    Button("Delete Project") {
+                    Button(LocalizedString.text("delete_project")) {
                         appState.deleteCurrentProject()
                     }
 
-                    Button("Close Project") {
+                    Button(LocalizedString.closeProject) {
                         appState.closeProject()
                     }
                     .keyboardShortcut("w", modifiers: [.command, .shift])

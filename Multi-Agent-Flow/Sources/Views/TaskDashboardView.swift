@@ -10,149 +10,71 @@ import Charts
 
 struct MonitoringDashboardView: View {
     @EnvironmentObject var appState: AppState
+    @State private var metrics = DashboardMetrics()
+    @State private var pendingMetricsRefreshWorkItem: DispatchWorkItem?
 
     private var project: MAProject? { appState.currentProject }
     private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
     private var executionState: ExecutionState? { appState.openClawService.executionState }
+    private let metricsRefreshDebounce: TimeInterval = 0.25
+
     private var recentTasks: [Task] {
         appState.taskManager.tasks.sorted { $0.createdAt > $1.createdAt }.prefix(8).map { $0 }
     }
-    private var workflowConversationMessages: [Message] {
-        guard let project else { return [] }
-        let agentIDs = Set(project.agents.map(\.id))
-        return appState.messageManager.messages
-            .filter { message in
-                agentIDs.contains(message.fromAgentID) || agentIDs.contains(message.toAgentID)
-            }
-            .sorted { $0.timestamp < $1.timestamp }
-    }
     private var conversationTotalCount: Int {
-        workflowConversationMessages.count
+        metrics.conversationTotalCount
     }
-    private var agentConversationRows: [AgentConversationRow] {
-        guard let project else { return [] }
-        let messages = workflowConversationMessages
-
-        return project.agents.map { agent in
-            let outgoingCount = messages.reduce(into: 0) { partial, message in
-                let role = message.metadata["role"]?.lowercased()
-                let kind = message.metadata["kind"]?.lowercased()
-
-                if message.fromAgentID == agent.id && message.toAgentID == agent.id {
-                    if role == "assistant" || kind == "output" {
-                        partial += 1
-                    }
-                    return
-                }
-
-                if message.fromAgentID == agent.id {
-                    partial += 1
-                }
-            }
-
-            let incomingCount = messages.reduce(into: 0) { partial, message in
-                let role = message.metadata["role"]?.lowercased()
-                let kind = message.metadata["kind"]?.lowercased()
-
-                if message.fromAgentID == agent.id && message.toAgentID == agent.id {
-                    if role == "user" || kind == "input" {
-                        partial += 1
-                    }
-                    return
-                }
-
-                if message.toAgentID == agent.id {
-                    partial += 1
-                }
-            }
-
-            let state = onlineState(for: agent, in: project)
-            let skillCount = Set(agent.capabilities.map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-            }.filter { !$0.isEmpty }).count
-            let fileCount = filesOwnedCount(for: agent)
-
-            return AgentConversationRow(
-                agent: agent,
-                state: state,
-                outgoingCount: outgoingCount,
-                incomingCount: incomingCount,
-                skillCount: skillCount,
-                fileCount: fileCount
-            )
-        }
-        .sorted { $0.agent.name.localizedCaseInsensitiveCompare($1.agent.name) == .orderedAscending }
+    private var agentConversationRows: [DashboardAgentConversationRow] {
+        metrics.agentConversationRows
     }
-    private var modelTokenRows: [ModelTokenUsageRow] {
-        guard let project else { return [] }
-
-        let agentLookup = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0) })
-        var usageByModel: [String: (input: Int, output: Int)] = [:]
-
-        for message in workflowConversationMessages {
-            if message.metadata["kind"] == "system" {
-                continue
-            }
-
-            let tokens = estimatedTokens(for: message)
-            guard tokens > 0 else { continue }
-
-            let fromModel = agentLookup[message.fromAgentID].map(normalizedModelName(for:))
-            let toModel = agentLookup[message.toAgentID].map(normalizedModelName(for:))
-            let role = message.metadata["role"]?.lowercased()
-
-            if message.fromAgentID == message.toAgentID {
-                guard let model = toModel ?? fromModel else { continue }
-                var bucket = usageByModel[model, default: (0, 0)]
-                if role == "assistant" || message.metadata["kind"] == "output" {
-                    bucket.output += tokens
-                } else {
-                    bucket.input += tokens
-                }
-                usageByModel[model] = bucket
-                continue
-            }
-
-            if let fromModel {
-                var bucket = usageByModel[fromModel, default: (0, 0)]
-                bucket.output += tokens
-                usageByModel[fromModel] = bucket
-            }
-
-            if let toModel {
-                var bucket = usageByModel[toModel, default: (0, 0)]
-                bucket.input += tokens
-                usageByModel[toModel] = bucket
-            }
-        }
-
-        return usageByModel
-            .map { model, usage in
-                ModelTokenUsageRow(
-                    model: model,
-                    inputTokens: usage.input,
-                    outputTokens: usage.output
-                )
-            }
-            .sorted { $0.model.localizedCaseInsensitiveCompare($1.model) == .orderedAscending }
+    private var modelTokenRows: [DashboardModelTokenUsageRow] {
+        metrics.modelTokenRows
     }
     private var totalTokenCount: Int {
-        modelTokenRows.reduce(0) { $0 + $1.totalTokens }
+        metrics.totalTokenCount
     }
     private var activeAgentCount: Int {
-        agentConversationRows.filter { $0.state == .active }.count
+        metrics.activeAgentCount
     }
     private var idleAgentCount: Int {
-        max(agentConversationRows.count - activeAgentCount, 0)
+        metrics.idleAgentCount
+    }
+    private var dashboardRefreshSignature: String {
+        let projectSignature = project.map {
+            [
+                $0.id.uuidString,
+                "\($0.agents.count)",
+                "\($0.workflows.count)",
+                $0.updatedAt.timeIntervalSinceReferenceDate.formatted()
+            ].joined(separator: ":")
+        } ?? "no-project"
+        let messageSignature = appState.messageManager.messages.last.map {
+            "\($0.id.uuidString):\($0.content.count):\($0.timestamp.timeIntervalSinceReferenceDate)"
+        } ?? "no-messages"
+        let taskSignature = appState.taskManager.tasks.last.map {
+            "\($0.id.uuidString):\($0.status.rawValue):\($0.createdAt.timeIntervalSinceReferenceDate)"
+        } ?? "no-tasks"
+        let activeAgentSignature = appState.openClawManager.activeAgents.values
+            .sorted { $0.agentID.uuidString < $1.agentID.uuidString }
+            .map { "\($0.agentID.uuidString):\($0.status)" }
+            .joined(separator: "|")
+
+        return [
+            projectSignature,
+            messageSignature,
+            taskSignature,
+            activeAgentSignature,
+            String(appState.openClawManager.isConnected)
+        ].joined(separator: "::")
     }
 
     var body: some View {
         Group {
             if project == nil {
                 ContentUnavailableView(
-                    "先打开一个 Project",
+                    LocalizedString.text("open_project_first"),
                     systemImage: "gauge.with.dots.needle.33percent",
-                    description: Text("仪表盘会基于当前 project 展示工作流运行态、任务状态和 OpenClaw 干预入口。")
+                    description: Text(LocalizedString.text("open_project_first_dashboard_desc"))
                 )
             } else if !appState.openClawManager.isConnected {
                 VStack(spacing: 16) {
@@ -160,23 +82,23 @@ struct MonitoringDashboardView: View {
                         .font(.system(size: 44))
                         .foregroundColor(.accentColor)
 
-                    Text("先连接 OpenClaw")
+                    Text(LocalizedString.text("connect_openclaw_first"))
                         .font(.title3)
                         .fontWeight(.semibold)
 
-                    Text("仪表盘中的工作流运行态、Agent 在线状态和干预能力都依赖实时 OpenClaw 连接。连接成功后才会展示这些信息。")
+                    Text(LocalizedString.text("connect_openclaw_first_dashboard_desc"))
                         .font(.body)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
 
                     HStack(spacing: 12) {
-                        Button("连接 OpenClaw") {
+                        Button(LocalizedString.text("connect_openclaw")) {
                             appState.connectOpenClaw()
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Button("打开设置") {
+                        Button(LocalizedString.text("open_settings")) {
                             NotificationCenter.default.post(name: .openSettings, object: nil)
                         }
                         .buttonStyle(.bordered)
@@ -199,36 +121,46 @@ struct MonitoringDashboardView: View {
                 }
             }
         }
+        .onAppear {
+            scheduleMetricsRefresh(immediately: true)
+        }
+        .onChange(of: dashboardRefreshSignature) { _, _ in
+            scheduleMetricsRefresh(immediately: false)
+        }
+        .onDisappear {
+            pendingMetricsRefreshWorkItem?.cancel()
+            pendingMetricsRefreshWorkItem = nil
+        }
     }
 
     private var overviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("全局状态")
+            Text(LocalizedString.text("global_status"))
                 .font(.headline)
 
             HStack(spacing: 16) {
                 monitoringCard(
                     title: "OpenClaw",
-                    value: appState.openClawManager.isConnected ? "已连接" : "未连接",
+                    value: appState.openClawManager.isConnected ? LocalizedString.text("connected_status") : LocalizedString.text("disconnected_status"),
                     detail: appState.openClawManager.config.deploymentSummary,
                     color: appState.openClawManager.isConnected ? .green : .red
                 )
                 monitoringCard(
-                    title: "任务",
+                    title: LocalizedString.tasks,
                     value: "\(taskStats.total)",
-                    detail: "进行中 \(taskStats.inProgress) / 阻塞 \(taskStats.blocked)",
+                    detail: "\(LocalizedString.text("mark_in_progress")) \(taskStats.inProgress) / \(LocalizedString.text("mark_blocked")) \(taskStats.blocked)",
                     color: .blue
                 )
                 monitoringCard(
-                    title: "执行",
-                    value: appState.openClawService.isExecuting ? "Running" : "Idle",
+                    title: LocalizedString.execution,
+                    value: appState.openClawService.isExecuting ? LocalizedString.text("running_status") : LocalizedString.text("idle_status"),
                     detail: executionProgressText,
                     color: appState.openClawService.isExecuting ? .orange : .secondary
                 )
                 monitoringCard(
-                    title: "记忆备份",
+                    title: LocalizedString.text("memory_backup"),
                     value: "\(project?.memoryData.taskExecutionMemories.count ?? 0)",
-                    detail: "任务 \(project?.memoryData.taskExecutionMemories.count ?? 0) / Agent \(project?.memoryData.agentMemories.count ?? 0)",
+                    detail: "\(LocalizedString.tasks) \(project?.memoryData.taskExecutionMemories.count ?? 0) / \(LocalizedString.agent) \(project?.memoryData.agentMemories.count ?? 0)",
                     color: .purple
                 )
             }
@@ -237,7 +169,7 @@ struct MonitoringDashboardView: View {
 
     private var executionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("工作流运行态")
+            Text(LocalizedString.text("workflow_runtime"))
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -254,19 +186,24 @@ struct MonitoringDashboardView: View {
                     )
 
                     if let executionState, executionState.isPaused {
-                        monitoringPill(title: "已暂停", color: .red)
+                        monitoringPill(title: LocalizedString.text("paused"), color: .red)
                     }
 
                     if let lastUpdated = project?.runtimeState.lastUpdated {
                         monitoringPill(
-                            title: "更新于 \(lastUpdated.formatted(date: .omitted, time: .shortened))",
+                            title: LocalizedString.format("updated_at", lastUpdated.formatted(date: .omitted, time: .shortened)),
                             color: .secondary
                         )
                     }
                 }
 
                 if let workflow = project?.workflows.first {
-                    Text("当前项目包含 \(workflow.nodes.filter { $0.type == .agent }.count) 个执行节点、\(workflow.edges.count) 条通信线、\(workflow.boundaries.count) 个文件边界。")
+                    Text(LocalizedString.format(
+                        "workflow_runtime_summary",
+                        workflow.nodes.filter { $0.type == .agent }.count,
+                        workflow.edges.count,
+                        workflow.boundaries.count
+                    ))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -279,37 +216,37 @@ struct MonitoringDashboardView: View {
 
     private var conversationMonitoringSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("对话监控")
+            Text(LocalizedString.text("conversation_monitoring"))
                 .font(.headline)
 
             HStack(spacing: 16) {
                 monitoringCard(
-                    title: "总对话数量",
+                    title: LocalizedString.text("conversation_total"),
                     value: "\(conversationTotalCount)",
-                    detail: "当前工作流上下文内累计消息",
+                    detail: LocalizedString.text("workflow_message_total"),
                     color: .blue
                 )
                 monitoringCard(
-                    title: "在线状态",
-                    value: "活跃 \(activeAgentCount) / 空闲 \(idleAgentCount)",
-                    detail: "按任务执行态与 runtime 状态判定",
+                    title: LocalizedString.text("online_status"),
+                    value: LocalizedString.format("active_idle_summary", activeAgentCount, idleAgentCount),
+                    detail: LocalizedString.text("runtime_based_judgement"),
                     color: activeAgentCount > 0 ? .green : .secondary
                 )
                 monitoringCard(
-                    title: "模型 Token",
+                    title: LocalizedString.text("model_tokens"),
                     value: "\(totalTokenCount)",
-                    detail: "\(modelTokenRows.count) 个模型的输入+输出估算",
+                    detail: LocalizedString.format("model_token_estimate", modelTokenRows.count),
                     color: .purple
                 )
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Agent 发言/接收/技能/文件")
+                Text(LocalizedString.text("agent_activity_metrics"))
                     .font(.subheadline)
                     .fontWeight(.medium)
 
                 if agentConversationRows.isEmpty {
-                    Text("当前项目没有可监控的 Agent。")
+                    Text(LocalizedString.text("no_monitorable_agents"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
@@ -322,22 +259,22 @@ struct MonitoringDashboardView: View {
                             monitoringPill(title: row.state.title, color: row.state.color)
                                 .frame(width: 72, alignment: .leading)
 
-                            Text("发言 \(row.outgoingCount)")
+                            Text(LocalizedString.format("spoken_count", row.outgoingCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 68, alignment: .leading)
 
-                            Text("接收 \(row.incomingCount)")
+                            Text(LocalizedString.format("received_count", row.incomingCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 68, alignment: .leading)
 
-                            Text("技能 \(row.skillCount)")
+                            Text(LocalizedString.format("skill_count", row.skillCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 62, alignment: .leading)
 
-                            Text("文件 \(row.fileCount)")
+                            Text(LocalizedString.format("file_count", row.fileCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 72, alignment: .leading)
@@ -352,12 +289,12 @@ struct MonitoringDashboardView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("模型 Token 明细")
+                Text(LocalizedString.text("model_token_details"))
                     .font(.subheadline)
                     .fontWeight(.medium)
 
                 if modelTokenRows.isEmpty {
-                    Text("当前还没有可统计的模型 token 消耗。")
+                    Text(LocalizedString.text("no_token_usage"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
@@ -367,17 +304,17 @@ struct MonitoringDashboardView: View {
                                 .font(.caption)
                                 .frame(width: 180, alignment: .leading)
 
-                            Text("输入 \(row.inputTokens)")
+                            Text(LocalizedString.format("input_count", row.inputTokens))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 86, alignment: .leading)
 
-                            Text("输出 \(row.outputTokens)")
+                            Text(LocalizedString.format("output_count", row.outputTokens))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 86, alignment: .leading)
 
-                            Text("总计 \(row.totalTokens)")
+                            Text(LocalizedString.format("total_count", row.totalTokens))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 84, alignment: .leading)
@@ -395,11 +332,11 @@ struct MonitoringDashboardView: View {
 
     private var interventionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("干预操作")
+            Text(LocalizedString.text("intervention_actions"))
                 .font(.headline)
 
             HStack(spacing: 10) {
-                Button(appState.openClawManager.isConnected ? "断开 OpenClaw" : "连接 OpenClaw") {
+                Button(appState.openClawManager.isConnected ? LocalizedString.text("disconnect_openclaw") + " OpenClaw" : LocalizedString.text("connect_openclaw") + " OpenClaw") {
                     if appState.openClawManager.isConnected {
                         appState.disconnectOpenClaw()
                     } else {
@@ -408,30 +345,30 @@ struct MonitoringDashboardView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button("检测连接") {
+                Button(LocalizedString.text("detect_connection")) {
                     appState.openClawService.checkConnection()
                 }
                 .buttonStyle(.bordered)
 
-                Button("暂停执行") {
+                Button(LocalizedString.text("pause_execution")) {
                     appState.openClawService.pauseExecution()
                 }
                 .buttonStyle(.bordered)
                 .disabled(!appState.openClawService.isExecuting)
 
-                Button("恢复执行") {
+                Button(LocalizedString.text("resume_execution")) {
                     appState.openClawService.resumeExecution()
                 }
                 .buttonStyle(.bordered)
                 .disabled(!(executionState?.canResume ?? false))
 
-                Button("回滚检查点") {
+                Button(LocalizedString.text("rollback_checkpoint")) {
                     appState.openClawService.rollbackToLastCheckpoint()
                 }
                 .buttonStyle(.bordered)
                 .disabled(executionState?.completedNodes.isEmpty ?? true)
 
-                Button("项目设置") {
+                Button(LocalizedString.text("project_settings")) {
                     NotificationCenter.default.post(name: .openSettings, object: nil)
                 }
                 .buttonStyle(.bordered)
@@ -441,7 +378,7 @@ struct MonitoringDashboardView: View {
 
     private var taskSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("任务监控")
+            Text(LocalizedString.text("task_monitoring"))
                 .font(.headline)
 
             VStack(spacing: 10) {
@@ -459,19 +396,19 @@ struct MonitoringDashboardView: View {
 
                         Spacer()
 
-                        monitoringPill(title: task.status.rawValue, color: task.status.color)
+                        monitoringPill(title: task.status.displayName, color: task.status.color)
 
-                        Button("进行中") {
+                        Button(LocalizedString.text("mark_in_progress")) {
                             appState.taskManager.moveTask(task.id, to: .inProgress)
                         }
                         .buttonStyle(.borderless)
 
-                        Button("完成") {
+                        Button(LocalizedString.text("mark_done")) {
                             appState.taskManager.moveTask(task.id, to: .done)
                         }
                         .buttonStyle(.borderless)
 
-                        Button("阻塞") {
+                        Button(LocalizedString.text("mark_blocked")) {
                             appState.taskManager.moveTask(task.id, to: .blocked)
                         }
                         .buttonStyle(.borderless)
@@ -486,12 +423,12 @@ struct MonitoringDashboardView: View {
 
     private var resultsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("最近执行结果")
+            Text(LocalizedString.text("recent_execution_results"))
                 .font(.headline)
 
             VStack(spacing: 8) {
                 if appState.openClawService.executionResults.isEmpty {
-                    Text("当前没有执行结果。")
+                    Text(LocalizedString.text("no_execution_results"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -502,7 +439,7 @@ struct MonitoringDashboardView: View {
                                 .font(.caption)
                                 .foregroundColor(result.status == .completed ? .green : .red)
                                 .frame(width: 80, alignment: .leading)
-                            Text(result.output.isEmpty ? "无输出" : result.output)
+                            Text(result.output.isEmpty ? LocalizedString.text("no_output") : result.output)
                                 .font(.caption)
                                 .lineLimit(2)
                             Spacer()
@@ -520,10 +457,10 @@ struct MonitoringDashboardView: View {
     private var logsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("实时日志")
+                Text(LocalizedString.text("realtime_logs"))
                     .font(.headline)
                 Spacer()
-                Button("清空日志") {
+                Button(LocalizedString.text("clear_logs")) {
                     appState.openClawService.clearLogs()
                 }
                 .buttonStyle(.borderless)
@@ -531,7 +468,7 @@ struct MonitoringDashboardView: View {
 
             VStack(spacing: 6) {
                 if appState.openClawService.executionLogs.isEmpty {
-                    Text("当前没有日志。")
+                    Text(LocalizedString.text("no_logs"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -577,8 +514,8 @@ struct MonitoringDashboardView: View {
     private var executionProgressText: String {
         let totalSteps = appState.openClawService.totalSteps
         let currentStep = appState.openClawService.currentStep
-        guard totalSteps > 0 else { return "未开始" }
-        return "\(currentStep)/\(totalSteps) 步"
+        guard totalSteps > 0 else { return LocalizedString.text("not_started") }
+        return LocalizedString.format("step_progress", currentStep, totalSteps)
     }
 
     private func monitoringCard(title: String, value: String, detail: String, color: Color) -> some View {
@@ -630,18 +567,235 @@ struct MonitoringDashboardView: View {
         }
     }
 
-    private func onlineState(for agent: Agent, in project: MAProject) -> AgentOnlineState {
-        guard appState.openClawManager.isConnected else {
+    private func scheduleMetricsRefresh(immediately: Bool) {
+        pendingMetricsRefreshWorkItem?.cancel()
+
+        let signature = dashboardRefreshSignature
+        let projectSnapshot = project
+        let tasksSnapshot = appState.taskManager.tasks
+        let messagesSnapshot = appState.messageManager.messages
+        let activeAgentsSnapshot = appState.openClawManager.activeAgents
+        let isConnected = appState.openClawManager.isConnected
+        let fileRootsByAgent = buildFileRootsByAgent(project: projectSnapshot, tasks: tasksSnapshot)
+        let unknownModelLabel = LocalizedString.text("unknown_model")
+
+        let workItem = DispatchWorkItem {
+            DispatchQueue.global(qos: .utility).async {
+                let refreshedMetrics = DashboardMetrics.build(
+                    project: projectSnapshot,
+                    tasks: tasksSnapshot,
+                    messages: messagesSnapshot,
+                    activeAgents: activeAgentsSnapshot,
+                    isConnected: isConnected,
+                    fileRootsByAgent: fileRootsByAgent,
+                    unknownModelLabel: unknownModelLabel
+                )
+
+                DispatchQueue.main.async {
+                    guard dashboardRefreshSignature == signature else {
+                        scheduleMetricsRefresh(immediately: false)
+                        return
+                    }
+                    metrics = refreshedMetrics
+                }
+            }
+        }
+
+        pendingMetricsRefreshWorkItem = workItem
+        let delay = immediately ? 0 : metricsRefreshDebounce
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func buildFileRootsByAgent(project: MAProject?, tasks: [Task]) -> [UUID: [URL]] {
+        guard let project else { return [:] }
+
+        var rootsByAgent: [UUID: [URL]] = [:]
+        for agent in project.agents {
+            if let memoryPath = agent.openClawDefinition.memoryBackupPath?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !memoryPath.isEmpty {
+                rootsByAgent[agent.id, default: []].append(URL(fileURLWithPath: memoryPath, isDirectory: true))
+            }
+        }
+
+        for task in tasks {
+            guard let agentID = task.assignedAgentID,
+                  let workspaceURL = appState.absoluteWorkspaceURL(for: task.id) else {
+                continue
+            }
+            rootsByAgent[agentID, default: []].append(workspaceURL)
+        }
+
+        return rootsByAgent.mapValues { roots in
+            Array(Dictionary(uniqueKeysWithValues: roots.map { ($0.standardizedFileURL.path, $0) }).values)
+        }
+    }
+}
+
+private struct DashboardMetrics {
+    var conversationTotalCount = 0
+    var agentConversationRows: [DashboardAgentConversationRow] = []
+    var modelTokenRows: [DashboardModelTokenUsageRow] = []
+    var totalTokenCount = 0
+    var activeAgentCount = 0
+    var idleAgentCount = 0
+
+    nonisolated init() {}
+
+    nonisolated init(
+        conversationTotalCount: Int,
+        agentConversationRows: [DashboardAgentConversationRow],
+        modelTokenRows: [DashboardModelTokenUsageRow],
+        totalTokenCount: Int,
+        activeAgentCount: Int,
+        idleAgentCount: Int
+    ) {
+        self.conversationTotalCount = conversationTotalCount
+        self.agentConversationRows = agentConversationRows
+        self.modelTokenRows = modelTokenRows
+        self.totalTokenCount = totalTokenCount
+        self.activeAgentCount = activeAgentCount
+        self.idleAgentCount = idleAgentCount
+    }
+
+    nonisolated static func build(
+        project: MAProject?,
+        tasks: [Task],
+        messages: [Message],
+        activeAgents: [UUID: OpenClawManager.ActiveAgentRuntime],
+        isConnected: Bool,
+        fileRootsByAgent: [UUID: [URL]],
+        unknownModelLabel: String
+    ) -> DashboardMetrics {
+        guard let project else { return DashboardMetrics() }
+
+        let agentIDs = Set(project.agents.map(\.id))
+        let relevantMessages = messages
+            .filter { message in
+                agentIDs.contains(message.fromAgentID) || agentIDs.contains(message.toAgentID)
+            }
+            .sorted { $0.timestamp < $1.timestamp }
+        let agentLookup = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0) })
+        let runningTaskAgentIDs = Set(
+            tasks
+                .filter { $0.status == .inProgress }
+                .compactMap(\.assignedAgentID)
+        )
+
+        var outgoingCounts: [UUID: Int] = [:]
+        var incomingCounts: [UUID: Int] = [:]
+        var usageByModel: [String: (input: Int, output: Int)] = [:]
+
+        for message in relevantMessages {
+            let role = message.metadata["role"]?.lowercased()
+            let kind = message.metadata["kind"]?.lowercased()
+
+            if message.fromAgentID == message.toAgentID {
+                if role == "assistant" || kind == "output" {
+                    outgoingCounts[message.fromAgentID, default: 0] += 1
+                } else if role == "user" || kind == "input" {
+                    incomingCounts[message.toAgentID, default: 0] += 1
+                }
+            } else {
+                outgoingCounts[message.fromAgentID, default: 0] += 1
+                incomingCounts[message.toAgentID, default: 0] += 1
+            }
+
+            guard kind != "system" else { continue }
+            let tokens = estimatedTokens(for: message)
+            guard tokens > 0 else { continue }
+
+            let fromModel = agentLookup[message.fromAgentID].map { normalizedModelName(for: $0, unknownModelLabel: unknownModelLabel) }
+            let toModel = agentLookup[message.toAgentID].map { normalizedModelName(for: $0, unknownModelLabel: unknownModelLabel) }
+
+            if message.fromAgentID == message.toAgentID {
+                guard let model = toModel ?? fromModel else { continue }
+                var bucket = usageByModel[model, default: (0, 0)]
+                if role == "assistant" || kind == "output" {
+                    bucket.output += tokens
+                } else {
+                    bucket.input += tokens
+                }
+                usageByModel[model] = bucket
+                continue
+            }
+
+            if let fromModel {
+                var bucket = usageByModel[fromModel, default: (0, 0)]
+                bucket.output += tokens
+                usageByModel[fromModel] = bucket
+            }
+
+            if let toModel {
+                var bucket = usageByModel[toModel, default: (0, 0)]
+                bucket.input += tokens
+                usageByModel[toModel] = bucket
+            }
+        }
+
+        let agentConversationRows = project.agents
+            .map { agent in
+                DashboardAgentConversationRow(
+                    agent: agent,
+                    state: resolveAgentState(
+                        for: agent,
+                        project: project,
+                        activeAgents: activeAgents,
+                        runningTaskAgentIDs: runningTaskAgentIDs,
+                        isConnected: isConnected
+                    ),
+                    outgoingCount: outgoingCounts[agent.id, default: 0],
+                    incomingCount: incomingCounts[agent.id, default: 0],
+                    skillCount: Set(agent.capabilities.map {
+                        $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }.filter { !$0.isEmpty }).count,
+                    fileCount: fileRootsByAgent[agent.id, default: []].reduce(0) { partial, root in
+                        partial + regularFileCount(at: root)
+                    }
+                )
+            }
+            .sorted { $0.agent.name.localizedCaseInsensitiveCompare($1.agent.name) == .orderedAscending }
+
+        let modelTokenRows = usageByModel
+            .map { model, usage in
+                DashboardModelTokenUsageRow(
+                    model: model,
+                    inputTokens: usage.input,
+                    outputTokens: usage.output
+                )
+            }
+            .sorted { $0.model.localizedCaseInsensitiveCompare($1.model) == .orderedAscending }
+
+        let activeAgentCount = agentConversationRows.reduce(into: 0) { partial, row in
+            if row.state.isActive {
+                partial += 1
+            }
+        }
+
+        return DashboardMetrics(
+            conversationTotalCount: relevantMessages.count,
+            agentConversationRows: agentConversationRows,
+            modelTokenRows: modelTokenRows,
+            totalTokenCount: modelTokenRows.reduce(0) { $0 + $1.totalTokens },
+            activeAgentCount: activeAgentCount,
+            idleAgentCount: max(agentConversationRows.count - activeAgentCount, 0)
+        )
+    }
+
+    private nonisolated static func resolveAgentState(
+        for agent: Agent,
+        project: MAProject,
+        activeAgents: [UUID: OpenClawManager.ActiveAgentRuntime],
+        runningTaskAgentIDs: Set<UUID>,
+        isConnected: Bool
+    ) -> DashboardAgentOnlineState {
+        guard isConnected else {
             return .idle
         }
 
         let runtimeState = project.runtimeState.agentStates[agent.id.uuidString]?.lowercased() ?? ""
-        let openClawState = appState.openClawManager.activeAgents[agent.id]?.status.lowercased() ?? ""
-        let hasRunningTask = appState.taskManager.tasks.contains {
-            $0.assignedAgentID == agent.id && $0.status == .inProgress
-        }
-
-        let isActive = hasRunningTask
+        let openClawState = activeAgents[agent.id]?.status.lowercased() ?? ""
+        let isActive = runningTaskAgentIDs.contains(agent.id)
             || runtimeState.contains("running")
             || runtimeState.contains("queued")
             || runtimeState.contains("active")
@@ -653,28 +807,7 @@ struct MonitoringDashboardView: View {
         return isActive ? .active : .idle
     }
 
-    private func filesOwnedCount(for agent: Agent) -> Int {
-        var roots: [URL] = []
-
-        if let memoryPath = agent.openClawDefinition.memoryBackupPath?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !memoryPath.isEmpty {
-            roots.append(URL(fileURLWithPath: memoryPath, isDirectory: true))
-        }
-
-        for task in appState.taskManager.tasks(for: agent.id) {
-            if let workspaceURL = appState.absoluteWorkspaceURL(for: task.id) {
-                roots.append(workspaceURL)
-            }
-        }
-
-        let uniqueRoots = Dictionary(uniqueKeysWithValues: roots.map { ($0.standardizedFileURL.path, $0) })
-        return uniqueRoots.values.reduce(0) { partial, root in
-            partial + regularFileCount(at: root)
-        }
-    }
-
-    private func regularFileCount(at rootURL: URL) -> Int {
+    private nonisolated static func regularFileCount(at rootURL: URL) -> Int {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             return 0
@@ -698,12 +831,12 @@ struct MonitoringDashboardView: View {
         return count
     }
 
-    private func normalizedModelName(for agent: Agent) -> String {
+    private nonisolated static func normalizedModelName(for agent: Agent, unknownModelLabel: String) -> String {
         let value = agent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? "Unknown" : value
+        return value.isEmpty ? unknownModelLabel : value
     }
 
-    private func estimatedTokens(for message: Message) -> Int {
+    private nonisolated static func estimatedTokens(for message: Message) -> Int {
         if let tokenText = message.metadata["tokenEstimate"],
            let value = Int(tokenText),
            value >= 0 {
@@ -712,48 +845,62 @@ struct MonitoringDashboardView: View {
         return estimatedTokens(for: message.content)
     }
 
-    private func estimatedTokens(for text: String) -> Int {
+    private nonisolated static func estimatedTokens(for text: String) -> Int {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return 0 }
         let scalarCount = trimmed.unicodeScalars.count
         return max(1, Int(ceil(Double(scalarCount) / 4.0)))
     }
+}
 
-    private enum AgentOnlineState {
-        case active
-        case idle
+private enum DashboardAgentOnlineState {
+    case active
+    case idle
 
-        var title: String {
-            switch self {
-            case .active: return "活跃"
-            case .idle: return "空闲"
-            }
-        }
-
-        var color: Color {
-            switch self {
-            case .active: return .green
-            case .idle: return .secondary
-            }
+    nonisolated var isActive: Bool {
+        switch self {
+        case .active: return true
+        case .idle: return false
         }
     }
 
-    private struct AgentConversationRow: Identifiable {
-        var id: UUID { agent.id }
-        let agent: Agent
-        let state: AgentOnlineState
-        let outgoingCount: Int
-        let incomingCount: Int
-        let skillCount: Int
-        let fileCount: Int
+    var title: String {
+        switch self {
+        case .active: return LocalizedString.text("active_state")
+        case .idle: return LocalizedString.text("idle_state")
+        }
     }
 
-    private struct ModelTokenUsageRow: Identifiable {
-        var id: String { model }
-        let model: String
-        let inputTokens: Int
-        let outputTokens: Int
-        var totalTokens: Int { inputTokens + outputTokens }
+    var color: Color {
+        switch self {
+        case .active: return .green
+        case .idle: return .secondary
+        }
+    }
+}
+
+private struct DashboardAgentConversationRow: Identifiable {
+    var id: UUID { agent.id }
+    let agent: Agent
+    let state: DashboardAgentOnlineState
+    let outgoingCount: Int
+    let incomingCount: Int
+    let skillCount: Int
+    let fileCount: Int
+}
+
+private struct DashboardModelTokenUsageRow: Identifiable {
+    var id: String { model }
+    let model: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let totalTokens: Int
+
+    nonisolated init(model: String, inputTokens: Int, outputTokens: Int) {
+        self.model = model
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.totalTokens = inputTokens + outputTokens
     }
 }
 

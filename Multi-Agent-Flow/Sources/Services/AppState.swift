@@ -223,12 +223,12 @@ enum CanvasColorPreset: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
-        case .blue: return "蓝"
-        case .graphite: return "石墨"
-        case .green: return "绿"
-        case .orange: return "橙"
-        case .red: return "红"
-        case .primary: return "默认"
+        case .blue: return LocalizedString.text("color_blue")
+        case .graphite: return LocalizedString.text("color_graphite")
+        case .green: return LocalizedString.text("color_green")
+        case .orange: return LocalizedString.text("color_orange")
+        case .red: return LocalizedString.text("color_red")
+        case .primary: return LocalizedString.text("color_default")
         }
     }
 
@@ -274,15 +274,15 @@ enum CanvasAccentColorPreset: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .blue: return "蓝"
-        case .teal: return "青"
-        case .green: return "绿"
-        case .amber: return "琥珀"
-        case .orange: return "橙"
-        case .red: return "红"
-        case .pink: return "粉"
-        case .violet: return "紫"
-        case .slate: return "灰"
+        case .blue: return LocalizedString.text("color_blue")
+        case .teal: return LocalizedString.text("color_teal")
+        case .green: return LocalizedString.text("color_green")
+        case .amber: return LocalizedString.text("color_amber")
+        case .orange: return LocalizedString.text("color_orange")
+        case .red: return LocalizedString.text("color_red")
+        case .pink: return LocalizedString.text("color_pink")
+        case .violet: return LocalizedString.text("color_violet")
+        case .slate: return LocalizedString.text("color_slate")
         }
     }
 
@@ -359,9 +359,9 @@ enum ContentToolbarItem: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
-        case .view: return "视图"
-        case .display: return "显示控制"
-        case .language: return "语言"
+        case .view: return LocalizedString.text("view_menu")
+        case .display: return LocalizedString.text("display_controls")
+        case .language: return LocalizedString.language
         }
     }
 
@@ -501,6 +501,12 @@ class AppState: ObservableObject {
         openClawManager.$activeAgents
             .sink { [weak self] _ in
                 self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$status
+            .sink { [weak self] status in
+                self?.openClawService.syncConnectionStatus(with: status)
             }
             .store(in: &cancellables)
 
@@ -2239,52 +2245,38 @@ class AppState: ObservableObject {
         return project.workflows.first
     }
 
-    func startWorkflowExecutionWithVerification(
+    @discardableResult
+    func runWorkflowLaunchVerification(
         workflowID: UUID? = nil,
-        prompt: String? = nil,
-        agentOutputMode: AgentOutputMode = .structuredJSON,
-        onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
-        onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
-        completion: @escaping (WorkflowLaunchVerificationReport, [ExecutionResult]) -> Void
-    ) {
+        completion: ((WorkflowLaunchVerificationReport) -> Void)? = nil
+    ) -> Bool {
         guard let project = currentProject,
               let workflow = self.workflow(for: workflowID) else {
-            return
+            return false
         }
 
+        guard !openClawService.isExecuting else {
+            openClawService.addLog(.warning, "Launch verification is unavailable while another workflow execution is in progress.")
+            return false
+        }
+
+        openClawService.addLog(.info, "Manual launch verification requested for workflow \(workflow.name).")
         verifyWorkflowBeforeLaunch(workflow, agents: project.agents) { [weak self] report in
             guard let self else { return }
 
             switch report.status {
             case .fail:
-                self.openClawService.addLog(.error, "Workflow launch verification failed for \(workflow.name). Execution was blocked.")
-                completion(report, [])
+                self.openClawService.addLog(.error, "Workflow launch verification failed for \(workflow.name).")
             case .warn:
-                self.openClawService.addLog(.warning, "Workflow launch verification completed with warnings for \(workflow.name). Proceeding with execution.")
-                self.openClawService.executeWorkflow(
-                    workflow,
-                    agents: project.agents,
-                    prompt: prompt,
-                    agentOutputMode: agentOutputMode,
-                    onNodeStream: onNodeStream,
-                    onNodeCompleted: onNodeCompleted
-                ) { results in
-                    completion(report, results)
-                }
+                self.openClawService.addLog(.warning, "Workflow launch verification completed with warnings for \(workflow.name).")
             case .pass:
                 self.openClawService.addLog(.success, "Workflow launch verification passed for \(workflow.name).")
-                self.openClawService.executeWorkflow(
-                    workflow,
-                    agents: project.agents,
-                    prompt: prompt,
-                    agentOutputMode: agentOutputMode,
-                    onNodeStream: onNodeStream,
-                    onNodeCompleted: onNodeCompleted
-                ) { results in
-                    completion(report, results)
-                }
             }
+
+            completion?(report)
         }
+
+        return true
     }
 
     private func verifyWorkflowBeforeLaunch(
@@ -2298,10 +2290,12 @@ class AppState: ObservableObject {
             workflowName: workflow.name,
             workflowSignature: signature
         )
+        persistLaunchVerificationReport(report, for: workflow.id)
 
         let staticEvaluation = staticVerificationFindings(for: workflow, agents: agents)
         report.staticFindings = staticEvaluation.findings
         report.status = staticEvaluation.status
+        persistLaunchVerificationReport(report, for: workflow.id)
 
         let testCases = effectiveLaunchTestCases(for: workflow, agents: agents)
         if workflow.launchTestCases.isEmpty {
@@ -2650,6 +2644,13 @@ class AppState: ObservableObject {
 
         let beginWorkbenchExecution: () -> Void = { [weak self] in
             guard let self else { return }
+            let workbenchStart = Date()
+            let workbenchSessionID = self.workbenchSessionID(
+                projectRuntimeSessionID: project.runtimeState.sessionID,
+                workflowID: workflow.id,
+                agentID: leadAgent.id
+            )
+            let workbenchThinkingLevel = self.workbenchThinkingLevel(for: trimmedPrompt)
 
             var task = Task(
                 title: workbenchTaskTitle(from: trimmedPrompt),
@@ -2665,6 +2666,8 @@ class AppState: ObservableObject {
             task.metadata["workflowID"] = workflow.id.uuidString
             task.metadata["entryAgentID"] = leadAgent.id.uuidString
             task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
+            task.metadata["workbenchSessionID"] = workbenchSessionID
+            task.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             self.taskManager.addTask(task)
 
             var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
@@ -2674,6 +2677,8 @@ class AppState: ObservableObject {
             userMessage.metadata["kind"] = "input"
             userMessage.metadata["workflowID"] = workflow.id.uuidString
             userMessage.metadata["taskID"] = task.id.uuidString
+            userMessage.metadata["workbenchSessionID"] = workbenchSessionID
+            userMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             userMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: trimmedPrompt))
             self.messageManager.appendMessage(userMessage)
 
@@ -2688,170 +2693,107 @@ class AppState: ObservableObject {
                 self.currentProject = mutableProject
             }
 
-            var entryReplySent = false
-            var streamingMessageIDByAgent: [UUID: UUID] = [:]
-            var streamingContentByAgent: [UUID: String] = [:]
+            let otherEntryNodes = entryAgentNodes.filter { $0.id != leadNode.id }
+            var streamingMessageID: UUID?
+            var streamingContent = ""
+            var firstChunkAt: Date?
+            var firstReplyAt: Date?
+            var fullWorkflowAt: Date?
 
-            self.openClawService.executeWorkflow(
-                workflow,
-                agents: project.agents,
-                prompt: trimmedPrompt,
-                agentOutputMode: .plainStreaming,
-                onNodeStream: { [weak self] update in
-                    guard let self else { return }
-                    guard entryAgentIDs.contains(update.agentID) else { return }
+            var placeholderMessage = Message(
+                from: leadAgent.id,
+                to: leadAgent.id,
+                type: .notification,
+                content: "已收到，正在生成回复..."
+            )
+            placeholderMessage.status = .read
+            placeholderMessage.metadata["channel"] = "workbench"
+            placeholderMessage.metadata["role"] = "assistant"
+            placeholderMessage.metadata["kind"] = "output"
+            placeholderMessage.metadata["workflowID"] = workflow.id.uuidString
+            placeholderMessage.metadata["taskID"] = task.id.uuidString
+            placeholderMessage.metadata["entryReply"] = "true"
+            placeholderMessage.metadata["streamed"] = "true"
+            placeholderMessage.metadata["thinking"] = "true"
+            placeholderMessage.metadata["agentName"] = leadAgent.name
+            placeholderMessage.metadata["outputType"] = ExecutionOutputType.runtimeLog.rawValue
+            placeholderMessage.metadata["workbenchSessionID"] = workbenchSessionID
+            placeholderMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
+            placeholderMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: placeholderMessage.content))
+            self.messageManager.appendMessage(placeholderMessage)
+            streamingMessageID = placeholderMessage.id
 
-                    let chunk = update.chunk
-                    guard !chunk.isEmpty,
-                          !chunk.allSatisfy({ $0.isWhitespace || $0.isNewline }) else { return }
+            func upsertWorkbenchAssistantMessage(
+                agent: Agent,
+                content: String,
+                type: MessageType,
+                outputType: ExecutionOutputType,
+                isThinking: Bool
+            ) {
+                let cleanedContent = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isThinking
+                    ? "已收到任务，正在继续处理。"
+                    : content
 
-                    let respondingAgent = project.agents.first(where: { $0.id == update.agentID }) ?? leadAgent
-                    let nextContent = (streamingContentByAgent[update.agentID, default: ""]) + chunk
-                    streamingContentByAgent[update.agentID] = nextContent
-
-                    if let messageID = streamingMessageIDByAgent[update.agentID] {
-                        self.messageManager.updateMessage(messageID) { message in
-                            message.content = nextContent
-                            message.timestamp = Date()
-                            message.metadata["thinking"] = "true"
-                            message.metadata["streamed"] = "true"
-                            message.metadata["agentName"] = respondingAgent.name
-                            message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
-                            message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: nextContent))
-                        }
-                    } else {
-                        var streamingMessage = Message(
-                            from: respondingAgent.id,
-                            to: respondingAgent.id,
-                            type: .notification,
-                            content: nextContent
-                        )
-                        streamingMessage.status = .read
-                        streamingMessage.metadata["channel"] = "workbench"
-                        streamingMessage.metadata["role"] = "assistant"
-                        streamingMessage.metadata["kind"] = "output"
-                        streamingMessage.metadata["workflowID"] = workflow.id.uuidString
-                        streamingMessage.metadata["taskID"] = task.id.uuidString
-                        streamingMessage.metadata["entryReply"] = "true"
-                        streamingMessage.metadata["streamed"] = "true"
-                        streamingMessage.metadata["thinking"] = "true"
-                        streamingMessage.metadata["agentName"] = respondingAgent.name
-                        streamingMessage.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
-                        streamingMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: nextContent))
-                        self.messageManager.appendMessage(streamingMessage)
-                        streamingMessageIDByAgent[update.agentID] = streamingMessage.id
+                if let messageID = streamingMessageID {
+                    self.messageManager.updateMessage(messageID) { message in
+                        message.content = cleanedContent
+                        message.timestamp = Date()
+                        message.type = type
+                        message.metadata["thinking"] = isThinking ? "true" : "false"
+                        message.metadata["streamed"] = "true"
+                        message.metadata["agentName"] = agent.name
+                        message.metadata["outputType"] = outputType.rawValue
+                        message.metadata["workbenchSessionID"] = workbenchSessionID
+                        message.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
+                        message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
                     }
-                },
-                onNodeCompleted: { [weak self] result in
-                    guard let self else { return }
-                    guard !entryReplySent, entryAgentIDs.contains(result.agentID) else { return }
-                    guard result.outputType == .agentFinalResponse else {
-                        self.openClawService.addLog(
-                            .info,
-                            "已跳过非最终回复输出（\(result.outputType.rawValue)），不写入工作台对话。",
-                            nodeID: result.nodeID
-                        )
-                        return
-                    }
-
-                    let respondingAgent = project.agents.first(where: { $0.id == result.agentID }) ?? leadAgent
-                    let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !output.isEmpty else { return }
-                    entryReplySent = true
-
-                    if let messageID = streamingMessageIDByAgent[result.agentID] {
-                        self.messageManager.updateMessage(messageID) { message in
-                            message.content = output
-                            message.timestamp = Date()
-                            message.type = result.status == .completed ? .notification : .data
-                            message.metadata["thinking"] = "false"
-                            message.metadata["agentName"] = respondingAgent.name
-                            message.metadata["outputType"] = result.outputType.rawValue
-                            message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
-                        }
-                    } else {
-                        var responseMessage = Message(
-                            from: respondingAgent.id,
-                            to: respondingAgent.id,
-                            type: result.status == .completed ? .notification : .data,
-                            content: output
-                        )
-                        responseMessage.status = .read
-                        responseMessage.metadata["channel"] = "workbench"
-                        responseMessage.metadata["role"] = "assistant"
-                        responseMessage.metadata["kind"] = "output"
-                        responseMessage.metadata["outputType"] = result.outputType.rawValue
-                        responseMessage.metadata["workflowID"] = workflow.id.uuidString
-                        responseMessage.metadata["taskID"] = task.id.uuidString
-                        responseMessage.metadata["entryReply"] = "true"
-                        responseMessage.metadata["streamed"] = "true"
-                        responseMessage.metadata["thinking"] = "false"
-                        responseMessage.metadata["agentName"] = respondingAgent.name
-                        responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
-                        self.messageManager.appendMessage(responseMessage)
-                    }
+                } else {
+                    var responseMessage = Message(
+                        from: agent.id,
+                        to: agent.id,
+                        type: type,
+                        content: cleanedContent
+                    )
+                    responseMessage.status = .read
+                    responseMessage.metadata["channel"] = "workbench"
+                    responseMessage.metadata["role"] = "assistant"
+                    responseMessage.metadata["kind"] = "output"
+                    responseMessage.metadata["workflowID"] = workflow.id.uuidString
+                    responseMessage.metadata["taskID"] = task.id.uuidString
+                    responseMessage.metadata["entryReply"] = "true"
+                    responseMessage.metadata["streamed"] = "true"
+                    responseMessage.metadata["thinking"] = isThinking ? "true" : "false"
+                    responseMessage.metadata["agentName"] = agent.name
+                    responseMessage.metadata["outputType"] = outputType.rawValue
+                    responseMessage.metadata["workbenchSessionID"] = workbenchSessionID
+                    responseMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
+                    responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
+                    self.messageManager.appendMessage(responseMessage)
+                    streamingMessageID = responseMessage.id
                 }
-            ) { [weak self] results in
-                guard let self else { return }
+            }
+
+            func recordWorkbenchLatency(_ key: String, label: String, at timestamp: Date) {
+                let latency = self.latencyMillisecondsString(since: workbenchStart, until: timestamp)
+                self.persistWorkbenchLatencyMetric(
+                    taskID: task.id,
+                    messageID: streamingMessageID,
+                    key: key,
+                    value: latency
+                )
+                self.openClawService.addLog(.info, "Workbench latency: \(label)=\(latency)ms")
+            }
+
+            func completeWorkbenchExecution(results: [ExecutionResult]) {
+                if fullWorkflowAt == nil {
+                    let finishedAt = Date()
+                    fullWorkflowAt = finishedAt
+                    recordWorkbenchLatency("fullWorkflowMs", label: "full_workflow", at: finishedAt)
+                }
 
                 let failedCount = results.filter { $0.status == .failed }.count
                 let finalStatus: TaskStatus = results.isEmpty ? .blocked : (failedCount == 0 ? .done : .blocked)
                 self.taskManager.moveTask(task.id, to: finalStatus)
-
-                if !entryReplySent {
-                    let entryResult = results.first { result in
-                        entryAgentIDs.contains(result.agentID)
-                            && result.outputType == .agentFinalResponse
-                            && !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    }
-
-                    if let entryResult {
-                        let respondingAgent = project.agents.first(where: { $0.id == entryResult.agentID }) ?? leadAgent
-                        let output = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
-
-                        if let messageID = streamingMessageIDByAgent[entryResult.agentID] {
-                            self.messageManager.updateMessage(messageID) { message in
-                                message.content = output
-                                message.timestamp = Date()
-                                message.type = failedCount == 0 ? .notification : .data
-                                message.metadata["thinking"] = "false"
-                                message.metadata["agentName"] = respondingAgent.name
-                                message.metadata["outputType"] = entryResult.outputType.rawValue
-                                message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
-                            }
-                        } else {
-                            var responseMessage = Message(
-                                from: respondingAgent.id,
-                                to: respondingAgent.id,
-                                type: failedCount == 0 ? .notification : .data,
-                                content: output
-                            )
-                            responseMessage.status = .read
-                            responseMessage.metadata["channel"] = "workbench"
-                            responseMessage.metadata["role"] = "assistant"
-                            responseMessage.metadata["kind"] = "output"
-                            responseMessage.metadata["outputType"] = entryResult.outputType.rawValue
-                            responseMessage.metadata["workflowID"] = workflow.id.uuidString
-                            responseMessage.metadata["taskID"] = task.id.uuidString
-                            responseMessage.metadata["entryReply"] = "true"
-                            responseMessage.metadata["thinking"] = "false"
-                            responseMessage.metadata["agentName"] = respondingAgent.name
-                            responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: output))
-                            self.messageManager.appendMessage(responseMessage)
-                        }
-                        entryReplySent = true
-                    } else if let fallbackStreaming = streamingMessageIDByAgent.values.first {
-                        self.messageManager.updateMessage(fallbackStreaming) { message in
-                            message.metadata["thinking"] = "false"
-                        }
-                        entryReplySent = true
-                    } else {
-                        self.openClawService.addLog(
-                            .info,
-                            "本轮执行未产出 agent_final_response，结果保留在仪表盘日志中。"
-                        )
-                    }
-                }
 
                 if var mutableProject = self.currentProject {
                     if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: trimmedPrompt) {
@@ -2865,22 +2807,113 @@ class AppState: ObservableObject {
                     mutableProject.updatedAt = Date()
                     self.currentProject = mutableProject
                 }
+
+                self.openClawService.isExecuting = false
+                self.openClawService.currentNodeID = nil
+            }
+
+            func orderedUniqueNodes(_ nodes: [WorkflowNode]) -> [WorkflowNode] {
+                var seen = Set<UUID>()
+                return nodes.filter { seen.insert($0.id).inserted }
+            }
+
+            self.openClawService.isExecuting = true
+            self.openClawService.currentNodeID = leadNode.id
+            self.openClawService.currentStep = 0
+            self.openClawService.totalSteps = max(entryAgentNodes.count, 1)
+            self.openClawService.lastError = nil
+            self.openClawService.addLog(.info, "Workbench is generating the first reply from entry agent \(leadAgent.name).")
+            self.openClawService.addLog(.info, "Workbench entry thinking level selected: \(workbenchThinkingLevel.rawValue).")
+
+            self.openClawService.executeWorkbenchEntryNode(
+                node: leadNode,
+                workflow: workflow,
+                agents: project.agents,
+                prompt: trimmedPrompt,
+                sessionID: workbenchSessionID,
+                thinkingLevel: workbenchThinkingLevel,
+                onStream: { [weak self] chunk in
+                    guard self != nil else { return }
+                    guard !chunk.isEmpty,
+                          !chunk.allSatisfy({ $0.isWhitespace || $0.isNewline }) else { return }
+
+                    streamingContent += chunk
+                    upsertWorkbenchAssistantMessage(
+                        agent: leadAgent,
+                        content: streamingContent,
+                        type: .notification,
+                        outputType: .agentFinalResponse,
+                        isThinking: true
+                    )
+
+                    if firstChunkAt == nil {
+                        let timestamp = Date()
+                        firstChunkAt = timestamp
+                        recordWorkbenchLatency("firstChunkMs", label: "first_chunk", at: timestamp)
+                    }
+                }
+            ) { [weak self] entryExecution in
+                guard let self else { return }
+
+                let entryResult = entryExecution.result
+                let visibleOutput = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !visibleOutput.isEmpty {
+                    upsertWorkbenchAssistantMessage(
+                        agent: leadAgent,
+                        content: visibleOutput.isEmpty ? streamingContent : visibleOutput,
+                        type: entryResult.status == .completed ? .notification : .data,
+                        outputType: entryResult.outputType,
+                        isThinking: false
+                    )
+                } else if let messageID = streamingMessageID {
+                    self.messageManager.updateMessage(messageID) { message in
+                        message.metadata["thinking"] = "false"
+                    }
+                }
+
+                if firstReplyAt == nil {
+                    let timestamp = Date()
+                    firstReplyAt = timestamp
+                    recordWorkbenchLatency("firstReplyMs", label: "first_reply", at: timestamp)
+                }
+
+                guard entryResult.status == .completed else {
+                    self.openClawService.executionResults = [entryResult]
+                    completeWorkbenchExecution(results: [entryResult])
+                    return
+                }
+
+                let backgroundNodes = orderedUniqueNodes(otherEntryNodes + entryExecution.downstreamNodes)
+                if backgroundNodes.isEmpty {
+                    self.openClawService.executionResults = [entryResult]
+                    self.openClawService.addLog(.info, "Workbench reply completed with no additional workflow nodes queued.")
+                    completeWorkbenchExecution(results: [entryResult])
+                    return
+                }
+
+                let backgroundEntryNodeIDs = Set(otherEntryNodes.map(\.id))
+                self.openClawService.addLog(
+                    .info,
+                    "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s)."
+                )
+
+                self.openClawService.executeWorkflow(
+                    workflow,
+                    agents: project.agents,
+                    prompt: trimmedPrompt,
+                    startingNodes: backgroundNodes,
+                    entryNodeIDsOverride: backgroundEntryNodeIDs,
+                    preloadedResults: [entryResult],
+                    precompletedNodeIDs: [leadNode.id],
+                    agentOutputMode: .plainStreaming
+                ) { [weak self] results in
+                    guard self != nil else { return }
+                    completeWorkbenchExecution(results: results)
+                }
             }
         }
 
-        verifyWorkflowBeforeLaunch(workflow, agents: project.agents) { [weak self] report in
-            guard let self else { return }
-            switch report.status {
-            case .fail:
-                self.openClawService.addLog(.error, "Workbench launch blocked: workflow \(workflow.name) failed launch verification.")
-            case .warn:
-                self.openClawService.addLog(.warning, "Workbench launch verification warned for workflow \(workflow.name); continuing.")
-                beginWorkbenchExecution()
-            case .pass:
-                self.openClawService.addLog(.success, "Workbench launch verification passed for workflow \(workflow.name).")
-                beginWorkbenchExecution()
-            }
-        }
+        beginWorkbenchExecution()
 
         return true
     }
@@ -3172,6 +3205,58 @@ class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return 0 }
         let scalarCount = trimmed.unicodeScalars.count
         return max(1, Int(ceil(Double(scalarCount) / 4.0)))
+    }
+
+    private func workbenchThinkingLevel(for prompt: String) -> AgentThinkingLevel {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .off }
+
+        let tokenEstimate = estimatedTokenCount(for: trimmed)
+        let scalarCount = trimmed.unicodeScalars.count
+        let lineCount = trimmed.components(separatedBy: .newlines).count
+        let containsStructuredInput = trimmed.contains("\n")
+            || trimmed.contains("1.")
+            || trimmed.contains("2.")
+            || trimmed.contains("3.")
+            || trimmed.contains("- ")
+            || trimmed.contains("•")
+
+        let complexityHints = [
+            "分析", "原因", "方案", "设计", "架构", "排查", "调试", "优化",
+            "比较", "对比", "步骤", "计划", "详细", "复杂", "实现",
+            "analyze", "analysis", "debug", "diagnose", "design", "plan",
+            "compare", "complex", "refactor", "architecture", "step by step"
+        ]
+        let normalized = trimmed.lowercased()
+        let hasComplexityHint = complexityHints.contains { normalized.contains($0) }
+
+        if tokenEstimate > 48 || scalarCount > 120 || lineCount > 1 || containsStructuredInput || hasComplexityHint {
+            return .minimal
+        }
+        return .off
+    }
+
+    private func workbenchSessionID(projectRuntimeSessionID: String, workflowID: UUID, agentID: UUID) -> String {
+        let base = projectRuntimeSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBase = base.isEmpty ? UUID().uuidString : base
+        return "workbench-\(resolvedBase)-\(workflowID.uuidString)-\(agentID.uuidString)"
+    }
+
+    private func latencyMillisecondsString(since start: Date, until end: Date = Date()) -> String {
+        let milliseconds = max(0, Int((end.timeIntervalSince(start) * 1000).rounded()))
+        return String(milliseconds)
+    }
+
+    private func persistWorkbenchLatencyMetric(taskID: UUID, messageID: UUID?, key: String, value: String) {
+        if var updatedTask = taskManager.task(with: taskID) {
+            updatedTask.metadata[key] = value
+            taskManager.updateTask(updatedTask)
+        }
+
+        guard let messageID else { return }
+        messageManager.updateMessage(messageID) { message in
+            message.metadata[key] = value
+        }
     }
 
     func setToolbarItem(_ item: ContentToolbarItem, visible: Bool) {

@@ -31,6 +31,15 @@ enum TaskStatus: String, Codable, CaseIterable {
         case .blocked: return "exclamationmark.triangle"
         }
     }
+
+    var displayName: String {
+        switch self {
+        case .todo: return LocalizedString.todo
+        case .inProgress: return LocalizedString.inProgress
+        case .done: return LocalizedString.text("mark_done")
+        case .blocked: return LocalizedString.blocked
+        }
+    }
 }
 
 enum TaskPriority: String, Codable, CaseIterable {
@@ -45,6 +54,15 @@ enum TaskPriority: String, Codable, CaseIterable {
         case .medium: return .orange
         case .high: return .red
         case .critical: return .purple
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .low: return LocalizedString.low
+        case .medium: return LocalizedString.medium
+        case .high: return LocalizedString.high
+        case .critical: return LocalizedString.text("priority_critical")
         }
     }
 }

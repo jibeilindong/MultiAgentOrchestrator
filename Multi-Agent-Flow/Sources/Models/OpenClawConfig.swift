@@ -15,10 +15,10 @@ enum OpenClawCLILogLevel: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .error: return "Error"
-        case .warning: return "Warning"
-        case .info: return "Info"
-        case .debug: return "Debug"
+        case .error: return LocalizedString.text("log_level_error")
+        case .warning: return LocalizedString.text("log_level_warning")
+        case .info: return LocalizedString.text("log_level_info")
+        case .debug: return LocalizedString.text("log_level_debug")
         }
     }
 
@@ -34,9 +34,9 @@ enum OpenClawDeploymentKind: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .local: return "本地"
-        case .remoteServer: return "云端/远程"
-        case .container: return "容器"
+        case .local: return LocalizedString.text("deployment_local")
+        case .remoteServer: return LocalizedString.text("deployment_remote")
+        case .container: return LocalizedString.text("deployment_container")
         }
     }
 }
@@ -115,7 +115,7 @@ struct OpenClawConfig: Codable {
         case .remoteServer:
             return baseURL
         case .container:
-            let name = container.containerName.isEmpty ? "(未设置容器名)" : container.containerName
+            let name = container.containerName.isEmpty ? LocalizedString.text("container_name_not_set") : container.containerName
             return "\(container.engine): \(name)"
         }
     }

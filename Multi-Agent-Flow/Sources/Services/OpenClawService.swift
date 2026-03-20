@@ -14,6 +14,16 @@ enum ExecutionStatus: String, Codable, Hashable {
     case completed = "Completed"
     case failed = "Failed"
     case waiting = "Waiting"
+
+    var displayName: String {
+        switch self {
+        case .idle: return LocalizedString.text("execution_idle")
+        case .running: return LocalizedString.text("execution_running")
+        case .completed: return LocalizedString.text("execution_completed")
+        case .failed: return LocalizedString.text("execution_failed")
+        case .waiting: return LocalizedString.pending
+        }
+    }
 }
 
 enum ExecutionOutputType: String, Codable, Hashable {
@@ -26,6 +36,20 @@ enum ExecutionOutputType: String, Codable, Hashable {
 enum AgentOutputMode {
     case structuredJSON
     case plainStreaming
+}
+
+enum AgentThinkingLevel: String {
+    case off
+    case minimal
+    case low
+    case medium
+    case high
+    case xhigh
+}
+
+private enum WorkflowInstructionStyle {
+    case standard
+    case fastWorkbenchEntry
 }
 
 struct ExecutionResult: Codable, Identifiable {
@@ -118,6 +142,11 @@ struct NodeStreamUpdate {
     let nodeID: UUID
     let agentID: UUID
     let chunk: String
+}
+
+struct WorkbenchEntryExecution {
+    let result: ExecutionResult
+    let downstreamNodes: [WorkflowNode]
 }
 
 // OpenClaw Agent配置
@@ -409,69 +438,39 @@ class OpenClawService: ObservableObject {
         timeoutTimer?.invalidate()
         timeoutTimer = nil
     }
+
+    func syncConnectionStatus(with status: OpenClawManager.OpenClawStatus) {
+        switch status {
+        case .connected:
+            connectionStatus = .connected
+            isConnected = true
+            lastError = nil
+        case .connecting:
+            connectionStatus = .connecting
+        case .disconnected:
+            connectionStatus = .disconnected
+            isConnected = false
+        case .error(let message):
+            connectionStatus = .error(message)
+            isConnected = false
+            lastError = message
+        }
+    }
     
     // 检测OpenClaw网关是否可用
     func checkConnection() {
-        connectionStatus = .connecting
+        let manager = OpenClawManager.shared
+        syncConnectionStatus(with: .connecting)
         addLog(.info, "Checking OpenClaw Gateway connection...")
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", "openclaw status 2>&1 | grep -q 'Gateway' && echo 'OK' || echo 'FAIL'"]
-            
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            
-            // 设置超时
-            let timeout = self.connectionTimeout
-            let startTime = Date()
-            
-            do {
-                try process.run()
-                
-                // 等待进程完成或超时
-                while process.isRunning {
-                    if Date().timeIntervalSince(startTime) > timeout {
-                        process.terminate()
-                        DispatchQueue.main.async {
-                            self.connectionStatus = .error("Connection timeout")
-                            self.isConnected = false
-                            self.lastError = "Connection timeout after \(Int(timeout)) seconds"
-                            self.addLog(.error, "Connection timeout")
-                        }
-                        return
-                    }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                
-                DispatchQueue.main.async {
-                    let connected = output.contains("OK")
-                    self.isConnected = connected
-                    
-                    if connected {
-                        self.connectionStatus = .connected
-                        self.lastError = nil
-                        self.addLog(.success, "OpenClaw Gateway connected")
-                    } else {
-                        self.connectionStatus = .error("Gateway not reachable")
-                        self.lastError = "OpenClaw Gateway not reachable"
-                        self.addLog(.error, "OpenClaw Gateway not reachable")
-                    }
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.connectionStatus = .error(error.localizedDescription)
-                    self.isConnected = false
-                    self.lastError = error.localizedDescription
-                    self.addLog(.error, "Connection error: \(error.localizedDescription)")
-                }
+
+        manager.confirmConnection(using: manager.config) { [weak self] success, message in
+            guard let self else { return }
+
+            self.syncConnectionStatus(with: success ? .connected : .error(message))
+            if success {
+                self.addLog(.success, message)
+            } else {
+                self.addLog(.error, message)
             }
         }
     }
@@ -495,6 +494,10 @@ class OpenClawService: ObservableObject {
         _ workflow: Workflow,
         agents: [Agent],
         prompt: String? = nil,
+        startingNodes: [WorkflowNode]? = nil,
+        entryNodeIDsOverride: Set<UUID>? = nil,
+        preloadedResults: [ExecutionResult] = [],
+        precompletedNodeIDs: [UUID] = [],
         agentOutputMode: AgentOutputMode = .structuredJSON,
         onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
@@ -510,19 +513,33 @@ class OpenClawService: ObservableObject {
         }
         
         isExecuting = true
-        executionResults.removeAll()
+        executionResults = preloadedResults
         lastError = nil
         
-        let entryNodes = entryAgentNodes(in: workflow)
-        totalSteps = entryNodes.count
-        currentStep = 0
+        let queuedNodes = startingNodes ?? entryAgentNodes(in: workflow)
+        let effectiveEntryNodeIDs = entryNodeIDsOverride ?? entryAgentNodeIDs(in: workflow)
+        totalSteps = precompletedNodeIDs.count + queuedNodes.count
+        currentStep = precompletedNodeIDs.count
         currentNodeID = nil
 
         // 初始化执行状态（用于回滚）
         executionState = ExecutionState(workflowID: workflow.id, totalSteps: totalSteps)
-        addLog(.info, "Starting workflow execution: \(workflow.name) with \(totalSteps) queued entry node(s)")
+        executionState?.completedNodes = precompletedNodeIDs
+        executionState?.currentStep = currentStep
+        addLog(.info, "Starting workflow execution: \(workflow.name) with \(queuedNodes.count) queued node(s)")
 
-        var results: [ExecutionResult] = []
+        if queuedNodes.isEmpty {
+            isExecuting = false
+            currentNodeID = nil
+            stopTimeoutTimer()
+            clearExecutionState()
+
+            let successCount = preloadedResults.filter { $0.status == .completed }.count
+            let failCount = preloadedResults.filter { $0.status == .failed }.count
+            addLog(.info, "Workflow execution completed: \(successCount) succeeded, \(failCount) failed")
+            completion(preloadedResults)
+            return
+        }
         
         // 设置超时监控
         startTimeoutTimer(duration: executionTimeout) { [weak self] in
@@ -532,17 +549,17 @@ class OpenClawService: ObservableObject {
         
         // 按连接顺序执行
         executeNodesSequentially(
-            entryNodes,
+            queuedNodes,
             workflow: workflow,
             agents: agents,
             prompt: prompt,
-            entryNodeIDs: entryAgentNodeIDs(in: workflow),
+            entryNodeIDs: effectiveEntryNodeIDs,
+            seedResults: preloadedResults,
             agentOutputMode: agentOutputMode,
             onNodeStream: onNodeStream,
             onNodeCompleted: onNodeCompleted
         ) { nodeResults in
-            results = nodeResults
-            self.executionResults = results
+            self.executionResults = nodeResults
             self.isExecuting = false
             self.currentNodeID = nil
             self.stopTimeoutTimer()
@@ -550,11 +567,86 @@ class OpenClawService: ObservableObject {
             // 清理执行状态
             self.clearExecutionState()
             
-            let successCount = results.filter { $0.status == .completed }.count
-            let failCount = results.filter { $0.status == .failed }.count
+            let successCount = nodeResults.filter { $0.status == .completed }.count
+            let failCount = nodeResults.filter { $0.status == .failed }.count
             self.addLog(.info, "Workflow execution completed: \(successCount) succeeded, \(failCount) failed")
             
-            completion(results)
+            completion(nodeResults)
+        }
+    }
+
+    func executeWorkbenchEntryNode(
+        node: WorkflowNode,
+        workflow: Workflow,
+        agents: [Agent],
+        prompt: String,
+        sessionID: String? = nil,
+        thinkingLevel: AgentThinkingLevel = .off,
+        onStream: ((String) -> Void)? = nil,
+        completion: @escaping (WorkbenchEntryExecution) -> Void
+    ) {
+        guard let agentID = node.agentID,
+              let agent = agents.first(where: { $0.id == agentID }) else {
+            let failedResult = ExecutionResult(
+                nodeID: node.id,
+                agentID: UUID(),
+                status: .failed,
+                output: "Agent not found for node",
+                outputType: .errorSummary
+            )
+            completion(WorkbenchEntryExecution(result: failedResult, downstreamNodes: []))
+            return
+        }
+
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let sortedEdges = workflow.edges.sorted { lhs, rhs in
+            guard let leftTarget = nodeByID[lhs.toNodeID], let rightTarget = nodeByID[rhs.toNodeID] else {
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            return nodeSort(leftTarget, rightTarget)
+        }
+
+        var outgoingEdges: [UUID: [WorkflowEdge]] = [:]
+        for edge in sortedEdges {
+            outgoingEdges[edge.fromNodeID, default: []].append(edge)
+            if edge.isBidirectional {
+                outgoingEdges[edge.toNodeID, default: []].append(edge.reversed())
+            }
+        }
+
+        let downstreamTargets = routingTargets(
+            for: node,
+            workflow: workflow,
+            agents: agents,
+            outgoingEdges: outgoingEdges
+        )
+
+        executeNodeOnOpenClaw(
+            node: node,
+            agent: agent,
+            prompt: prompt,
+            isEntryNode: true,
+            downstreamTargets: downstreamTargets,
+            instructionStyle: .fastWorkbenchEntry,
+            sessionID: sessionID,
+            thinkingLevel: thinkingLevel,
+            outputMode: .plainStreaming,
+            onStream: onStream
+        ) { [weak self] result, routingDecision in
+            guard let self else { return }
+            let resolvedTargets = self.resolveRoutingTargets(
+                from: routingDecision,
+                availableTargets: downstreamTargets,
+                node: node,
+                outputType: result.outputType,
+                fallbackPolicy: workflow.fallbackRoutingPolicy
+            )
+            completion(
+                WorkbenchEntryExecution(
+                    result: result,
+                    downstreamNodes: resolvedTargets.map(\.node)
+                )
+            )
         }
     }
 
@@ -683,12 +775,13 @@ class OpenClawService: ObservableObject {
         agents: [Agent],
         prompt: String?,
         entryNodeIDs: Set<UUID>,
+        seedResults: [ExecutionResult] = [],
         agentOutputMode: AgentOutputMode,
         onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
-        var results: [ExecutionResult] = []
+        var results: [ExecutionResult] = seedResults
         let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
         let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
         let sortedEdges = workflow.edges.sorted { lhs, rhs in
@@ -822,6 +915,9 @@ class OpenClawService: ObservableObject {
         prompt: String?,
         isEntryNode: Bool = false,
         downstreamTargets: [RoutingTargetDescriptor] = [],
+        instructionStyle: WorkflowInstructionStyle = .standard,
+        sessionID: String? = nil,
+        thinkingLevel: AgentThinkingLevel? = nil,
         outputMode: AgentOutputMode = .structuredJSON,
         onStream: ((String) -> Void)? = nil,
         completion: @escaping (ExecutionResult, WorkflowRoutingDecision?) -> Void
@@ -832,7 +928,8 @@ class OpenClawService: ObservableObject {
             agent: agent,
             prompt: prompt,
             isEntryNode: isEntryNode,
-            downstreamTargets: downstreamTargets
+            downstreamTargets: downstreamTargets,
+            style: instructionStyle
         )
         let targetAgentID = resolvedAgentIdentifier(for: agent)
 
@@ -840,6 +937,8 @@ class OpenClawService: ObservableObject {
         callOpenClawAgent(
             instruction: instruction,
             agentIdentifier: targetAgentID,
+            sessionID: sessionID,
+            thinkingLevel: thinkingLevel,
             outputMode: outputMode,
             onPartial: onStream
         ) { success, parsedOutput in
@@ -864,32 +963,10 @@ class OpenClawService: ObservableObject {
         agent: Agent,
         prompt: String?,
         isEntryNode: Bool,
-        downstreamTargets: [RoutingTargetDescriptor]
+        downstreamTargets: [RoutingTargetDescriptor],
+        style: WorkflowInstructionStyle
     ) -> String {
-        var instruction = "Execute agent task:\n"
-        instruction += "Agent: \(agent.name)\n"
-        instruction += "Node ID: \(node.id.uuidString)\n"
-        instruction += "Node Type: \(node.type.rawValue)\n"
-        
-        // 添加节点位置信息
-        instruction += "Position: (\(Int(node.position.x)), \(Int(node.position.y)))\n"
-        
         let normalizedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !normalizedPrompt.isEmpty {
-            instruction += "\nUser Task:\n\(normalizedPrompt)\n"
-        }
-
-        if isEntryNode {
-            instruction += """
-
-            Workbench Entry Policy:
-            - You are the entry agent facing the user directly.
-            - Reply to the user immediately with a direct answer first.
-            - Contact other agents only when strictly necessary.
-            - If cross-agent communication is limited, do not stall; continue with the best direct answer and clearly state constraints.
-            """
-            instruction += "\n"
-        }
 
         let candidateLines: [String]
         if downstreamTargets.isEmpty {
@@ -902,30 +979,75 @@ class OpenClawService: ObservableObject {
             }
         }
 
-        instruction += """
+        switch style {
+        case .standard:
+            var instruction = "Execute agent task:\n"
+            instruction += "Agent: \(agent.name)\n"
+            instruction += "Node ID: \(node.id.uuidString)\n"
+            instruction += "Node Type: \(node.type.rawValue)\n"
+            instruction += "Position: (\(Int(node.position.x)), \(Int(node.position.y)))\n"
 
-        Workflow Routing Policy:
-        - Downstream routing is opt-in, never automatic.
-        - If you can finish the task yourself, stop and do not route further.
-        - Only route when you genuinely need help from a downstream agent in this workflow.
-        - You may only choose downstream agents from the list below.
+            if !normalizedPrompt.isEmpty {
+                instruction += "\nUser Task:\n\(normalizedPrompt)\n"
+            }
 
-        Downstream Candidates:
-        \(candidateLines.joined(separator: "\n"))
+            if isEntryNode {
+                instruction += """
 
-        Routing Output Contract:
-        - After your normal visible reply, append exactly one valid single-line JSON object as the last non-empty line.
-        - Use this schema:
-          {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
-        - Allowed action values:
-          - "stop": do not trigger any downstream agent.
-          - "selected": trigger only the listed downstream agents by name, agent_id, or node title.
-          - "all": trigger every available downstream agent.
-        - Keep the JSON line separate from the user-facing answer.
-        - Do not wrap the JSON in Markdown code fences.
-        """
+                Workbench Entry Policy:
+                - You are the entry agent facing the user directly.
+                - Reply to the user immediately with a direct answer first.
+                - Contact other agents only when strictly necessary.
+                - If cross-agent communication is limited, do not stall; continue with the best direct answer and clearly state constraints.
+                """
+                instruction += "\n"
+            }
 
-        return instruction
+            instruction += """
+
+            Workflow Routing Policy:
+            - Downstream routing is opt-in, never automatic.
+            - If you can finish the task yourself, stop and do not route further.
+            - Only route when you genuinely need help from a downstream agent in this workflow.
+            - You may only choose downstream agents from the list below.
+
+            Downstream Candidates:
+            \(candidateLines.joined(separator: "\n"))
+
+            Routing Output Contract:
+            - After your normal visible reply, append exactly one valid single-line JSON object as the last non-empty line.
+            - Use this schema:
+              {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
+            - Allowed action values:
+              - "stop": do not trigger any downstream agent.
+              - "selected": trigger only the listed downstream agents by name, agent_id, or node title.
+              - "all": trigger every available downstream agent.
+            - Keep the JSON line separate from the user-facing answer.
+            - Do not wrap the JSON in Markdown code fences.
+            """
+
+            return instruction
+        case .fastWorkbenchEntry:
+            return """
+            Fast Workbench Entry
+            Agent: \(agent.name)
+            User Task: \(normalizedPrompt.isEmpty ? "(none provided)" : normalizedPrompt)
+
+            Rules:
+            - Reply to the user immediately with a practical answer.
+            - Keep the visible reply concise and high-signal.
+            - If you can finish the task yourself, do not route further.
+            - Only choose downstream agents from the list below when they are truly needed.
+
+            Downstream Candidates:
+            \(candidateLines.joined(separator: "\n"))
+
+            Append exactly one JSON object as the last non-empty line:
+            {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
+            Allowed action values: "stop", "selected", "all".
+            Keep the JSON on its own line with no Markdown fence.
+            """
+        }
     }
 
     private func routingTargets(
@@ -1062,6 +1184,8 @@ class OpenClawService: ObservableObject {
     private func callOpenClawAgent(
         instruction: String,
         agentIdentifier: String,
+        sessionID: String? = nil,
+        thinkingLevel: AgentThinkingLevel? = nil,
         outputMode: AgentOutputMode = .structuredJSON,
         onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Bool, ParsedAgentOutput) -> Void
@@ -1106,6 +1230,12 @@ class OpenClawService: ObservableObject {
             var args = ["agent"]
             args.append(contentsOf: ["--agent", resolvedAgent.identifier])
             args.append(contentsOf: ["--message", instruction])
+            if let sessionID, !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                args.append(contentsOf: ["--session-id", sessionID])
+            }
+            if let thinkingLevel {
+                args.append(contentsOf: ["--thinking", thinkingLevel.rawValue])
+            }
 
             let capabilityCacheKey = self.capabilityCacheKey(for: connectionConfig)
             let capabilities = self.resolveAgentCLICapabilities(

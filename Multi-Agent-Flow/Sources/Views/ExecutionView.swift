@@ -40,7 +40,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 Spacer()
                 
                 // 工作流选择器
-                Picker("Workflow", selection: $selectedWorkflowID) {
+                Picker(LocalizedString.text("workflow_picker_label"), selection: $selectedWorkflowID) {
                     Text(LocalizedString.selectWorkflow).tag(nil as UUID?)
                     ForEach(workflows) { workflow in
                         Text(workflow.name).tag(workflow.id as UUID?)
@@ -48,13 +48,13 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 }
                 .frame(width: 200)
                 
-                Button("Execute") {
+                Button(LocalizedString.text("execute_action")) {
                     executeWorkflow()
                 }
                 .disabled(selectedWorkflow == nil || isExecuting)
                 .buttonStyle(.borderedProminent)
                 
-                Button("Clear Results") {
+                Button(LocalizedString.text("clear_results_action")) {
                     openClawService.clearResults()
                     openClawService.clearLogs()
                 }
@@ -96,7 +96,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 .progressViewStyle(.linear)
                 .padding()
                 
-                Text("Step \(openClawService.currentStep) of \(openClawService.totalSteps)")
+                Text(LocalizedString.format("step_of_total", openClawService.currentStep, openClawService.totalSteps))
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -106,9 +106,9 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                         if let agentID = currentNode.agentID,
                            let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
                             VStack {
-                                Text("Executing: \(agent.name)")
+                                Text(LocalizedString.format("executing_agent", agent.name))
                                     .font(.headline)
-                                Text("Node at position (\(Int(currentNode.position.x)), \(Int(currentNode.position.y)))")
+                                Text(LocalizedString.format("node_position", Int(currentNode.position.x), Int(currentNode.position.y)))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -157,10 +157,10 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     
     private var connectionStatusText: String {
         switch openClawService.connectionStatus {
-        case .connected: return "Connected"
-        case .connecting: return "Connecting..."
-        case .disconnected: return "Disconnected"
-        case .error(let msg): return "Error: \(msg)"
+        case .connected: return LocalizedString.text("connected_status")
+        case .connecting: return LocalizedString.text("connecting_status")
+        case .disconnected: return LocalizedString.text("disconnected_status")
+        case .error(let msg): return LocalizedString.format("error_status", msg)
         }
     }
     
@@ -171,7 +171,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 Text(LocalizedString.executionLogs)
                     .font(.headline)
                 Spacer()
-                Button("Clear") {
+                Button(LocalizedString.text("clear")) {
                     openClawService.clearLogs()
                 }
                 .font(.caption)
@@ -208,7 +208,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
             VStack(alignment: .leading, spacing: 16) {
                 if openClawService.executionResults.isEmpty {
                     ContentUnavailableView(
-                        "No Results",
+                        LocalizedString.text("no_execution_results"),
                         systemImage: "chart.bar",
                         description: Text(LocalizedString.executeWorkflowToSeeResults)
                     )
@@ -285,12 +285,15 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
     
     private func executeWorkflow() {
         guard let workflow = selectedWorkflow,
-              appState.currentProject != nil else { return }
+              let project = appState.currentProject else { return }
         
         isExecuting = true
         showResults = false
         
-        appState.startWorkflowExecutionWithVerification(workflowID: workflow.id) { _, results in
+        appState.openClawService.executeWorkflow(
+            workflow,
+            agents: project.agents
+        ) { _ in
             isExecuting = false
             showResults = true
         }

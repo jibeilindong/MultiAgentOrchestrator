@@ -843,6 +843,8 @@ struct ProjectPropertiesView: View {
     @State private var projectName: String = ""
     @State private var showExportPanel = false
     @State private var selectedWorkflowID: UUID?
+    @State private var showLaunchVerificationConfirmation = false
+    @State private var isRunningLaunchVerification = false
 
     private var workspaceRootPath: String {
         appState.currentProject?.taskData.workspaceRootPath ?? appState.projectManager.defaultWorkspaceRootDirectory.path
@@ -961,6 +963,34 @@ struct ProjectPropertiesView: View {
 
                 SectionView(title: "Launch Verification") {
                     VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Manual Check")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("启动验证只会在你手动确认后运行，不会在工作流启动时自动触发。")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button(isRunningLaunchVerification ? "Running..." : "Run Launch Verification") {
+                                showLaunchVerificationConfirmation = true
+                            }
+                            .disabled(selectedWorkflow == nil || isRunningLaunchVerification || appState.openClawService.isExecuting)
+                        }
+
+                        if isRunningLaunchVerification {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在执行启动验证，请稍候。")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
                         if let report = selectedWorkflow?.lastLaunchVerificationReport {
                             HStack {
                                 Text("Last Result")
@@ -1026,10 +1056,31 @@ struct ProjectPropertiesView: View {
                                 }
                             }
                         } else {
-                            Text("还没有启动验证报告。第一次运行工作流时会自动生成。")
+                            Text("还没有启动验证报告。请点击上方按钮并确认后启动首次验证。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
+                    }
+                    .confirmationDialog(
+                        "Run launch verification for the selected workflow?",
+                        isPresented: $showLaunchVerificationConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Start Verification") {
+                            guard let workflow = selectedWorkflow else { return }
+                            isRunningLaunchVerification = true
+                            let started = appState.runWorkflowLaunchVerification(workflowID: workflow.id) { _ in
+                                DispatchQueue.main.async {
+                                    isRunningLaunchVerification = false
+                                }
+                            }
+                            if !started {
+                                isRunningLaunchVerification = false
+                            }
+                        }
+                        Button("Cancel", role: .cancel) { }
+                    } message: {
+                        Text("This will execute the workflow's launch verification cases and refresh the report in this panel.")
                     }
                 }
 

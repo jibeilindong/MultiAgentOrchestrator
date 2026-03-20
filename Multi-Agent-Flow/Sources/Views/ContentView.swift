@@ -34,10 +34,10 @@ struct ContentView: View {
 
                         if selectedTab == 2 {
                             HStack(spacing: 8) {
-                                Label("仪表盘（通过左侧导航）", systemImage: "gauge.with.dots.needle.33percent")
+                                Label(LocalizedString.text("dashboard_via_sidebar"), systemImage: "gauge.with.dots.needle.33percent")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Button("切回工作台") {
+                                Button(LocalizedString.text("switch_to_workbench")) {
                                     selectedTab = 1
                                 }
                                 .buttonStyle(.bordered)
@@ -45,8 +45,8 @@ struct ContentView: View {
                             }
                         } else {
                             Picker("", selection: toolbarTabSelection) {
-                                Label("编辑器", systemImage: "square.grid.2x2").tag(0)
-                                Label("工作台", systemImage: "message.badge.waveform").tag(1)
+                                Label(LocalizedString.text("editor_tab"), systemImage: "square.grid.2x2").tag(0)
+                                Label(LocalizedString.text("workbench_tab"), systemImage: "message.badge.waveform").tag(1)
                             }
                             .pickerStyle(.segmented)
                             .frame(width: 230)
@@ -99,24 +99,24 @@ struct ContentView: View {
                 .padding(.bottom)
             }
         }
-        .alert("OpenClaw", isPresented: Binding(
+        .alert(LocalizedString.text("openclaw_alert_title"), isPresented: Binding(
             get: { openClawMessage != nil },
             set: { if !$0 { openClawMessage = nil } }
         )) {
-            Button("OK") { }
+            Button(LocalizedString.ok) { }
         } message: {
             Text(openClawMessage ?? "")
         }
         .sheet(isPresented: $isPresentingOpenClawImportSheet) {
             OpenClawAgentImportSheet(
                 records: appState.openClawManager.discoveryResults,
-                actionTitle: "导入这些 Agents",
+                actionTitle: LocalizedString.text("import_these_agents"),
                 onImport: { selectedIDs in
                     let imported = appState.importDetectedOpenClawAgents(selectedRecordIDs: selectedIDs)
                     if imported.isEmpty {
-                        openClawMessage = "没有选中可导入的 Agents。"
+                        openClawMessage = LocalizedString.text("no_agents_selected_for_import")
                     } else {
-                        openClawMessage = "已导入 \(imported.count) 个 Agents。"
+                        openClawMessage = LocalizedString.format("agents_imported_count", imported.count)
                     }
                 }
             )
@@ -129,21 +129,21 @@ struct ContentView: View {
         case .view:
             TopToolbarGroup {
                 Menu {
-                    Button("Zoom Out") {
+                    Button(LocalizedString.zoomOut) {
                         zoomScale = max(zoomScale / 1.25, 0.05)
                     }
-                    Button("Reset Zoom") {
+                    Button(LocalizedString.resetZoom) {
                         zoomScale = 1.0
                     }
-                    Button("Zoom In") {
+                    Button(LocalizedString.zoomIn) {
                         zoomScale = min(zoomScale * 1.25, 20.0)
                     }
                     Divider()
-                    Button(appState.showLogs ? "Hide Logs" : "Show Logs") {
+                    Button(appState.showLogs ? LocalizedString.text("hide_logs") : LocalizedString.text("show_logs")) {
                         appState.showLogs.toggle()
                     }
                 } label: {
-                    Label("视图", systemImage: "eye")
+                    Label(LocalizedString.text("view_menu"), systemImage: "eye")
                 }
 
                 HStack(spacing: 4) {
@@ -167,7 +167,7 @@ struct ContentView: View {
                     Image(systemName: "globe")
                     ForEach(AppLanguage.allCases) { language in
                         Button(action: { appState.localizationManager.setLanguage(language) }) {
-                            Text(language.displayName == "简体中文" ? "简体" : language.displayName == "繁體中文" ? "繁中" : "EN")
+                            Text(language.shortDisplayName)
                         }
                         .buttonStyle(.bordered)
                         .tint(appState.localizationManager.currentLanguage == language ? .accentColor : nil)
@@ -183,7 +183,7 @@ struct ContentView: View {
                 Circle()
                     .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
                     .frame(width: 8, height: 8)
-                Text(appState.openClawManager.isConnected ? "OpenClaw 已连接" : "OpenClaw 未连接")
+                Text(appState.openClawManager.isConnected ? LocalizedString.text("openclaw_connected") : LocalizedString.text("openclaw_disconnected"))
                     .font(.caption)
                     .fontWeight(.medium)
                 Text(appState.openClawManager.config.deploymentSummary)
@@ -195,39 +195,39 @@ struct ContentView: View {
             Spacer(minLength: 12)
 
             if appState.openClawManager.isConnected {
-                StatusBarButton(title: "断开", icon: "link.badge.minus") {
+                StatusBarButton(title: LocalizedString.text("disconnect_openclaw"), icon: "link.badge.minus") {
                     appState.disconnectOpenClaw()
                 }
 
-                StatusBarButton(title: "导入 Agents", icon: "person.badge.plus") {
+                StatusBarButton(title: LocalizedString.text("import_agents"), icon: "person.badge.plus") {
                     if appState.openClawManager.discoveryResults.isEmpty {
-                        openClawMessage = "请先自动识别 OpenClaw agents。"
+                        openClawMessage = LocalizedString.text("detect_agents_first")
                         return
                     }
                     isPresentingOpenClawImportSheet = true
                 }
                 .disabled(appState.openClawManager.discoveryResults.isEmpty)
             } else {
-                StatusBarButton(title: "自动识别", icon: "dot.radiowaves.left.and.right", prominent: true) {
+                StatusBarButton(title: LocalizedString.text("auto_detect_agents"), icon: "dot.radiowaves.left.and.right", prominent: true) {
                     autoDetectOpenClaw()
                 }
 
-                StatusBarButton(title: "连接", icon: "link.badge.plus") {
+                StatusBarButton(title: LocalizedString.text("connect_openclaw"), icon: "link.badge.plus") {
                     appState.connectOpenClaw { success, message in
                         openClawMessage = message
                         if !success {
                             return
                         }
-                        openClawMessage = "已连接并同步 \(appState.openClawManager.agents.count) 个 agents。"
+                        openClawMessage = LocalizedString.format("connected_synced_agents", appState.openClawManager.agents.count)
                     }
                 }
             }
 
-            StatusBarButton(title: "检测", icon: "arrow.triangle.2.circlepath") {
+            StatusBarButton(title: LocalizedString.text("check_connection"), icon: "arrow.triangle.2.circlepath") {
                 appState.openClawService.checkConnection()
             }
 
-            StatusBarButton(title: "设置", icon: "gearshape") {
+            StatusBarButton(title: LocalizedString.settings, icon: "gearshape") {
                 NotificationCenter.default.post(name: .openSettings, object: nil)
             }
         }
@@ -241,7 +241,7 @@ struct ContentView: View {
             Circle()
                 .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
                 .frame(width: 8, height: 8)
-            Text(appState.openClawManager.isConnected ? "已连接" : "未连接")
+            Text(appState.openClawManager.isConnected ? LocalizedString.text("connected_status") : LocalizedString.text("disconnected_status"))
         }
         .padding(.vertical, 4)
     }
@@ -251,7 +251,7 @@ struct ContentView: View {
         appState.detectOpenClawAgents { success, message, agentNames in
             self.isConnectingOpenClaw = false
             if success {
-                self.openClawMessage = "已识别 \(agentNames.count) 个 agents。请在设置或底部栏手动确认连接。"
+                self.openClawMessage = LocalizedString.format("detected_agents_confirm_connection", agentNames.count)
             } else {
                 self.openClawMessage = message
             }
@@ -276,39 +276,39 @@ private struct ProjectOnboardingView: View {
                 .font(.system(size: 64))
                 .foregroundColor(.accentColor)
 
-            Text("从 OpenClaw 配置开始")
+            Text(LocalizedString.text("setup_openclaw_title"))
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("推荐流程：先配置 OpenClaw，再新建 Project，在编辑器搭建工作流并保存，随后到工作台对话发任务，最后在仪表盘实时监控与干预。")
+            Text(LocalizedString.text("setup_openclaw_description"))
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 620)
 
             VStack(alignment: .leading, spacing: 10) {
-                onboardingStep(index: 1, title: "配置 OpenClaw", detail: "保存本地、远程或容器部署配置，作为所有 agent 的底层驱动。")
-                onboardingStep(index: 2, title: "新建 Project", detail: "Project 保存工作流、OpenClaw、任务数据与记忆备份索引。")
-                onboardingStep(index: 3, title: "编辑工作流", detail: "搭建节点、连接线与边界，并编辑 agent 的 soul、identity 与 skill。")
-                onboardingStep(index: 4, title: "工作台发任务", detail: "保存后在工作台通过对话把任务发布给当前工作流。")
-                onboardingStep(index: 5, title: "仪表盘监控", detail: "实时查看任务、日志与执行进度，并进行暂停、恢复和回滚。")
+                onboardingStep(index: 1, title: LocalizedString.text("setup_openclaw_step_1_title"), detail: LocalizedString.text("setup_openclaw_step_1_detail"))
+                onboardingStep(index: 2, title: LocalizedString.text("setup_openclaw_step_2_title"), detail: LocalizedString.text("setup_openclaw_step_2_detail"))
+                onboardingStep(index: 3, title: LocalizedString.text("setup_openclaw_step_3_title"), detail: LocalizedString.text("setup_openclaw_step_3_detail"))
+                onboardingStep(index: 4, title: LocalizedString.text("setup_openclaw_step_4_title"), detail: LocalizedString.text("setup_openclaw_step_4_detail"))
+                onboardingStep(index: 5, title: LocalizedString.text("setup_openclaw_step_5_title"), detail: LocalizedString.text("setup_openclaw_step_5_detail"))
             }
             .padding(18)
             .background(Color(.controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             HStack(spacing: 12) {
-                Button("配置 OpenClaw") {
+                Button(LocalizedString.text("configure_openclaw")) {
                     NotificationCenter.default.post(name: .openSettings, object: nil)
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button("新建 Project") {
+                Button(LocalizedString.newProject) {
                     appState.createNewProject()
                 }
                 .buttonStyle(.bordered)
 
-                Button("打开 Project") {
+                Button(LocalizedString.openProject) {
                     appState.openProject()
                 }
                 .buttonStyle(.bordered)
@@ -397,7 +397,7 @@ private struct CanvasDisplayToolbar: View {
         TopToolbarGroup {
             HStack(spacing: 10) {
                 ToolbarStepper(
-                    title: "线宽",
+                    title: LocalizedString.text("line_width"),
                     valueText: "\(Int(appState.canvasDisplaySettings.lineWidth))px",
                     canDecrease: selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth) > 0,
                     canIncrease: selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth) < lineWidthValues.count - 1,
@@ -406,7 +406,7 @@ private struct CanvasDisplayToolbar: View {
                 )
 
                 ToolbarStepper(
-                    title: "字号",
+                    title: LocalizedString.text("font_size"),
                     valueText: "\(Int(appState.canvasDisplaySettings.textScale * 100))%",
                     canDecrease: selectedIndex(in: textScaleValues, for: appState.canvasDisplaySettings.textScale) > 0,
                     canIncrease: selectedIndex(in: textScaleValues, for: appState.canvasDisplaySettings.textScale) < textScaleValues.count - 1,
@@ -415,7 +415,7 @@ private struct CanvasDisplayToolbar: View {
                 )
 
                 ToolbarColorSelector(
-                    title: "线色",
+                    title: LocalizedString.text("line_color"),
                     selection: appState.canvasDisplaySettings.lineColor,
                     onSelect: { preset in
                         appState.updateCanvasDisplaySettings { settings in
@@ -541,7 +541,7 @@ struct RealtimeInfoPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("实时信息")
+                Text(LocalizedString.text("realtime_info"))
                     .font(.headline)
                 Spacer()
             }
@@ -556,7 +556,7 @@ struct RealtimeInfoPanel: View {
                         isExpanded: $showPermissionSummary,
                         content: permissionSummaryContent,
                         label: {
-                            sectionTitle("权限矩阵摘要", count: permissions.count)
+                            sectionTitle(LocalizedString.text("permission_matrix_summary"), count: permissions.count)
                         }
                     )
 
@@ -564,7 +564,7 @@ struct RealtimeInfoPanel: View {
                         isExpanded: $showPendingApprovals,
                         content: pendingApprovalContent,
                         label: {
-                            sectionTitle("待审批消息", count: pendingApprovals.count)
+                            sectionTitle(LocalizedString.text("pending_approval_messages"), count: pendingApprovals.count)
                         }
                     )
 
@@ -572,7 +572,7 @@ struct RealtimeInfoPanel: View {
                         isExpanded: $showExecutionLogs,
                         content: executionLogsContent,
                         label: {
-                            sectionTitle("执行日志", count: executionLogs.count)
+                            sectionTitle(LocalizedString.executionLogs, count: executionLogs.count)
                         }
                     )
                 }
@@ -601,13 +601,13 @@ struct RealtimeInfoPanel: View {
     private func permissionSummaryContent() -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                summaryPill("Allow", value: allowCount, color: .green)
-                summaryPill("Deny", value: denyCount, color: .red)
-                summaryPill("审批", value: approvalCount, color: .orange)
+                summaryPill(LocalizedString.text("allow_label"), value: allowCount, color: .green)
+                summaryPill(LocalizedString.text("deny_label"), value: denyCount, color: .red)
+                summaryPill(LocalizedString.text("approval"), value: approvalCount, color: .orange)
             }
 
             if permissions.isEmpty {
-                Text("暂无权限规则")
+                Text(LocalizedString.text("no_permission_rules"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -617,7 +617,7 @@ struct RealtimeInfoPanel: View {
                             .font(.caption)
                             .lineLimit(1)
                         Spacer()
-                        Label(permission.permissionType.rawValue, systemImage: permission.permissionType.icon)
+                        Label(permission.permissionType.displayName, systemImage: permission.permissionType.icon)
                             .font(.caption2)
                             .foregroundColor(permission.permissionType.color)
                     }
@@ -625,7 +625,7 @@ struct RealtimeInfoPanel: View {
                 }
 
                 if permissions.count > 8 {
-                    Text("还有 \(permissions.count - 8) 条规则")
+                    Text(LocalizedString.format("remaining_rules_count", permissions.count - 8))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -639,7 +639,7 @@ struct RealtimeInfoPanel: View {
     private func pendingApprovalContent() -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if pendingApprovals.isEmpty {
-                Text("当前没有待审批消息")
+                Text(LocalizedString.text("no_pending_approval_messages"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -674,7 +674,7 @@ struct RealtimeInfoPanel: View {
     private func executionLogsContent() -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if executionLogs.isEmpty {
-                Text("暂无执行日志")
+                Text(LocalizedString.text("no_execution_logs"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -761,10 +761,10 @@ struct ToolbarCustomizationSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Customize Toolbar")
+                Text(LocalizedString.text("toolbar_customize_title"))
                     .font(.headline)
                 Spacer()
-                Button("Done") {
+                Button(LocalizedString.text("toolbar_customize_done")) {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -774,7 +774,7 @@ struct ToolbarCustomizationSheet: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 16) {
-                Text("Choose which toolbar groups are visible and adjust their order.")
+                Text(LocalizedString.text("toolbar_customize_description"))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
 
@@ -817,7 +817,7 @@ struct ToolbarCustomizationSheet: View {
                 }
 
                 HStack {
-                    Button("Reset to Default") {
+                    Button(LocalizedString.text("toolbar_reset_default")) {
                         appState.resetToolbarLayout()
                     }
                     .buttonStyle(.bordered)
@@ -843,11 +843,11 @@ struct ToolbarCustomizationSheet: View {
     private func toolbarItemDescription(for item: ContentToolbarItem) -> String {
         switch item {
         case .view:
-            return "Zoom controls and log visibility"
+            return LocalizedString.text("toolbar_view_description")
         case .display:
-            return "Line width, text size and route color controls"
+            return LocalizedString.text("toolbar_display_description")
         case .language:
-            return "Language switcher"
+            return LocalizedString.text("toolbar_language_description")
         }
     }
 }

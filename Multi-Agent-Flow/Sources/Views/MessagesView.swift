@@ -22,6 +22,7 @@ struct WorkbenchConversationView: View {
     @State private var lastCombinedLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var prompt = ""
     @State private var errorText: String?
+    @State private var pendingAutoScrollWorkItem: DispatchWorkItem?
 
     private var project: MAProject? { appState.currentProject }
     private var workflows: [Workflow] { project?.workflows ?? [] }
@@ -138,38 +139,38 @@ struct WorkbenchConversationView: View {
         Group {
             if project == nil {
                 WorkbenchEmptyState(
-                    title: "先配置 OpenClaw，再新建 Project",
-                    description: "安装软件后先完成 OpenClaw 配置，然后创建或打开项目，在编辑器中搭建工作流并保存。保存后，这里就是对该工作流发布任务和追踪回执的工作台。",
-                    primaryTitle: "配置 OpenClaw",
+                    title: LocalizedString.text("workbench_empty_setup_title"),
+                    description: LocalizedString.text("workbench_empty_setup_desc"),
+                    primaryTitle: LocalizedString.text("configure_openclaw"),
                     primaryAction: { NotificationCenter.default.post(name: .openSettings, object: nil) },
-                    secondaryTitle: "新建项目",
+                    secondaryTitle: LocalizedString.newProject,
                     secondaryAction: { appState.createNewProject() }
                 )
             } else if !isOpenClawConnected {
                 WorkbenchEmptyState(
-                    title: "先连接 OpenClaw，再进入工作台",
-                    description: "工作台对话、工作流执行和 Agent 运行态都依赖实时 OpenClaw 连接。未连接时，不会发布任务，也不会展示运行中的工作流状态。历史记录仍保存在项目中，重新连接后可继续查看和协作。",
-                    primaryTitle: "连接 OpenClaw",
+                    title: LocalizedString.text("workbench_empty_connect_title"),
+                    description: LocalizedString.text("workbench_empty_connect_desc"),
+                    primaryTitle: LocalizedString.text("connect_openclaw"),
                     primaryAction: { appState.connectOpenClaw() },
-                    secondaryTitle: "打开设置",
+                    secondaryTitle: LocalizedString.text("open_settings"),
                     secondaryAction: { NotificationCenter.default.post(name: .openSettings, object: nil) }
                 )
             } else if workflows.isEmpty {
                 WorkbenchEmptyState(
-                    title: "Project 里还没有工作流",
-                    description: "先在编辑器中创建工作流架构，再回到工作台以对话形式发布任务。",
-                    primaryTitle: "创建主工作流",
+                    title: LocalizedString.text("workbench_empty_no_workflow_title"),
+                    description: LocalizedString.text("workbench_empty_no_workflow_desc"),
+                    primaryTitle: LocalizedString.text("create_main_workflow"),
                     primaryAction: { _ = appState.ensureMainWorkflow() },
-                    secondaryTitle: "保存项目",
+                    secondaryTitle: LocalizedString.saveProject,
                     secondaryAction: { appState.saveProject() }
                 )
             } else if !hasExecutableWorkflow {
                 WorkbenchEmptyState(
-                    title: "当前工作流还不能执行",
-                    description: "入口（Start）节点至少需要连接一个 Agent 节点。工作台输入会路由到入口连线对应的 Agent。",
-                    primaryTitle: "导入 Project Agents",
+                    title: LocalizedString.text("workbench_empty_not_executable_title"),
+                    description: LocalizedString.text("workbench_empty_not_executable_desc"),
+                    primaryTitle: LocalizedString.text("import_project_agents"),
                     primaryAction: { appState.generateArchitectureFromProjectAgents() },
-                    secondaryTitle: "配置 OpenClaw",
+                    secondaryTitle: LocalizedString.text("configure_openclaw"),
                     secondaryAction: { NotificationCenter.default.post(name: .openSettings, object: nil) }
                 )
             } else {
@@ -213,23 +214,23 @@ struct WorkbenchConversationView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("工作台")
+                    Text(LocalizedString.text("workbench_title"))
                         .font(.title2)
-                    Text("以对话方式向已保存工作流发布任务")
+                    Text(LocalizedString.text("workbench_subtitle"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                Picker("Workflow", selection: $selectedWorkflowID) {
+                Picker(LocalizedString.text("workflow_picker_label"), selection: $selectedWorkflowID) {
                     ForEach(workflows) { workflow in
                         Text(workflow.name).tag(workflow.id as UUID?)
                     }
                 }
                 .frame(width: 220)
 
-                Picker("布局", selection: $dashboardLayout) {
+                Picker(LocalizedString.text("layout_picker_label"), selection: $dashboardLayout) {
                     ForEach(WorkbenchDashboardLayout.allCases) { layout in
                         Text(layout.title).tag(layout)
                     }
@@ -243,7 +244,7 @@ struct WorkbenchConversationView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("与工作台共同展示仪表盘")
+                    .help(LocalizedString.text("dashboard_with_workbench"))
                     .disabled(dashboardLayout != .dashboardOnly)
 
                     Button(action: expandDashboard) {
@@ -251,17 +252,17 @@ struct WorkbenchConversationView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("仅显示仪表盘")
+                    .help(LocalizedString.text("dashboard_only"))
                     .disabled(dashboardLayout == .dashboardOnly)
                 }
 
-                statusBadge(title: "OpenClaw 已连接", color: .green)
+                statusBadge(title: LocalizedString.text("openclaw_connected"), color: .green)
                 statusBadge(
-                    title: appState.openClawService.isExecuting ? "工作流执行中" : "工作流待命",
+                    title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
                     color: appState.openClawService.isExecuting ? .orange : .secondary
                 )
 
-                Button("保存项目") {
+                Button(LocalizedString.saveProject) {
                     appState.saveProject()
                 }
                 .buttonStyle(.bordered)
@@ -269,9 +270,9 @@ struct WorkbenchConversationView: View {
 
             if let workflow = selectedWorkflow {
                 HStack(spacing: 8) {
-                    statusBadge(title: "\(workflow.nodes.filter { $0.type == .agent }.count) 个执行节点", color: .blue)
-                    statusBadge(title: "\(workflow.edges.count) 条通信线", color: .purple)
-                    statusBadge(title: "\(workflow.boundaries.count) 个文件边界", color: .orange)
+                    statusBadge(title: LocalizedString.format("execution_nodes_count", workflow.nodes.filter { $0.type == .agent }.count), color: .blue)
+                    statusBadge(title: LocalizedString.format("communication_links_count", workflow.edges.count), color: .purple)
+                    statusBadge(title: LocalizedString.format("file_boundaries_count", workflow.boundaries.count), color: .orange)
                 }
             }
         }
@@ -281,17 +282,17 @@ struct WorkbenchConversationView: View {
     private var openClawBanner: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("OpenClaw 尚未完成配置")
+                Text(LocalizedString.text("openclaw_incomplete_config"))
                     .font(.subheadline)
                     .fontWeight(.semibold)
-                Text("工作台会记录任务，但没有可用的 OpenClaw 配置时，流程无法稳定驱动执行。")
+                Text(LocalizedString.text("openclaw_incomplete_config_desc"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
 
             Spacer()
 
-            Button("现在配置") {
+            Button(LocalizedString.text("configure_now")) {
                 NotificationCenter.default.post(name: .openSettings, object: nil)
             }
             .buttonStyle(.borderedProminent)
@@ -345,9 +346,9 @@ struct WorkbenchConversationView: View {
                     LazyVStack(spacing: 12) {
                         if workbenchMessages.isEmpty {
                             ContentUnavailableView(
-                                "还没有对话任务",
+                                LocalizedString.text("no_conversation_tasks"),
                                 systemImage: "bubble.left.and.exclamationmark.bubble.right",
-                                description: Text("在下方输入任务目标，软件会把它发布到当前工作流，并把执行结果回写到项目。")
+                                description: Text(LocalizedString.text("no_conversation_tasks_desc"))
                             )
                             .frame(maxWidth: .infinity, minHeight: 280)
                         } else {
@@ -364,18 +365,14 @@ struct WorkbenchConversationView: View {
                 }
                 .textSelection(.enabled)
                 .onChange(of: workbenchMessages.count) { _, _ in
-                    if let lastID = workbenchMessages.last?.id {
-                        withAnimation {
-                            proxy.scrollTo(lastID, anchor: .bottom)
-                        }
-                    }
+                    scheduleAutoScroll(using: proxy, animated: true, debounce: 0)
                 }
                 .onChange(of: lastWorkbenchMessageSignature) { _, _ in
-                    if let lastID = workbenchMessages.last?.id {
-                        withAnimation {
-                            proxy.scrollTo(lastID, anchor: .bottom)
-                        }
-                    }
+                    scheduleAutoScroll(using: proxy, animated: false, debounce: 0.08)
+                }
+                .onDisappear {
+                    pendingAutoScrollWorkItem?.cancel()
+                    pendingAutoScrollWorkItem = nil
                 }
             }
 
@@ -390,7 +387,7 @@ struct WorkbenchConversationView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     TextField(
-                        "描述要交给当前工作流处理的任务，例如：先调研，再拆分，再给出执行方案。",
+                        LocalizedString.text("workbench_prompt_placeholder"),
                         text: $prompt,
                         axis: .vertical
                     )
@@ -402,7 +399,7 @@ struct WorkbenchConversationView: View {
 
                     if !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Markdown 预览")
+                            Text(LocalizedString.text("markdown_preview"))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
 
@@ -420,13 +417,13 @@ struct WorkbenchConversationView: View {
                 }
 
                 HStack {
-                    Text(selectedWorkflow?.name ?? "未选择工作流")
+                    Text(selectedWorkflow?.name ?? LocalizedString.text("no_workflow_selected"))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     Spacer()
 
-                    Button("发送到工作流") {
+                    Button(LocalizedString.text("send_to_workflow")) {
                         publishPrompt()
                     }
                     .disabled(
@@ -445,7 +442,7 @@ struct WorkbenchConversationView: View {
     private var taskPane: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("信息流转回执")
+                Text(LocalizedString.text("flow_receipts"))
                     .font(.headline)
                 Spacer()
                 Text("\(workflowFlowReceipts.count)")
@@ -459,7 +456,7 @@ struct WorkbenchConversationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if workflowFlowReceipts.isEmpty {
-                        Text("当前工作流还没有可展示的信息流转。")
+                        Text(LocalizedString.text("no_flow_receipts"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding()
@@ -489,7 +486,7 @@ struct WorkbenchConversationView: View {
                                     )
                                 }
 
-                                Text("流转状态：\(flow.flowStatus.title)")
+                                Text(LocalizedString.format("flow_status_prefix", flow.flowStatus.title))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .lineLimit(2)
@@ -517,13 +514,13 @@ struct WorkbenchConversationView: View {
     private func nodeDisplayName(_ node: WorkflowNode) -> String {
         switch node.type {
         case .start:
-            return node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Start" : node.title
+            return node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? LocalizedString.text("node_start_fallback") : node.title
         case .agent:
             if let agentID = node.agentID,
                let agent = project?.agents.first(where: { $0.id == agentID }) {
                 return agent.name
             }
-            return node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Agent" : node.title
+            return node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? LocalizedString.text("node_agent_fallback") : node.title
         }
     }
 
@@ -579,28 +576,50 @@ struct WorkbenchConversationView: View {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !text.isEmpty else {
-            errorText = "请输入要发给工作流的任务。"
+            errorText = LocalizedString.text("workbench_error_empty_prompt")
             return
         }
 
         guard hasExecutableWorkflow else {
-            errorText = "当前工作流入口节点尚未连接 Agent，请先从 Start 节点连线到目标 Agent。"
+            errorText = LocalizedString.text("workbench_error_unconnected_start")
             return
         }
 
         guard isOpenClawConnected else {
-            errorText = "请先连接 OpenClaw，连接成功后才能向工作流发布任务。"
+            errorText = LocalizedString.text("workbench_error_connect_openclaw")
             return
         }
 
         guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID) else {
             errorText = appState.openClawService.isExecuting
-                ? "当前已有工作流在执行，请等待本轮完成后再发布新任务。"
-                : "任务发布失败，请检查工作流结构和 OpenClaw 连接状态。"
+                ? LocalizedString.text("workbench_error_busy")
+                : LocalizedString.text("workbench_error_submit_failed")
             return
         }
 
         prompt = ""
+    }
+
+    private func scheduleAutoScroll(
+        using proxy: ScrollViewProxy,
+        animated: Bool,
+        debounce: TimeInterval
+    ) {
+        pendingAutoScrollWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            guard let lastID = workbenchMessages.last?.id else { return }
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(lastID, anchor: .bottom)
+            }
+        }
+
+        pendingAutoScrollWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: workItem)
     }
 
     private func statusBadge(title: String, color: Color) -> some View {
@@ -635,11 +654,11 @@ private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .sideBySide:
-            return "左右分栏"
+            return LocalizedString.text("layout_side_by_side")
         case .topBottom:
-            return "上下分栏"
+            return LocalizedString.text("layout_top_bottom")
         case .dashboardOnly:
-            return "仅仪表盘"
+            return LocalizedString.text("layout_dashboard_only")
         }
     }
 }
@@ -662,13 +681,13 @@ private enum NodeExecutionDisplayStatus: String {
     var title: String {
         switch self {
         case .idle:
-            return "待命"
+            return LocalizedString.text("execution_idle")
         case .running:
-            return "执行中"
+            return LocalizedString.text("execution_running")
         case .completed:
-            return "已完成"
+            return LocalizedString.text("execution_completed")
         case .failed:
-            return "失败"
+            return LocalizedString.text("execution_failed")
         }
     }
 
@@ -708,13 +727,13 @@ private enum WorkflowFlowStatus: String {
     var title: String {
         switch self {
         case .pending:
-            return "待流转"
+            return LocalizedString.text("flow_pending")
         case .inProgress:
-            return "流转中"
+            return LocalizedString.text("flow_in_progress")
         case .completed:
-            return "已流转"
+            return LocalizedString.text("flow_completed")
         case .blocked:
-            return "阻塞"
+            return LocalizedString.text("flow_blocked")
         }
     }
 
@@ -755,7 +774,7 @@ private struct WorkbenchMessageBubble: View {
 
     private var agentName: String {
         let name = message.metadata["agentName"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? "Agent" : name
+        return name.isEmpty ? LocalizedString.text("node_agent_fallback") : name
     }
 
     private var isThinking: Bool {
@@ -766,12 +785,12 @@ private struct WorkbenchMessageBubble: View {
         VStack(alignment: isUserMessage ? .trailing : .leading, spacing: 6) {
             HStack {
                 if isUserMessage { Spacer() }
-                Text(isUserMessage ? "你" : "回复 Agent: \(agentName)")
+                Text(isUserMessage ? LocalizedString.text("user_you") : LocalizedString.format("agent_reply_prefix", agentName))
                     .font(.caption2)
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
                 if !isUserMessage {
-                    Text(isThinking ? "思考中…" : "已回复")
+                    Text(isThinking ? LocalizedString.text("thinking") : LocalizedString.text("replied"))
                         .font(.caption2)
                         .foregroundColor(isThinking ? .orange : .secondary)
                 }
@@ -782,7 +801,7 @@ private struct WorkbenchMessageBubble: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.mini)
-                    Text("正在生成回复，内容会实时更新")
+                    Text(LocalizedString.text("streaming_reply"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -799,7 +818,7 @@ private struct WorkbenchMessageBubble: View {
 
             HStack(spacing: 8) {
                 if !isUserMessage, let linkedTask {
-                    Label(linkedTask.status.rawValue, systemImage: linkedTask.status.icon)
+                    Label(linkedTask.status.displayName, systemImage: linkedTask.status.icon)
                         .foregroundColor(linkedTask.status.color)
                 }
                 Text(message.timestamp.formatted(date: .omitted, time: .shortened))

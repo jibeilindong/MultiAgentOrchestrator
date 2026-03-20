@@ -76,7 +76,7 @@ struct SettingsView: View {
                         Button(action: { selectedTab = 3 }) {
                             HStack {
                                 Image(systemName: "person.2.badge.gearshape")
-                                Text("OpenClaw Agents")
+                                Text(LocalizedString.text("openclaw_agents_management"))
                                 Spacer()
                                 if selectedTab == 3 {
                                     Image(systemName: "checkmark")
@@ -224,9 +224,9 @@ struct AdvancedSettingsView: View {
                 .font(.title2)
             
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("Debug Mode", isOn: .constant(false))
-                Toggle("Auto-save", isOn: .constant(true))
-                Toggle("Show Hints", isOn: .constant(true))
+                Toggle(LocalizedString.text("debug_mode"), isOn: .constant(false))
+                Toggle(LocalizedString.autoSave, isOn: .constant(true))
+                Toggle(LocalizedString.text("show_hints"), isOn: .constant(true))
             }
             .padding()
             .background(Color(.controlBackgroundColor))

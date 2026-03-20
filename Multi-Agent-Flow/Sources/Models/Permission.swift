@@ -31,9 +31,17 @@ enum PermissionType: String, Codable, CaseIterable {
     
     var description: String {
         switch self {
-        case .allow: return "Messages are allowed to flow directly"
-        case .deny: return "Messages are completely blocked"
-        case .requireApproval: return "Messages require manual approval"
+        case .allow: return LocalizedString.text("permission_allow_desc")
+        case .deny: return LocalizedString.text("permission_deny_desc")
+        case .requireApproval: return LocalizedString.text("permission_require_approval_desc")
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .allow: return LocalizedString.text("allow_label")
+        case .deny: return LocalizedString.text("deny_label")
+        case .requireApproval: return LocalizedString.text("approval")
         }
     }
 }

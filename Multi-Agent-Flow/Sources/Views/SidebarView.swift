@@ -45,9 +45,9 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Menu {
-                    Section("当前项目") {
+                    Section(LocalizedString.text("current_project")) {
                         Button(action: { showingProjectPicker = true }) {
-                            Label("切换或管理项目", systemImage: "rectangle.stack")
+                            Label(LocalizedString.text("switch_or_manage_project"), systemImage: "rectangle.stack")
                         }
 
                         ForEach(appState.projectManager.projects.prefix(8)) { project in
@@ -69,34 +69,34 @@ struct SidebarView: View {
                         Label(LocalizedString.save, systemImage: "square.and.arrow.down")
                     }
                     Button(action: { appState.saveProjectAs() }) {
-                        Label("另存为", systemImage: "square.and.arrow.down.on.square")
+                        Label(LocalizedString.text("save_as"), systemImage: "square.and.arrow.down.on.square")
                     }
 
                     Divider()
 
                     Button(action: { appState.importData() }) {
-                        Label("导入架构", systemImage: "square.and.arrow.down.on.square")
+                        Label(LocalizedString.text("import_architecture"), systemImage: "square.and.arrow.down.on.square")
                     }
                     Button(action: { appState.exportData() }) {
-                        Label("导出架构", systemImage: "square.and.arrow.up")
+                        Label(LocalizedString.text("export_architecture"), systemImage: "square.and.arrow.up")
                     }
 
                     if appState.currentProject != nil {
                         Divider()
 
                         Button(action: { appState.deleteCurrentProject() }) {
-                            Label("删除项目", systemImage: "trash")
+                            Label(LocalizedString.text("delete_project"), systemImage: "trash")
                         }
 
                         Button(action: { appState.closeProject() }) {
-                            Label("关闭项目", systemImage: "xmark.circle")
+                            Label(LocalizedString.closeProject, systemImage: "xmark.circle")
                         }
                     }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "folder")
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(appState.currentProject?.name ?? "项目")
+                            Text(appState.currentProject?.name ?? LocalizedString.project)
                                 .font(.headline)
                                 .lineLimit(1)
                             Text(projectSummary)
@@ -120,22 +120,22 @@ struct SidebarView: View {
                 .frame(maxWidth: .infinity)
 
                 Button(action: { appState.saveProject() }) {
-                    Label("保存", systemImage: "square.and.arrow.down")
+                    Label(LocalizedString.save, systemImage: "square.and.arrow.down")
                         .font(.caption)
                         .padding(.horizontal, 6)
                 }
                 .buttonStyle(.bordered)
-                .help("保存项目")
+                .help(LocalizedString.saveProject)
                 .disabled(appState.currentProject == nil)
 
                 if appState.currentProject != nil {
                     Button(action: { appState.closeProject() }) {
-                        Label("关闭", systemImage: "xmark.circle")
+                        Label(LocalizedString.close, systemImage: "xmark.circle")
                             .font(.caption)
                             .padding(.horizontal, 6)
                     }
                     .buttonStyle(.bordered)
-                    .help("关闭项目")
+                    .help(LocalizedString.closeProject)
                 }
             }
         }
@@ -176,14 +176,14 @@ struct SidebarView: View {
         let agentCount = appState.currentProject?.agents.count ?? 0
         let workflowCount = appState.currentProject?.workflows.count ?? 0
         let taskCount = appState.taskManager.tasks.count
-        return "\(agentCount) agents • \(workflowCount) workflows • \(taskCount) tasks"
+        return LocalizedString.format("project_summary_counts", agentCount, workflowCount, taskCount)
     }
 
     private var navigationItems: [NavigationItem] {
         [
-            NavigationItem(tag: 0, title: "工作流编辑器", icon: "square.grid.2x2"),
-            NavigationItem(tag: 1, title: "工作台对话", icon: "message.badge.waveform"),
-            NavigationItem(tag: 2, title: "监控仪表盘", icon: "gauge.with.dots.needle.33percent")
+            NavigationItem(tag: 0, title: LocalizedString.text("workflow_editor_nav"), icon: "square.grid.2x2"),
+            NavigationItem(tag: 1, title: LocalizedString.text("workbench_nav"), icon: "message.badge.waveform"),
+            NavigationItem(tag: 2, title: LocalizedString.text("monitoring_dashboard_nav"), icon: "gauge.with.dots.needle.33percent")
         ]
     }
 

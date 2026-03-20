@@ -17,22 +17,22 @@ enum WorkflowFallbackRoutingPolicy: String, Codable, CaseIterable, Hashable {
     var displayName: String {
         switch self {
         case .stop:
-            return "无指令即停止"
+            return LocalizedString.text("routing_stop_display")
         case .firstAvailable:
-            return "无指令时单下游自动继续"
+            return LocalizedString.text("routing_first_available_display")
         case .allAvailable:
-            return "无指令时沿全部下游继续"
+            return LocalizedString.text("routing_all_available_display")
         }
     }
 
     var detail: String {
         switch self {
         case .stop:
-            return "只有 agent 明确输出路由指令时，才继续触发下游节点。"
+            return LocalizedString.text("routing_stop_detail")
         case .firstAvailable:
-            return "当 agent 没给路由指令且只有一个可达下游时，自动继续；多个下游时仍停止。"
+            return LocalizedString.text("routing_first_available_detail")
         case .allAvailable:
-            return "当 agent 没给路由指令时，自动触发当前节点的全部可达下游。"
+            return LocalizedString.text("routing_all_available_detail")
         }
     }
 }

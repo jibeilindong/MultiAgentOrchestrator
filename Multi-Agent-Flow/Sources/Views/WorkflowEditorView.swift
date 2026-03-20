@@ -259,7 +259,10 @@ struct WorkflowEditorView: View {
         testExecution = WorkflowTestExecution(workflow: workflow, agents: project.agents)
         
         // 调用OpenClaw执行工作流
-        appState.startWorkflowExecutionWithVerification(workflowID: workflow.id) { _, results in
+        appState.openClawService.executeWorkflow(
+            workflow,
+            agents: project.agents
+        ) { results in
             DispatchQueue.main.async {
                 self.isRunning = false
                 // 显示执行结果
