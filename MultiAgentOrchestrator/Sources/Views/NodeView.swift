@@ -12,10 +12,13 @@ struct NodeView: View {
     let node: WorkflowNode
     let isSelected: Bool
     let agent: Agent?
+    let incomingConnections: Int
+    let outgoingConnections: Int
     
     // 连接模式状态
     var isConnectingMode: Bool = false
     var isConnectSource: Bool = false
+    var isRelatedToSelection: Bool = false
     
     // 回调函数
     var onTap: (() -> Void)?
@@ -25,95 +28,10 @@ struct NodeView: View {
 
     @State private var isHovered: Bool = false
     @State private var pulseAnimation: Bool = false
+    @State private var relationPulse: Bool = false
     
     var body: some View {
-        VStack(spacing: 4) {
-            // 嵌套层级指示器
-            if node.nestingLevel > 0 {
-                NestingLevelBadge(level: node.nestingLevel)
-            }
-            
-            // 节点图标和标题
-            HStack(spacing: 4) {
-                Image(systemName: nodeTypeIcon)
-                    .font(.title3)
-                    .foregroundColor(nodeColor)
-
-                Text(nodeTitle)
-                    .font(.system(size: 12 * textScale))
-                    .lineLimit(1)
-                    .foregroundColor(textColor)
-            }
-
-            // 连接指示器（连接模式下显示）
-            if isConnectingMode && !isConnectSource {
-                HStack(spacing: 2) {
-                    Image(systemName: "link")
-                        .font(.system(size: 10 * textScale))
-                    Text("点击连接")
-                        .font(.system(size: 8 * textScale))
-                }
-                .foregroundColor(.orange)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.orange.opacity(0.1))
-                .cornerRadius(4)
-            }
-            
-        }
-        .frame(width: nodeWidth, height: nodeHeight)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(nodeBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(borderColor, lineWidth: isSelected ? 3 : (isHovered ? 2 : 1))
-                )
-        )
-        .shadow(
-            color: isSelected ? nodeColor.opacity(0.4) : (isHovered ? Color.black.opacity(0.15) : Color.black.opacity(0.08)),
-            radius: isSelected ? 8 : (isHovered ? 6 : 3),
-            x: 0,
-            y: isSelected ? 4 : (isHovered ? 3 : 2)
-        )
-        // 连接源节点动画
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(
-                    isConnectSource ? Color.orange : Color.clear,
-                    lineWidth: 2
-                )
-                .scaleEffect(isConnectSource ? (pulseAnimation ? 1.05 : 1.0) : 1.0)
-                .opacity(isConnectSource ? (pulseAnimation ? 0.6 : 1.0) : 0)
-                .animation(
-                    isConnectSource ? 
-                        Animation.easeInOut(duration: 0.8).repeatForever(autoreverses: true) : 
-                        .default,
-                    value: pulseAnimation
-                )
-        )
-        // 点击手势
-        .onTapGesture(count: 1) {
-            onTap?()
-        }
-        // 悬停状态
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.1)) {
-                isHovered = hovering
-            }
-        }
-        // 连接源时启动脉冲动画
-        .onChange(of: isConnectSource) { _, newValue in
-            if newValue {
-                pulseAnimation = true
-            } else {
-                pulseAnimation = false
-            }
-        }
-        // 变换
-        .scaleEffect(isSelected ? 1.02 : (isHovered ? 1.01 : 1.0))
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
-        .animation(.easeInOut(duration: 0.1), value: isHovered)
+        nodeCard
     }
 
     private var nodeTypeIcon: String {
@@ -151,6 +69,9 @@ struct NodeView: View {
         if isSelected {
             return nodeColor.opacity(0.15)
         }
+        if isRelatedToSelection {
+            return nodeColor.opacity(0.15)
+        }
         switch node.type {
         case .start: return Color.orange.opacity(0.12)
         case .agent: return nodeColor.opacity(0.1)
@@ -160,6 +81,9 @@ struct NodeView: View {
     private var borderColor: Color {
         if isSelected {
             return nodeColor
+        }
+        if isRelatedToSelection {
+            return nodeColor.opacity(0.92)
         }
         if appState.boundary(for: node.id) != nil {
             return Color.orange.opacity(0.75)
@@ -179,9 +103,164 @@ struct NodeView: View {
 
     private var nodeHeight: CGFloat {
         switch node.type {
-        case .start: return 60
-        case .agent: return 65
+        case .start: return 68
+        case .agent: return hasNoOutgoingConnections ? 92 : 78
         }
+    }
+
+    private var nodeCard: some View {
+        VStack(spacing: 3) {
+            if node.nestingLevel > 0 {
+                NestingLevelBadge(level: node.nestingLevel)
+            }
+
+            nodeHeader
+            connectionCountLabel
+            noOutgoingWarning
+            connectionHint
+        }
+        .frame(width: nodeWidth, height: nodeHeight)
+        .background(nodeBackgroundShape)
+        .shadow(color: nodeShadowColor, radius: nodeShadowRadius, x: 0, y: nodeShadowYOffset)
+        .overlay(relatedHighlightOverlay)
+        .overlay(connectSourceOverlay)
+        .onTapGesture(count: 1) {
+            onTap?()
+        }
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.1)) {
+                isHovered = hovering
+            }
+        }
+        .onChange(of: isConnectSource) { _, newValue in
+            pulseAnimation = newValue
+        }
+        .scaleEffect(isSelected ? 1.05 : (isHovered ? 1.01 : 1.0))
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
+        .animation(.easeInOut(duration: 0.1), value: isHovered)
+        .onAppear {
+            relationPulse = isRelatedToSelection
+        }
+        .onChange(of: isRelatedToSelection) { _, newValue in
+            relationPulse = newValue
+        }
+    }
+
+    private var nodeHeader: some View {
+        HStack(spacing: 4) {
+            Image(systemName: nodeTypeIcon)
+                .font(.title3)
+                .foregroundColor(nodeColor)
+
+            Text(nodeTitle)
+                .font(.system(size: 12 * textScale))
+                .lineLimit(1)
+                .foregroundColor(textColor)
+        }
+    }
+
+    private var connectionCountLabel: some View {
+        Text("In \(incomingConnections)  Out \(outgoingConnections)")
+            .font(.system(size: 9 * textScale, weight: .medium, design: .rounded))
+            .lineLimit(1)
+            .foregroundColor(textColor.opacity(0.8))
+            .minimumScaleFactor(0.75)
+    }
+
+    private var noOutgoingWarning: some View {
+        Group {
+            if hasNoOutgoingConnections {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 8 * textScale, weight: .semibold))
+                    Text("无出口，无法反馈消息")
+                        .font(.system(size: 8 * textScale, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .foregroundColor(.red.opacity(0.92))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.red.opacity(0.12))
+                .cornerRadius(4)
+            }
+        }
+    }
+
+    private var connectionHint: some View {
+        Group {
+            if isConnectingMode && !isConnectSource {
+                HStack(spacing: 2) {
+                    Image(systemName: "link")
+                        .font(.system(size: 10 * textScale))
+                    Text("点击连接")
+                        .font(.system(size: 8 * textScale))
+                }
+                .foregroundColor(.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(4)
+            }
+        }
+    }
+
+    private var nodeBackgroundShape: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(nodeBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(borderColor, lineWidth: isSelected ? 4 : (isHovered ? 2 : 1))
+            )
+    }
+
+    private var relatedHighlightOverlay: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(isRelatedToSelection && !isSelected ? Color.white.opacity(0.08) : Color.clear)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(
+                        isRelatedToSelection && !isSelected ? nodeColor.opacity(relationPulse ? 0.5 : 0.18) : Color.clear,
+                        lineWidth: 2
+                    )
+                    .scaleEffect(isRelatedToSelection && !isSelected ? (relationPulse ? 1.03 : 1.0) : 1.0)
+                    .opacity(isRelatedToSelection && !isSelected ? (relationPulse ? 1.0 : 0.55) : 0)
+                    .animation(
+                        isRelatedToSelection && !isSelected
+                            ? Animation.easeInOut(duration: 0.9).repeatForever(autoreverses: true)
+                            : .default,
+                        value: relationPulse
+                    )
+            )
+    }
+
+    private var connectSourceOverlay: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .stroke(isConnectSource ? Color.orange : Color.clear, lineWidth: 2)
+            .scaleEffect(isConnectSource ? (pulseAnimation ? 1.05 : 1.0) : 1.0)
+            .opacity(isConnectSource ? (pulseAnimation ? 0.6 : 1.0) : 0)
+            .animation(
+                isConnectSource
+                    ? Animation.easeInOut(duration: 0.8).repeatForever(autoreverses: true)
+                    : .default,
+                value: pulseAnimation
+            )
+    }
+
+    private var nodeShadowColor: Color {
+        isSelected ? nodeColor.opacity(0.55) : (isRelatedToSelection ? nodeColor.opacity(0.28) : (isHovered ? Color.black.opacity(0.15) : Color.black.opacity(0.08)))
+    }
+
+    private var nodeShadowRadius: CGFloat {
+        isSelected ? 12 : (isHovered ? 6 : (isRelatedToSelection ? 8 : 3))
+    }
+
+    private var nodeShadowYOffset: CGFloat {
+        isSelected ? 6 : (isHovered ? 3 : (isRelatedToSelection ? 4 : 2))
+    }
+
+    private var hasNoOutgoingConnections: Bool {
+        node.type == .agent && outgoingConnections == 0
     }
 
     private func optionalText(_ value: String) -> String? {

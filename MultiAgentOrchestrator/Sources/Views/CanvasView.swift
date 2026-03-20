@@ -43,7 +43,7 @@ struct CanvasView: View {
         selectedEdgeID: Binding<UUID?> = .constant(nil),
         selectedBoundaryIDs: Binding<Set<UUID>> = .constant([]),
         isConnectMode: Binding<Bool> = .constant(false),
-        connectionType: Binding<WorkflowEditorView.ConnectionType> = .constant(.unidirectional),
+        connectionType: Binding<WorkflowEditorView.ConnectionType> = .constant(.bidirectional),
         connectFromAgentID: Binding<UUID?> = .constant(nil),
         isLassoMode: Binding<Bool> = .constant(false),
         onNodeClickInConnectMode: ((WorkflowNode) -> Void)? = nil,

@@ -26,7 +26,7 @@ struct WorkflowEditorView: View {
     @State private var copiedNodes: [WorkflowNode] = []
     @State private var copiedEdges: [WorkflowEdge] = []
     @State private var copiedBoundaries: [WorkflowBoundary] = []
-    @State private var connectionType: ConnectionType = .unidirectional
+    @State private var connectionType: ConnectionType = .bidirectional
     @State private var testExecution: WorkflowTestExecution?
     @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
@@ -164,9 +164,17 @@ struct WorkflowEditorView: View {
         let sourceNodeID = resolveNodeID(for: from, preferredIndex: 0)
         let targetNodeID = resolveNodeID(for: to, preferredIndex: 1)
 
-        if let sourceNodeID, let targetNodeID, sourceNodeID != targetNodeID {
-            appState.connectNodes(from: sourceNodeID, to: targetNodeID, bidirectional: connectionType == .bidirectional)
+        guard let sourceNodeID, let targetNodeID else {
+            connectFromAgentID = nil
+            return
         }
+
+        guard sourceNodeID != targetNodeID else {
+            connectFromAgentID = nil
+            return
+        }
+
+        appState.connectNodes(from: sourceNodeID, to: targetNodeID, bidirectional: connectionType == .bidirectional)
 
         connectFromAgentID = nil
     }
@@ -797,8 +805,8 @@ struct EditorToolbar: View {
 
                     Button(action: isRunning ? onStopTest : onRunTest) {
                         Image(systemName: isRunning ? "stop.circle" : "play.circle")
-                            .font(.caption.weight(.medium))
-                            .frame(width: 34, height: 32)
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 38, height: 34)
                     }
                     .buttonStyle(.borderedProminent)
                     .help(isRunning ? "停止测试" : "运行测试")
@@ -841,8 +849,8 @@ struct EditorToolbar: View {
     private func toolbarModeButton(_ mode: WorkflowEditorView.EditorViewMode) -> some View {
         Button(action: { viewMode = mode }) {
             Image(systemName: mode.icon)
-                .font(.caption.weight(.medium))
-                .frame(width: 34, height: 32)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 34)
         }
         .buttonStyle(.plain)
         .foregroundColor(viewMode == mode ? .accentColor : .secondary)
@@ -870,8 +878,8 @@ struct EditorToolbar: View {
     private func toolbarIconButton(systemName: String, action: @escaping () -> Void, tooltip: String) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.caption.weight(.medium))
-                .frame(width: 34, height: 32)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 34)
         }
         .buttonStyle(.bordered)
         .help(tooltip)
@@ -888,15 +896,15 @@ struct EditorToolbar: View {
             if prominent {
                 Button(action: action) {
                     Image(systemName: systemName)
-                        .font(.caption.weight(.medium))
-                        .frame(width: 34, height: 32)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 34)
                 }
                 .buttonStyle(.borderedProminent)
             } else {
                 Button(action: action) {
                     Image(systemName: systemName)
-                        .font(.caption.weight(.medium))
-                        .frame(width: 34, height: 32)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 34)
                 }
                 .buttonStyle(.bordered)
             }
@@ -912,8 +920,8 @@ struct EditorToolbar: View {
             isConnectMode = true
         }) {
             Image(systemName: icon)
-                .font(.caption.weight(.medium))
-                .frame(width: 34, height: 32)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 34)
         }
         .buttonStyle(.bordered)
         .tint(connectionType == type ? .blue : nil)
@@ -1512,6 +1520,7 @@ struct ArchitectureView: View {
     
     // 创建连接
     private func createConnection(from: UUID, to: UUID) {
+        guard from != to else { return }
         appState.connectNodes(from: from, to: to, bidirectional: connectionType == .bidirectional)
     }
 

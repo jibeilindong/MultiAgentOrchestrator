@@ -26,13 +26,20 @@ struct NodesView: View {
     @State private var dragOriginPositions: [UUID: CGPoint] = [:]
 
     var body: some View {
+        let focusedNodeIDs = activeFocusedNodeIDs()
+        let relatedNodeIDs = connectedNodeIDs(for: focusedNodeIDs)
+
         ForEach(currentWorkflow?.nodes ?? []) { node in
+            let counts = connectionCounts(for: node.id)
             NodeView(
                 node: node,
                 isSelected: selectedNodeIDs.contains(node.id) || node.id == selectedNodeID,
                 agent: appState.getAgent(for: node),
+                incomingConnections: counts.incoming,
+                outgoingConnections: counts.outgoing,
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
+                isRelatedToSelection: relatedNodeIDs.contains(node.id) && !focusedNodeIDs.contains(node.id) && node.type == .agent,
                 onTap: { handleSingleTap(node) },
                 accentColor: displayColor(for: node),
                 textScale: appState.canvasDisplaySettings.textScale,
@@ -77,6 +84,42 @@ struct NodesView: View {
 
         selectedEdgeID = nil
         selectedBoundaryIDs.removeAll()
+    }
+
+    private func activeFocusedNodeIDs() -> Set<UUID> {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs
+        }
+        if let selectedNodeID {
+            return [selectedNodeID]
+        }
+        return []
+    }
+
+    private func connectedNodeIDs(for focusedNodeIDs: Set<UUID>) -> Set<UUID> {
+        guard let workflow = currentWorkflow, !focusedNodeIDs.isEmpty else { return [] }
+
+        var result: Set<UUID> = []
+        for edge in workflow.edges {
+            if focusedNodeIDs.contains(edge.fromNodeID) {
+                result.insert(edge.toNodeID)
+            }
+            if focusedNodeIDs.contains(edge.toNodeID) {
+                result.insert(edge.fromNodeID)
+            }
+        }
+        return result
+    }
+
+    private func connectionCounts(for nodeID: UUID) -> (incoming: Int, outgoing: Int) {
+        guard let workflow = currentWorkflow else { return (0, 0) }
+        let incoming = workflow.edges.reduce(into: 0) { partial, edge in
+            if edge.toNodeID == nodeID { partial += 1 }
+        }
+        let outgoing = workflow.edges.reduce(into: 0) { partial, edge in
+            if edge.fromNodeID == nodeID { partial += 1 }
+        }
+        return (incoming, outgoing)
     }
 
     private func updateNodePositions(for node: WorkflowNode, translation: CGSize) {

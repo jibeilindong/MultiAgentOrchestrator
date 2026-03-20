@@ -378,7 +378,7 @@ class AppState: ObservableObject {
         }
     }
 
-    private func enforceUniqueAgentNodes(in workflow: Workflow) -> (workflow: Workflow, removedNodeIDs: [UUID]) {
+    private func enforceUniqueAgentNodes(in workflow: Workflow) -> (workflow: Workflow, removedNodeIDs: [UUID], removedSelfEdgeCount: Int) {
         var mutableWorkflow = workflow
         var seenAgentIDs = Set<UUID>()
         var removedNodeIDs = Set<UUID>()
@@ -394,12 +394,10 @@ class AppState: ObservableObject {
             return false
         }
 
-        guard !removedNodeIDs.isEmpty else {
-            return (workflow, [])
-        }
+        let removedSelfEdgeCount = mutableWorkflow.edges.filter { $0.fromNodeID == $0.toNodeID }.count
 
         mutableWorkflow.edges.removeAll {
-            removedNodeIDs.contains($0.fromNodeID) || removedNodeIDs.contains($0.toNodeID)
+            $0.fromNodeID == $0.toNodeID || removedNodeIDs.contains($0.fromNodeID) || removedNodeIDs.contains($0.toNodeID)
         }
 
         mutableWorkflow.boundaries = mutableWorkflow.boundaries.compactMap { boundary in
@@ -413,17 +411,23 @@ class AppState: ObservableObject {
             return updatedBoundary
         }
 
-        return (mutableWorkflow, Array(removedNodeIDs))
+        guard !removedNodeIDs.isEmpty || removedSelfEdgeCount > 0 else {
+            return (workflow, [], 0)
+        }
+
+        return (mutableWorkflow, Array(removedNodeIDs), removedSelfEdgeCount)
     }
 
-    private func enforceUniqueAgentNodes(in workflows: [Workflow]) -> (workflows: [Workflow], removedNodeCount: Int) {
+    private func enforceUniqueAgentNodes(in workflows: [Workflow]) -> (workflows: [Workflow], removedNodeCount: Int, removedSelfEdgeCount: Int) {
         var totalRemoved = 0
+        var totalSelfEdgeRemoved = 0
         let sanitized = workflows.map { workflow -> Workflow in
             let result = enforceUniqueAgentNodes(in: workflow)
             totalRemoved += result.removedNodeIDs.count
+            totalSelfEdgeRemoved += result.removedSelfEdgeCount
             return result.workflow
         }
-        return (sanitized, totalRemoved)
+        return (sanitized, totalRemoved, totalSelfEdgeRemoved)
     }
     
     private func performAutoSave() {
@@ -636,6 +640,12 @@ class AppState: ObservableObject {
                 "检测到重复 Agent 节点，已自动清理 \(deduplication.removedNodeCount) 个重复节点。"
             )
         }
+        if deduplication.removedSelfEdgeCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "检测到自连接，已自动清理 \(deduplication.removedSelfEdgeCount) 条非法连线。"
+            )
+        }
     }
 
     private func makeOfflineTemplateProject(named projectName: String) -> MAProject {
@@ -834,6 +844,12 @@ class AppState: ObservableObject {
             openClawService.addLog(
                 .warning,
                 "导入项目时清理了 \(deduplication.removedNodeCount) 个重复 Agent 节点。"
+            )
+        }
+        if deduplication.removedSelfEdgeCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "导入项目时清理了 \(deduplication.removedSelfEdgeCount) 条自连接。"
             )
         }
     }
@@ -1046,6 +1062,12 @@ class AppState: ObservableObject {
                 "工作流中存在重复 Agent 节点，已移除 \(deduplication.removedNodeIDs.count) 个重复项。"
             )
         }
+        if deduplication.removedSelfEdgeCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "工作流中存在自连接，已移除 \(deduplication.removedSelfEdgeCount) 条非法连线。"
+            )
+        }
     }
 
     func updateMainWorkflow(_ updates: (inout Workflow) -> Void) {
@@ -1067,6 +1089,12 @@ class AppState: ObservableObject {
             openClawService.addLog(
                 .warning,
                 "工作流中存在重复 Agent 节点，已移除 \(deduplication.removedNodeIDs.count) 个重复项。"
+            )
+        }
+        if deduplication.removedSelfEdgeCount > 0 {
+            openClawService.addLog(
+                .warning,
+                "工作流中存在自连接，已移除 \(deduplication.removedSelfEdgeCount) 条非法连线。"
             )
         }
     }
@@ -1249,6 +1277,8 @@ class AppState: ObservableObject {
               let workflow = project.workflows.first,
               let sourceNode = workflow.nodes.first(where: { $0.id == sourceNodeID }),
               let targetNode = workflow.nodes.first(where: { $0.id == targetNodeID }) else { return }
+
+        guard sourceNodeID != targetNodeID else { return }
 
         // 当前编辑器支持 start/agent 两类节点连线；仅在 agent<->agent 时自动补权限。
         let supportedTypes: Set<WorkflowNode.NodeType> = [.start, .agent]

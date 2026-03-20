@@ -156,13 +156,7 @@ struct ConnectionLinesView: View {
 
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
         let center = getNodeCenter(node.position, geometry: geometry)
-        let size: CGSize
-        switch node.type {
-        case .start:
-            size = CGSize(width: 100, height: 60)
-        case .agent:
-            size = CGSize(width: 110, height: 65)
-        }
+        let size = nodeSize(for: node)
 
         return CGRect(
             x: center.x - size.width / 2,
@@ -170,6 +164,18 @@ struct ConnectionLinesView: View {
             width: size.width,
             height: size.height
         )
+    }
+
+    private func nodeSize(for node: WorkflowNode) -> CGSize {
+        switch node.type {
+        case .start:
+            return CGSize(width: 100, height: 68)
+        case .agent:
+            let outgoing = currentWorkflow?.edges.reduce(into: 0) { partial, edge in
+                if edge.fromNodeID == node.id { partial += 1 }
+            } ?? 0
+            return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
+        }
     }
 
     private func getNodeCenter(_ position: CGPoint, geometry: GeometryProxy) -> CGPoint {
@@ -454,24 +460,31 @@ struct WorkflowEdgeRoutePlanner {
     }
 
     static func preferredOutgoingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        preferredVerticalSide(for: rect, toward: point)
+        preferredSide(for: rect, toward: point)
     }
 
     static func preferredIncomingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        preferredVerticalSide(for: rect, toward: point)
+        preferredSide(for: rect, toward: point)
     }
 
-    private static func preferredVerticalSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
+    private static func preferredSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
         let center = rect.center
-        return point.y >= center.y ? .bottom : .top
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+
+        if abs(dx) >= abs(dy) {
+            return dx >= 0 ? .right : .left
+        }
+
+        return dy >= 0 ? .bottom : .top
     }
 
     private static func anchorPoint(on rect: CGRect, side: EdgeAnchorSide, laneOffset: CGFloat) -> CGPoint {
         switch side {
         case .top: return CGPoint(x: rect.midX + laneOffset, y: rect.minY - anchorClearance)
         case .bottom: return CGPoint(x: rect.midX + laneOffset, y: rect.maxY + anchorClearance)
-        case .left: return CGPoint(x: rect.midX, y: rect.minY - anchorClearance)
-        case .right: return CGPoint(x: rect.midX, y: rect.maxY + anchorClearance)
+        case .left: return CGPoint(x: rect.minX - anchorClearance, y: rect.midY + laneOffset)
+        case .right: return CGPoint(x: rect.maxX + anchorClearance, y: rect.midY + laneOffset)
         }
     }
 

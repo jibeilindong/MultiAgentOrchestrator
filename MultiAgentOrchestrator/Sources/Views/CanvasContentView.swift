@@ -460,19 +460,25 @@ struct CanvasContentView: View {
 
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
         let center = adjustedPosition(node.position, geometry: geometry)
-        let size: CGSize
-        switch node.type {
-        case .start:
-            size = CGSize(width: 100, height: 60)
-        case .agent:
-            size = CGSize(width: 110, height: 65)
-        }
+        let size = nodeSize(for: node)
         return CGRect(
             x: center.x - size.width / 2,
             y: center.y - size.height / 2,
             width: size.width,
             height: size.height
         )
+    }
+
+    private func nodeSize(for node: WorkflowNode) -> CGSize {
+        switch node.type {
+        case .start:
+            return CGSize(width: 100, height: 68)
+        case .agent:
+            let outgoing = currentWorkflow?.edges.reduce(into: 0) { partial, edge in
+                if edge.fromNodeID == node.id { partial += 1 }
+            } ?? 0
+            return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
+        }
     }
 
     private func node(at location: CGPoint, geometry: GeometryProxy) -> WorkflowNode? {
