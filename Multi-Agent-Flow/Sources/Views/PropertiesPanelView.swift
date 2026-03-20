@@ -59,7 +59,7 @@ struct NodePropertiesView: View {
             VStack(alignment: .leading, spacing: 20) {
                 if let node = selectedNode {
                     // 节点基础信息
-                    SectionView(title: "Node Properties") {
+                    SectionView(title: LocalizedString.text("node_properties_title")) {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Image(systemName: nodeTypeIcon(node.type))
@@ -86,10 +86,10 @@ struct NodePropertiesView: View {
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 HStack {
-                                    Text("X: \(Int(node.position.x))")
+                                    Text(LocalizedString.format("x_position", Int(node.position.x)))
                                         .font(.caption)
                                         .monospacedDigit()
-                                    Text("Y: \(Int(node.position.y))")
+                                    Text(LocalizedString.format("y_position", Int(node.position.y)))
                                         .font(.caption)
                                         .monospacedDigit()
                                 }
@@ -103,13 +103,13 @@ struct NodePropertiesView: View {
                         let outgoingEdges = workflow.edges.filter { $0.isOutgoing(from: node.id) }
                         
                         if !incomingEdges.isEmpty {
-                            SectionView(title: "Incoming Connections") {
+                            SectionView(title: LocalizedString.text("incoming_connections")) {
                                 ForEach(incomingEdges) { edge in
                                     if let fromNode = workflow.nodes.first(where: { $0.id == edge.fromNodeID }) {
                                         HStack {
                                             Image(systemName: "arrow.right.circle.fill")
                                                 .foregroundColor(.green)
-                                            Text("From: \(nodeTypeName(fromNode.type))")
+                                            Text(LocalizedString.format("from_node", nodeTypeName(fromNode.type)))
                                             Spacer()
                                         }
                                         .padding(.vertical, 4)
@@ -119,13 +119,13 @@ struct NodePropertiesView: View {
                         }
                         
                         if !outgoingEdges.isEmpty {
-                            SectionView(title: "Outgoing Connections") {
+                            SectionView(title: LocalizedString.text("outgoing_connections")) {
                                 ForEach(outgoingEdges) { edge in
                                     if let toNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) {
                                         HStack {
                                             Image(systemName: "arrow.right.circle.fill")
                                                 .foregroundColor(.blue)
-                                            Text("To: \(nodeTypeName(toNode.type))")
+                                            Text(LocalizedString.format("to_node", nodeTypeName(toNode.type)))
                                             Spacer()
                                         }
                                         .padding(.vertical, 4)
@@ -174,8 +174,8 @@ struct NodePropertiesView: View {
     
     private func nodeTypeName(_ type: WorkflowNode.NodeType) -> String {
         switch type {
-        case .start: return "Start Node"
-        case .agent: return "Agent Node"
+        case .start: return LocalizedString.text("start_node_title")
+        case .agent: return LocalizedString.agentNode
         }
     }
 }
@@ -219,9 +219,9 @@ struct AgentPropertiesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionView(title: "Agent Selection") {
-                    Picker("Select Agent", selection: $selectedAgentID) {
-                        Text("None").tag(nil as UUID?)
+                SectionView(title: LocalizedString.text("agent_selection")) {
+                    Picker(LocalizedString.text("select_agent_label"), selection: $selectedAgentID) {
+                        Text(LocalizedString.text("none_option")).tag(nil as UUID?)
                         if let agents = appState.currentProject?.agents {
                             ForEach(agents) { agent in
                                 Text(agent.name).tag(agent.id as UUID?)
@@ -249,21 +249,21 @@ struct AgentPropertiesView: View {
                 }
                 
                 if let _ = selectedAgent {
-                    SectionView(title: "Agent Configuration") {
+                    SectionView(title: LocalizedString.text("agent_configuration_title")) {
                         VStack(alignment: .leading, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(LocalizedString.name)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                TextField("Agent Name", text: $agentName)
+                                TextField(LocalizedString.agentName, text: $agentName)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
 
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Identity")
+                                Text(LocalizedString.text("identity"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                TextField("Agent Identity", text: $agentIdentity)
+                                TextField(LocalizedString.text("agent_identity"), text: $agentIdentity)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
                             
@@ -271,29 +271,29 @@ struct AgentPropertiesView: View {
                                 Text(LocalizedString.description)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                TextField("Agent Description", text: $agentDescription)
+                                TextField(LocalizedString.text("agent_description_label"), text: $agentDescription)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
 
                             Divider()
 
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("OpenClaw Definition")
+                                Text(LocalizedString.text("openclaw_definition"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
 
-                                TextField("OpenClaw Agent ID", text: $openClawAgentIdentifier)
+                                TextField(LocalizedString.text("openclaw_agent_id"), text: $openClawAgentIdentifier)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                                TextField("Model Identifier", text: $openClawModelIdentifier)
+                                TextField(LocalizedString.text("model_identifier"), text: $openClawModelIdentifier)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                                TextField("Runtime Profile", text: $openClawRuntimeProfile)
+                                TextField(LocalizedString.text("runtime_profile"), text: $openClawRuntimeProfile)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
-                                TextField("Memory Backup Path", text: $openClawMemoryBackupPath)
+                                TextField(LocalizedString.text("memory_backup_path"), text: $openClawMemoryBackupPath)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
 
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Agent Color")
+                                Text(LocalizedString.text("agent_color"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
 
@@ -312,14 +312,14 @@ struct AgentPropertiesView: View {
                                         .help(preset.title)
                                     }
 
-                                    Button("清除") {
+                                    Button(LocalizedString.text("clear_action")) {
                                         colorHex = ""
                                     }
                                     .font(.caption)
                                     .buttonStyle(.borderless)
                                 }
 
-                                TextField("Hex Color", text: $colorHex)
+                                TextField(LocalizedString.text("hex_color"), text: $colorHex)
                                     .textFieldStyle(RoundedBorderTextFieldStyle())
                             }
                             
@@ -327,7 +327,7 @@ struct AgentPropertiesView: View {
                             
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
-                                    Text("Workspace SOUL Content")
+                                    Text(LocalizedString.text("workspace_soul_content"))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                     Spacer()
@@ -336,7 +336,7 @@ struct AgentPropertiesView: View {
                                         onSelect: { template in applyTemplate(template) },
                                         labelTitle: selectedTemplate.name
                                     )
-                                    Button("Apply Template") {
+                                    Button(LocalizedString.text("apply_template")) {
                                         loadTemplate()
                                     }
                                     .font(.caption)
@@ -357,7 +357,7 @@ struct AgentPropertiesView: View {
                             Divider()
                             
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("Skills")
+                                Text(LocalizedString.manageSkills)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 
@@ -382,23 +382,23 @@ struct AgentPropertiesView: View {
                             Divider()
                             
                             HStack {
-                                Button("Save Changes") {
+                                Button(LocalizedString.text("save_changes")) {
                                     saveAgentChanges()
                                 }
                                 .disabled(!hasChanges)
                                 
                                 Spacer()
                                 
-                                Button("Delete Agent", role: .destructive) {
+                                Button(LocalizedString.deleteAgent, role: .destructive) {
                                     deleteAgent()
                                 }
                             }
                         }
                     }
                 } else if appState.currentProject?.agents.isEmpty ?? true {
-                    SectionView(title: "No Agents") {
+                    SectionView(title: LocalizedString.noAgents) {
                         VStack(spacing: 12) {
-                            Text("No agents created yet.")
+                            Text(LocalizedString.text("no_agents_created_yet"))
                                 .foregroundColor(.secondary)
                             
                             HStack {
@@ -408,7 +408,7 @@ struct AgentPropertiesView: View {
                                     labelTitle: selectedTemplate.name
                                 )
 
-                                Button("Create New Agent") {
+                                Button(LocalizedString.text("create_new_agent")) {
                                     createNewAgent()
                                 }
                             }
@@ -669,14 +669,14 @@ struct TemplatePickerPopover: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("选择模板")
+                Text(LocalizedString.text("select_template"))
                     .font(.headline)
                 Spacer()
-                Button("关闭") { isPresented = false }
+                Button(LocalizedString.close) { isPresented = false }
                     .buttonStyle(.borderless)
             }
 
-            TextField("搜索模板", text: $searchText)
+            TextField(LocalizedString.text("search_template"), text: $searchText)
                 .textFieldStyle(.roundedBorder)
 
             ScrollView {
@@ -692,7 +692,7 @@ struct TemplatePickerPopover: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(blankActionTitle)
                                         .font(.body)
-                                    Text("创建不套用模板的空白 agent")
+                                    Text(LocalizedString.text("create_blank_agent_no_template"))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
@@ -732,7 +732,7 @@ struct TemplatePickerPopover: View {
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                             .lineLimit(2)
-                                        Text("适用场景：\(template.applicableScenarios.joined(separator: " · "))")
+                                        Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                             .lineLimit(2)
@@ -749,7 +749,7 @@ struct TemplatePickerPopover: View {
 
                     if !existingAgents.isEmpty, let onSelectExistingAgent {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("现有 Agent")
+                            Text(LocalizedString.text("existing_agent_header"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
 
@@ -793,7 +793,7 @@ struct TemplateSummaryCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("当前模板名称/说明")
+            Text(LocalizedString.text("current_template_summary"))
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -810,7 +810,7 @@ struct TemplateSummaryCard: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("适用场景：\(template.applicableScenarios.joined(separator: " · "))")
+                    Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -862,13 +862,13 @@ struct ProjectPropertiesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionView(title: "Project Info") {
+                SectionView(title: LocalizedString.text("project_info")) {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Project Name")
+                            Text(LocalizedString.text("project_name_label"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            TextField("Project Name", text: $projectName)
+                            TextField(LocalizedString.text("project_name_label"), text: $projectName)
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
                                 .onAppear {
                                     projectName = appState.currentProject?.name ?? ""
@@ -881,44 +881,44 @@ struct ProjectPropertiesView: View {
                         if let project = appState.currentProject {
                             Divider()
                             
-                            InfoRow(label: "Created", value: project.createdAt.formatted(date: .abbreviated, time: .shortened))
-                            InfoRow(label: "Last Updated", value: project.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                            InfoRow(label: "Agents", value: "\(project.agents.count)")
-                            InfoRow(label: "Workflows", value: "\(project.workflows.count)")
+                            InfoRow(label: LocalizedString.text("created_label"), value: project.createdAt.formatted(date: .abbreviated, time: .shortened))
+                            InfoRow(label: LocalizedString.text("last_updated"), value: project.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                            InfoRow(label: LocalizedString.agents, value: "\(project.agents.count)")
+                            InfoRow(label: LocalizedString.workflows, value: "\(project.workflows.count)")
                             InfoRow(label: "OpenClaw", value: project.openClaw.config.deploymentSummary)
                         }
                     }
                 }
 
-                SectionView(title: "Task Data") {
+                SectionView(title: LocalizedString.text("task_data")) {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(workspaceRootPath)
                             .font(.caption)
                             .textSelection(.enabled)
 
                         HStack {
-                            Button("Choose Folder") {
+                            Button(LocalizedString.text("choose_folder")) {
                                 appState.chooseTaskDataRootDirectory()
                             }
-                            Button("Reset Default") {
+                            Button(LocalizedString.text("reset_default")) {
                                 appState.resetTaskDataRootDirectory()
                             }
                         }
                     }
                 }
 
-                SectionView(title: "Workflow Routing") {
+                SectionView(title: LocalizedString.text("workflow_routing")) {
                     VStack(alignment: .leading, spacing: 12) {
                         if workflows.isEmpty {
-                            Text("当前项目还没有工作流。")
+                            Text(LocalizedString.text("no_workflows_in_project"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         } else {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Workflow")
+                                Text(LocalizedString.text("workflow_label"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Picker("Workflow", selection: workflowSelectionBinding) {
+                                Picker(LocalizedString.text("workflow_label"), selection: workflowSelectionBinding) {
                                     ForEach(workflows) { workflow in
                                         Text(workflow.name).tag(workflow.id as UUID?)
                                     }
@@ -928,11 +928,11 @@ struct ProjectPropertiesView: View {
 
                             if let workflow = selectedWorkflow {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("Fallback Routing Policy")
+                                    Text(LocalizedString.text("fallback_routing_policy"))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                     Picker(
-                                        "Fallback Routing Policy",
+                                        LocalizedString.text("fallback_routing_policy"),
                                         selection: Binding(
                                             get: { workflow.fallbackRoutingPolicy },
                                             set: { newPolicy in
@@ -961,21 +961,21 @@ struct ProjectPropertiesView: View {
                     }
                 }
 
-                SectionView(title: "Launch Verification") {
+                SectionView(title: LocalizedString.text("launch_verification")) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Manual Check")
+                                Text(LocalizedString.text("manual_check"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text("启动验证只会在你手动确认后运行，不会在工作流启动时自动触发。")
+                                Text(LocalizedString.text("launch_verification_manual_hint"))
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
 
                             Spacer()
 
-                            Button(isRunningLaunchVerification ? "Running..." : "Run Launch Verification") {
+                            Button(isRunningLaunchVerification ? LocalizedString.executionRunning : LocalizedString.text("launch_verification")) {
                                 showLaunchVerificationConfirmation = true
                             }
                             .disabled(selectedWorkflow == nil || isRunningLaunchVerification || appState.openClawService.isExecuting)
@@ -985,7 +985,7 @@ struct ProjectPropertiesView: View {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("正在执行启动验证，请稍候。")
+                                Text(LocalizedString.text("running_launch_verification"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -993,7 +993,7 @@ struct ProjectPropertiesView: View {
 
                         if let report = selectedWorkflow?.lastLaunchVerificationReport {
                             HStack {
-                                Text("Last Result")
+                                Text(LocalizedString.text("last_result"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Spacer()
@@ -1006,21 +1006,21 @@ struct ProjectPropertiesView: View {
                                     .clipShape(Capsule())
                             }
 
-                            InfoRow(label: "Started", value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
-                            InfoRow(label: "Completed", value: report.completedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Running")
-                            InfoRow(label: "Cases", value: "\(report.testCaseReports.count)")
+                            InfoRow(label: LocalizedString.text("started_label"), value: report.startedAt.formatted(date: .abbreviated, time: .shortened))
+                            InfoRow(label: LocalizedString.text("completed_label"), value: report.completedAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedString.executionRunning)
+                            InfoRow(label: LocalizedString.text("cases_label"), value: "\(report.testCaseReports.count)")
 
                             if !report.staticFindings.isEmpty {
-                                verificationList(title: "Static Findings", items: report.staticFindings, color: .orange)
+                                verificationList(title: LocalizedString.text("static_findings"), items: report.staticFindings, color: .orange)
                             }
 
                             if !report.runtimeFindings.isEmpty {
-                                verificationList(title: "Runtime Findings", items: Array(report.runtimeFindings.prefix(5)), color: .blue)
+                                verificationList(title: LocalizedString.text("runtime_findings"), items: Array(report.runtimeFindings.prefix(5)), color: .blue)
                             }
 
                             if !report.testCaseReports.isEmpty {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text("Case Results")
+                                    Text(LocalizedString.text("case_results"))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
 
@@ -1039,7 +1039,7 @@ struct ProjectPropertiesView: View {
                                                     .foregroundColor(verificationColor(caseReport.status))
                                                     .clipShape(Capsule())
                                             }
-                                            Text("Steps: \(caseReport.actualStepCount) | Agents: \(caseReport.actualAgents.joined(separator: ", "))")
+                                            Text(LocalizedString.format("case_result_summary", caseReport.actualStepCount, caseReport.actualAgents.joined(separator: ", ")))
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
                                             if !caseReport.notes.isEmpty {
@@ -1056,17 +1056,17 @@ struct ProjectPropertiesView: View {
                                 }
                             }
                         } else {
-                            Text("还没有启动验证报告。请点击上方按钮并确认后启动首次验证。")
+                            Text(LocalizedString.text("no_launch_verification_report"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
                     .confirmationDialog(
-                        "Run launch verification for the selected workflow?",
+                        LocalizedString.text("run_launch_verification_confirm"),
                         isPresented: $showLaunchVerificationConfirmation,
                         titleVisibility: .visible
                     ) {
-                        Button("Start Verification") {
+                        Button(LocalizedString.text("start_verification")) {
                             guard let workflow = selectedWorkflow else { return }
                             isRunningLaunchVerification = true
                             let started = appState.runWorkflowLaunchVerification(workflowID: workflow.id) { _ in
@@ -1078,41 +1078,41 @@ struct ProjectPropertiesView: View {
                                 isRunningLaunchVerification = false
                             }
                         }
-                        Button("Cancel", role: .cancel) { }
+                        Button(LocalizedString.cancel, role: .cancel) { }
                     } message: {
-                        Text("This will execute the workflow's launch verification cases and refresh the report in this panel.")
+                        Text(LocalizedString.text("launch_verification_confirm_message"))
                     }
                 }
 
-                SectionView(title: "Memory Backup") {
+                SectionView(title: LocalizedString.text("memory_backup_section")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        InfoRow(label: "Mode", value: appState.currentProject?.memoryData.backupOnly == true ? "Backup Only" : "Managed")
-                        InfoRow(label: "Task Memories", value: "\(appState.currentProject?.memoryData.taskExecutionMemories.count ?? 0)")
-                        InfoRow(label: "Agent Memories", value: "\(appState.currentProject?.memoryData.agentMemories.count ?? 0)")
+                        InfoRow(label: LocalizedString.text("mode_label"), value: appState.currentProject?.memoryData.backupOnly == true ? LocalizedString.text("backup_only") : LocalizedString.text("managed_mode"))
+                        InfoRow(label: LocalizedString.text("task_memories"), value: "\(appState.currentProject?.memoryData.taskExecutionMemories.count ?? 0)")
+                        InfoRow(label: LocalizedString.text("agent_memories"), value: "\(appState.currentProject?.memoryData.agentMemories.count ?? 0)")
                     }
                 }
                 
-                SectionView(title: "Statistics") {
+                SectionView(title: LocalizedString.text("statistics_section")) {
                     VStack(alignment: .leading, spacing: 8) {
-                        InfoRow(label: "Total Nodes", value: "\(appState.currentProject?.workflows.first?.nodes.count ?? 0)")
-                        InfoRow(label: "Total Connections", value: "\(appState.currentProject?.workflows.first?.edges.count ?? 0)")
-                        InfoRow(label: "Total Boundaries", value: "\(appState.currentProject?.workflows.first?.boundaries.count ?? 0)")
-                        InfoRow(label: "Project Size", value: "Compact")
+                        InfoRow(label: LocalizedString.text("total_nodes"), value: "\(appState.currentProject?.workflows.first?.nodes.count ?? 0)")
+                        InfoRow(label: LocalizedString.text("total_connections"), value: "\(appState.currentProject?.workflows.first?.edges.count ?? 0)")
+                        InfoRow(label: LocalizedString.text("total_boundaries"), value: "\(appState.currentProject?.workflows.first?.boundaries.count ?? 0)")
+                        InfoRow(label: LocalizedString.text("project_size"), value: LocalizedString.text("compact_size"))
                     }
                 }
                 
-                SectionView(title: "Export") {
+                SectionView(title: LocalizedString.text("export_section")) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Export your project for sharing or backup.")
+                        Text(LocalizedString.text("export_project_sharing_hint"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                         
                         HStack {
-                            Button("Export as JSON") {
+                            Button(LocalizedString.text("export_as_json")) {
                                 exportProjectAsJSON()
                             }
                             
-                            Button("Export as Image") {
+                            Button(LocalizedString.text("export_as_image")) {
                                 // 导出为图片功能
                             }
                             .disabled(true)
@@ -1155,7 +1155,7 @@ struct ProjectPropertiesView: View {
         guard let project = appState.currentProject else { return }
         
         let panel = NSSavePanel()
-        panel.title = "Export Project"
+        panel.title = LocalizedString.text("export_project_title")
         panel.nameFieldStringValue = "\(project.name).json"
         panel.allowedContentTypes = [.json]
         

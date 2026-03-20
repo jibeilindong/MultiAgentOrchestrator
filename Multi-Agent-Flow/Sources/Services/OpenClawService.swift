@@ -33,12 +33,12 @@ enum ExecutionOutputType: String, Codable, Hashable {
     case empty = "empty"
 }
 
-enum AgentOutputMode {
+enum AgentOutputMode: Sendable {
     case structuredJSON
     case plainStreaming
 }
 
-enum AgentThinkingLevel: String {
+enum AgentThinkingLevel: String, Sendable {
     case off
     case minimal
     case low
@@ -1190,7 +1190,7 @@ class OpenClawService: ObservableObject {
         onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Bool, ParsedAgentOutput) -> Void
     ) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async(execute: { [weak self] in
             guard let self = self else { return }
             
             let serviceConfig = self.agentConfig
@@ -1203,21 +1203,6 @@ class OpenClawService: ObservableObject {
                 self.addLog(.info, pluginCleanup.message)
             }
 
-            if connectionConfig.deploymentKind == .remoteServer {
-                DispatchQueue.main.async {
-                    completion(
-                        false,
-                        ParsedAgentOutput(
-                            text: "当前连接模式为远程网关，工作台对话暂不支持直接执行 agent CLI。",
-                            type: .errorSummary,
-                            routingDecision: nil
-                        )
-                    )
-                }
-                return
-            }
-            
-            // 构建命令
             let resolvedAgent = self.resolveRuntimeAgentIdentifier(
                 preferred: agentIdentifier,
                 manager: manager,
@@ -1226,6 +1211,85 @@ class OpenClawService: ObservableObject {
             if let message = resolvedAgent.message {
                 self.addLog(.warning, message)
             }
+
+            if connectionConfig.deploymentKind == .remoteServer {
+                let gatewaySessionKey = self.gatewaySessionKey(
+                    sessionID: sessionID,
+                    agentIdentifier: resolvedAgent.identifier
+                )
+                let shouldStreamPlainOutput: Bool
+                switch outputMode {
+                case .plainStreaming:
+                    shouldStreamPlainOutput = true
+                case .structuredJSON:
+                    shouldStreamPlainOutput = false
+                }
+
+                self.addLog(
+                    .info,
+                    "Gateway agent path enabled for remote server: agent=\(resolvedAgent.identifier), sessionKey=\(gatewaySessionKey)"
+                )
+
+                _Concurrency.Task {
+                    do {
+                        var lastVisibleText = ""
+                        let result = try await manager.executeGatewayAgentCommand(
+                            message: instruction,
+                            agentIdentifier: resolvedAgent.identifier,
+                            sessionKey: gatewaySessionKey,
+                            thinkingLevel: thinkingLevel,
+                            timeoutSeconds: max(1, serviceConfig.timeout),
+                            using: connectionConfig,
+                            onAssistantTextUpdated: { fullText in
+                                guard let onPartial, shouldStreamPlainOutput else { return }
+                                let visibleText = self.extractVisiblePlainResponse(from: fullText)
+                                let delta = self.streamingDelta(from: lastVisibleText, to: visibleText)
+                                guard !delta.isEmpty else { return }
+                                lastVisibleText = visibleText
+                                DispatchQueue.main.async {
+                                    onPartial(delta)
+                                }
+                            }
+                        )
+
+                        let normalizedText = result.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let parsedOutput = await MainActor.run {
+                            self.parseAgentOutput(from: normalizedText, outputMode: outputMode)
+                        }
+                        let success = result.status == "ok"
+                        let fallback = result.errorMessage ?? (normalizedText.isEmpty ? "Gateway agent run finished with status: \(result.status)" : normalizedText)
+
+                        DispatchQueue.main.async {
+                            if success {
+                                completion(true, parsedOutput)
+                            } else {
+                                completion(
+                                    false,
+                                    ParsedAgentOutput(
+                                        text: fallback,
+                                        type: .errorSummary,
+                                        routingDecision: nil
+                                    )
+                                )
+                            }
+                        }
+                    } catch {
+                        DispatchQueue.main.async {
+                            completion(
+                                false,
+                                ParsedAgentOutput(
+                                    text: "Gateway error: \(error.localizedDescription)",
+                                    type: .errorSummary,
+                                    routingDecision: nil
+                                )
+                            )
+                        }
+                    }
+                }
+                return
+            }
+            
+            // 构建命令
 
             var args = ["agent"]
             args.append(contentsOf: ["--agent", resolvedAgent.identifier])
@@ -1268,10 +1332,9 @@ class OpenClawService: ObservableObject {
             args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
 
             do {
-                let result = try self.executeOpenClawAgentStreamingProcess(
-                    manager: manager,
-                    config: connectionConfig,
+                let result = try manager.executeAgentRuntimeCommand(
                     arguments: args,
+                    using: connectionConfig,
                     onStdoutChunk: { chunk in
                         guard let onPartial else { return }
                         let visibleChunk = self.extractStreamingTextChunk(from: chunk)
@@ -1286,6 +1349,18 @@ class OpenClawService: ObservableObject {
                 let stdoutTrimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
                 let stderrTrimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 let parsedOutput = self.parseAgentOutput(from: stdoutTrimmed, outputMode: outputMode)
+
+                let runtimeMessage: String?
+                if result.executionCount == 1 {
+                    runtimeMessage = "Created OpenClaw Agent Runtime channel \(result.channelKey) and executed the first request."
+                } else if result.executionCount == 2 {
+                    runtimeMessage = "OpenClaw Agent Runtime channel \(result.channelKey) is now being reused for subsequent requests."
+                } else {
+                    runtimeMessage = nil
+                }
+                if let runtimeMessage {
+                    self.addLog(.info, runtimeMessage)
+                }
 
                 if !stderrTrimmed.isEmpty {
                     let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
@@ -1323,7 +1398,7 @@ class OpenClawService: ObservableObject {
                     )
                 }
             }
-        }
+        })
     }
 
     private func parseAgentOutput(from stdout: String, outputMode: AgentOutputMode) -> ParsedAgentOutput {
@@ -1545,6 +1620,67 @@ class OpenClawService: ObservableObject {
 
         guard !filtered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
         return filtered
+    }
+
+    private func gatewaySessionKey(sessionID: String?, agentIdentifier: String) -> String {
+        let normalizedAgent = normalizedGatewayAgentID(agentIdentifier)
+        let base = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !base.isEmpty {
+            if base.lowercased().hasPrefix("agent:") {
+                return base.lowercased()
+            }
+            return "agent:\(normalizedAgent):\(sanitizedGatewaySessionComponent(base))"
+        }
+        return "agent:\(normalizedAgent):main"
+    }
+
+    private func normalizedGatewayAgentID(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return "main" }
+
+        let filtered = trimmed.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar) {
+                return Character(scalar)
+            }
+            if scalar == "-" || scalar == "_" || scalar == "." {
+                return Character(scalar)
+            }
+            return "-"
+        }
+
+        let value = String(filtered).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return value.isEmpty ? "main" : value
+    }
+
+    private func sanitizedGatewaySessionComponent(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "main" }
+
+        let filtered = trimmed.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar) {
+                return Character(scalar)
+            }
+            if scalar == "-" || scalar == "_" || scalar == ":" || scalar == "." {
+                return Character(scalar)
+            }
+            return "-"
+        }
+
+        let value = String(filtered)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            .lowercased()
+        return value.isEmpty ? "main" : value
+    }
+
+    private func streamingDelta(from previous: String, to current: String) -> String {
+        guard !current.isEmpty else { return "" }
+        if previous.isEmpty {
+            return current
+        }
+        if current.hasPrefix(previous) {
+            return String(current.dropFirst(previous.count))
+        }
+        return current
     }
 
     private func resolvedAgentIdentifier(for agent: Agent) -> String {
@@ -1868,6 +2004,10 @@ class OpenClawService: ObservableObject {
         manager: OpenClawManager,
         config: OpenClawConfig
     ) -> (identifier: String, message: String?) {
+        if config.deploymentKind == .remoteServer {
+            return resolveRemoteRuntimeAgentIdentifier(preferred: preferred, manager: manager, config: config)
+        }
+
         let preferredID = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preferredID.isEmpty else {
             let fallback = preferredRuntimeAgentFallback(from: runtimeAgentIdentifiers(manager: manager, config: config))
@@ -1901,6 +2041,55 @@ class OpenClawService: ObservableObject {
         return (first, "目标 agent \(preferredID) 在当前运行态不存在，已回退到 \(first)。")
     }
 
+    private func resolveRemoteRuntimeAgentIdentifier(
+        preferred: String,
+        manager: OpenClawManager,
+        config: OpenClawConfig
+    ) -> (identifier: String, message: String?) {
+        let availableRecords = manager.discoveryResults.compactMap { record -> (id: String, name: String)? in
+            let identifier = record.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = record.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !identifier.isEmpty else { return nil }
+            return (identifier, name.isEmpty ? identifier : name)
+        }
+
+        func match(_ value: String) -> (id: String, name: String)? {
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty else { return nil }
+            return availableRecords.first { record in
+                record.id.lowercased() == normalized || record.name.lowercased() == normalized
+            }
+        }
+
+        let preferredID = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let matched = match(preferredID) {
+            return (matched.id, matched.id == preferredID ? nil : "远程网关已将 agent \(preferredID) 解析为 \(matched.id)。")
+        }
+
+        if let defaultMatch = match(config.defaultAgent) {
+            let message = preferredID.isEmpty
+                ? "目标 agent 未配置，已回退到默认远程 agent \(defaultMatch.id)。"
+                : "目标 agent \(preferredID) 在远程网关中不存在，已回退到默认 agent \(defaultMatch.id)。"
+            return (defaultMatch.id, message)
+        }
+
+        if let mainMatch = match("main") {
+            let message = preferredID.isEmpty
+                ? "目标 agent 未配置，已回退到远程 agent \(mainMatch.id)。"
+                : "目标 agent \(preferredID) 在远程网关中不存在，已回退到 \(mainMatch.id)。"
+            return (mainMatch.id, message)
+        }
+
+        if let first = availableRecords.first {
+            let message = preferredID.isEmpty
+                ? "目标 agent 未配置，已回退到远程 agent \(first.id)。"
+                : "目标 agent \(preferredID) 在远程网关中不存在，已回退到 \(first.id)。"
+            return (first.id, message)
+        }
+
+        return (preferredID.isEmpty ? "main" : preferredID, nil)
+    }
+
     private func preferredRuntimeAgentFallback(from available: [String]) -> String? {
         if let main = firstCaseInsensitiveMatch("main", in: available) {
             return main
@@ -1915,6 +2104,25 @@ class OpenClawService: ObservableObject {
     }
 
     private func runtimeAgentIdentifiers(manager: OpenClawManager, config: OpenClawConfig) -> [String] {
+        if config.deploymentKind == .remoteServer {
+            let identifiers = manager.discoveryResults.compactMap { record -> String? in
+                let identifier = record.id.trimmingCharacters(in: .whitespacesAndNewlines)
+                return identifier.isEmpty ? nil : identifier
+            }
+
+            if !identifiers.isEmpty {
+                var seen = Set<String>()
+                return identifiers.filter { seen.insert($0.lowercased()).inserted }
+            }
+
+            var seen = Set<String>()
+            return manager.agents.filter { candidate in
+                let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty else { return false }
+                return seen.insert(normalized.lowercased()).inserted
+            }
+        }
+
         do {
             let result = try manager.executeOpenClawCLI(arguments: ["agents", "list", "--json"], using: config)
             let stdout = String(data: result.standardOutput, encoding: .utf8) ?? ""

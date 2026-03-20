@@ -982,9 +982,9 @@ private enum OpsAnomalySeverityFilter: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .all: return "All"
-        case .critical: return "Critical"
-        case .warning: return "Warning"
+        case .all: return LocalizedString.text("filter_all")
+        case .critical: return LocalizedString.text("critical_label")
+        case .warning: return LocalizedString.text("warning_label")
         }
     }
 
@@ -1031,11 +1031,11 @@ private enum OpsAnomalyTimeWindow: String, CaseIterable, Identifiable {
 
     var detailText: String {
         switch self {
-        case .last24Hours: return "Signals from the last 24 hours"
-        case .last3Days: return "Signals from the last 3 days"
-        case .last7Days: return "Signals from the last 7 days"
-        case .last14Days: return "Signals from the last 14 days"
-        case .all: return "All retained anomalies in the local cache"
+        case .last24Hours: return LocalizedString.text("signals_last_24_hours")
+        case .last3Days: return LocalizedString.text("signals_last_3_days")
+        case .last7Days: return LocalizedString.text("signals_last_7_days")
+        case .last14Days: return LocalizedString.text("signals_last_14_days")
+        case .all: return LocalizedString.text("all_retained_anomalies_local_cache")
         }
     }
 }
@@ -1403,19 +1403,19 @@ struct MonitoringDashboardView: View {
     private var opsCenterHeaderSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Ops Center")
+                Text(LocalizedString.text("ops_center"))
                     .font(.headline)
 
                 Spacer()
 
                 if opsSnapshot.generatedAt != .distantPast {
-                    Text("Updated \(opsSnapshot.generatedAt.formatted(date: .omitted, time: .shortened))")
+                    Text(LocalizedString.format("updated_time", opsSnapshot.generatedAt.formatted(date: .omitted, time: .shortened)))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
 
-            Picker("Ops Center Page", selection: $selectedOpsCenterPage) {
+            Picker(LocalizedString.text("ops_center_page"), selection: $selectedOpsCenterPage) {
                 ForEach(OpsCenterPage.allCases) { page in
                     Text(page.title).tag(page)
                 }
@@ -1426,11 +1426,11 @@ struct MonitoringDashboardView: View {
 
     private var opsOverviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Current Posture")
+            Text(LocalizedString.text("current_posture"))
                 .font(.headline)
 
             if opsSnapshot.goalCards.isEmpty {
-                Text("Ops analytics will appear after a project is loaded.")
+                Text(LocalizedString.text("ops_analytics_after_project_loaded"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -1452,9 +1452,9 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Project Anomalies")
+                    Text(LocalizedString.text("project_anomalies"))
                         .font(.headline)
-                    Text("Cross-project failure rollup for runtime, tools, cron, and timeouts.")
+                    Text(LocalizedString.text("project_anomalies_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -1462,7 +1462,7 @@ struct MonitoringDashboardView: View {
                 Spacer()
 
                 if let latest = opsSnapshot.anomalySummary?.latestAnomalyAt {
-                    Text("Latest \(latest.formatted(date: .abbreviated, time: .shortened))")
+                    Text(LocalizedString.format("latest_time", latest.formatted(date: .abbreviated, time: .shortened)))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -1471,27 +1471,27 @@ struct MonitoringDashboardView: View {
             if let summary = opsSnapshot.anomalySummary {
                 HStack(spacing: 16) {
                     monitoringCard(
-                        title: "Runtime Failures",
+                        title: LocalizedString.text("runtime_failures"),
                         value: "\(summary.runtimeFailures24h)",
-                        detail: "24h / 7d: \(summary.runtimeFailures24h) / \(summary.runtimeFailures7d)",
+                        detail: LocalizedString.format("time_window_24h_7d", summary.runtimeFailures24h, summary.runtimeFailures7d),
                         color: summary.runtimeFailures24h == 0 ? .green : .red
                     )
                     monitoringCard(
-                        title: "Tool Failures",
+                        title: LocalizedString.text("tool_failures"),
                         value: "\(summary.toolFailures24h)",
-                        detail: "24h / 7d: \(summary.toolFailures24h) / \(summary.toolFailures7d)",
+                        detail: LocalizedString.format("time_window_24h_7d", summary.toolFailures24h, summary.toolFailures7d),
                         color: summary.toolFailures24h == 0 ? .green : .orange
                     )
                     monitoringCard(
-                        title: "Cron Errors",
+                        title: LocalizedString.text("cron_errors"),
                         value: "\(summary.cronFailures24h)",
-                        detail: "24h / 7d: \(summary.cronFailures24h) / \(summary.cronFailures7d)",
+                        detail: LocalizedString.format("time_window_24h_7d", summary.cronFailures24h, summary.cronFailures7d),
                         color: summary.cronFailures24h == 0 ? .green : .red
                     )
                     monitoringCard(
-                        title: "Timeouts",
+                        title: LocalizedString.text("timeouts"),
                         value: "\(summary.timeoutCount7d)",
-                        detail: "Across cron and trace artifacts in 7d",
+                        detail: LocalizedString.text("timeouts_7d_detail"),
                         color: summary.timeoutCount7d == 0 ? .green : .orange
                     )
                 }
@@ -1505,7 +1505,7 @@ struct MonitoringDashboardView: View {
                 .background(Color(.controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
-                Text("No project-level anomalies are currently aggregated.")
+                Text(LocalizedString.text("no_project_level_anomalies"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding()
@@ -1520,9 +1520,9 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Project History")
+                    Text(LocalizedString.text("project_history"))
                         .font(.headline)
-                    Text("OA CLI-inspired project metrics with runtime and cron history overlays.")
+                    Text(LocalizedString.text("project_history_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -1531,14 +1531,14 @@ struct MonitoringDashboardView: View {
             }
 
             HStack(spacing: 12) {
-                Picker("History Category", selection: $selectedHistoryCategory) {
+                Picker(LocalizedString.text("history_category"), selection: $selectedHistoryCategory) {
                     ForEach(OpsHistoryCategory.allCases) { category in
                         Text(category.title).tag(category)
                     }
                 }
                 .pickerStyle(.segmented)
 
-                Picker("History Window", selection: $selectedHistoryWindow) {
+                Picker(LocalizedString.text("history_window"), selection: $selectedHistoryWindow) {
                     ForEach(OpsHistoryWindow.allCases) { window in
                         Text(window.title).tag(window)
                     }
@@ -1548,14 +1548,14 @@ struct MonitoringDashboardView: View {
             }
 
             HStack(spacing: 12) {
-                Picker("History Focus", selection: $selectedHistoryFocusMode) {
+                Picker(LocalizedString.text("history_focus"), selection: $selectedHistoryFocusMode) {
                     ForEach(OpsHistoryFocusMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
                 .pickerStyle(.menu)
 
-                Picker("History Scope", selection: $selectedHistoryFocusID) {
+                Picker(LocalizedString.text("history_scope"), selection: $selectedHistoryFocusID) {
                     ForEach(historyFocusOptions) { option in
                         Text(option.title).tag(option.id)
                     }
@@ -1565,14 +1565,14 @@ struct MonitoringDashboardView: View {
                 Spacer()
 
                 if selectedHistoryFocusMode == .tool {
-                    Button("Open Tool Detail") {
+                    Button(LocalizedString.text("open_tool_detail")) {
                         openToolDetail(for: effectiveSelectedHistoryFocus.scopeValue)
                     }
                     .buttonStyle(.bordered)
                 }
 
                 if selectedHistoryFocusMode == .cron {
-                    Button("Open Cron Detail") {
+                    Button(LocalizedString.text("open_cron_detail")) {
                         openCronDetail(for: effectiveSelectedHistoryFocus.scopeValue)
                     }
                     .buttonStyle(.bordered)
@@ -1584,7 +1584,7 @@ struct MonitoringDashboardView: View {
             }
 
             if visibleHistoricalSeries.isEmpty {
-                Text("Project history will populate after the first analytics sync.")
+                Text(LocalizedString.text("project_history_after_sync"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding()
@@ -1612,14 +1612,14 @@ struct MonitoringDashboardView: View {
                         Chart {
                             ForEach(series.points) { point in
                                 AreaMark(
-                                    x: .value("Day", point.date, unit: .day),
+                                    x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
                                     y: .value(series.metric.title, point.value)
                                 )
                                 .interpolationMethod(.catmullRom)
                                 .foregroundStyle(historyColor(for: series.metric).opacity(0.14))
 
                                 LineMark(
-                                    x: .value("Day", point.date, unit: .day),
+                                    x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
                                     y: .value(series.metric.title, point.value)
                                 )
                                 .interpolationMethod(.catmullRom)
@@ -1627,7 +1627,7 @@ struct MonitoringDashboardView: View {
                                 .lineStyle(StrokeStyle(lineWidth: 2.5))
 
                                 PointMark(
-                                    x: .value("Day", point.date, unit: .day),
+                                    x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
                                     y: .value(series.metric.title, point.value)
                                 )
                                 .foregroundStyle(historyColor(for: series.metric))
@@ -1637,12 +1637,12 @@ struct MonitoringDashboardView: View {
                                let selectedPoint = series.points.first(where: {
                                    historyCalendar.isDate($0.date, inSameDayAs: selectedDate.date)
                                }) {
-                                RuleMark(x: .value("Selected Day", selectedDate.date, unit: .day))
+                                RuleMark(x: .value(LocalizedString.text("selected_day"), selectedDate.date, unit: .day))
                                     .foregroundStyle(historyColor(for: series.metric).opacity(0.35))
                                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
 
                                 PointMark(
-                                    x: .value("Day", selectedPoint.date, unit: .day),
+                                    x: .value(LocalizedString.text("day_label"), selectedPoint.date, unit: .day),
                                     y: .value(series.metric.title, selectedPoint.value)
                                 )
                                 .symbolSize(110)
@@ -1657,15 +1657,15 @@ struct MonitoringDashboardView: View {
 
                         HStack(spacing: 16) {
                             historyStatPill(
-                                title: "Latest",
+                                title: LocalizedString.text("latest"),
                                 value: series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "-"
                             )
                             historyStatPill(
-                                title: "Previous",
+                                title: LocalizedString.text("previous"),
                                 value: series.previousPoint.map { series.metric.formattedValue($0.value) } ?? "-"
                             )
                             historyStatPill(
-                                title: "Delta",
+                                title: LocalizedString.text("delta"),
                                 value: OpsHistoryNarrativeBuilder.deltaText(for: series)
                             )
                         }
@@ -1688,16 +1688,16 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Anomaly Explorer")
+                    Text(LocalizedString.text("anomaly_explorer"))
                         .font(.headline)
-                    Text("Filter and triage runtime, tool, cron, and OpenClaw anomalies from one queue.")
+                    Text(LocalizedString.text("anomaly_explorer_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                Text("\(filteredAnomalyRows.count) matching")
+                Text(LocalizedString.format("matching_count", filteredAnomalyRows.count))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -1727,7 +1727,7 @@ struct MonitoringDashboardView: View {
                 Spacer()
             }
 
-            TextField("Search anomaly title, source, service, or captured detail", text: $anomalySearchText)
+            TextField(LocalizedString.text("anomaly_search_placeholder"), text: $anomalySearchText)
                 .textFieldStyle(.roundedBorder)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
@@ -1744,7 +1744,7 @@ struct MonitoringDashboardView: View {
             if !hotAnomalyClusters.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text("Hot Clusters")
+                        Text(LocalizedString.text("hot_clusters"))
                             .font(.headline)
                         Spacer()
                         Text(selectedAnomalyTimeWindow.detailText)
@@ -1763,16 +1763,16 @@ struct MonitoringDashboardView: View {
 
             VStack(spacing: 8) {
                 if filteredAnomalyRows.isEmpty {
-                    Text("No anomalies match the current explorer filters.")
+                    Text(LocalizedString.text("no_anomalies_match_filters"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     HStack {
-                        Text("Recent Matches")
+                        Text(LocalizedString.text("recent_matches"))
                             .font(.headline)
                         Spacer()
-                        Text("Sorted by latest occurrence")
+                        Text(LocalizedString.text("sorted_by_latest_occurrence"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -1794,9 +1794,9 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Cron Reliability")
-                        .font(.headline)
-                    Text("External OpenClaw scheduled runs ingested from backup artifacts.")
+                    Text(LocalizedString.text("cron_reliability"))
+                            .font(.headline)
+                    Text(LocalizedString.text("cron_reliability_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -1804,7 +1804,7 @@ struct MonitoringDashboardView: View {
                 Spacer()
 
                 if let latestRunAt = opsSnapshot.cronSummary?.latestRunAt {
-                    Text("Latest \(latestRunAt.formatted(date: .abbreviated, time: .shortened))")
+                    Text(LocalizedString.format("latest_time", latestRunAt.formatted(date: .abbreviated, time: .shortened)))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -1813,21 +1813,21 @@ struct MonitoringDashboardView: View {
             if let summary = opsSnapshot.cronSummary {
                 HStack(spacing: 16) {
                     monitoringCard(
-                        title: "Success Rate",
+                        title: LocalizedString.text("execution_success_rate"),
                         value: "\(Int(summary.successRate.rounded()))%",
-                        detail: "\(summary.successfulRuns) successful runs",
+                        detail: LocalizedString.format("success_detail", summary.successfulRuns, summary.failedRuns),
                         color: summary.successRate >= 90 ? .green : (summary.successRate >= 75 ? .orange : .red)
                     )
                     monitoringCard(
-                        title: "Failed Runs",
+                        title: LocalizedString.text("failed_runs"),
                         value: "\(summary.failedRuns)",
-                        detail: "Last 14 days",
+                        detail: LocalizedString.text("last_14_days"),
                         color: summary.failedRuns == 0 ? .green : .red
                     )
                     monitoringCard(
-                        title: "Recent Runs",
+                        title: LocalizedString.text("recent_runs"),
                         value: "\(opsSnapshot.cronRuns.count)",
-                        detail: "Showing latest ingested executions",
+                        detail: LocalizedString.text("showing_latest_ingested_executions"),
                         color: .blue
                     )
                 }
@@ -1885,7 +1885,7 @@ struct MonitoringDashboardView: View {
                 .background(Color(.controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
-                Text("No external cron runs have been discovered yet.")
+                Text(LocalizedString.text("no_external_cron_runs"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding()
@@ -1898,11 +1898,11 @@ struct MonitoringDashboardView: View {
 
     private var opsDailyActivitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Reliability Trend")
+            Text(LocalizedString.text("reliability_trend"))
                 .font(.headline)
 
             if opsSnapshot.dailyActivity.isEmpty {
-                Text("No historical execution activity is available yet.")
+                Text(LocalizedString.text("no_historical_execution_activity"))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding()
@@ -1913,20 +1913,20 @@ struct MonitoringDashboardView: View {
                 Chart {
                     ForEach(opsSnapshot.dailyActivity) { point in
                         BarMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Completed", point.completedCount)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("completed_label"), point.completedCount)
                         )
                         .foregroundStyle(Color.green.gradient)
 
                         BarMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Failed", point.failedCount)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("failed_label"), point.failedCount)
                         )
                         .foregroundStyle(Color.red.gradient)
 
                         LineMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Errors", point.errorCount)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("errors_label"), point.errorCount)
                         )
                         .foregroundStyle(Color.orange)
                         .symbol(.circle)
@@ -1942,12 +1942,12 @@ struct MonitoringDashboardView: View {
 
     private var opsAgentHealthSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Agent Health")
+            Text(LocalizedString.text("agent_health"))
                 .font(.headline)
 
             VStack(spacing: 8) {
                 if opsSnapshot.agentRows.isEmpty {
-                    Text("No agents available to analyze.")
+                    Text(LocalizedString.text("no_agents_to_analyze"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1962,27 +1962,27 @@ struct MonitoringDashboardView: View {
                             monitoringPill(title: row.stateText, color: opsColor(for: row.status))
                                 .frame(width: 128, alignment: .leading)
 
-                            Text("Done \(row.completedCount)")
+                            Text(LocalizedString.format("done_count", row.completedCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 70, alignment: .leading)
 
-                            Text("Fail \(row.failedCount)")
+                            Text(LocalizedString.format("fail_count", row.failedCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 64, alignment: .leading)
 
-                            Text(row.averageDuration.map { "Avg \(formatOpsDuration($0))" } ?? "Avg -")
+                            Text(row.averageDuration.map { LocalizedString.format("average_duration", formatOpsDuration($0)) } ?? LocalizedString.format("average_duration", "-"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 92, alignment: .leading)
 
-                            Text(row.hasTrackedMemory ? "Memory tracked" : "Memory missing")
+                            Text(row.hasTrackedMemory ? LocalizedString.text("memory_tracked") : LocalizedString.text("memory_missing"))
                                 .font(.caption)
                                 .foregroundColor(row.hasTrackedMemory ? .secondary : .orange)
                                 .frame(width: 110, alignment: .leading)
 
-                            Text(row.lastActivityAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "No activity")
+                            Text(row.lastActivityAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? LocalizedString.text("no_activity"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .lineLimit(1)
@@ -2006,16 +2006,16 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Recent Traces")
+                    Text(LocalizedString.text("recent_traces"))
                         .font(.headline)
-                    Text("Merged runtime and OpenClaw backup traces.")
+                    Text(LocalizedString.text("recent_traces_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                Picker("Trace Source", selection: $selectedTraceSourceFilter) {
+                Picker(LocalizedString.text("trace_source"), selection: $selectedTraceSourceFilter) {
                     ForEach(OpsTraceSourceFilter.allCases) { filter in
                         Text(filter.title).tag(filter)
                     }
@@ -2024,12 +2024,12 @@ struct MonitoringDashboardView: View {
                 .frame(maxWidth: 220)
             }
 
-            TextField("Search agent, output, route, or source", text: $traceSearchText)
+            TextField(LocalizedString.text("trace_search_placeholder"), text: $traceSearchText)
                 .textFieldStyle(.roundedBorder)
 
             VStack(spacing: 8) {
                 if filteredTraceRows.isEmpty {
-                    Text(traceSearchText.isEmpty ? "No execution traces are available yet." : "No traces match the current search.")
+                    Text(traceSearchText.isEmpty ? LocalizedString.text("no_execution_traces_available") : LocalizedString.text("no_traces_match_search"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2612,7 +2612,7 @@ struct MonitoringDashboardView: View {
 
     private func historyFocusDisplayName(forToolIdentifier identifier: String) -> String {
         let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "Tool" }
+        guard !trimmed.isEmpty else { return LocalizedString.text("tool_category") }
 
         if let lastComponent = trimmed.split(separator: ".").last {
             return String(lastComponent)
@@ -2623,16 +2623,16 @@ struct MonitoringDashboardView: View {
     private func opsHistoryContextSection(for series: OpsMetricHistorySeries) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Metric Lens")
+                Text(LocalizedString.text("metric_lens"))
                     .font(.headline)
-                Text("Scope: \(effectiveSelectedHistoryFocus.title)")
+                Text(LocalizedString.format("scope_format", effectiveSelectedHistoryFocus.title))
                     .font(.caption.weight(.medium))
                     .foregroundColor(historyColor(for: series.metric))
                 Text(
                     OpsHistoryNarrativeBuilder.narrative(
                         for: series,
                         focusText: selectedHistoryFocusMode == .project
-                            ? "Project-wide"
+                            ? LocalizedString.text("project_wide")
                             : effectiveSelectedHistoryFocus.title
                     )
                 )
@@ -2652,12 +2652,12 @@ struct MonitoringDashboardView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Related Signals")
+                Text(LocalizedString.text("related_signals"))
                     .font(.headline)
 
                 let rows = historySignalRows(for: series.metric)
                 if rows.isEmpty {
-                    Text("No supporting signals are available for this metric yet.")
+                    Text(LocalizedString.text("no_supporting_signals"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2721,16 +2721,16 @@ struct MonitoringDashboardView: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Day Drill-Down")
+                    Text(LocalizedString.text("day_drill_down"))
                         .font(.headline)
-                    Text("Inspect the selected sample day and jump straight into its related signals.")
+                    Text(LocalizedString.text("day_drill_down_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
 
-                Picker("Sample Day", selection: historyDateSelectionBinding) {
+                Picker(LocalizedString.text("sample_day"), selection: historyDateSelectionBinding) {
                     ForEach(historyDateOptions) { option in
                         Text(option.title).tag(option.id)
                     }
@@ -2751,11 +2751,11 @@ struct MonitoringDashboardView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Signals On \(selectedDate.title)")
+                Text(LocalizedString.format("signals_on", selectedDate.title))
                     .font(.headline)
 
                 if dayRows.isEmpty {
-                    Text("No related signals were captured for this day in the current scope.")
+                    Text(LocalizedString.text("no_related_signals_for_day"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2905,7 +2905,7 @@ struct MonitoringDashboardView: View {
                 monitoringPill(title: row.sourceLabel, color: anomalySourceColor(for: row.sourceLabel))
                     .frame(width: 84, alignment: .leading)
 
-                monitoringPill(title: row.status == .critical ? "Critical" : "Warning", color: opsColor(for: row.status))
+                monitoringPill(title: row.status == .critical ? LocalizedString.text("critical_label") : LocalizedString.text("warning_label"), color: opsColor(for: row.status))
                     .frame(width: 74, alignment: .leading)
 
                 Text(row.title)
@@ -2978,7 +2978,7 @@ struct MonitoringDashboardView: View {
                 monitoringPill(title: cluster.sourceLabel, color: anomalySourceColor(for: cluster.sourceLabel))
                     .frame(width: 84, alignment: .leading)
 
-                monitoringPill(title: cluster.status == .critical ? "Critical" : "Warning", color: opsColor(for: cluster.status))
+                monitoringPill(title: cluster.status == .critical ? LocalizedString.text("critical_label") : LocalizedString.text("warning_label"), color: opsColor(for: cluster.status))
                     .frame(width: 74, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -3014,11 +3014,11 @@ struct MonitoringDashboardView: View {
                         )
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        Text("First \(cluster.firstOccurredAt.formatted(date: .abbreviated, time: .shortened))")
+                        Text(LocalizedString.format("first_time", cluster.firstOccurredAt.formatted(date: .abbreviated, time: .shortened)))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         if cluster.linkedTraceCount > 0 {
-                            Text("\(cluster.linkedTraceCount) trace-linked")
+                            Text(LocalizedString.format("trace_linked_count", cluster.linkedTraceCount))
                                 .font(.caption2)
                                 .foregroundColor(.teal)
                         }
@@ -3740,30 +3740,30 @@ private struct OpsTraceDetailSheet: View {
                 }
 
                 if let reason = detail.routingReason, !reason.isEmpty {
-                    detailSection(title: "Routing Reason", text: reason)
+                    detailSection(title: LocalizedString.text("routing_reason"), text: reason)
                 }
 
                 if !detail.routingTargets.isEmpty {
-                    detailSection(title: "Routing Targets", text: detail.routingTargets.joined(separator: ", "))
+                    detailSection(title: LocalizedString.text("routing_targets"), text: detail.routingTargets.joined(separator: ", "))
                 }
 
-                detailSection(title: "Preview", text: detail.previewText)
+                detailSection(title: LocalizedString.text("preview"), text: detail.previewText)
 
                 if !detail.outputText.isEmpty {
-                    detailSection(title: "Raw Output", text: detail.outputText, monospaced: true)
+                    detailSection(title: LocalizedString.text("raw_output"), text: detail.outputText, monospaced: true)
                 }
 
                 if let workflowPath = panel.workflowPath {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Workflow Path")
+                        Text(LocalizedString.text("workflow_path"))
                             .font(.headline)
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(alignment: .top, spacing: 18) {
                                 workflowPathColumn(
-                                    title: "Upstream",
+                                    title: LocalizedString.text("upstream"),
                                     nodes: workflowPath.upstreamNodes,
-                                    emptyText: "No upstream nodes"
+                                    emptyText: LocalizedString.text("no_upstream_nodes")
                                 )
 
                                 Image(systemName: "arrow.right")
@@ -3777,9 +3777,9 @@ private struct OpsTraceDetailSheet: View {
                                     .padding(.top, 34)
 
                                 workflowPathColumn(
-                                    title: "Downstream",
+                                    title: LocalizedString.text("downstream"),
                                     nodes: workflowPath.downstreamNodes,
-                                    emptyText: "No downstream nodes"
+                                    emptyText: LocalizedString.text("no_downstream_nodes")
                                 )
                             }
                             .padding(.vertical, 4)
@@ -3794,16 +3794,16 @@ private struct OpsTraceDetailSheet: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Span Timeline")
+                                Text(LocalizedString.text("span_timeline"))
                                     .font(.headline)
-                                Text("Filter by message, tool, or runtime activity and inspect parent-child depth.")
+                                Text(LocalizedString.text("span_timeline_desc"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
 
                             Spacer()
 
-                            Picker("Span Filter", selection: $selectedSpanFilter) {
+                            Picker(LocalizedString.text("span_filter"), selection: $selectedSpanFilter) {
                                 ForEach(OpsTraceSpanFilter.allCases) { filter in
                                     Text(filter.title).tag(filter)
                                 }
@@ -3813,22 +3813,22 @@ private struct OpsTraceDetailSheet: View {
                         }
 
                         HStack(spacing: 12) {
-                            TextField("Search spans, tools, services, or errors", text: $spanSearchText)
+                            TextField(LocalizedString.text("span_search_placeholder"), text: $spanSearchText)
                                 .textFieldStyle(.roundedBorder)
 
-                            Toggle("Prioritize anomalies", isOn: $prioritizeAnomalies)
+                            Toggle(LocalizedString.text("prioritize_anomalies"), isOn: $prioritizeAnomalies)
                                 .toggleStyle(.switch)
                                 .frame(maxWidth: 180)
                         }
 
                         if anomalyCount > 0 {
-                            Text("\(anomalyCount) anomalous span(s) highlighted")
+                            Text(LocalizedString.format("anomalous_spans_highlighted", anomalyCount))
                                 .font(.caption)
                                 .foregroundColor(.orange)
                         }
 
                         if filteredTimelineEntries.isEmpty {
-                            Text(spanSearchText.isEmpty ? "No spans match the current filter." : "No spans match the current search.")
+                            Text(spanSearchText.isEmpty ? LocalizedString.text("no_spans_match_filter") : LocalizedString.text("no_spans_match_search"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .padding(.vertical, 4)
@@ -3905,7 +3905,7 @@ private struct OpsTraceDetailSheet: View {
 
                 if !visibleAttributeKeys.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Attributes")
+                        Text(LocalizedString.text("attributes"))
                             .font(.headline)
 
                         ForEach(visibleAttributeKeys, id: \.self) { key in
@@ -3930,12 +3930,12 @@ private struct OpsTraceDetailSheet: View {
                 }
 
                 if let eventsText = detail.eventsText, !eventsText.isEmpty {
-                    detailSection(title: "Events", text: eventsText, monospaced: true)
+                    detailSection(title: LocalizedString.text("events"), text: eventsText, monospaced: true)
                 }
 
                 if !panel.relatedLogs.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Related Logs")
+                        Text(LocalizedString.text("related_logs"))
                             .font(.headline)
 
                         ForEach(panel.relatedLogs) { entry in
@@ -4012,7 +4012,7 @@ private struct OpsTraceDetailSheet: View {
 
     private func workflowPathCurrentNode(_ node: OpsTraceWorkflowPathNode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Current")
+            Text(LocalizedString.text("current"))
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -4089,18 +4089,18 @@ private struct OpsTraceDetailSheet: View {
 
     private func spanTimelineCategoryLabel(for service: String) -> String {
         if service.contains("message") {
-            return "Message"
+            return LocalizedString.text("message_category")
         }
         if service.contains("tool") {
-            return "Tool"
+            return LocalizedString.text("tool_category")
         }
         if service.contains("routing") {
-            return "Routing"
+            return LocalizedString.text("routing_category")
         }
         if service.contains("output") {
-            return "Output"
+            return LocalizedString.text("output_category")
         }
-        return "Runtime"
+        return LocalizedString.text("runtime_category")
     }
 
     private func spanTimelineCategoryColor(for service: String) -> Color {
@@ -4133,17 +4133,17 @@ private struct OpsTraceDetailSheet: View {
     private func workflowPathBadgeText(_ node: OpsTraceWorkflowPathNode) -> String {
         switch node.role {
         case .current:
-            return "Current"
+            return LocalizedString.text("current")
         case .upstream:
-            return "Upstream"
+            return LocalizedString.text("upstream")
         case .downstream:
             switch node.state {
             case .selected:
-                return "Selected"
+                return LocalizedString.text("selected")
             case .skipped:
-                return "Available"
+                return LocalizedString.text("available")
             case .normal:
-                return "Node"
+                return LocalizedString.text("node_label")
             }
         }
     }
@@ -4248,11 +4248,11 @@ private struct OpsCronDetailSheet: View {
                     latestRun?.statusText ?? "Unknown",
                     color: statusColor(for: latestRun?.statusText ?? "")
                 )
-                detailBadge("\(detail.runs.count) runs", color: .blue)
-                detailBadge("\(detail.anomalies.count) anomalies", color: detail.anomalies.isEmpty ? .secondary : .red)
+                detailBadge(LocalizedString.format("runs_count", detail.runs.count), color: .blue)
+                detailBadge(LocalizedString.format("anomalies_count", detail.anomalies.count), color: detail.anomalies.isEmpty ? .secondary : .red)
             }
 
-            Text("Cron-scoped runs, anomalies, and retained history ingested from OpenClaw backup artifacts.")
+            Text(LocalizedString.text("cron_scoped_desc"))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -4261,33 +4261,33 @@ private struct OpsCronDetailSheet: View {
     private var summarySection: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
             summaryCard(
-                title: "Success Rate",
+                title: LocalizedString.text("execution_success_rate"),
                 value: summarySuccessRateText,
-                detail: detail.summary.map { "\($0.successfulRuns) successful / \($0.failedRuns) failed" } ?? "Recent retained samples",
+                detail: detail.summary.map { LocalizedString.format("success_detail", $0.successfulRuns, $0.failedRuns) } ?? LocalizedString.text("recent_retained_samples"),
                 color: summarySuccessRateColor
             )
             summaryCard(
-                title: "Latest Run",
+                title: LocalizedString.text("latest_run"),
                 value: latestRun.map { $0.runAt.formatted(date: .abbreviated, time: .shortened) } ?? "-",
-                detail: latestRun?.summaryText ?? "No recent run captured",
+                detail: latestRun?.summaryText ?? LocalizedString.text("no_recent_run_captured"),
                 color: .blue
             )
             summaryCard(
-                title: "Linked Sessions",
+                title: LocalizedString.text("linked_sessions"),
                 value: "\(linkedSessionCount)",
-                detail: "Runs that can open the external session trace",
+                detail: LocalizedString.text("runs_open_external_session_trace"),
                 color: linkedSessionCount == 0 ? .secondary : .teal
             )
             summaryCard(
-                title: "Linked Anomalies",
+                title: LocalizedString.text("linked_anomalies"),
                 value: "\(linkedAnomalyCount)",
-                detail: "Anomalies that can jump to the underlying session",
+                detail: LocalizedString.text("anomalies_jump_underlying_session"),
                 color: linkedAnomalyCount == 0 ? .secondary : .orange
             )
             summaryCard(
-                title: "Last Error Count",
+                title: LocalizedString.text("last_error_count"),
                 value: latestErrorBudgetText,
-                detail: "Most recent scoped error-budget sample",
+                detail: LocalizedString.text("most_recent_scoped_error_budget_sample"),
                 color: latestErrorBudgetValue == 0 ? .green : .red
             )
         }
@@ -4299,9 +4299,9 @@ private struct OpsCronDetailSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("30-Day Trend")
+                        Text(LocalizedString.text("thirty_day_trend"))
                             .font(.headline)
-                        Text("Cron reliability for this named schedule across the retained project history window.")
+                        Text(LocalizedString.text("cron_trend_desc"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -4309,7 +4309,7 @@ private struct OpsCronDetailSheet: View {
                     Spacer()
 
                     if let latestPoint = reliabilitySeries.latestPoint {
-                        Text("Latest \(Int(latestPoint.value.rounded()))%")
+                        Text(LocalizedString.format("latest_percent", Int(latestPoint.value.rounded())))
                             .font(.caption.weight(.medium))
                             .foregroundColor(.secondary)
                     }
@@ -4318,23 +4318,23 @@ private struct OpsCronDetailSheet: View {
                 Chart {
                     ForEach(reliabilitySeries.points) { point in
                         AreaMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Success Rate", point.value)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("execution_success_rate"), point.value)
                         )
                         .interpolationMethod(.catmullRom)
                         .foregroundStyle(Color.teal.opacity(0.14))
 
                         LineMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Success Rate", point.value)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("execution_success_rate"), point.value)
                         )
                         .interpolationMethod(.catmullRom)
                         .foregroundStyle(Color.teal)
                         .lineStyle(StrokeStyle(lineWidth: 2.5))
 
                         PointMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Success Rate", point.value)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("execution_success_rate"), point.value)
                         )
                         .foregroundStyle(Color.teal)
                     }
@@ -4345,7 +4345,7 @@ private struct OpsCronDetailSheet: View {
                 .chartYScale(domain: 0 ... 100)
                 .frame(height: 220)
 
-                Text("Latest error-budget sample: \(latestErrorBudgetText)")
+                Text(LocalizedString.format("latest_error_budget_sample", latestErrorBudgetText))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -4357,11 +4357,11 @@ private struct OpsCronDetailSheet: View {
 
     private var recentRunsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Runs")
+            Text(LocalizedString.text("recent_runs"))
                 .font(.headline)
 
             if detail.runs.isEmpty {
-                emptyState("No retained runs were found for this cron.")
+                emptyState(LocalizedString.text("no_retained_runs_for_cron"))
             } else {
                 VStack(spacing: 8) {
                     ForEach(Array(detail.runs.prefix(12))) { run in
@@ -4430,11 +4430,11 @@ private struct OpsCronDetailSheet: View {
 
     private var anomalySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Anomalies")
+            Text(LocalizedString.text("recent_anomalies"))
                 .font(.headline)
 
             if detail.anomalies.isEmpty {
-                emptyState("No retained cron anomalies were found for this schedule.")
+                emptyState(LocalizedString.text("no_retained_cron_anomalies"))
             } else {
                 VStack(spacing: 8) {
                     ForEach(Array(detail.anomalies.prefix(10))) { row in
@@ -4448,11 +4448,11 @@ private struct OpsCronDetailSheet: View {
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
 
-                                    detailBadge(row.status == .critical ? "Critical" : "Warning", color: statusColor(for: row.statusText))
+                                    detailBadge(row.status == .critical ? LocalizedString.text("critical_label") : LocalizedString.text("warning_label"), color: statusColor(for: row.statusText))
                                     detailBadge(row.statusText, color: .secondary)
 
                                     if row.linkedSessionSpanID != nil || matchingRun(for: row)?.linkedSessionSpanID != nil {
-                                        detailBadge("Open Session", color: .teal)
+                                        detailBadge(LocalizedString.text("open_session"), color: .teal)
                                     }
                                 }
 
@@ -4558,13 +4558,13 @@ private struct OpsCronDetailSheet: View {
     private func runMetadataSummary(for run: OpsCronRunRow) -> String? {
         var parts: [String] = []
         if let jobID = run.jobID {
-            parts.append("Job \(jobID)")
+            parts.append(LocalizedString.format("job_id_label", jobID))
         }
         if let runID = run.runID {
-            parts.append("Session \(shortIdentifier(runID))")
+            parts.append(LocalizedString.format("session_label", shortIdentifier(runID)))
         }
         if let sourcePath = run.sourcePath {
-            parts.append("Artifact \(URL(fileURLWithPath: sourcePath).lastPathComponent)")
+            parts.append(LocalizedString.format("artifact_label", URL(fileURLWithPath: sourcePath).lastPathComponent))
         }
 
         return parts.isEmpty ? nil : parts.joined(separator: " • ")
@@ -4576,13 +4576,13 @@ private struct OpsCronDetailSheet: View {
     ) -> String? {
         var parts: [String] = []
         if let jobID = anomaly.relatedJobID ?? matchedRun?.jobID {
-            parts.append("Matched run \(jobID)")
+            parts.append(LocalizedString.format("matched_run_label", jobID))
         }
         if let runID = anomaly.relatedRunID ?? matchedRun?.runID {
-            parts.append("Session \(shortIdentifier(runID))")
+            parts.append(LocalizedString.format("session_label", shortIdentifier(runID)))
         }
         if let sourcePath = anomaly.relatedSourcePath ?? matchedRun?.sourcePath {
-            parts.append("Artifact \(URL(fileURLWithPath: sourcePath).lastPathComponent)")
+            parts.append(LocalizedString.format("artifact_label", URL(fileURLWithPath: sourcePath).lastPathComponent))
         }
 
         return parts.isEmpty ? nil : parts.joined(separator: " • ")
@@ -4701,12 +4701,12 @@ private struct OpsToolDetailSheet: View {
                 .font(.title3.weight(.semibold))
 
             HStack(spacing: 8) {
-                detailBadge(detail.spans.isEmpty ? "No spans" : "\(detail.spans.count) spans", color: .blue)
-                detailBadge("\(detail.anomalies.count) anomalies", color: detail.anomalies.isEmpty ? .secondary : .red)
+                detailBadge(detail.spans.isEmpty ? LocalizedString.text("no_spans_badge") : LocalizedString.format("spans_count", detail.spans.count), color: .blue)
+                detailBadge(LocalizedString.format("anomalies_count", detail.anomalies.count), color: detail.anomalies.isEmpty ? .secondary : .red)
                 detailBadge(latestSpan?.service ?? detail.toolIdentifier, color: .teal)
             }
 
-            Text("Tool-scoped spans and anomalies matched from retained OpenClaw runtime traces.")
+            Text(LocalizedString.text("tool_scoped_desc"))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -4715,27 +4715,27 @@ private struct OpsToolDetailSheet: View {
     private var summarySection: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
             summaryCard(
-                title: "Success Rate",
+                title: LocalizedString.text("execution_success_rate"),
                 value: latestReliabilityText,
-                detail: "Latest tool-scoped reliability sample",
+                detail: LocalizedString.text("latest_tool_scoped_reliability_sample"),
                 color: reliabilityColor
             )
             summaryCard(
-                title: "Latest Span",
+                title: LocalizedString.text("latest"),
                 value: latestSpan.map { $0.startedAt.formatted(date: .abbreviated, time: .shortened) } ?? "-",
-                detail: latestSpan?.title ?? "No retained tool span",
+                detail: latestSpan?.title ?? LocalizedString.text("no_retained_tool_span"),
                 color: .blue
             )
             summaryCard(
-                title: "Last Error Count",
+                title: LocalizedString.text("last_error_count"),
                 value: latestErrorBudgetText,
-                detail: "Most recent tool-scoped error-budget sample",
+                detail: LocalizedString.text("most_recent_scoped_error_budget_sample"),
                 color: latestErrorBudgetValue == 0 ? .green : .red
             )
             summaryCard(
-                title: "Trace Drill-down",
+                title: LocalizedString.text("trace_drill_down"),
                 value: "\(linkedTraceCount)",
-                detail: "Retained tool spans and anomalies that open full trace context",
+                detail: LocalizedString.text("retained_tool_context_count"),
                 color: linkedTraceCount == 0 ? .secondary : .teal
             )
         }
@@ -4747,16 +4747,16 @@ private struct OpsToolDetailSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("30-Day Trend")
+                        Text(LocalizedString.text("thirty_day_trend"))
                             .font(.headline)
-                        Text("Tool span reliability derived from the scoped analytics cache.")
+                        Text(LocalizedString.text("tool_trend_desc"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
 
                     Spacer()
 
-                    Text("Latest \(latestReliabilityText)")
+                    Text(LocalizedString.format("latest_time", latestReliabilityText))
                         .font(.caption.weight(.medium))
                         .foregroundColor(.secondary)
                 }
@@ -4764,23 +4764,23 @@ private struct OpsToolDetailSheet: View {
                 Chart {
                     ForEach(reliabilitySeries.points) { point in
                         AreaMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Success Rate", point.value)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("execution_success_rate"), point.value)
                         )
                         .interpolationMethod(.catmullRom)
                         .foregroundStyle(Color.teal.opacity(0.14))
 
                         LineMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Success Rate", point.value)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("execution_success_rate"), point.value)
                         )
                         .interpolationMethod(.catmullRom)
                         .foregroundStyle(Color.teal)
                         .lineStyle(StrokeStyle(lineWidth: 2.5))
 
                         PointMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Success Rate", point.value)
+                            x: .value(LocalizedString.text("day_label"), point.date, unit: .day),
+                            y: .value(LocalizedString.text("execution_success_rate"), point.value)
                         )
                         .foregroundStyle(Color.teal)
                     }
@@ -4799,11 +4799,11 @@ private struct OpsToolDetailSheet: View {
 
     private var recentSpanSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Tool Spans")
+            Text(LocalizedString.text("recent_tool_spans"))
                 .font(.headline)
 
             if detail.spans.isEmpty {
-                emptyState("No retained tool spans were found for this scope.")
+                emptyState(LocalizedString.text("no_retained_tool_spans"))
             } else {
                 VStack(spacing: 8) {
                     ForEach(Array(detail.spans.prefix(12))) { row in
@@ -4860,11 +4860,11 @@ private struct OpsToolDetailSheet: View {
 
     private var anomalySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Tool Anomalies")
+            Text(LocalizedString.text("recent_tool_anomalies"))
                 .font(.headline)
 
             if detail.anomalies.isEmpty {
-                emptyState("No retained tool anomalies were found for this scope.")
+                emptyState(LocalizedString.text("no_retained_tool_anomalies"))
             } else {
                 VStack(spacing: 8) {
                     ForEach(Array(detail.anomalies.prefix(10))) { row in
@@ -4877,11 +4877,11 @@ private struct OpsToolDetailSheet: View {
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
 
-                                    detailBadge(row.status == .critical ? "Critical" : "Warning", color: statusColor(for: row.statusText))
-                                    detailBadge(row.sourceService ?? "Tool", color: .teal)
+                                    detailBadge(row.status == .critical ? LocalizedString.text("critical_label") : LocalizedString.text("warning_label"), color: statusColor(for: row.statusText))
+                                    detailBadge(row.sourceService ?? LocalizedString.text("tool_category"), color: .teal)
 
                                     if row.linkedSpanID != nil {
-                                        detailBadge("Open Trace", color: .blue)
+                                        detailBadge(LocalizedString.text("open_trace"), color: .blue)
                                     }
                                 }
 
@@ -4914,7 +4914,7 @@ private struct OpsToolDetailSheet: View {
 
     private var displayTitle: String {
         let trimmed = detail.toolIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "Tool" }
+        guard !trimmed.isEmpty else { return LocalizedString.text("tool_category") }
         if let lastComponent = trimmed.split(separator: ".").last {
             return String(lastComponent)
         }
@@ -5040,7 +5040,7 @@ private struct OpsAnomalyDetailSheet: View {
 
                     HStack(spacing: 8) {
                         detailBadge(row.sourceLabel, color: sourceColor)
-                        detailBadge(row.status == .critical ? "Critical" : "Warning", color: statusColor)
+                        detailBadge(row.status == .critical ? LocalizedString.text("critical_label") : LocalizedString.text("warning_label"), color: statusColor)
                         detailBadge(row.statusText.isEmpty ? "Unknown" : row.statusText.capitalized, color: .secondary)
                     }
                 }
@@ -5048,10 +5048,10 @@ private struct OpsAnomalyDetailSheet: View {
                 detailGrid
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Captured Detail")
+                    Text(LocalizedString.text("captured_detail"))
                         .font(.headline)
 
-                    Text(row.fullDetailText.isEmpty ? "No additional detail captured." : row.fullDetailText)
+                    Text(row.fullDetailText.isEmpty ? LocalizedString.text("no_additional_detail_captured") : row.fullDetailText)
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -5068,23 +5068,23 @@ private struct OpsAnomalyDetailSheet: View {
     private var detailGrid: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
             GridRow {
-                detailKey("Occurred")
+                detailKey(LocalizedString.text("occurred"))
                 detailValue(row.occurredAt.formatted(date: .abbreviated, time: .standard))
             }
 
             GridRow {
-                detailKey("Source")
+                detailKey(LocalizedString.text("source_label"))
                 detailValue(row.sourceService ?? row.sourceLabel)
             }
 
             GridRow {
-                detailKey("Navigation")
-                detailValue(row.linkedSpanID == nil ? "Detail view only" : "Linked trace available")
+                detailKey(LocalizedString.text("navigation"))
+                detailValue(row.linkedSpanID == nil ? LocalizedString.text("detail_view_only") : LocalizedString.text("linked_trace_available"))
             }
 
             if let spanID = row.linkedSpanID {
                 GridRow {
-                    detailKey("Span ID")
+                    detailKey(LocalizedString.text("span_id"))
                     detailValue(spanID.uuidString)
                 }
             }
@@ -5426,10 +5426,19 @@ struct TaskDashboardView: View {
     @State private var showingAgentStats = false
     
     enum TimeRange: String, CaseIterable {
-        case day = "Day"
-        case week = "Week"
-        case month = "Month"
-        case all = "All Time"
+        case day
+        case week
+        case month
+        case all
+
+        var title: String {
+            switch self {
+            case .day: return LocalizedString.text("day_label")
+            case .week: return LocalizedString.text("week_label")
+            case .month: return LocalizedString.text("month_label")
+            case .all: return LocalizedString.text("all_time")
+            }
+        }
     }
     
     var body: some View {
@@ -5449,12 +5458,12 @@ struct TaskDashboardView: View {
             }
             .padding()
         }
-        .navigationTitle("Task Dashboard")
+        .navigationTitle(LocalizedString.text("task_dashboard_title"))
         .toolbar {
             ToolbarItem {
-                Picker("Time Range", selection: $selectedTimeRange) {
+                Picker(LocalizedString.text("time_range"), selection: $selectedTimeRange) {
                     ForEach(TimeRange.allCases, id: \.self) { range in
-                        Text(range.rawValue).tag(range)
+                        Text(range.title).tag(range)
                     }
                 }
             }
@@ -5466,7 +5475,7 @@ struct TaskDashboardView: View {
     private var overviewCards: some View {
         HStack(spacing: 16) {
             DashboardStatCard(  // 使用重命名后的名称
-                title: "Completion Rate",
+                title: LocalizedString.text("completion_rate"),
                 value: "\(Int(taskManager.statistics.completionRate * 100))%",
                 icon: "checkmark.circle.fill",
                 color: taskManager.statistics.completionRate > 0.7 ? .green : .orange,
@@ -5474,7 +5483,7 @@ struct TaskDashboardView: View {
             )
             
             DashboardStatCard(  // 使用重命名后的名称
-                title: "Avg. Completion Time",
+                title: LocalizedString.text("avg_completion_time"),
                 value: formatDuration(taskManager.statistics.averageCompletionTime),
                 icon: "clock.fill",
                 color: .blue,
@@ -5482,7 +5491,7 @@ struct TaskDashboardView: View {
             )
             
             DashboardStatCard(  // 使用重命名后的名称
-                title: "Active Tasks",
+                title: LocalizedString.text("active_tasks"),
                 value: "\(taskManager.statistics.inProgress)",
                 icon: "arrow.triangle.2.circlepath",
                 color: .blue,
@@ -5490,7 +5499,7 @@ struct TaskDashboardView: View {
             )
             
             DashboardStatCard(  // 使用重命名后的名称
-                title: "Blocked Tasks",
+                title: LocalizedString.text("blocked_tasks"),
                 value: "\(taskManager.statistics.blocked)",
                 icon: "exclamationmark.triangle",
                 color: .red,
@@ -5507,7 +5516,7 @@ struct TaskDashboardView: View {
             Chart {
                 ForEach(TaskStatus.allCases, id: \.self) { status in
                     SectorMark(
-                        angle: .value("Count", taskManager.tasks(for: status).count),
+                        angle: .value(LocalizedString.text("count_label"), taskManager.tasks(for: status).count),
                         innerRadius: .ratio(0.6),
                         angularInset: 1
                     )
@@ -5533,7 +5542,7 @@ struct TaskDashboardView: View {
                 Text(LocalizedString.agent + " " + LocalizedString.performance)
                     .font(.headline)
                 Spacer()
-                Button("Show Details") {
+                    Button(LocalizedString.text("show_details")) {
                     showingAgentStats = true
                 }
                 .font(.caption)
@@ -5685,7 +5694,7 @@ struct AgentStatCard: View {
                 .font(.caption)
                 .lineLimit(1)
             
-            Text("\(agentTasks.count) tasks")
+            Text(LocalizedString.format("tasks_count", agentTasks.count))
                 .font(.caption2)
                 .foregroundColor(.secondary)
             
@@ -5745,10 +5754,10 @@ struct AgentStatsDetailView: View {
             List(agents) { agent in
                 AgentDetailRow(agent: agent, taskManager: taskManager)
             }
-            .navigationTitle("Agent Performance")
+            .navigationTitle(LocalizedString.text("agent_performance"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
+                    Button(LocalizedString.text("done_label")) {
                         dismiss()
                     }
                 }

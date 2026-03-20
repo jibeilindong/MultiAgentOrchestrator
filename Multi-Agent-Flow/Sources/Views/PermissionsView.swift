@@ -19,7 +19,7 @@ struct PermissionsView: View {
                 .padding(.horizontal)
             
             if agents.isEmpty {
-                ContentUnavailableView("No Agents", systemImage: "person.slash", description: Text("Add some agents in the sidebar to configure permissions"))
+                ContentUnavailableView(LocalizedString.noAgents, systemImage: "person.slash", description: Text(LocalizedString.text("no_agents_permission_desc")))
             } else {
                 ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -156,10 +156,10 @@ struct PermissionCell: View {
         Group {
             if fromAgent.id == toAgent.id {
                 // 自身
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.yellow.opacity(0.3))
-                    .overlay(
-                        Text("N/A")
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.yellow.opacity(0.3))
+                            .overlay(
+                        Text(LocalizedString.text("na_short"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     )

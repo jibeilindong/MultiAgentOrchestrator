@@ -21,19 +21,19 @@ struct OpenClawConfigView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("OpenClaw Connection")
+                    Text(LocalizedString.text("openclaw_connection_title"))
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("先测试当前配置是否可用，测试通过后点击 Save 即视为确认连接。")
+                    Text(LocalizedString.text("openclaw_connection_hint"))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
 
                 statusBanner
 
-                GroupBox("Deployment") {
+                GroupBox(LocalizedString.text("deployment")) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Picker("Deployment", selection: $config.deploymentKind) {
+                        Picker(LocalizedString.text("deployment"), selection: $config.deploymentKind) {
                             ForEach(OpenClawDeploymentKind.allCases) { kind in
                                 Text(kind.title).tag(kind)
                             }
@@ -41,78 +41,78 @@ struct OpenClawConfigView: View {
                         .pickerStyle(.segmented)
 
                         if config.deploymentKind == .local {
-                            labeledField("OpenClaw Binary") {
-                                TextField("OpenClaw Binary", text: $config.localBinaryPath)
+                            labeledField(LocalizedString.text("openclaw_binary")) {
+                                TextField(LocalizedString.text("openclaw_binary"), text: $config.localBinaryPath)
                                     .textFieldStyle(.roundedBorder)
                             }
                         }
 
                         if config.deploymentKind == .container {
-                            labeledField("Container Engine") {
-                                TextField("Container Engine", text: $config.container.engine)
+                            labeledField(LocalizedString.text("container_engine")) {
+                                TextField(LocalizedString.text("container_engine"), text: $config.container.engine)
                                     .textFieldStyle(.roundedBorder)
                             }
-                            labeledField("Container Name") {
-                                TextField("Container Name", text: $config.container.containerName)
+                            labeledField(LocalizedString.text("container_name")) {
+                                TextField(LocalizedString.text("container_name"), text: $config.container.containerName)
                                     .textFieldStyle(.roundedBorder)
                             }
-                            labeledField("Workspace Mount") {
-                                TextField("Workspace Mount", text: $config.container.workspaceMountPath)
+                            labeledField(LocalizedString.text("workspace_mount")) {
+                                TextField(LocalizedString.text("workspace_mount"), text: $config.container.workspaceMountPath)
                                     .textFieldStyle(.roundedBorder)
                             }
                         }
                     }
                 }
 
-                GroupBox("Connection Settings") {
+                GroupBox(LocalizedString.text("connection_settings_title")) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 12) {
-                            labeledField("Host") {
-                                TextField("Host", text: $config.host)
+                            labeledField(LocalizedString.host) {
+                                TextField(LocalizedString.host, text: $config.host)
                                     .textFieldStyle(.roundedBorder)
                             }
 
-                            labeledField("Port") {
-                                TextField("Port", value: $config.port, format: .number)
+                            labeledField(LocalizedString.port) {
+                                TextField(LocalizedString.port, value: $config.port, format: .number)
                                     .textFieldStyle(.roundedBorder)
                             }
                             .frame(width: 140)
                         }
 
                         HStack(spacing: 20) {
-                            Toggle("Use SSL", isOn: $config.useSSL)
-                            Toggle("Auto Connect on Startup", isOn: $config.autoConnect)
+                            Toggle(LocalizedString.text("use_ssl"), isOn: $config.useSSL)
+                            Toggle(LocalizedString.text("auto_connect_startup"), isOn: $config.autoConnect)
                         }
                     }
                 }
 
-                GroupBox("Authentication & Timeout") {
+                GroupBox(LocalizedString.text("authentication_timeout")) {
                     VStack(alignment: .leading, spacing: 12) {
-                        labeledField("API Key") {
-                            SecureField("API Key", text: $config.apiKey)
+                        labeledField(LocalizedString.apiKey) {
+                            SecureField(LocalizedString.apiKey, text: $config.apiKey)
                                 .textFieldStyle(.roundedBorder)
                         }
 
                         HStack(spacing: 12) {
-                            labeledField("Timeout") {
-                                TextField("Timeout", value: $config.timeout, format: .number)
+                            labeledField(LocalizedString.timeout) {
+                                TextField(LocalizedString.timeout, value: $config.timeout, format: .number)
                                     .textFieldStyle(.roundedBorder)
                             }
                             .frame(width: 140)
 
-                            Text("seconds")
+                            Text(LocalizedString.seconds)
                                 .foregroundColor(.secondary)
                                 .padding(.top, 20)
                         }
                     }
                 }
 
-                GroupBox("CLI Output") {
+                GroupBox(LocalizedString.text("cli_output")) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Toggle("Quiet Mode (if supported)", isOn: $config.cliQuietMode)
+                        Toggle(LocalizedString.text("quiet_mode_supported"), isOn: $config.cliQuietMode)
 
-                        labeledField("Log Level") {
-                            Picker("Log Level", selection: $config.cliLogLevel) {
+                        labeledField(LocalizedString.text("log_level")) {
+                            Picker(LocalizedString.text("log_level"), selection: $config.cliLogLevel) {
                                 ForEach(OpenClawCLILogLevel.allCases) { level in
                                     Text(level.title).tag(level)
                                 }
@@ -129,7 +129,7 @@ struct OpenClawConfigView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Text(isTesting ? "识别中..." : "自动识别")
+                            Text(isTesting ? LocalizedString.text("detecting") : LocalizedString.autoDetect)
                         }
                     }
                     .disabled(isTesting || isSaving || !canTestConnection)
@@ -140,13 +140,13 @@ struct OpenClawConfigView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Text(isSaving ? "保存中..." : "保存配置")
+                            Text(isSaving ? LocalizedString.saving : LocalizedString.text("save_config"))
                         }
                     }
                     .disabled(isTesting || isSaving)
 
                     Button(action: connectNow) {
-                        Text("手动连接")
+                        Text(LocalizedString.text("manual_connect_label"))
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isTesting || isSaving || !canTestConnection)
@@ -167,16 +167,16 @@ struct OpenClawConfigView: View {
         .sheet(isPresented: $isPresentingImportSheet) {
             OpenClawAgentImportSheet(
                 records: appState.openClawManager.discoveryResults,
-                actionTitle: "导入这些 Agents",
+                actionTitle: LocalizedString.text("import_these_agents_title"),
                 onImport: { selectedIDs in
                     let imported = appState.importDetectedOpenClawAgents(selectedRecordIDs: selectedIDs)
                     if imported.isEmpty {
-                        testResult = "没有选中可导入的 Agents。"
-                        statusMessage = "未导入任何 Agents。"
+                        testResult = LocalizedString.text("no_agents_selected_for_import")
+                        statusMessage = LocalizedString.text("no_agents_imported")
                         statusTone = .error
                     } else {
-                        testResult = "已导入 \(imported.count) 个 Agents。"
-                        statusMessage = "已将选中的 Agents 导入到当前项目。"
+                        testResult = LocalizedString.format("agents_imported_done", imported.count)
+                        statusMessage = LocalizedString.text("agents_imported_status")
                         statusTone = .success
                     }
                 }
@@ -189,7 +189,7 @@ struct OpenClawConfigView: View {
         .onChange(of: configFingerprint(config)) { _, newFingerprint in
             if let lastTestedFingerprint, lastTestedFingerprint != newFingerprint {
                 lastTestSucceeded = false
-                statusMessage = "配置已修改，请重新测试后再保存以确认连接。"
+                statusMessage = LocalizedString.text("config_modified_retest")
                 statusTone = .neutral
             }
         }
@@ -216,7 +216,7 @@ struct OpenClawConfigView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(statusTitle)
                     .font(.headline)
-                Text(statusMessage ?? "当前连接状态会在这里反馈。")
+                Text(statusMessage ?? LocalizedString.text("connection_status_here"))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -231,9 +231,9 @@ struct OpenClawConfigView: View {
 
     private var statusTitle: String {
         switch statusTone {
-        case .success: return "连接已确认"
-        case .error: return "连接未就绪"
-        case .neutral: return "等待确认"
+        case .success: return LocalizedString.text("connection_confirmed")
+        case .error: return LocalizedString.text("connection_not_ready")
+        case .neutral: return LocalizedString.text("awaiting_confirmation")
         }
     }
 
@@ -265,8 +265,8 @@ struct OpenClawConfigView: View {
             lastTestedFingerprint = configFingerprint(config)
             lastTestSucceeded = success
             statusMessage = success
-                ? "识别完成。请确认结果后再手动连接。"
-                : "识别未通过。请调整配置后重新识别。"
+                ? LocalizedString.text("detection_complete_manual_connect")
+                : LocalizedString.text("detection_failed_retry")
             statusTone = success ? .success : .error
         }
     }
@@ -276,7 +276,7 @@ struct OpenClawConfigView: View {
         appState.openClawManager.config = config
         config.save()
         isSaving = false
-        statusMessage = "配置已保存。识别后点击手动连接即可进入会话。"
+        statusMessage = LocalizedString.text("config_saved_connect_next")
         statusTone = .neutral
     }
 
@@ -285,7 +285,7 @@ struct OpenClawConfigView: View {
         appState.connectOpenClaw(using: config) { success, message in
             isSaving = false
             testResult = message
-            statusMessage = success ? "连接已确认，OpenClaw 文件已经进入会话同步。" : "连接失败：\(message)"
+            statusMessage = success ? LocalizedString.text("connection_confirmed_sync") : LocalizedString.format("error_status", message)
             statusTone = success ? .success : .error
         }
     }
@@ -293,13 +293,13 @@ struct OpenClawConfigView: View {
     private func refreshStatusFromManager() {
         switch appState.openClawManager.status {
         case .connected:
-            statusMessage = "当前配置已连接到 OpenClaw，会话文件已同步。"
+            statusMessage = LocalizedString.text("current_connected_sync")
             statusTone = .success
         case .connecting:
-            statusMessage = "正在处理 OpenClaw 会话。"
+            statusMessage = LocalizedString.text("processing_openclaw_session")
             statusTone = .neutral
         case .disconnected:
-            statusMessage = "当前尚未确认连接。可先自动识别，再手动连接。"
+            statusMessage = LocalizedString.text("current_not_confirmed")
             statusTone = .neutral
         case .error(let message):
             statusMessage = message
@@ -329,7 +329,7 @@ struct OpenClawConfigView: View {
         let detectedAgents = appState.openClawManager.discoveryResults
 
         if !detectedAgents.isEmpty {
-            GroupBox("识别结果") {
+            GroupBox(LocalizedString.text("detection_results")) {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(detectedAgents) { agent in
                         HStack(alignment: .top, spacing: 10) {
@@ -339,7 +339,7 @@ struct OpenClawConfigView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(agent.name)
                                     .font(.headline)
-                                Text(agent.issues.isEmpty ? "目录与 openclaw.json 都已校验。" : agent.issues.joined(separator: " · "))
+                                Text(agent.issues.isEmpty ? LocalizedString.text("directory_openclaw_validated") : agent.issues.joined(separator: " · "))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 if let path = agent.copiedToProjectPath {
@@ -356,7 +356,7 @@ struct OpenClawConfigView: View {
 
                     HStack {
                         Spacer()
-                        Button("导入这些 Agents") {
+                        Button(LocalizedString.text("import_these_agents_title")) {
                             isPresentingImportSheet = true
                         }
                         .buttonStyle(.borderedProminent)
@@ -398,35 +398,35 @@ struct OpenClawAgentManagementView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("OpenClaw Agent 管理")
+                    Text(LocalizedString.text("openclaw_agent_management"))
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("管理单个 OpenClaw agent 的 model 与 skills，并支持从 ClawHub 搜索后直接安装。")
+                    Text(LocalizedString.text("openclaw_agent_management_hint"))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
 
-                GroupBox("Agent 配置") {
+                GroupBox(LocalizedString.text("agent_configuration")) {
                     VStack(alignment: .leading, spacing: 12) {
                         if !appState.openClawManager.isConnected {
-                            Text("请先在 OpenClaw Connection 页面完成连接。")
+                            Text(LocalizedString.text("complete_connection_first"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         } else if config.deploymentKind == .remoteServer {
-                            Text("远程网关模式不提供本地 agent 文件与 workspace 直接编辑。")
+                            Text(LocalizedString.text("remote_gateway_no_local_edit"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         } else {
                             HStack(alignment: .center, spacing: 12) {
-                                labeledField("Target Agent") {
-                                    Picker("Target Agent", selection: Binding<String?>(
+                                labeledField(LocalizedString.text("target_agent")) {
+                                    Picker(LocalizedString.text("target_agent"), selection: Binding<String?>(
                                         get: { selectedManagedAgentID },
                                         set: { newValue in
                                             selectedManagedAgentID = newValue
                                             syncManagedAgentDrafts()
                                         }
                                     )) {
-                                        Text("请选择 Agent").tag(nil as String?)
+                                        Text(LocalizedString.text("please_select_agent")).tag(nil as String?)
                                         ForEach(managedAgents) { agent in
                                             Text(agentPickerLabel(for: agent)).tag(Optional(agent.id))
                                         }
@@ -444,7 +444,7 @@ struct OpenClawAgentManagementView: View {
                                             ProgressView()
                                                 .controlSize(.small)
                                         }
-                                        Text(isRefreshingManagedAgents ? "刷新中..." : "刷新列表")
+                                        Text(isRefreshingManagedAgents ? LocalizedString.text("refreshing") : LocalizedString.text("refresh_list"))
                                     }
                                 }
                                 .disabled(isRefreshingManagedAgents)
@@ -454,17 +454,17 @@ struct OpenClawAgentManagementView: View {
                                 Divider()
 
                                 VStack(alignment: .leading, spacing: 10) {
-                                    infoRow(label: "项目 Agent", value: selectedManagedAgent.name)
-                                    infoRow(label: "OpenClaw ID", value: selectedManagedAgent.targetIdentifier)
+                                    infoRow(label: LocalizedString.text("project_agent"), value: selectedManagedAgent.name)
+                                    infoRow(label: LocalizedString.text("openclaw_id"), value: selectedManagedAgent.targetIdentifier)
                                     if let configIndex = selectedManagedAgent.configIndex {
-                                        infoRow(label: "配置索引", value: "\(configIndex)")
+                                        infoRow(label: LocalizedString.text("config_index"), value: "\(configIndex)")
                                     }
-                                    infoRow(label: "Workspace", value: selectedManagedAgent.workspacePath ?? "未配置")
-                                    infoRow(label: "Agent Dir", value: selectedManagedAgent.agentDirPath ?? "未配置")
-                                    infoRow(label: "当前 Model", value: selectedManagedAgent.modelIdentifier.isEmpty ? "未设置" : selectedManagedAgent.modelIdentifier)
+                                    infoRow(label: LocalizedString.text("workspace"), value: selectedManagedAgent.workspacePath ?? LocalizedString.text("not_configured"))
+                                    infoRow(label: LocalizedString.text("agent_dir"), value: selectedManagedAgent.agentDirPath ?? LocalizedString.text("not_configured"))
+                                    infoRow(label: LocalizedString.text("current_model"), value: selectedManagedAgent.modelIdentifier.isEmpty ? LocalizedString.text("not_set") : selectedManagedAgent.modelIdentifier)
 
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text("Model 切换")
+                                        Text(LocalizedString.text("model_switch"))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
 
@@ -472,9 +472,9 @@ struct OpenClawAgentManagementView: View {
                                             TextField("provider/model", text: $managedAgentModelDraft)
                                                 .textFieldStyle(.roundedBorder)
 
-                                            Menu("模型候选") {
+                                            Menu(LocalizedString.text("model_candidates")) {
                                                 if availableModels.isEmpty {
-                                                    Text("暂无可用模型")
+                                                    Text(LocalizedString.text("no_models_available"))
                                                 } else {
                                                     ForEach(availableModels, id: \.self) { model in
                                                         Button(model) {
@@ -492,7 +492,7 @@ struct OpenClawAgentManagementView: View {
                                                         ProgressView()
                                                             .controlSize(.small)
                                                     }
-                                                    Text(isMutatingManagedAgent ? "应用中..." : "应用模型")
+                                                    Text(isMutatingManagedAgent ? LocalizedString.text("applying") : LocalizedString.text("apply_model"))
                                                 }
                                             }
                                             .buttonStyle(.borderedProminent)
@@ -503,7 +503,7 @@ struct OpenClawAgentManagementView: View {
                                     Divider()
 
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text("技能安装")
+                                        Text(LocalizedString.text("skill_installation"))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
 
@@ -519,7 +519,7 @@ struct OpenClawAgentManagementView: View {
                                                         ProgressView()
                                                             .controlSize(.small)
                                                     }
-                                                    Text("按 slug 安装")
+                                                    Text(LocalizedString.text("install_by_slug"))
                                                 }
                                             }
                                             .buttonStyle(.borderedProminent)
@@ -527,7 +527,7 @@ struct OpenClawAgentManagementView: View {
                                         }
 
                                         HStack(spacing: 10) {
-                                            TextField("从 ClawHub 搜索技能", text: $searchKeyword)
+                                            TextField(LocalizedString.text("search_clawhub_skill"), text: $searchKeyword)
                                                 .textFieldStyle(.roundedBorder)
                                             Button {
                                                 searchSkillsFromClawHub()
@@ -537,7 +537,7 @@ struct OpenClawAgentManagementView: View {
                                                         ProgressView()
                                                             .controlSize(.small)
                                                     }
-                                                    Text(isSearchingSkills ? "搜索中..." : "搜索并安装")
+                                                    Text(isSearchingSkills ? LocalizedString.text("searching") : LocalizedString.text("search_install"))
                                                 }
                                             }
                                             .buttonStyle(.bordered)
@@ -559,7 +559,7 @@ struct OpenClawAgentManagementView: View {
                                                             }
                                                         }
                                                         Spacer()
-                                                        Button("安装") {
+                                                        Button(LocalizedString.text("install")) {
                                                             managedSkillSlug = result.slug
                                                             installManagedSkill()
                                                         }
@@ -572,7 +572,7 @@ struct OpenClawAgentManagementView: View {
                                         }
 
                                         if selectedManagedAgent.installedSkills.isEmpty {
-                                            Text("暂无已安装技能。")
+                                            Text(LocalizedString.text("no_installed_skills"))
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
                                         } else {
@@ -590,7 +590,7 @@ struct OpenClawAgentManagementView: View {
                                                     Button(role: .destructive) {
                                                         removeManagedSkill(skill.name)
                                                     } label: {
-                                                        Text("移除")
+                                                        Text(LocalizedString.text("remove"))
                                                     }
                                                     .buttonStyle(.bordered)
                                                     .disabled(isMutatingManagedAgent)
@@ -601,11 +601,11 @@ struct OpenClawAgentManagementView: View {
                                     }
                                 }
                             } else if !managedAgents.isEmpty {
-                                Text("请选择一个 agent 查看详细配置。")
+                                Text(LocalizedString.text("select_agent_for_details"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             } else {
-                                Text("当前没有可用的 OpenClaw agent 配置。")
+                                Text(LocalizedString.text("no_openclaw_agent_config"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }

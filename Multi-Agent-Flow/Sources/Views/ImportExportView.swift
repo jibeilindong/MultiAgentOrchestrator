@@ -56,71 +56,71 @@ struct ImportExportView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section("Import Project") {
+                Section(LocalizedString.text("import_project_section")) {
                     Text(LocalizedString.importText)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Button("Import Project...") {
+                    Button(LocalizedString.text("import_project_button")) {
                         showingImportPanel = true
                     }
                     .frame(maxWidth: .infinity)
                 }
                 
-                Section("Export Project") {
+                Section(LocalizedString.text("export_project_section")) {
                     Text(LocalizedString.export)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Picker("Format", selection: $exportFormat) {
+                    Picker(LocalizedString.text("export_format"), selection: $exportFormat) {
                         ForEach(ExportFormat.allCases, id: \.self) { format in
                             Text(format.rawValue).tag(format)
                         }
                     }
                     
-                    Toggle("Include Tasks", isOn: $includeTasks)
-                    Toggle("Include Kanban Status", isOn: $includeKanban)  // 工部：看板选项
-                    Toggle("Include Messages", isOn: $includeMessages)
-                    Toggle("Include Execution Results", isOn: $includeExecutionResults)
+                    Toggle(LocalizedString.text("include_tasks"), isOn: $includeTasks)
+                    Toggle(LocalizedString.text("include_kanban_status"), isOn: $includeKanban)
+                    Toggle(LocalizedString.text("include_messages"), isOn: $includeMessages)
+                    Toggle(LocalizedString.text("include_execution_results"), isOn: $includeExecutionResults)
                     
-                    Button("Export Project...") {
+                    Button(LocalizedString.text("export_project_button")) {
                         showingExportPanel = true
                     }
                     .frame(maxWidth: .infinity)
                 }
                 
-                Section("Backup & Restore") {
+                Section(LocalizedString.text("backup_restore")) {
                     Text(LocalizedString.backup)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Button("Create Backup...") {
+                    Button(LocalizedString.text("create_backup")) {
                         createBackup()
                     }
                     .frame(maxWidth: .infinity)
                     
-                    Button("Restore from Backup...") {
+                    Button(LocalizedString.text("restore_from_backup")) {
                         restoreFromBackup()
                     }
                     .frame(maxWidth: .infinity)
                 }
                 
-                Section("Templates") {
+                Section(LocalizedString.text("templates_section")) {
                     Text(LocalizedString.template)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Button("Save as Template...") {
+                    Button(LocalizedString.text("save_as_template")) {
                         saveAsTemplate()
                     }
                     .frame(maxWidth: .infinity)
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Import & Export")
+            .navigationTitle(LocalizedString.text("import_export_title"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
+                    Button(LocalizedString.close) {
                         dismiss()
                     }
                 }
@@ -160,7 +160,7 @@ struct ImportExportView: View {
             .sheet(isPresented: $isImporting) {
                 ImportExportProgressView(
                     progress: importProgress,
-                    status: importError ?? "Importing...",
+                    status: importError ?? LocalizedString.text("importing"),
                     isImport: true
                 )
                 .interactiveDismissDisabled()
@@ -169,7 +169,7 @@ struct ImportExportView: View {
             .sheet(isPresented: $isExporting) {
                 ImportExportProgressView(
                     progress: exportProgress,
-                    status: "Exporting...",
+                    status: LocalizedString.text("exporting"),
                     isImport: false
                 )
                 .interactiveDismissDisabled()
@@ -575,31 +575,31 @@ struct ImportPreviewView: View {
             Divider()
             
             // 基本信息
-            GroupBox("Project Information") {
+            GroupBox(LocalizedString.text("project_information")) {
                 VStack(alignment: .leading, spacing: 8) {
-                    LabeledContent("Name") { Text(previewData.projectName) }
-                    LabeledContent("Format") { Text(previewData.format) }
-                    LabeledContent("Version") { Text(previewData.version) }
-                    LabeledContent("Exported") { Text(previewData.exportedAt, style: .date) }
+                    LabeledContent(LocalizedString.name) { Text(previewData.projectName) }
+                    LabeledContent(LocalizedString.text("format_label")) { Text(previewData.format) }
+                    LabeledContent(LocalizedString.version) { Text(previewData.version) }
+                    LabeledContent(LocalizedString.text("exported_label")) { Text(previewData.exportedAt, style: .date) }
                 }
                 .font(.caption)
             }
             
             // 数据统计
-            GroupBox("Data Summary") {
+            GroupBox(LocalizedString.text("data_summary")) {
                 VStack(alignment: .leading, spacing: 8) {
-                    LabeledContent("Agents") { Text("\(previewData.agentCount)") }
-                    LabeledContent("Workflows") { Text("\(previewData.workflowCount)") }
-                    LabeledContent("Tasks") { Text("\(previewData.taskCount)") }
-                    LabeledContent("Messages") { Text("\(previewData.messageCount)") }
-                    LabeledContent("Execution Results") { Text("\(previewData.executionResultCount)") }
+                    LabeledContent(LocalizedString.agents) { Text("\(previewData.agentCount)") }
+                    LabeledContent(LocalizedString.workflows) { Text("\(previewData.workflowCount)") }
+                    LabeledContent(LocalizedString.tasks) { Text("\(previewData.taskCount)") }
+                    LabeledContent(LocalizedString.messages) { Text("\(previewData.messageCount)") }
+                    LabeledContent(LocalizedString.executionResults) { Text("\(previewData.executionResultCount)") }
                     
                     if !previewData.kanbanTasks.isEmpty {
                         Divider()
                         Text(LocalizedString.kanbanStatus).font(.caption.bold())
                         ForEach(Array(previewData.kanbanTasks.keys), id: \.self) { status in
                             if let count = previewData.kanbanTasks[status] {
-                                LabeledContent(status.rawValue) { 
+                                LabeledContent(status.displayName) {
                                     HStack(spacing: 4) {
                                         Image(systemName: status.icon)
                                         Text("\(count)")
@@ -614,7 +614,7 @@ struct ImportPreviewView: View {
             
             // 警告信息
             if !previewData.warnings.isEmpty {
-                GroupBox("Warnings") {
+                GroupBox(LocalizedString.text("warnings_label")) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(previewData.warnings, id: \.self) { warning in
                             HStack {
@@ -629,12 +629,12 @@ struct ImportPreviewView: View {
             }
             
             // 导入选项
-            GroupBox("Import Options") {
+            GroupBox(LocalizedString.text("import_options")) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Project Configuration", isOn: binding(for: "project"))
-                    Toggle("Tasks & Kanban", isOn: binding(for: "tasks"))
-                    Toggle("Messages", isOn: binding(for: "messages"))
-                    Toggle("Execution Results", isOn: binding(for: "executionResults"))
+                    Toggle(LocalizedString.text("project_configuration"), isOn: binding(for: "project"))
+                    Toggle(LocalizedString.text("tasks_kanban"), isOn: binding(for: "tasks"))
+                    Toggle(LocalizedString.messages, isOn: binding(for: "messages"))
+                    Toggle(LocalizedString.executionResults, isOn: binding(for: "executionResults"))
                 }
                 .font(.caption)
             }
@@ -643,10 +643,10 @@ struct ImportPreviewView: View {
             
             // 按钮
             HStack {
-                Button("Cancel", action: onCancel)
+                Button(LocalizedString.cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Import", action: onConfirm)
+                Button(LocalizedString.text("import_action"), action: onConfirm)
                     .keyboardShortcut(.defaultAction)
                     .disabled(selectedItems.isEmpty)
             }
@@ -811,12 +811,12 @@ struct ValidationErrorView: View {
                 Image(systemName: result.isValid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundColor(result.isValid ? .green : .red)
                     .font(.title2)
-                Text(result.isValid ? "Validation Passed" : "Validation Failed")
+                Text(result.isValid ? LocalizedString.text("validation_passed") : LocalizedString.text("validation_failed"))
                     .font(.headline)
             }
             
             if !result.errors.isEmpty {
-                GroupBox("Errors") {
+                GroupBox(LocalizedString.text("errors_label")) {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(result.errors) { error in
                             HStack(alignment: .top) {
@@ -837,7 +837,7 @@ struct ValidationErrorView: View {
             }
             
             if !result.warnings.isEmpty {
-                GroupBox("Warnings") {
+                GroupBox(LocalizedString.text("warnings_label")) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(result.warnings, id: \.self) { warning in
                             HStack {
@@ -854,7 +854,7 @@ struct ValidationErrorView: View {
             
             HStack {
                 Spacer()
-                Button("OK", action: onDismiss)
+                Button(LocalizedString.ok, action: onDismiss)
                     .keyboardShortcut(.defaultAction)
             }
         }

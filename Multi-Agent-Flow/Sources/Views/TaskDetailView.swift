@@ -31,11 +31,11 @@ struct TaskDetailView: View {
                 Text(LocalizedString.taskDetails)
                     .font(.headline)
                 Spacer()
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                Button("Save") {
+                Button(LocalizedString.save) {
                     onSave(editedTask)
                     dismiss()
                 }
@@ -49,31 +49,31 @@ struct TaskDetailView: View {
             // 表单内容
             ScrollView {
                 VStack(spacing: 20) {
-                    SectionView(title: "Task Information") {
-                        TextField("Title", text: $editedTask.title)
+                    SectionView(title: LocalizedString.text("task_information")) {
+                        TextField(LocalizedString.text("title_label"), text: $editedTask.title)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                             .font(.headline)
                         
-                        TextField("Description", text: $editedTask.description)
+                        TextField(LocalizedString.description, text: $editedTask.description)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                             .frame(height: 80)
                     }
                     
                     HStack(spacing: 20) {
-                        SectionView(title: "Status") {
-                            Picker("Status", selection: $editedTask.status) {
+                        SectionView(title: LocalizedString.status) {
+                            Picker(LocalizedString.status, selection: $editedTask.status) {
                                 ForEach(TaskStatus.allCases, id: \.self) { status in
-                                    Label(status.rawValue, systemImage: status.icon)
+                                    Label(status.displayName, systemImage: status.icon)
                                         .tag(status)
                                 }
                             }
                             .pickerStyle(.segmented)
                         }
                         
-                        SectionView(title: "Priority") {
-                            Picker("Priority", selection: $editedTask.priority) {
+                        SectionView(title: LocalizedString.priority) {
+                            Picker(LocalizedString.priority, selection: $editedTask.priority) {
                                 ForEach(TaskPriority.allCases, id: \.self) { priority in
-                                    Label(priority.rawValue, systemImage: "flag.fill")
+                                    Label(priority.displayName, systemImage: "flag.fill")
                                         .foregroundColor(priority.color)
                                         .tag(priority)
                                 }
@@ -81,35 +81,35 @@ struct TaskDetailView: View {
                         }
                     }
                     
-                    SectionView(title: "Assignment") {
-                        Picker("Assign to Agent", selection: $editedTask.assignedAgentID) {
-                            Text("Unassigned").tag(nil as UUID?)
+                    SectionView(title: LocalizedString.text("assignment")) {
+                        Picker(LocalizedString.text("assign_to_agent"), selection: $editedTask.assignedAgentID) {
+                            Text(LocalizedString.unassigned).tag(nil as UUID?)
                             ForEach(agents) { agent in
                                 Text(agent.name).tag(agent.id as UUID?)
                             }
                         }
                     }
                     
-                    SectionView(title: "Timeline") {
-                        TaskInfoRow(label: "Created", value: task.createdAt.formatted())
+                    SectionView(title: LocalizedString.text("timeline")) {
+                        TaskInfoRow(label: LocalizedString.text("created_label"), value: task.createdAt.formatted())
                         
                         if let startedAt = task.startedAt {
-                            TaskInfoRow(label: "Started", value: startedAt.formatted())
+                            TaskInfoRow(label: LocalizedString.text("started_label"), value: startedAt.formatted())
                         }
                         
                         if let completedAt = task.completedAt {
-                            TaskInfoRow(label: "Completed", value: completedAt.formatted())
+                            TaskInfoRow(label: LocalizedString.text("completed_label"), value: completedAt.formatted())
                         }
                         
                         if let duration = task.duration {
-                            TaskInfoRow(label: "Duration", value: formatDuration(duration))
+                            TaskInfoRow(label: LocalizedString.text("duration_label"), value: formatDuration(duration))
                         } else if let timeSpent = task.timeSpent {
-                            TaskInfoRow(label: "Time Spent", value: formatDuration(timeSpent))
+                            TaskInfoRow(label: LocalizedString.text("time_spent"), value: formatDuration(timeSpent))
                         }
                     }
                     
                     if !task.tags.isEmpty {
-                        SectionView(title: "Tags") {
+                        SectionView(title: LocalizedString.text("tags")) {
                             HStack {
                                 ForEach(task.tags, id: \.self) { tag in
                                     Text(tag)
@@ -122,14 +122,14 @@ struct TaskDetailView: View {
                         }
                     }
                     
-                    SectionView(title: "Actions") {
+                    SectionView(title: LocalizedString.actions) {
                         HStack {
-                            Button("Simulate Execution") {
+                            Button(LocalizedString.text("simulate_execution")) {
                                 // TODO: 模拟执行
                             }
                             .buttonStyle(.bordered)
                             
-                            Button("Delete Task", role: .destructive) {
+                            Button(LocalizedString.text("delete_task"), role: .destructive) {
                                 onDelete()
                                 dismiss()
                             }

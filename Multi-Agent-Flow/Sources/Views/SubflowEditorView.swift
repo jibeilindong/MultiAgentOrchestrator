@@ -33,7 +33,7 @@ struct SubflowEditorView: View {
             HStack {
                 Image(systemName: "arrow.down.doc.fill")
                     .foregroundColor(.purple)
-                Text(isCreatingNew ? "Create Subflow" : "Edit Subflow")
+                Text(isCreatingNew ? LocalizedString.text("create_subflow") : LocalizedString.text("edit_subflow"))
                     .font(.headline)
                 
                 if let subflow = currentSubflow {
@@ -44,7 +44,7 @@ struct SubflowEditorView: View {
                 
                 Spacer()
                 
-                Button("Done") {
+                Button(LocalizedString.text("toolbar_customize_done")) {
                     dismiss()
                 }
             }
@@ -77,12 +77,12 @@ struct SubflowEditorView: View {
             Text(LocalizedString.noSubflowAssigned)
                 .font(.headline)
             
-            Text(LocalizedString.createOrSelectSubflow)
-                .font(.caption)
-                .foregroundColor(.secondary)
+                Text(LocalizedString.createOrSelectSubflow)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             
             HStack(spacing: 16) {
-                Button("Create New Subflow") {
+                Button(LocalizedString.text("create_new_subflow")) {
                     isCreatingNew = true
                     newSubflowName = "Subflow \(parentWorkflow.name)_\(parentNode.id.uuidString.prefix(4))"
                 }
@@ -97,26 +97,26 @@ struct SubflowEditorView: View {
     // 创建新子流程视图
     private var createNewSubflowView: some View {
         VStack(spacing: 20) {
-            SectionView(title: "Subflow Details") {
-                TextField("Subflow Name", text: $newSubflowName)
+            SectionView(title: LocalizedString.text("subflow_details")) {
+                TextField(LocalizedString.text("subflow_name"), text: $newSubflowName)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
             }
             
-            SectionView(title: "Description") {
-                Text("A new subflow will be created and linked to this node.")
+            SectionView(title: LocalizedString.description) {
+                Text(LocalizedString.text("subflow_create_hint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             
             HStack {
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     isCreatingNew = false
                 }
                 .buttonStyle(.bordered)
                 
                 Spacer()
                 
-                Button("Create Subflow") {
+                Button(LocalizedString.text("create_subflow_action")) {
                     createSubflow()
                 }
                 .buttonStyle(.borderedProminent)
@@ -133,9 +133,9 @@ struct SubflowEditorView: View {
             // 子流程信息
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Nodes: \(subflow.nodes.count)")
+                    Text(LocalizedString.format("nodes_count", subflow.nodes.count))
                         .font(.caption)
-                    Text("Connections: \(subflow.edges.count)")
+                    Text(LocalizedString.format("connections_count", subflow.edges.count))
                         .font(.caption)
                 }
                 
@@ -145,7 +145,7 @@ struct SubflowEditorView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "square.stack.3d.up")
                         .foregroundColor(.orange)
-                    Text("Nesting Level: \(parentNode.nestingLevel + 1)")
+                    Text(LocalizedString.format("nesting_level", parentNode.nestingLevel + 1))
                         .font(.caption)
                         .foregroundColor(.orange)
                 }
@@ -158,9 +158,9 @@ struct SubflowEditorView: View {
             // 预览区域
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionView(title: "Nodes Preview") {
+                    SectionView(title: LocalizedString.text("nodes_preview")) {
                         if subflow.nodes.isEmpty {
-                            Text("No nodes in this subflow")
+                            Text(LocalizedString.noNodesInSubflow)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .center)
@@ -181,14 +181,14 @@ struct SubflowEditorView: View {
                         }
                     }
                     
-                    SectionView(title: "Actions") {
+                    SectionView(title: LocalizedString.actions) {
                         HStack {
-                            Button("View Full Editor") {
+                            Button(LocalizedString.text("view_full_editor")) {
                                 // TODO: 打开完整的子流程编辑器
                             }
                             .buttonStyle(.bordered)
                             
-                            Button("Delete Subflow", role: .destructive) {
+                            Button(LocalizedString.text("delete_subflow"), role: .destructive) {
                                 deleteSubflow()
                             }
                             .buttonStyle(.bordered)
@@ -260,8 +260,8 @@ struct SubflowEditorView: View {
     
     private func nodeTitle(for node: WorkflowNode) -> String {
         switch node.type {
-        case .start: return "Start"
-        case .agent: return "Agent Node"
+        case .start: return LocalizedString.startNode
+        case .agent: return LocalizedString.agentNode
         }
     }
 }

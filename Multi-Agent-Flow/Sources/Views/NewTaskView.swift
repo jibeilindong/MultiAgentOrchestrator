@@ -27,11 +27,11 @@ struct NewTaskView: View {
                 Text(LocalizedString.newTask)
                     .font(.headline)
                 Spacer()
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                Button("Create") {
+                Button(LocalizedString.text("create_action")) {
                     createTask()
                     dismiss()
                 }
@@ -47,30 +47,30 @@ struct NewTaskView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     // 任务详情
-                    SectionView(title: "Task Details") {
-                        TextField("Title", text: $title)
+                    SectionView(title: LocalizedString.taskDetails) {
+                        TextField(LocalizedString.text("title_label"), text: $title)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                         
-                        TextField("Description", text: $description)
+                        TextField(LocalizedString.description, text: $description)
                             .textFieldStyle(RoundedBorderTextFieldStyle())
                             .frame(height: 60)
                     }
                     
                     // 状态和优先级
                     HStack(spacing: 20) {
-                        SectionView(title: "Status") {
-                            Picker("Status", selection: $selectedStatus) {
+                        SectionView(title: LocalizedString.status) {
+                            Picker(LocalizedString.status, selection: $selectedStatus) {
                                 ForEach(TaskStatus.allCases, id: \.self) { status in
-                                    Label(status.rawValue, systemImage: status.icon)
+                                    Label(status.displayName, systemImage: status.icon)
                                         .tag(status)
                                 }
                             }
                         }
                         
-                        SectionView(title: "Priority") {
-                            Picker("Priority", selection: $selectedPriority) {
+                        SectionView(title: LocalizedString.priority) {
+                            Picker(LocalizedString.priority, selection: $selectedPriority) {
                                 ForEach(TaskPriority.allCases, id: \.self) { priority in
-                                    Label(priority.rawValue, systemImage: "flag.fill")
+                                    Label(priority.displayName, systemImage: "flag.fill")
                                         .foregroundColor(priority.color)
                                         .tag(priority)
                                 }
@@ -79,27 +79,27 @@ struct NewTaskView: View {
                     }
                     
                     // 分配
-                    SectionView(title: "Assignment") {
-                        Picker("Assign to Agent", selection: $selectedAgentID) {
-                            Text("Unassigned").tag(nil as UUID?)
+                    SectionView(title: LocalizedString.text("assignment")) {
+                        Picker(LocalizedString.text("assign_to_agent"), selection: $selectedAgentID) {
+                            Text(LocalizedString.unassigned).tag(nil as UUID?)
                         }
                         
                         HStack {
-                            Text("Estimated Time:")
-                            Stepper("\(estimatedHours) hours", value: $estimatedHours, in: 1...24)
+                            Text(LocalizedString.estimatedTime)
+                            Stepper(LocalizedString.format("estimated_hours", estimatedHours), value: $estimatedHours, in: 1...24)
                         }
                     }
                     
                     // 标签
-                    SectionView(title: "Tags") {
+                    SectionView(title: LocalizedString.text("tags")) {
                         HStack {
-                            TextField("Add tag", text: $newTag)
+                            TextField(LocalizedString.text("add_tag"), text: $newTag)
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
                                 .onSubmit {
                                     addTag()
                                 }
                             
-                            Button("Add") {
+                            Button(LocalizedString.add) {
                                 addTag()
                             }
                             .disabled(newTag.isEmpty)

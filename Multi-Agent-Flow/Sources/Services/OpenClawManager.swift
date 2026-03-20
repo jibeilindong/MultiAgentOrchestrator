@@ -9,6 +9,7 @@ import Combine
 class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
     private let fileManager = FileManager.default
+    private let gatewayClient = OpenClawGatewayClient()
     
     @Published var isConnected: Bool = false
     @Published var agents: [String] = []
@@ -36,6 +37,20 @@ class OpenClawManager: ObservableObject {
         var name: String
         var status: String
         var lastReloadedAt: Date?
+    }
+
+    struct AgentRuntimeCommandResult {
+        let terminationStatus: Int32
+        let standardOutput: Data
+        let standardError: Data
+        let channelKey: String
+        let executionCount: Int
+        let createdAt: Date
+        let lastUsedAt: Date
+
+        var reusedExistingChannel: Bool {
+            executionCount > 1
+        }
     }
 
     struct ManagedAgentSkillRecord: Identifiable, Hashable {
@@ -97,10 +112,146 @@ class OpenClawManager: ObservableObject {
         var unresolvedAgentNames: [String] = []
     }
 
+    private final class AgentRuntimeChannel {
+        private enum CommandLaunchMode {
+            case executable(url: URL, baseArguments: [String])
+        }
+
+        private let key: String
+        private let launchMode: CommandLaunchMode
+        private let stateLock = NSLock()
+        private var executionCount = 0
+        private let createdAt = Date()
+        private var lastUsedAt = Date()
+
+        init(key: String, config: OpenClawConfig, resolvedOpenClawPath: String) throws {
+            self.key = key
+
+            switch config.deploymentKind {
+            case .local:
+                launchMode = .executable(
+                    url: URL(fileURLWithPath: resolvedOpenClawPath),
+                    baseArguments: []
+                )
+            case .container:
+                let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !containerName.isEmpty else {
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: 301,
+                        userInfo: [NSLocalizedDescriptionKey: "容器名称未配置，无法创建 OpenClaw Agent Runtime 通道。"]
+                    )
+                }
+
+                let engine = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "docker"
+                    : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+                launchMode = .executable(
+                    url: URL(fileURLWithPath: "/usr/bin/env"),
+                    baseArguments: [engine, "exec", containerName, "openclaw"]
+                )
+            case .remoteServer:
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: 302,
+                    userInfo: [NSLocalizedDescriptionKey: "远程网关模式暂不支持创建本地 OpenClaw Agent Runtime 通道。"]
+                )
+            }
+        }
+
+        func execute(
+            arguments: [String],
+            standardInput: FileHandle? = nil,
+            onStdoutChunk: ((String) -> Void)? = nil
+        ) throws -> AgentRuntimeCommandResult {
+            let process = Process()
+
+            switch launchMode {
+            case .executable(let url, let baseArguments):
+                process.executableURL = url
+                process.arguments = baseArguments + arguments
+            }
+
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+            process.standardInput = standardInput
+
+            let lock = NSLock()
+            var stdoutData = Data()
+            var stderrData = Data()
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                lock.lock()
+                stdoutData.append(data)
+                lock.unlock()
+                if let onStdoutChunk {
+                    onStdoutChunk(String(decoding: data, as: UTF8.self))
+                }
+            }
+
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else { return }
+                lock.lock()
+                stderrData.append(data)
+                lock.unlock()
+            }
+
+            try process.run()
+            process.waitUntilExit()
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+            let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            if !remainingStdout.isEmpty {
+                lock.lock()
+                stdoutData.append(remainingStdout)
+                lock.unlock()
+                if let onStdoutChunk {
+                    onStdoutChunk(String(decoding: remainingStdout, as: UTF8.self))
+                }
+            }
+
+            let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            if !remainingStderr.isEmpty {
+                lock.lock()
+                stderrData.append(remainingStderr)
+                lock.unlock()
+            }
+
+            let snapshot = markExecutionFinished()
+            return AgentRuntimeCommandResult(
+                terminationStatus: process.terminationStatus,
+                standardOutput: stdoutData,
+                standardError: stderrData,
+                channelKey: key,
+                executionCount: snapshot.executionCount,
+                createdAt: snapshot.createdAt,
+                lastUsedAt: snapshot.lastUsedAt
+            )
+        }
+
+        private func markExecutionFinished() -> (executionCount: Int, createdAt: Date, lastUsedAt: Date) {
+            stateLock.lock()
+            executionCount += 1
+            lastUsedAt = Date()
+            let snapshot = (executionCount: executionCount, createdAt: createdAt, lastUsedAt: lastUsedAt)
+            stateLock.unlock()
+            return snapshot
+        }
+    }
+
     private var sessionContext: SessionContext?
     private var discoverySnapshotURL: URL?
     private var pluginStageCleanupPerformed = false
     private let pluginStageCleanupLock = NSLock()
+    private var agentRuntimeChannels: [String: AgentRuntimeChannel] = [:]
+    private let agentRuntimeChannelLock = NSLock()
 
     private static let possiblePaths = [
         "/Users/chenrongze/.local/bin/openclaw",
@@ -148,9 +299,7 @@ class OpenClawManager: ObservableObject {
                     stageNote = mirrorStageMessage(from: stageResult)
                 }
             } catch {
-                if projectID != nil {
-                    endSession(restoreOriginalState: true)
-                }
+                endSession(restoreOriginalState: true)
                 status = .error(error.localizedDescription)
                 completion?(false, error.localizedDescription)
                 return
@@ -289,6 +438,8 @@ class OpenClawManager: ObservableObject {
                 self.status = success ? .connected : .error(message)
                 if !success {
                     self.activeAgents.removeAll()
+                    self.resetAgentRuntimeChannels()
+                    self.resetGatewayConnection()
                 }
                 completion(success, message)
             }
@@ -399,6 +550,8 @@ class OpenClawManager: ObservableObject {
         activeAgents.removeAll()
         discoveryResults = []
         clearDiscoverySnapshot()
+        resetAgentRuntimeChannels()
+        resetGatewayConnection()
         status = .disconnected
     }
 
@@ -1089,8 +1242,97 @@ class OpenClawManager: ObservableObject {
         try runOpenClawCommand(using: config ?? self.config, arguments: arguments, standardInput: standardInput)
     }
 
+    func executeAgentRuntimeCommand(
+        arguments: [String],
+        using config: OpenClawConfig? = nil,
+        standardInput: FileHandle? = nil,
+        onStdoutChunk: ((String) -> Void)? = nil
+    ) throws -> AgentRuntimeCommandResult {
+        let resolvedConfig = config ?? self.config
+        let channel = try agentRuntimeChannel(for: resolvedConfig)
+        return try channel.execute(
+            arguments: arguments,
+            standardInput: standardInput,
+            onStdoutChunk: onStdoutChunk
+        )
+    }
+
+    func resetAgentRuntimeChannels() {
+        agentRuntimeChannelLock.lock()
+        agentRuntimeChannels.removeAll()
+        agentRuntimeChannelLock.unlock()
+    }
+
+    func resetGatewayConnection() {
+        _Concurrency.Task {
+            await gatewayClient.disconnect()
+        }
+    }
+
+    func executeGatewayAgentCommand(
+        message: String,
+        agentIdentifier: String,
+        sessionKey: String?,
+        thinkingLevel: AgentThinkingLevel?,
+        timeoutSeconds: Int,
+        using config: OpenClawConfig? = nil,
+        onAssistantTextUpdated: @escaping @Sendable (String) -> Void
+    ) async throws -> OpenClawGatewayClient.AgentExecutionResult {
+        try await gatewayClient.executeAgent(
+            using: config ?? self.config,
+            message: message,
+            agentIdentifier: agentIdentifier,
+            sessionKey: sessionKey,
+            thinkingLevel: thinkingLevel,
+            timeoutSeconds: timeoutSeconds,
+            onAssistantTextUpdated: onAssistantTextUpdated
+        )
+    }
+
     func resolvedOpenClawPath(using config: OpenClawConfig? = nil) -> String {
         resolveOpenClawPath(for: config ?? self.config)
+    }
+
+    private func agentRuntimeChannel(for config: OpenClawConfig) throws -> AgentRuntimeChannel {
+        let key = agentRuntimeChannelKey(for: config)
+
+        agentRuntimeChannelLock.lock()
+        if let existing = agentRuntimeChannels[key] {
+            agentRuntimeChannelLock.unlock()
+            return existing
+        }
+        agentRuntimeChannelLock.unlock()
+
+        let channel = try AgentRuntimeChannel(
+            key: key,
+            config: config,
+            resolvedOpenClawPath: resolveOpenClawPath(for: config)
+        )
+
+        agentRuntimeChannelLock.lock()
+        if let existing = agentRuntimeChannels[key] {
+            agentRuntimeChannelLock.unlock()
+            return existing
+        }
+        agentRuntimeChannels[key] = channel
+        agentRuntimeChannelLock.unlock()
+        return channel
+    }
+
+    private func agentRuntimeChannelKey(for config: OpenClawConfig) -> String {
+        switch config.deploymentKind {
+        case .local:
+            return "local|\(resolveOpenClawPath(for: config))"
+        case .container:
+            let engine = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "docker"
+                : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+            let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "container|\(engine)|\(containerName)"
+        case .remoteServer:
+            let host = config.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "remote|\(host)|\(config.port)|\(config.useSSL)"
+        }
     }
 
     private func parseManagedAgents(from data: Data, using config: OpenClawConfig) -> [ManagedAgentRecord] {
@@ -2642,34 +2884,33 @@ class OpenClawManager: ObservableObject {
             return
         }
 
-        guard let url = URL(string: config.baseURL) else {
-            completion(false, "远程地址无效：\(config.baseURL)", [])
-            return
-        }
-
-        var request = URLRequest(url: url, timeoutInterval: TimeInterval(max(config.timeout, 5)))
-        if !config.apiKey.isEmpty {
-            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        }
-
-        URLSession.shared.dataTask(with: request) { _, response, error in
-            if let error {
+        _Concurrency.Task {
+            do {
+                let probe = try await gatewayClient.probe(using: config)
                 DispatchQueue.main.async {
+                    self.discoveryResults = probe.agents.map { agent in
+                        ProjectOpenClawDetectedAgentRecord(
+                            id: agent.id,
+                            name: agent.name,
+                            directoryValidated: true,
+                            configValidated: true
+                        )
+                    }
+                    self.agents = self.discoveryResults.map(\.name)
+                    completion(
+                        true,
+                        "远程网关连接成功：\((config.useSSL ? "wss" : "ws"))://\(host):\(config.port)",
+                        probe.agentNames
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.discoveryResults = []
+                    self.agents = []
                     completion(false, error.localizedDescription, [])
                 }
-                return
             }
-
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let success = (200..<400).contains(statusCode)
-            let message = success
-                ? "远程连接成功：\(config.baseURL)"
-                : "远程连接失败，HTTP \(statusCode)"
-
-            DispatchQueue.main.async {
-                completion(success, message, [])
-            }
-        }.resume()
+        }
     }
     
     // 备份当前OpenClaw配置

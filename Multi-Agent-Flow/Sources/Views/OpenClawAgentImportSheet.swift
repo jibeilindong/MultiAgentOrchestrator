@@ -31,25 +31,25 @@ struct OpenClawAgentImportSheet: View {
                 Text(actionTitle)
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("勾选要导入到当前项目的 Agents。只有目录和配置都通过校验的项目可导入。")
+                Text(LocalizedString.text("import_sheet_description"))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
 
             HStack(spacing: 10) {
-                Button("全选可导入") {
+                Button(LocalizedString.text("select_all_importable")) {
                     selectedIDs = importableIDs
                 }
                 .disabled(importableIDs.isEmpty)
 
-                Button("清空") {
+                Button(LocalizedString.text("clear_selection")) {
                     selectedIDs.removeAll()
                 }
                 .disabled(selectedIDs.isEmpty)
 
                 Spacer(minLength: 0)
 
-                Text("已选 \(selectedImportableCount) / \(importableIDs.count)")
+                Text(LocalizedString.format("selected_import_count", selectedImportableCount, importableIDs.count))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -65,13 +65,13 @@ struct OpenClawAgentImportSheet: View {
             .frame(minHeight: 220)
 
             HStack {
-                Button("取消") {
+                Button(LocalizedString.cancel) {
                     dismiss()
                 }
 
                 Spacer(minLength: 0)
 
-                Button("导入选中项") {
+                Button(LocalizedString.text("import_selected_items")) {
                     onImport(selectedIDs.intersection(importableIDs))
                     dismiss()
                 }
@@ -114,7 +114,7 @@ struct OpenClawAgentImportSheet: View {
                     Text(record.name)
                         .font(.headline)
                     if canImport {
-                        Text("可导入")
+                        Text(LocalizedString.text("importable"))
                             .font(.caption2)
                             .foregroundColor(.green)
                             .padding(.horizontal, 6)
@@ -122,7 +122,7 @@ struct OpenClawAgentImportSheet: View {
                             .background(Color.green.opacity(0.12))
                             .clipShape(Capsule())
                     } else {
-                        Text("不可导入")
+                        Text(LocalizedString.text("not_importable"))
                             .font(.caption2)
                             .foregroundColor(.orange)
                             .padding(.horizontal, 6)
@@ -133,7 +133,7 @@ struct OpenClawAgentImportSheet: View {
                 }
 
                 if record.issues.isEmpty {
-                    Text("目录与 openclaw.json 已完成校验。")
+                    Text(LocalizedString.text("openclaw_validation_passed"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
