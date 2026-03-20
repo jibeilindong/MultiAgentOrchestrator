@@ -1016,10 +1016,13 @@ struct EditorToolbar: View {
                     .font(.system(size: 14, weight: .semibold))
                 Text(mode.displayTitle)
                     .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 12)
             .frame(height: 38)
-            .frame(minWidth: 74)
+            .frame(minWidth: 82)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
         .foregroundColor(viewMode == mode ? .white : Color.primary.opacity(0.76))
@@ -1692,20 +1695,13 @@ private func makeAgentCollectionSnapshot(context: AgentCollectionSnapshotContext
 
     let workflow = project.workflows.first
     let nodes = workflow?.nodes ?? []
-    let edges = workflow?.edges ?? []
     let soulSourcePaths = makeAgentCollectionSoulSourcePaths(context: context)
+    let connectionCounts = workflow?.connectionCountsByNodeID() ?? [:]
 
     var nodeIDsByAgentID: [UUID: UUID] = [:]
     for node in nodes where node.type == .agent {
         guard let agentID = node.agentID, nodeIDsByAgentID[agentID] == nil else { continue }
         nodeIDsByAgentID[agentID] = node.id
-    }
-
-    var incomingCounts: [UUID: Int] = [:]
-    var outgoingCounts: [UUID: Int] = [:]
-    for edge in edges {
-        outgoingCounts[edge.fromNodeID, default: 0] += 1
-        incomingCounts[edge.toNodeID, default: 0] += 1
     }
 
     let items = project.agents.map { agent in
@@ -1722,8 +1718,8 @@ private func makeAgentCollectionSnapshot(context: AgentCollectionSnapshotContext
             statusSystemImage: status.systemImage,
             statusColor: status.color,
             statusIsProblem: status.isProblem,
-            incomingConnections: nodeID.flatMap { incomingCounts[$0] } ?? 0,
-            outgoingConnections: nodeID.flatMap { outgoingCounts[$0] } ?? 0
+            incomingConnections: nodeID.flatMap { connectionCounts[$0]?.incoming } ?? 0,
+            outgoingConnections: nodeID.flatMap { connectionCounts[$0]?.outgoing } ?? 0
         )
     }
 

@@ -481,6 +481,13 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
     }
 }
 
+struct WorkflowNodeConnectionCounts: Hashable {
+    var incoming: Int = 0
+    var outgoing: Int = 0
+
+    static let zero = WorkflowNodeConnectionCounts()
+}
+
 struct Workflow: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
@@ -559,5 +566,22 @@ struct Workflow: Codable, Identifiable, Hashable {
 
     func boundary(containing point: CGPoint) -> WorkflowBoundary? {
         boundaries.reversed().first { $0.contains(point: point) }
+    }
+
+    func connectionCountsByNodeID() -> [UUID: WorkflowNodeConnectionCounts] {
+        var counts: [UUID: WorkflowNodeConnectionCounts] = [:]
+        counts.reserveCapacity(nodes.count)
+
+        for edge in edges {
+            counts[edge.toNodeID, default: .zero].incoming += 1
+            counts[edge.fromNodeID, default: .zero].outgoing += 1
+
+            guard edge.isBidirectional else { continue }
+
+            counts[edge.fromNodeID, default: .zero].incoming += 1
+            counts[edge.toNodeID, default: .zero].outgoing += 1
+        }
+
+        return counts
     }
 }

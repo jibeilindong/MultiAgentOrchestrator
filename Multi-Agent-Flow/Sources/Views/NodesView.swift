@@ -28,7 +28,7 @@ struct NodesView: View {
     var body: some View {
         let workflow = currentWorkflow
         let focusedNodeIDs = activeFocusedNodeIDs()
-        let nodeConnectionCounts = connectionCountsByNodeID(in: workflow)
+        let nodeConnectionCounts = workflow?.connectionCountsByNodeID() ?? [:]
         let connectedNodeIDs = allConnectedNodeIDs(in: workflow)
         let relatedNodeIDs = relatedNodeIDs(for: focusedNodeIDs, in: workflow)
 
@@ -114,20 +114,6 @@ struct NodesView: View {
         return result
     }
 
-    private func connectionCountsByNodeID(in workflow: Workflow?) -> [UUID: NodeConnectionCounts] {
-        guard let workflow else { return [:] }
-
-        var counts: [UUID: NodeConnectionCounts] = [:]
-        counts.reserveCapacity(workflow.nodes.count)
-
-        for edge in workflow.edges {
-            counts[edge.toNodeID, default: .zero].incoming += 1
-            counts[edge.fromNodeID, default: .zero].outgoing += 1
-        }
-
-        return counts
-    }
-
     private func allConnectedNodeIDs(in workflow: Workflow?) -> Set<UUID> {
         guard let workflow else { return [] }
 
@@ -204,11 +190,4 @@ struct NodesView: View {
         }
         return nil
     }
-}
-
-private struct NodeConnectionCounts {
-    var incoming: Int = 0
-    var outgoing: Int = 0
-
-    static let zero = NodeConnectionCounts()
 }
