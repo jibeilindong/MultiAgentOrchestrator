@@ -552,6 +552,11 @@ struct AgentPropertiesView: View {
 }
 
 struct TemplatePickerButton: View {
+    enum Variant {
+        case plain
+        case toolbar
+    }
+
     @Binding var selectedTemplateID: String
     let onSelect: (AgentTemplate) -> Void
     let labelTitle: String
@@ -560,6 +565,7 @@ struct TemplatePickerButton: View {
     let onCreateBlank: (() -> Void)?
     let existingAgents: [Agent]
     let onSelectExistingAgent: ((Agent) -> Void)?
+    let variant: Variant
 
     @State private var isPresented = false
 
@@ -571,7 +577,8 @@ struct TemplatePickerButton: View {
         blankActionTitle: String? = nil,
         onCreateBlank: (() -> Void)? = nil,
         existingAgents: [Agent] = [],
-        onSelectExistingAgent: ((Agent) -> Void)? = nil
+        onSelectExistingAgent: ((Agent) -> Void)? = nil,
+        variant: Variant = .plain
     ) {
         self._selectedTemplateID = selectedTemplateID
         self.onSelect = onSelect
@@ -581,16 +588,41 @@ struct TemplatePickerButton: View {
         self.onCreateBlank = onCreateBlank
         self.existingAgents = existingAgents
         self.onSelectExistingAgent = onSelectExistingAgent
+        self.variant = variant
     }
 
     var body: some View {
         Button {
             isPresented = true
         } label: {
-            Label(labelTitle, systemImage: labelSystemImage)
+            switch variant {
+            case .plain:
+                Label(labelTitle, systemImage: labelSystemImage)
+            case .toolbar:
+                HStack(spacing: 8) {
+                    Image(systemName: labelSystemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(labelTitle)
+                        .font(.system(size: 12.5, weight: .semibold))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                }
+                .foregroundColor(Color.primary.opacity(0.82))
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.black.opacity(0.045))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                )
+            }
         }
         .font(.caption)
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .top) {
             TemplatePickerPopover(
                 selectedTemplateID: $selectedTemplateID,

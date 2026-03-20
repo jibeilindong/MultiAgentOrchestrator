@@ -696,26 +696,29 @@ struct EditorToolbar: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 14) {
             WorkflowToolbarGroup(title: "View") {
                 HStack(spacing: 8) {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
                         toolbarModeButton(mode)
                     }
 
-                    Divider().frame(height: 18)
+                    Divider()
+                        .frame(height: 24)
+                        .padding(.horizontal, 2)
 
                     Menu {
                         Button("Zoom Out") { zoomOut() }
                         Button("Reset Zoom") { resetView() }
                         Button("Zoom In") { zoomIn() }
                     } label: {
-                        toolbarMenuLabel(title: "View", systemName: "eye")
+                        toolbarMenuLabel(title: "Zoom", systemName: "eye")
                     }
                     .menuStyle(.borderlessButton)
 
                     toolbarIconToggleButton(
                         systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
+                        title: "Lasso",
                         action: toggleLassoMode,
                         isActive: isLassoMode,
                         tooltip: "框选模式"
@@ -739,7 +742,8 @@ struct EditorToolbar: View {
                         existingAgents: appState.currentProject?.agents ?? [],
                         onSelectExistingAgent: { agent in
                             appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
-                        }
+                        },
+                        variant: .toolbar
                     )
 
                     Menu {
@@ -798,6 +802,7 @@ struct EditorToolbar: View {
 
                     toolbarIconToggleButton(
                         systemName: isConnectMode ? "link.circle.fill" : "link.circle",
+                        title: "Connect",
                         action: toggleConnectMode,
                         isActive: isConnectMode,
                         tooltip: isConnectMode ? "取消创建连线" : "准备创建连线",
@@ -809,17 +814,37 @@ struct EditorToolbar: View {
                         connectionTypeButton(type: .bidirectional)
                     }
 
-                    toolbarIconButton(systemName: "list.bullet.clipboard", action: onGenerateTasks, tooltip: "生成任务")
+                    toolbarIconButton(
+                        systemName: "list.bullet.clipboard",
+                        title: "Tasks",
+                        action: onGenerateTasks,
+                        tooltip: "生成任务"
+                    )
 
                     Button(action: isRunning ? onStopTest : onRunTest) {
-                        Image(systemName: isRunning ? "stop.circle" : "play.circle")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 38, height: 34)
+                        HStack(spacing: 8) {
+                            Image(systemName: isRunning ? "stop.circle" : "play.circle")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text(isRunning ? "Stop" : "Run")
+                                .font(.system(size: 12.5, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(isRunning ? Color.red : Color.accentColor)
+                        )
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.plain)
                     .help(isRunning ? "停止测试" : "运行测试")
 
-                    toolbarIconButton(systemName: "square.and.arrow.down", action: onSave, tooltip: "保存")
+                    toolbarIconButton(
+                        systemName: "square.and.arrow.down",
+                        title: "Save",
+                        action: onSave,
+                        tooltip: "保存"
+                    )
                 }
 
                 if appState.isAutoSaving {
@@ -887,11 +912,11 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(
             LinearGradient(
-                colors: [Color.white.opacity(0.96), Color.white.opacity(0.84)],
+                colors: [Color.white.opacity(0.98), Color(red: 0.968, green: 0.972, blue: 0.985)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -900,23 +925,50 @@ struct EditorToolbar: View {
 
     private func toolbarModeButton(_ mode: WorkflowEditorView.EditorViewMode) -> some View {
         Button(action: { viewMode = mode }) {
-            Image(systemName: mode.icon)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 38, height: 34)
+            HStack(spacing: 8) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(mode == .architecture ? "Flow" : mode.rawValue)
+                    .font(.system(size: 12.5, weight: .semibold))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .frame(minWidth: 74)
         }
         .buttonStyle(.plain)
-        .foregroundColor(viewMode == mode ? .accentColor : .secondary)
-        .background(viewMode == mode ? Color.accentColor.opacity(0.18) : Color.clear)
-        .cornerRadius(8)
+        .foregroundColor(viewMode == mode ? .white : Color.primary.opacity(0.76))
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(viewMode == mode ? Color.accentColor : Color.black.opacity(0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(viewMode == mode ? Color.accentColor.opacity(0.1) : Color.black.opacity(0.06), lineWidth: 1)
+        )
         .help(mode.rawValue)
     }
 
     private func toolbarMenuLabel(title: String, systemName: String) -> some View {
-        Label(title, systemImage: systemName)
-            .font(.caption.weight(.medium))
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .frame(height: 32)
+        HStack(spacing: 8) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+            Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.secondary)
+        }
+        .foregroundColor(Color.primary.opacity(0.82))
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.black.opacity(0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
     }
 
     private func selectAllItems() {
@@ -954,57 +1006,100 @@ struct EditorToolbar: View {
         }
     }
 
-    private func toolbarIconButton(systemName: String, action: @escaping () -> Void, tooltip: String) -> some View {
+    private func toolbarIconButton(
+        systemName: String,
+        title: String? = nil,
+        action: @escaping () -> Void,
+        tooltip: String
+    ) -> some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 38, height: 34)
+            toolbarActionLabel(
+                systemName: systemName,
+                title: title,
+                isActive: false,
+                prominent: false
+            )
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .help(tooltip)
     }
 
     private func toolbarIconToggleButton(
         systemName: String,
+        title: String? = nil,
         action: @escaping () -> Void,
         isActive: Bool,
         tooltip: String,
         prominent: Bool = false
     ) -> some View {
-        Group {
-            if prominent {
-                Button(action: action) {
-                    Image(systemName: systemName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 38, height: 34)
-                }
-                .buttonStyle(.borderedProminent)
-            } else {
-                Button(action: action) {
-                    Image(systemName: systemName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 38, height: 34)
-                }
-                .buttonStyle(.bordered)
-            }
+        Button(action: action) {
+            toolbarActionLabel(
+                systemName: systemName,
+                title: title,
+                isActive: isActive,
+                prominent: prominent
+            )
         }
-        .tint(isActive ? .blue : nil)
+        .buttonStyle(.plain)
         .help(tooltip)
     }
 
     private func connectionTypeButton(type: WorkflowEditorView.ConnectionType) -> some View {
         let icon = type == .unidirectional ? "arrow.right" : "arrow.left.arrow.right"
+        let isActive = connectionType == type
         return Button(action: {
             connectionType = type
             isConnectMode = true
         }) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 38, height: 34)
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 13.5, weight: .semibold))
+                Text(type == .unidirectional ? "One-way" : "Two-way")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundColor(isActive ? .white : Color.primary.opacity(0.76))
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isActive ? Color.accentColor : Color.black.opacity(0.045))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isActive ? Color.accentColor.opacity(0.1) : Color.black.opacity(0.06), lineWidth: 1)
+            )
         }
-        .buttonStyle(.bordered)
-        .tint(connectionType == type ? .blue : nil)
+        .buttonStyle(.plain)
         .help(type.description)
+    }
+
+    private func toolbarActionLabel(
+        systemName: String,
+        title: String?,
+        isActive: Bool,
+        prominent: Bool
+    ) -> some View {
+        let useAccent = prominent || isActive
+        return HStack(spacing: 8) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .semibold))
+            if let title {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .semibold))
+            }
+        }
+        .foregroundColor(useAccent ? .white : Color.primary.opacity(0.82))
+        .padding(.horizontal, title == nil ? 0 : 14)
+        .frame(width: title == nil ? 40 : nil, height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(useAccent ? Color.accentColor : Color.black.opacity(0.045))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(useAccent ? Color.accentColor.opacity(0.12) : Color.black.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: useAccent ? Color.accentColor.opacity(0.16) : .clear, radius: 6, x: 0, y: 2)
     }
 
     private func zoomIn() {
@@ -1235,20 +1330,28 @@ private struct WorkflowToolbarGroup<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title.uppercased())
-                .font(.caption2)
-                .foregroundColor(.secondary)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color.primary.opacity(0.38))
+                .tracking(0.8)
             ScrollView(.horizontal, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 6) {
                     content
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color.white.opacity(0.8))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.86))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.black.opacity(0.05), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.04), radius: 10, x: 0, y: 2)
     }
 }
 
@@ -1289,33 +1392,105 @@ private struct AgentCollectionItem: Identifiable {
     var soulDirectoryName: String? { soulSourcePath.map { URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent } }
 }
 
+private struct AgentCollectionSnapshot {
+    let items: [AgentCollectionItem]
+    let onCanvasCount: Int
+    let withSoulCount: Int
+    let attentionCount: Int
+
+    static let empty = AgentCollectionSnapshot(
+        items: [],
+        onCanvasCount: 0,
+        withSoulCount: 0,
+        attentionCount: 0
+    )
+}
+
+private struct AgentCollectionSignature: Equatable {
+    let projectID: UUID?
+    let projectUpdatedAt: Date?
+    let runtimeUpdatedAt: Date?
+    let agentCount: Int
+    let nodeCount: Int
+    let edgeCount: Int
+}
+
 private struct AgentActionFeedback: Identifiable {
     let id = UUID()
     let message: String
     let isError: Bool
 }
 
-private func makeAgentCollectionItems(appState: AppState) -> [AgentCollectionItem] {
-    guard let project = appState.currentProject else { return [] }
+private func makeAgentCollectionSignature(project: MAProject?) -> AgentCollectionSignature {
+    let workflow = project?.workflows.first
 
-    return project.agents.map { agent in
-        let summary = appState.connectionSummary(for: agent.id)
+    return AgentCollectionSignature(
+        projectID: project?.id,
+        projectUpdatedAt: project?.updatedAt,
+        runtimeUpdatedAt: project?.runtimeState.lastUpdated,
+        agentCount: project?.agents.count ?? 0,
+        nodeCount: workflow?.nodes.count ?? 0,
+        edgeCount: workflow?.edges.count ?? 0
+    )
+}
+
+private func makeAgentCollectionSnapshot(appState: AppState) -> AgentCollectionSnapshot {
+    guard let project = appState.currentProject else { return .empty }
+
+    let workflow = project.workflows.first
+    let nodes = workflow?.nodes ?? []
+    let edges = workflow?.edges ?? []
+
+    var nodeIDsByAgentID: [UUID: UUID] = [:]
+    for node in nodes where node.type == .agent {
+        guard let agentID = node.agentID, nodeIDsByAgentID[agentID] == nil else { continue }
+        nodeIDsByAgentID[agentID] = node.id
+    }
+
+    var incomingCounts: [UUID: Int] = [:]
+    var outgoingCounts: [UUID: Int] = [:]
+    for edge in edges {
+        outgoingCounts[edge.fromNodeID, default: 0] += 1
+        incomingCounts[edge.toNodeID, default: 0] += 1
+    }
+
+    let items = project.agents.map { agent in
+        let nodeID = nodeIDsByAgentID[agent.id]
         let soulPath = appState.agentSoulFileURL(for: agent.id)?.path
         let rawStatus = project.runtimeState.agentStates[agent.id.uuidString]
         let status = runtimePresentation(for: rawStatus)
 
         return AgentCollectionItem(
             agent: agent,
-            nodeID: appState.workflowNodeID(for: agent.id),
+            nodeID: nodeID,
             soulSourcePath: soulPath,
             statusLabel: status.label,
             statusSystemImage: status.systemImage,
             statusColor: status.color,
             statusIsProblem: status.isProblem,
-            incomingConnections: summary.incoming,
-            outgoingConnections: summary.outgoing
+            incomingConnections: nodeID.flatMap { incomingCounts[$0] } ?? 0,
+            outgoingConnections: nodeID.flatMap { outgoingCounts[$0] } ?? 0
         )
     }
+
+    let counts = items.reduce(into: (onCanvas: 0, withSoul: 0, attention: 0)) { result, item in
+        if item.isOnCanvas {
+            result.onCanvas += 1
+        }
+        if item.hasSoulFile {
+            result.withSoul += 1
+        }
+        if !item.hasSoulFile || !item.isOnCanvas || item.statusIsProblem {
+            result.attention += 1
+        }
+    }
+
+    return AgentCollectionSnapshot(
+        items: items,
+        onCanvasCount: counts.onCanvas,
+        withSoulCount: counts.withSoul,
+        attentionCount: counts.attention
+    )
 }
 
 private func runtimePresentation(for rawStatus: String?) -> (label: String, systemImage: String, color: Color, isProblem: Bool) {
@@ -1405,21 +1580,9 @@ private struct AgentCollectionToolbar: View {
     @Binding var searchText: String
     @Binding var filter: AgentCollectionFilter
     @Binding var sort: AgentCollectionSort
-    let items: [AgentCollectionItem]
+    let snapshot: AgentCollectionSnapshot
     let visibleCount: Int
     let feedback: AgentActionFeedback?
-
-    private var onCanvasCount: Int {
-        items.filter(\.isOnCanvas).count
-    }
-
-    private var withSoulCount: Int {
-        items.filter(\.hasSoulFile).count
-    }
-
-    private var attentionCount: Int {
-        items.filter { !$0.hasSoulFile || !$0.isOnCanvas || $0.statusIsProblem }.count
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1451,10 +1614,10 @@ private struct AgentCollectionToolbar: View {
             }
 
             HStack(spacing: 8) {
-                AgentCollectionBadge(systemImage: "person.3.fill", text: "\(visibleCount)/\(items.count) visible")
-                AgentCollectionBadge(systemImage: "square.grid.2x2", text: "\(onCanvasCount) on canvas")
-                AgentCollectionBadge(systemImage: "doc.text.fill", text: "\(withSoulCount) with SOUL")
-                AgentCollectionBadge(systemImage: "exclamationmark.triangle.fill", text: "\(attentionCount) need attention")
+                AgentCollectionBadge(systemImage: "person.3.fill", text: "\(visibleCount)/\(snapshot.items.count) visible")
+                AgentCollectionBadge(systemImage: "square.grid.2x2", text: "\(snapshot.onCanvasCount) on canvas")
+                AgentCollectionBadge(systemImage: "doc.text.fill", text: "\(snapshot.withSoulCount) with SOUL")
+                AgentCollectionBadge(systemImage: "exclamationmark.triangle.fill", text: "\(snapshot.attentionCount) need attention")
             }
 
             if let feedback {
@@ -1627,13 +1790,18 @@ struct AgentListView: View {
     @State private var permissionsAgent: Agent?
     @State private var deleteCandidate: Agent?
     @State private var feedback: AgentActionFeedback?
+    @State private var collectionSnapshot: AgentCollectionSnapshot = .empty
 
     private var items: [AgentCollectionItem] {
-        makeAgentCollectionItems(appState: appState)
+        collectionSnapshot.items
     }
 
     private var visibleItems: [AgentCollectionItem] {
         filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
+    }
+
+    private var collectionSignature: AgentCollectionSignature {
+        makeAgentCollectionSignature(project: appState.currentProject)
     }
 
     var body: some View {
@@ -1642,7 +1810,7 @@ struct AgentListView: View {
                 searchText: $searchText,
                 filter: $filter,
                 sort: $sort,
-                items: items,
+                snapshot: collectionSnapshot,
                 visibleCount: visibleItems.count,
                 feedback: feedback
             )
@@ -1734,6 +1902,10 @@ struct AgentListView: View {
             }
         } message: {
             Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
+        }
+        .onAppear(perform: refreshCollectionSnapshot)
+        .onChange(of: collectionSignature) { _, _ in
+            refreshCollectionSnapshot()
         }
     }
 
@@ -1867,6 +2039,10 @@ struct AgentListView: View {
             }
         }
     }
+
+    private func refreshCollectionSnapshot() {
+        collectionSnapshot = makeAgentCollectionSnapshot(appState: appState)
+    }
 }
 
 private struct AgentListRow: View {
@@ -1884,57 +2060,68 @@ private struct AgentListRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AgentStatusPill(label: item.statusLabel, systemImage: item.statusSystemImage, color: item.statusColor)
-                .frame(width: 120, alignment: .leading)
+            HStack(spacing: 12) {
+                AgentStatusPill(label: item.statusLabel, systemImage: item.statusSystemImage, color: item.statusColor)
+                    .frame(width: 120, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.agent.name)
-                    .font(.body.weight(.semibold))
-                    .lineLimit(1)
-                Text(item.agent.identity)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                if !item.agent.description.isEmpty {
-                    Text(item.agent.description)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.agent.name)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                    Text(item.agent.identity)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    if !item.agent.description.isEmpty {
+                        Text(item.agent.description)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(minWidth: 220, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.agent.openClawDefinition.modelIdentifier)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Text(item.agent.openClawDefinition.runtimeProfile)
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
-            }
-            .frame(minWidth: 220, alignment: .leading)
+                .frame(minWidth: 170, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.agent.openClawDefinition.modelIdentifier)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                Text(item.agent.openClawDefinition.runtimeProfile)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(minWidth: 170, alignment: .leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("In \(item.incomingConnections) / Out \(item.outgoingConnections)")
+                        .font(.caption)
+                    Text("\(item.agent.capabilities.count) skills")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(width: 110, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("In \(item.incomingConnections) / Out \(item.outgoingConnections)")
-                    .font(.caption)
-                Text("\(item.agent.capabilities.count) skills")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .frame(width: 110, alignment: .leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.soulDisplayName)
+                        .font(.caption)
+                        .foregroundColor(item.hasSoulFile ? .primary : .orange)
+                        .lineLimit(1)
+                    Text(item.soulDirectoryName ?? "Using project cache only")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(minWidth: 170, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.soulDisplayName)
-                    .font(.caption)
-                    .foregroundColor(item.hasSoulFile ? .primary : .orange)
-                    .lineLimit(1)
-                Text(item.soulDirectoryName ?? "Using project cache only")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
-            .frame(minWidth: 170, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onSelect()
+            }
+            .onTapGesture(count: 2) {
+                onEdit()
+            }
 
             HStack(spacing: 8) {
                 Button(action: onOpen) {
@@ -1977,8 +2164,6 @@ private struct AgentListRow: View {
                 }
             }
             .frame(width: isConnectMode ? 210 : 180, alignment: .center)
-
-            Spacer(minLength: 0)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 2)
@@ -1986,13 +2171,6 @@ private struct AgentListRow: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(isSelected ? Color.accentColor.opacity(0.12) : (isConnectSource ? Color.blue.opacity(0.10) : Color.clear))
         )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onSelect()
-        }
-        .onTapGesture(count: 2) {
-            onEdit()
-        }
     }
 }
 
@@ -2014,13 +2192,18 @@ struct AgentGridView: View {
     @State private var permissionsAgent: Agent?
     @State private var deleteCandidate: Agent?
     @State private var feedback: AgentActionFeedback?
+    @State private var collectionSnapshot: AgentCollectionSnapshot = .empty
 
     private var items: [AgentCollectionItem] {
-        makeAgentCollectionItems(appState: appState)
+        collectionSnapshot.items
     }
 
     private var visibleItems: [AgentCollectionItem] {
         filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
+    }
+
+    private var collectionSignature: AgentCollectionSignature {
+        makeAgentCollectionSignature(project: appState.currentProject)
     }
 
     var body: some View {
@@ -2029,7 +2212,7 @@ struct AgentGridView: View {
                 searchText: $searchText,
                 filter: $filter,
                 sort: $sort,
-                items: items,
+                snapshot: collectionSnapshot,
                 visibleCount: visibleItems.count,
                 feedback: feedback
             )
@@ -2110,6 +2293,10 @@ struct AgentGridView: View {
             }
         } message: {
             Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
+        }
+        .onAppear(perform: refreshCollectionSnapshot)
+        .onChange(of: collectionSignature) { _, _ in
+            refreshCollectionSnapshot()
         }
     }
 
@@ -2236,6 +2423,10 @@ struct AgentGridView: View {
             }
         }
     }
+
+    private func refreshCollectionSnapshot() {
+        collectionSnapshot = makeAgentCollectionSnapshot(appState: appState)
+    }
 }
 
 private struct AgentGridCard: View {
@@ -2254,38 +2445,47 @@ private struct AgentGridCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.agent.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(item.agent.identity)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.agent.name)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Text(item.agent.identity)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    AgentStatusPill(label: item.statusLabel, systemImage: item.statusSystemImage, color: item.statusColor)
                 }
 
-                Spacer()
+                if !item.agent.description.isEmpty {
+                    Text(item.agent.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
 
-                AgentStatusPill(label: item.statusLabel, systemImage: item.statusSystemImage, color: item.statusColor)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(item.agent.openClawDefinition.modelIdentifier, systemImage: "cpu")
+                    Label(item.agent.openClawDefinition.runtimeProfile, systemImage: "dial.high")
+                    Label("\(item.agent.capabilities.count) skills", systemImage: "star")
+                    Label("In \(item.incomingConnections) / Out \(item.outgoingConnections)", systemImage: "arrow.left.arrow.right")
+                    Label(item.hasSoulFile ? item.soulDisplayName : "Project cache only", systemImage: item.hasSoulFile ? "doc.text" : "exclamationmark.triangle")
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
             }
-
-            if !item.agent.description.isEmpty {
-                Text(item.agent.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .onTapGesture {
+                onSelect()
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Label(item.agent.openClawDefinition.modelIdentifier, systemImage: "cpu")
-                Label(item.agent.openClawDefinition.runtimeProfile, systemImage: "dial.high")
-                Label("\(item.agent.capabilities.count) skills", systemImage: "star")
-                Label("In \(item.incomingConnections) / Out \(item.outgoingConnections)", systemImage: "arrow.left.arrow.right")
-                Label(item.hasSoulFile ? item.soulDisplayName : "Project cache only", systemImage: item.hasSoulFile ? "doc.text" : "exclamationmark.triangle")
+            .onTapGesture(count: 2) {
+                onEdit()
             }
-            .font(.caption)
-            .foregroundColor(.secondary)
 
             HStack(spacing: 10) {
                 Button(action: onOpen) {
@@ -2341,13 +2541,6 @@ private struct AgentGridCard: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(isSelected ? Color.accentColor : (isConnectSource ? Color.blue : Color.clear), lineWidth: 2)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 14))
-        .onTapGesture {
-            onSelect()
-        }
-        .onTapGesture(count: 2) {
-            onEdit()
-        }
     }
 }
 

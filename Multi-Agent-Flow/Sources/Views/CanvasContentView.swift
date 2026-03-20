@@ -33,9 +33,50 @@ struct CanvasContentView: View {
     @State private var rightMouseLassoStart: CGPoint?
     @State private var boundaryDragSnapshots: [UUID: BoundaryDragSnapshot] = [:]
     @State private var draggingBoundaryID: UUID?
+    @State private var legendFrame: CGRect = .null
 
     private var currentWorkflow: Workflow? {
         appState.currentProject?.workflows.first
+    }
+
+    private var visibleLegendGroupCount: Int {
+        guard let workflow = currentWorkflow else { return 0 }
+
+        let nodeGroups = Set(
+            workflow.nodes.compactMap { node in
+                CanvasStylePalette.normalizedHex(node.displayColorHex)
+            }
+        )
+        let edgeGroups = Set(
+            workflow.edges.compactMap { edge in
+                CanvasStylePalette.normalizedHex(edge.displayColorHex)
+            }
+        )
+
+        return nodeGroups.count + edgeGroups.count
+    }
+
+    private var fallbackLegendFrame: CGRect {
+        guard visibleLegendGroupCount > 0 else { return .null }
+
+        let scaledRowHeight = max(42, 38 * appState.canvasDisplaySettings.textScale)
+        let scaledHeaderHeight = max(22, 18 * appState.canvasDisplaySettings.textScale)
+        let interRowSpacing = CGFloat(max(0, visibleLegendGroupCount - 1)) * 10
+        let height = 14 + 12 + scaledHeaderHeight + 10 + (CGFloat(visibleLegendGroupCount) * scaledRowHeight) + interRowSpacing + 12
+        let width = max(360, 320 + (appState.canvasDisplaySettings.textScale * 40))
+
+        return CGRect(x: 8, y: 8, width: width, height: height)
+    }
+
+    private var legendInteractionFrame: CGRect {
+        let candidates = [
+            legendFrame.isNull ? CGRect.null : legendFrame.insetBy(dx: -16, dy: -16),
+            fallbackLegendFrame
+        ].filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+
+        return candidates.reduce(CGRect.null) { partial, rect in
+            partial.isNull ? rect : partial.union(rect)
+        }
     }
 
     var body: some View {
@@ -150,6 +191,7 @@ struct CanvasContentView: View {
                 }
             }
             interactiveCanvas
+            .coordinateSpace(name: CanvasOverlayFramePreferenceKey.coordinateSpaceName)
             .overlay(alignment: .topLeading) {
                 CanvasGroupLegendView(
                     workflow: currentWorkflow,
@@ -159,10 +201,23 @@ struct CanvasContentView: View {
                 )
                 .padding(.top, 14)
                 .padding(.leading, 14)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(
+                                key: CanvasOverlayFramePreferenceKey.self,
+                                value: proxy.frame(in: .named(CanvasOverlayFramePreferenceKey.coordinateSpaceName))
+                            )
+                    }
+                )
             }
+            .onPreferenceChange(CanvasOverlayFramePreferenceKey.self) { legendFrame = $0 }
             .background(
                 BlankCanvasDragMonitor(
                     isEnabled: { !(isLassoMode || isTransientLassoMode) },
+                    shouldIgnoreLocation: { location in
+                        legendInteractionFrame.contains(location)
+                    },
                     onEdgeHit: { location in
                         guard let edge = edge(at: location, geometry: geometry) else { return false }
                         suppressCanvasTapClear = true
@@ -201,6 +256,9 @@ struct CanvasContentView: View {
             )
             .background(
                 RightMouseDragMonitor(
+                    shouldIgnoreLocation: { location in
+                        legendInteractionFrame.contains(location)
+                    },
                     onStart: { start in
                         isTransientLassoMode = true
                         rightMouseLassoStart = start
@@ -907,18 +965,6 @@ private struct CanvasGroupLegendView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11 * textScale))
                         .frame(width: 126)
-                        .onSubmit {
-                            commit(group)
-                        }
-
-                        Button {
-                            commit(group)
-                        } label: {
-                            Image(systemName: "checkmark.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.secondary)
-                        .help(saveTitle)
 
                         Text("\(group.itemCount)")
                             .font(.system(size: 10 * textScale, weight: .medium))
@@ -960,7 +1006,10 @@ private struct CanvasGroupLegendView: View {
     private func binding(for group: CanvasLegendGroup) -> Binding<String> {
         Binding(
             get: { titleDrafts[group.id] ?? group.title },
-            set: { titleDrafts[group.id] = $0 }
+            set: { newValue in
+                titleDrafts[group.id] = newValue
+                commit(group, title: newValue)
+            }
         )
     }
 
@@ -978,11 +1027,11 @@ private struct CanvasGroupLegendView: View {
         }
     }
 
-    private func commit(_ group: CanvasLegendGroup) {
+    private func commit(_ group: CanvasLegendGroup, title: String? = nil) {
         appState.updateColorGroupTitle(
             kind: group.kind,
             colorHex: group.colorHex,
-            title: titleDrafts[group.id] ?? group.title
+            title: title ?? titleDrafts[group.id] ?? group.title
         )
     }
 
@@ -997,16 +1046,6 @@ private struct CanvasGroupLegendView: View {
         }
     }
 
-    private var saveTitle: String {
-        switch localizationManager.currentLanguage {
-        case .english:
-            return "Save label"
-        case .traditionalChinese:
-            return "保存標籤"
-        case .simplifiedChinese:
-            return "保存标签"
-        }
-    }
 }
 
 private struct CanvasLegendGroup: Identifiable, Hashable {
@@ -1045,6 +1084,7 @@ private struct CanvasLegendGroup: Identifiable, Hashable {
 
 private struct BlankCanvasDragMonitor: NSViewRepresentable {
     var isEnabled: () -> Bool
+    var shouldIgnoreLocation: (CGPoint) -> Bool
     var onEdgeHit: (_ location: CGPoint) -> Bool
     var isBlankLocation: (CGPoint) -> Bool
     var currentOffset: () -> CGSize
@@ -1056,6 +1096,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             isEnabled: isEnabled,
+            shouldIgnoreLocation: shouldIgnoreLocation,
             onEdgeHit: onEdgeHit,
             isBlankLocation: isBlankLocation,
             currentOffset: currentOffset,
@@ -1074,6 +1115,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.isEnabled = isEnabled
+        context.coordinator.shouldIgnoreLocation = shouldIgnoreLocation
         context.coordinator.onEdgeHit = onEdgeHit
         context.coordinator.isBlankLocation = isBlankLocation
         context.coordinator.currentOffset = currentOffset
@@ -1090,6 +1132,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
     final class Coordinator {
         var isEnabled: () -> Bool
+        var shouldIgnoreLocation: (CGPoint) -> Bool
         var onEdgeHit: (_ location: CGPoint) -> Bool
         var isBlankLocation: (CGPoint) -> Bool
         var currentOffset: () -> CGSize
@@ -1108,6 +1151,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
         init(
             isEnabled: @escaping () -> Bool,
+            shouldIgnoreLocation: @escaping (CGPoint) -> Bool,
             onEdgeHit: @escaping (_ location: CGPoint) -> Bool,
             isBlankLocation: @escaping (CGPoint) -> Bool,
             currentOffset: @escaping () -> CGSize,
@@ -1117,6 +1161,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
             onDragEnded: @escaping (_ didDrag: Bool, _ location: CGPoint) -> Void
         ) {
             self.isEnabled = isEnabled
+            self.shouldIgnoreLocation = shouldIgnoreLocation
             self.onEdgeHit = onEdgeHit
             self.isBlankLocation = isBlankLocation
             self.currentOffset = currentOffset
@@ -1137,6 +1182,9 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
                 guard view.bounds.contains(location) else { return event }
+                if self.shouldIgnoreLocation(location) {
+                    return event
+                }
 
                 switch event.type {
                 case .leftMouseDown:
@@ -1198,12 +1246,18 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 }
 
 private struct RightMouseDragMonitor: NSViewRepresentable {
+    var shouldIgnoreLocation: (CGPoint) -> Bool
     var onStart: (CGPoint) -> Void
     var onDrag: (CGPoint) -> Void
     var onEnd: (CGPoint) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onStart: onStart, onDrag: onDrag, onEnd: onEnd)
+        Coordinator(
+            shouldIgnoreLocation: shouldIgnoreLocation,
+            onStart: onStart,
+            onDrag: onDrag,
+            onEnd: onEnd
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -1213,6 +1267,7 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.shouldIgnoreLocation = shouldIgnoreLocation
         context.coordinator.onStart = onStart
         context.coordinator.onDrag = onDrag
         context.coordinator.onEnd = onEnd
@@ -1224,6 +1279,7 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
     }
 
     final class Coordinator {
+        var shouldIgnoreLocation: (CGPoint) -> Bool
         var onStart: (CGPoint) -> Void
         var onDrag: (CGPoint) -> Void
         var onEnd: (CGPoint) -> Void
@@ -1232,7 +1288,13 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
         private var monitor: Any?
         private var tracking = false
 
-        init(onStart: @escaping (CGPoint) -> Void, onDrag: @escaping (CGPoint) -> Void, onEnd: @escaping (CGPoint) -> Void) {
+        init(
+            shouldIgnoreLocation: @escaping (CGPoint) -> Bool,
+            onStart: @escaping (CGPoint) -> Void,
+            onDrag: @escaping (CGPoint) -> Void,
+            onEnd: @escaping (CGPoint) -> Void
+        ) {
+            self.shouldIgnoreLocation = shouldIgnoreLocation
             self.onStart = onStart
             self.onDrag = onDrag
             self.onEnd = onEnd
@@ -1251,6 +1313,7 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
                 switch event.type {
                 case .rightMouseDown:
                     guard inside else { return event }
+                    guard !self.shouldIgnoreLocation(location) else { return event }
                     tracking = true
                     onStart(location)
                     return nil
@@ -1276,5 +1339,14 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
             monitor = nil
             tracking = false
         }
+    }
+}
+
+private struct CanvasOverlayFramePreferenceKey: PreferenceKey {
+    static let coordinateSpaceName = "CanvasContentViewCoordinateSpace"
+    static var defaultValue: CGRect = .null
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
     }
 }

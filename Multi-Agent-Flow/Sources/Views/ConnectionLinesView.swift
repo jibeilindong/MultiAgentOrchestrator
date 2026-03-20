@@ -124,14 +124,19 @@ struct ConnectionLinesView: View {
                     ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16))
                         .fill(Color.clear)
                         .contentShape(ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16)))
-                        .onHover { isHovering in
-                            withAnimation(.easeOut(duration: 0.16)) {
-                                hoveredSharedSegmentID = isHovering ? sharedHit.id : (hoveredSharedSegmentID == sharedHit.id ? nil : hoveredSharedSegmentID)
-                            }
-                        }
                         .onTapGesture {
                             cycleSharedSegmentSelection(sharedHit.edges)
                         }
+                }
+            }
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let location):
+                    updateHoveredSharedSegment(
+                        sharedSegmentHitID(at: location, in: renderData.sharedHitLayouts)
+                    )
+                case .ended:
+                    updateHoveredSharedSegment(nil)
                 }
             }
         }
@@ -271,28 +276,16 @@ struct ConnectionLinesView: View {
     }
 
     private func buildSharedHitLayouts(from layouts: [EdgeLayout]) -> [SharedSegmentHitLayout] {
-        let groupedSegments = Dictionary(grouping: layouts.flatMap { layout -> [SharedSegmentCandidate] in
-            zip(layout.points, layout.points.dropFirst()).map { from, to in
-                SharedSegmentCandidate(
-                    segmentKey: normalizedUndirectedSegmentKey(from: from, to: to),
-                    points: [from, to],
-                    edge: layout.edge
-                )
-            }
-        }, by: \.segmentKey)
-
-        return groupedSegments.compactMap { segmentKey, candidates in
-            let uniqueEdges = uniqueEdgesPreservingOrder(candidates.map(\.edge))
-            guard uniqueEdges.count >= 2,
-                  let points = candidates.first?.points else { return nil }
-
-            return SharedSegmentHitLayout(
-                id: segmentKey,
-                points: points,
-                edges: uniqueEdges
-            )
+        let axisSegments = layouts.flatMap { layout in
+            sharedAxisSegments(for: layout)
         }
-        .sorted { lhs, rhs in
+        let groupedSegments = Dictionary(grouping: axisSegments, by: \.axisKey)
+
+        return groupedSegments
+            .flatMap { axisKey, segments in
+                sharedHitLayouts(for: segments, axisKey: axisKey)
+            }
+            .sorted { lhs, rhs in
             let lhsPoint = lhs.points.first ?? .zero
             let rhsPoint = rhs.points.first ?? .zero
             if abs(lhsPoint.y - rhsPoint.y) > 0.5 {
@@ -300,6 +293,92 @@ struct ConnectionLinesView: View {
             }
             return lhsPoint.x < rhsPoint.x
         }
+    }
+
+    private func sharedAxisSegments(for layout: EdgeLayout) -> [SharedAxisSegmentCandidate] {
+        zip(layout.points, layout.points.dropFirst()).compactMap { from, to in
+            let isVertical = abs(from.x - to.x) < 0.5
+            let isHorizontal = abs(from.y - to.y) < 0.5
+            guard isVertical || isHorizontal else { return nil }
+
+            let orientation: SharedSegmentOrientation = isVertical ? .vertical : .horizontal
+            let fixedValue = isVertical ? from.x : from.y
+            let rangeStart = isVertical ? min(from.y, to.y) : min(from.x, to.x)
+            let rangeEnd = isVertical ? max(from.y, to.y) : max(from.x, to.x)
+            guard rangeEnd - rangeStart > 0.5 else { return nil }
+
+            return SharedAxisSegmentCandidate(
+                axisKey: "\(orientation.rawValue):\(Int((fixedValue * 10).rounded()))",
+                orientation: orientation,
+                fixedValue: fixedValue,
+                rangeStart: rangeStart,
+                rangeEnd: rangeEnd,
+                edge: layout.edge
+            )
+        }
+    }
+
+    private func sharedHitLayouts(
+        for segments: [SharedAxisSegmentCandidate],
+        axisKey: String
+    ) -> [SharedSegmentHitLayout] {
+        let boundaries = uniqueSortedAxisBoundaries(
+            segments.flatMap { [$0.rangeStart, $0.rangeEnd] }
+        )
+        guard boundaries.count >= 2 else { return [] }
+
+        var atomicSegments: [SharedAtomicSegment] = []
+        for (start, end) in zip(boundaries, boundaries.dropFirst()) {
+            guard end - start > 0.5 else { continue }
+
+            let coveringEdges = uniqueEdgesPreservingOrder(
+                segments.compactMap { segment in
+                    segment.covers(start: start, end: end) ? segment.edge : nil
+                }
+            )
+            guard coveringEdges.count >= 2,
+                  let firstSegment = segments.first else { continue }
+
+            atomicSegments.append(
+                SharedAtomicSegment(
+                    orientation: firstSegment.orientation,
+                    fixedValue: firstSegment.fixedValue,
+                    rangeStart: start,
+                    rangeEnd: end,
+                    edges: coveringEdges
+                )
+            )
+        }
+
+        guard !atomicSegments.isEmpty else { return [] }
+        var mergedSegments: [SharedAtomicSegment] = []
+        for segment in atomicSegments {
+            if let last = mergedSegments.last,
+               last.canMerge(with: segment) {
+                mergedSegments[mergedSegments.count - 1] = last.merged(with: segment)
+            } else {
+                mergedSegments.append(segment)
+            }
+        }
+
+        return mergedSegments.map { segment in
+            SharedSegmentHitLayout(
+                id: "\(axisKey):\(Int((segment.rangeStart * 10).rounded()))-\(Int((segment.rangeEnd * 10).rounded()))",
+                points: segment.points,
+                edges: segment.edges
+            )
+        }
+    }
+
+    private func uniqueSortedAxisBoundaries(_ values: [CGFloat]) -> [CGFloat] {
+        var result: [CGFloat] = []
+        for value in values.sorted() {
+            if let last = result.last, abs(last - value) < 0.5 {
+                continue
+            }
+            result.append(value)
+        }
+        return result
     }
 
     private func fanoutLayoutMap(
@@ -586,6 +665,52 @@ struct ConnectionLinesView: View {
 
         selectedEdgeID = nextEdge.id
         onEdgeSelected?(nextEdge)
+    }
+
+    private func updateHoveredSharedSegment(_ nextID: String?) {
+        guard hoveredSharedSegmentID != nextID else { return }
+        withAnimation(.easeOut(duration: 0.12)) {
+            hoveredSharedSegmentID = nextID
+        }
+    }
+
+    private func sharedSegmentHitID(at location: CGPoint, in layouts: [SharedSegmentHitLayout]) -> String? {
+        let hoverThreshold = max(10, lineWidth + 6)
+        let bestMatch = layouts.compactMap { layout -> (id: String, distance: CGFloat)? in
+            guard layout.points.count >= 2 else { return nil }
+            let distance = distanceFromPoint(
+                location,
+                toSegmentFrom: layout.points[0],
+                to: layout.points[layout.points.count - 1]
+            )
+            guard distance <= hoverThreshold else { return nil }
+            return (layout.id, distance)
+        }
+        .min { lhs, rhs in
+            if abs(lhs.distance - rhs.distance) > 0.5 {
+                return lhs.distance < rhs.distance
+            }
+            return lhs.id < rhs.id
+        }
+
+        return bestMatch?.id
+    }
+
+    private func distanceFromPoint(_ point: CGPoint, toSegmentFrom start: CGPoint, to end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0.5 else {
+            return point.distance(to: start)
+        }
+
+        let projection = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared
+        let clampedProjection = min(1, max(0, projection))
+        let projectedPoint = CGPoint(
+            x: start.x + dx * clampedProjection,
+            y: start.y + dy * clampedProjection
+        )
+        return point.distance(to: projectedPoint)
     }
 
     private func resolvedLabelLayouts(_ layouts: [EdgeLayout], blockedRects: [CGRect]) -> [EdgeLayout] {
@@ -984,16 +1109,68 @@ private struct ConnectionRenderData {
     let sharedHitLayouts: [SharedSegmentHitLayout]
 }
 
-private struct SharedSegmentCandidate {
-    let segmentKey: String
-    let points: [CGPoint]
+private struct SharedAxisSegmentCandidate {
+    let axisKey: String
+    let orientation: SharedSegmentOrientation
+    let fixedValue: CGFloat
+    let rangeStart: CGFloat
+    let rangeEnd: CGFloat
     let edge: WorkflowEdge
+
+    func covers(start: CGFloat, end: CGFloat) -> Bool {
+        rangeStart <= start + 0.5 && rangeEnd >= end - 0.5
+    }
+}
+
+private struct SharedAtomicSegment {
+    let orientation: SharedSegmentOrientation
+    let fixedValue: CGFloat
+    let rangeStart: CGFloat
+    let rangeEnd: CGFloat
+    let edges: [WorkflowEdge]
+
+    var points: [CGPoint] {
+        switch orientation {
+        case .horizontal:
+            return [
+                CGPoint(x: rangeStart, y: fixedValue),
+                CGPoint(x: rangeEnd, y: fixedValue)
+            ]
+        case .vertical:
+            return [
+                CGPoint(x: fixedValue, y: rangeStart),
+                CGPoint(x: fixedValue, y: rangeEnd)
+            ]
+        }
+    }
+
+    func canMerge(with other: SharedAtomicSegment) -> Bool {
+        orientation == other.orientation
+            && abs(fixedValue - other.fixedValue) < 0.5
+            && abs(rangeEnd - other.rangeStart) < 0.5
+            && edges.map(\.id) == other.edges.map(\.id)
+    }
+
+    func merged(with other: SharedAtomicSegment) -> SharedAtomicSegment {
+        SharedAtomicSegment(
+            orientation: orientation,
+            fixedValue: fixedValue,
+            rangeStart: min(rangeStart, other.rangeStart),
+            rangeEnd: max(rangeEnd, other.rangeEnd),
+            edges: edges
+        )
+    }
 }
 
 private struct SharedSegmentHitLayout {
     let id: String
     let points: [CGPoint]
     let edges: [WorkflowEdge]
+}
+
+private enum SharedSegmentOrientation: String {
+    case horizontal
+    case vertical
 }
 
 private struct RoutedEdgeCandidate {
