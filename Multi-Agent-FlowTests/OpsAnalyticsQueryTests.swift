@@ -815,6 +815,65 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         )
     }
 
+    func testRefreshDeduplicatesEquivalentOpenClawBackupRoots() throws {
+        var project = makeProject(name: "OpenClaw Duplicate Backup Root")
+        try prepareEmptyAnalyticsDatabase(for: project.id)
+
+        let backupRoot = ProjectManager.shared.openClawBackupDirectory(for: project.id)
+        let projectRoot = ProjectManager.shared.openClawProjectRoot(for: project.id)
+        defer { try? FileManager.default.removeItem(at: projectRoot) }
+
+        try FileManager.default.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+        project.openClaw.sessionBackupPath = backupRoot.appendingPathComponent(".", isDirectory: true).path
+
+        let sessionID = UUID().uuidString
+        let sessionUUID = try XCTUnwrap(UUID(uuidString: sessionID))
+        let startedAt = Date().addingTimeInterval(-120)
+        let sessionFileURL = backupRoot
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent("Scout", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl", isDirectory: false)
+
+        try writeJSONLines(
+            [
+                [
+                    "type": "session",
+                    "id": sessionID,
+                    "timestamp": iso8601.string(from: startedAt),
+                    "cwd": "/tmp/scout-dedup"
+                ],
+                [
+                    "type": "message",
+                    "message": [
+                        "role": "assistant",
+                        "timestamp": Int64(startedAt.addingTimeInterval(3).timeIntervalSince1970 * 1000),
+                        "content": [
+                            [
+                                "type": "text",
+                                "text": "Single ingest only."
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            to: sessionFileURL
+        )
+
+        service.refresh(
+            project: project,
+            tasks: [],
+            executionResults: [],
+            executionLogs: [],
+            activeAgents: [:],
+            isConnected: true
+        )
+
+        let matchingRows = service.snapshot.traceRows.filter { $0.id == sessionUUID }
+        XCTAssertEqual(matchingRows.count, 1)
+        XCTAssertEqual(matchingRows.first?.previewText, "Single ingest only.")
+    }
+
     func testToolDetailFromExternalSessionLinksToChildTraceDetail() throws {
         var project = makeProject(name: "OpenClaw Tool Detail")
         try prepareEmptyAnalyticsDatabase(for: project.id)

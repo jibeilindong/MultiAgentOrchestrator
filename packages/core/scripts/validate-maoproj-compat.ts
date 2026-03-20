@@ -27,6 +27,15 @@ const EXPECTATIONS = new Map<string, FixtureExpectation>([
     }
   ],
   [
+    "openclaw-partial-config.maoproj",
+    {
+      agents: 0,
+      workflows: 1,
+      totalNodes: 0,
+      totalEdges: 0
+    }
+  ],
+  [
     "workflow-complex.maoproj",
     {
       agents: 2,
@@ -100,6 +109,19 @@ async function validateFixture(filePath: string) {
     const approvalEdge = mainWorkflow?.edges.find((edge) => edge.id === "edge-handoff");
     assert.ok(approvalEdge?.requiresApproval, "workflow-complex.maoproj should preserve approval edge flag");
     assert.equal(approvalEdge?.dataMapping.brief, "draft", "workflow-complex.maoproj should preserve data mapping");
+  }
+
+  if (fileName === "openclaw-partial-config.maoproj") {
+    assert.equal(parsed.openClaw.config.deploymentKind, "container");
+    assert.equal(parsed.openClaw.config.host, "gateway.internal");
+    assert.equal(parsed.openClaw.config.defaultAgent, "ops");
+    assert.equal(parsed.openClaw.config.localBinaryPath, "");
+    assert.equal(parsed.openClaw.config.container.engine, "docker");
+    assert.equal(parsed.openClaw.config.container.containerName, "");
+    assert.equal(parsed.openClaw.config.container.workspaceMountPath, "/workspace");
+    assert.ok(Array.isArray(parsed.openClaw.availableAgents), "OpenClaw availableAgents should default to an array");
+    assert.ok(Array.isArray(parsed.openClaw.activeAgents), "OpenClaw activeAgents should default to an array");
+    assert.ok(Array.isArray(parsed.openClaw.detectedAgents), "OpenClaw detectedAgents should default to an array");
   }
 
   console.log(

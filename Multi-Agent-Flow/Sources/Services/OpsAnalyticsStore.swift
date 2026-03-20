@@ -478,7 +478,16 @@ final class OpsAnalyticsStore {
             roots.append(URL(fileURLWithPath: sessionBackupPath, isDirectory: true))
         }
 
-        return Array(Dictionary(uniqueKeysWithValues: roots.map { ($0.standardizedFileURL.path, $0) }).values)
+        var seenPaths = Set<String>()
+        var uniqueRoots: [URL] = []
+
+        for root in roots {
+            let normalizedPath = root.standardizedFileURL.path
+            guard seenPaths.insert(normalizedPath).inserted else { continue }
+            uniqueRoots.append(root)
+        }
+
+        return uniqueRoots
     }
 
     private func openClawCronRunFiles(for project: MAProject) -> [URL] {

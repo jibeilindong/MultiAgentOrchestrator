@@ -283,6 +283,48 @@ function buildActiveAgentRecords(names: string[]): ProjectOpenClawAgentRecord[] 
   }));
 }
 
+function trimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizedPositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.round(value)) : fallback;
+}
+
+function normalizeOpenClawConfig(config: OpenClawConfig): OpenClawConfig {
+  const container = config && typeof config.container === "object" && config.container !== null ? config.container : null;
+  const deploymentKind =
+    config.deploymentKind === "container" || config.deploymentKind === "remoteServer" || config.deploymentKind === "local"
+      ? config.deploymentKind
+      : "local";
+  const cliLogLevel =
+    config.cliLogLevel === "error" ||
+    config.cliLogLevel === "warning" ||
+    config.cliLogLevel === "info" ||
+    config.cliLogLevel === "debug"
+      ? config.cliLogLevel
+      : "warning";
+
+  return {
+    deploymentKind,
+    host: trimmedString(config.host) || "127.0.0.1",
+    port: normalizedPositiveInteger(config.port, 18789),
+    useSSL: Boolean(config.useSSL),
+    apiKey: trimmedString(config.apiKey),
+    defaultAgent: trimmedString(config.defaultAgent) || "default",
+    timeout: normalizedPositiveInteger(config.timeout, 30),
+    autoConnect: config.autoConnect !== false,
+    localBinaryPath: trimmedString(config.localBinaryPath),
+    container: {
+      engine: trimmedString(container?.engine) || "docker",
+      containerName: trimmedString(container?.containerName),
+      workspaceMountPath: trimmedString(container?.workspaceMountPath) || "/workspace"
+    },
+    cliQuietMode: config.cliQuietMode !== false,
+    cliLogLevel
+  };
+}
+
 function firstExistingChildPath(directoryPath: string, candidates: string[]): string | null {
   for (const candidate of candidates) {
     const resolved = path.join(directoryPath, candidate);
@@ -773,8 +815,9 @@ async function executeOpenClawAgent(
   config: OpenClawConfig,
   request: OpenClawAgentExecutionRequest
 ): Promise<OpenClawAgentExecutionResult> {
-  const agentIdentifier = request.agentIdentifier.trim() || config.defaultAgent.trim() || "default";
-  const message = request.message.trim();
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  const agentIdentifier = trimmedString(request.agentIdentifier) || normalizedConfig.defaultAgent || "default";
+  const message = trimmedString(request.message);
   if (!message) {
     return {
       success: false,
@@ -789,17 +832,17 @@ async function executeOpenClawAgent(
   }
 
   const args = ["agent", "--agent", agentIdentifier, "--message", message];
-  if (request.sessionID?.trim()) {
-    args.push("--session-id", request.sessionID.trim());
+  if (trimmedString(request.sessionID)) {
+    args.push("--session-id", trimmedString(request.sessionID));
   }
-  if (request.thinkingLevel?.trim()) {
-    args.push("--thinking", request.thinkingLevel.trim());
+  if (trimmedString(request.thinkingLevel)) {
+    args.push("--thinking", trimmedString(request.thinkingLevel));
   }
-  args.push("--timeout", String(Math.max(1, Math.round(request.timeoutSeconds ?? config.timeout ?? 30))));
+  args.push("--timeout", String(Math.max(1, Math.round(request.timeoutSeconds ?? normalizedConfig.timeout ?? 30))));
 
   try {
-    const { stdout, stderr } = await runOpenClawDeploymentCommand(config, args, {
-      timeoutMs: Math.max(5, Math.round(request.timeoutSeconds ?? config.timeout ?? 30)) * 1000
+    const { stdout, stderr } = await runOpenClawDeploymentCommand(normalizedConfig, args, {
+      timeoutMs: Math.max(5, Math.round(request.timeoutSeconds ?? normalizedConfig.timeout ?? 30)) * 1000
     });
     const parsed = extractAgentResponse(stdout ?? "");
     const stderrText = (stderr ?? "").trim();
@@ -830,14 +873,15 @@ async function executeOpenClawAgent(
 }
 
 async function testLocalOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
-  const binaryPath = resolveLocalBinaryPath(config);
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  const binaryPath = resolveLocalBinaryPath(normalizedConfig);
   try {
     const { stdout, stderr } = await runCommand(binaryPath, ["agents", "list"], {
-      timeoutMs: Math.max(config.timeout, 5) * 1000
+      timeoutMs: Math.max(normalizedConfig.timeout, 5) * 1000
     });
     const output = `${stdout ?? ""}\n${stderr ?? ""}`;
     const availableAgents = parseAgentNamesFromOutput(output);
-    const detectedAgents = await inspectOpenClawAgents(config, availableAgents);
+    const detectedAgents = await inspectOpenClawAgents(normalizedConfig, availableAgents);
     const names = availableAgents.length > 0 ? availableAgents : detectedAgents.map((item) => item.name);
 
     return {
@@ -861,8 +905,9 @@ async function testLocalOpenClawConnection(config: OpenClawConfig): Promise<Open
 }
 
 async function testContainerOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
-  const engine = config.container.engine.trim() || "docker";
-  const containerName = config.container.containerName.trim();
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  const engine = normalizedConfig.container.engine.trim() || "docker";
+  const containerName = normalizedConfig.container.containerName.trim();
   if (!containerName) {
     return {
       success: false,
@@ -876,11 +921,11 @@ async function testContainerOpenClawConnection(config: OpenClawConfig): Promise<
 
   try {
     const { stdout, stderr } = await runCommand(engine, ["exec", containerName, "openclaw", "agents", "list"], {
-      timeoutMs: Math.max(config.timeout, 5) * 1000
+      timeoutMs: Math.max(normalizedConfig.timeout, 5) * 1000
     });
     const output = `${stdout ?? ""}\n${stderr ?? ""}`;
     const availableAgents = parseAgentNamesFromOutput(output);
-    const detectedAgents = await inspectOpenClawAgents(config, availableAgents);
+    const detectedAgents = await inspectOpenClawAgents(normalizedConfig, availableAgents);
     const names = availableAgents.length > 0 ? availableAgents : detectedAgents.map((item) => item.name);
 
     return {
@@ -904,7 +949,8 @@ async function testContainerOpenClawConnection(config: OpenClawConfig): Promise<
 }
 
 async function testRemoteOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
-  const host = config.host.trim();
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  const host = normalizedConfig.host.trim();
   if (!host) {
     return {
       success: false,
@@ -917,17 +963,17 @@ async function testRemoteOpenClawConnection(config: OpenClawConfig): Promise<Ope
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(config.timeout, 5) * 1000);
+  const timeout = setTimeout(() => controller.abort(), Math.max(normalizedConfig.timeout, 5) * 1000);
   try {
-    const response = await fetch(buildOpenClawBaseUrl(config), {
-      headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : undefined,
+    const response = await fetch(buildOpenClawBaseUrl(normalizedConfig), {
+      headers: normalizedConfig.apiKey ? { Authorization: `Bearer ${normalizedConfig.apiKey}` } : undefined,
       signal: controller.signal
     });
 
     return {
       success: response.ok,
       message: response.ok
-        ? `Connected to remote OpenClaw at ${buildOpenClawBaseUrl(config)}.`
+        ? `Connected to remote OpenClaw at ${buildOpenClawBaseUrl(normalizedConfig)}.`
         : `Remote OpenClaw responded with HTTP ${response.status}.`,
       isConnected: response.ok,
       availableAgents: [],

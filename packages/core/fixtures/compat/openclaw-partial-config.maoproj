@@ -1,0 +1,33 @@
+{
+  "id": "fixture-openclaw-partial-config",
+  "fileVersion": "2.0",
+  "name": "OpenClaw Partial Config Fixture",
+  "agents": [],
+  "workflows": [
+    {
+      "id": "workflow-main",
+      "name": "Main Workflow",
+      "fallbackRoutingPolicy": "stop",
+      "launchTestCases": [],
+      "lastLaunchVerificationReport": null,
+      "nodes": [],
+      "edges": [],
+      "boundaries": [],
+      "colorGroups": [],
+      "createdAt": 0,
+      "parentNodeID": null,
+      "inputSchema": [],
+      "outputSchema": []
+    }
+  ],
+  "openClaw": {
+    "isConnected": false,
+    "config": {
+      "deploymentKind": "container",
+      "host": "gateway.internal",
+      "defaultAgent": "ops"
+    }
+  },
+  "createdAt": 0,
+  "updatedAt": 60
+}
