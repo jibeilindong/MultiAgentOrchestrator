@@ -1830,11 +1830,11 @@ struct NodePropertyPanel: View {
                 Text("Node Properties")
                     .font(.headline)
                 Spacer()
-                Button(action: { isPresented = false }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                Button("Close") {
+                    isPresented = false
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
             }
             .padding()
             .background(Color(.windowBackgroundColor))
@@ -1914,10 +1914,8 @@ struct NodePropertyPanel: View {
                 }
                 .padding()
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             
-            Divider()
-            
-            // 底部按钮
             HStack {
                 Button("Cancel") {
                     isPresented = false
@@ -1934,9 +1932,17 @@ struct NodePropertyPanel: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(.regularMaterial)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Color.black.opacity(0.10))
+                    .frame(height: 1)
+            }
+            .shadow(color: Color.black.opacity(0.10), radius: 10, x: 0, y: -3)
         }
-        .frame(minWidth: 620, idealWidth: 760, maxWidth: 980, minHeight: 760, idealHeight: 920, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(.windowBackgroundColor))
         .onAppear {
             loadNodeData()

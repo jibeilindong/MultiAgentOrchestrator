@@ -159,7 +159,10 @@ struct ConnectionLinesView: View {
                         from: candidate.fromFrame,
                         to: candidate.toFrame,
                         turnY: fanoutInfo.turnY,
-                        branchOffset: fanoutInfo.branchOffset(for: candidate.edge.toNodeID),
+                        targetAnchorX: fanoutInfo.targetAnchorX(
+                            for: candidate.edge.toNodeID,
+                            default: candidate.toFrame.midX
+                        ),
                         avoiding: obstacles
                     ) {
                         path = fanoutPath
@@ -206,41 +209,51 @@ struct ConnectionLinesView: View {
         var layoutBySource: [UUID: FanoutLayoutInfo] = [:]
 
         for (sourceID, group) in groupedBySource {
-            guard group.count >= 3,
+            guard group.count >= 2,
                   let sourceFrame = group.first?.fromFrame else { continue }
 
             let downwardTargets = group.filter { candidate in
                 candidate.toFrame.center.y > sourceFrame.center.y + 18
             }
-            guard downwardTargets.count >= 3 else { continue }
+            guard downwardTargets.count >= 2 else { continue }
 
             let sourceBottom = sourceFrame.maxY + 10
             let targetTop = downwardTargets.map { $0.toFrame.minY }.min() ?? .greatestFiniteMagnitude
             let centeredTarget = closestTarget(to: sourceFrame.midX, in: downwardTargets)
+            let verticalGap = targetTop - sourceBottom
+            guard verticalGap >= 42 else { continue }
 
-            let centeredBottom = centeredTarget?.toFrame.maxY ?? sourceBottom
-            let turnY = max(sourceBottom + 34, centeredBottom + 18)
-            guard turnY < targetTop - 14 else { continue }
+            let preferredTurnY = sourceBottom + max(28, min(76, verticalGap * 0.4))
+            let turnY = min(preferredTurnY, targetTop - 18)
+            guard turnY > sourceBottom + 8, turnY < targetTop - 8 else { continue }
 
-            let sortedTargets = downwardTargets.sorted {
-                let lhsDistance = abs($0.toFrame.midX - sourceFrame.midX)
-                let rhsDistance = abs($1.toFrame.midX - sourceFrame.midX)
-                if abs(lhsDistance - rhsDistance) > 0.5 {
-                    return lhsDistance < rhsDistance
+            let sortedTargets = downwardTargets.sorted { lhs, rhs in
+                if abs(lhs.toFrame.midX - rhs.toFrame.midX) > 0.5 {
+                    return lhs.toFrame.midX < rhs.toFrame.midX
                 }
-                return $0.toFrame.midX < $1.toFrame.midX
+                return lhs.toFrame.midY < rhs.toFrame.midY
             }
 
-            let fanoutSpacingValue = WorkflowEdgeRoutePlanner.fanoutSpacing(for: sourceFrame, targetCount: sortedTargets.count)
+            let fanoutSpacingValue = WorkflowEdgeRoutePlanner.fanoutSpacing(
+                for: sourceFrame,
+                targetCount: sortedTargets.count
+            )
             let slotOffsets = laneOffsets(for: sortedTargets.count, spacing: fanoutSpacingValue)
-            let branchOffsetsByTargetID: [UUID: CGFloat] = Dictionary(uniqueKeysWithValues: zip(sortedTargets, slotOffsets).map { candidate, offset in
-                (candidate.edge.toNodeID, offset)
-            })
+            let targetAnchorXByTargetID: [UUID: CGFloat] = Dictionary(
+                uniqueKeysWithValues: zip(sortedTargets, slotOffsets).map { candidate, slotOffset in
+                    let preferredAnchorX = sourceFrame.midX + slotOffset
+                    let anchorX = WorkflowEdgeRoutePlanner.clampedVerticalEntryX(
+                        for: candidate.toFrame,
+                        preferredX: preferredAnchorX
+                    )
+                    return (candidate.edge.toNodeID, anchorX)
+                }
+            )
 
             layoutBySource[sourceID] = FanoutLayoutInfo(
-                turnY: min(turnY, targetTop - 14),
+                turnY: turnY,
                 centerTargetID: centeredTarget?.edge.toNodeID,
-                branchOffsetsByTargetID: branchOffsetsByTargetID
+                targetAnchorXByTargetID: targetAnchorXByTargetID
             )
         }
 
@@ -452,18 +465,20 @@ struct WorkflowEdgeRoutePlanner {
         from sourceFrame: CGRect,
         to targetFrame: CGRect,
         turnY: CGFloat,
-        branchOffset: CGFloat,
+        targetAnchorX: CGFloat,
         avoiding obstacles: [CGRect]
     ) -> [CGPoint]? {
         let start = CGPoint(x: sourceFrame.midX, y: sourceFrame.maxY + anchorClearance)
-        let end = CGPoint(x: targetFrame.midX, y: targetFrame.minY - anchorClearance)
+        let end = CGPoint(
+            x: clampedVerticalEntryX(for: targetFrame, preferredX: targetAnchorX),
+            y: targetFrame.minY - anchorClearance
+        )
         guard turnY > start.y + 4, turnY < end.y - 4 else { return nil }
 
         let path = simplify([
             start,
             CGPoint(x: sourceFrame.midX, y: turnY),
-            CGPoint(x: sourceFrame.midX + branchOffset, y: turnY),
-            CGPoint(x: targetFrame.midX, y: turnY),
+            CGPoint(x: end.x, y: turnY),
             end
         ])
 
@@ -474,10 +489,9 @@ struct WorkflowEdgeRoutePlanner {
     static func fanoutSpacing(for sourceFrame: CGRect, targetCount: Int) -> CGFloat {
         guard targetCount > 1 else { return 0 }
 
-        let base = max(20, sourceFrame.width * 0.42)
-        let spread = CGFloat(targetCount - 1)
-        let even = max(22, base / max(spread, 1))
-        return min(42, max(18, even))
+        let widthDriven = max(22, sourceFrame.width * 0.28)
+        let countAdjusted = max(20, 40 - CGFloat(max(0, targetCount - 3)) * 3)
+        return min(38, max(widthDriven, countAdjusted))
     }
 
     static func centerDownRoute(
@@ -502,6 +516,13 @@ struct WorkflowEdgeRoutePlanner {
             end
         ])
         return isClear(fallback, blockedRects: blockedRects) ? fallback : nil
+    }
+
+    static func clampedVerticalEntryX(for targetFrame: CGRect, preferredX: CGFloat) -> CGFloat {
+        let inset = min(18, max(10, targetFrame.width * 0.18))
+        let minX = targetFrame.minX + inset
+        let maxX = targetFrame.maxX - inset
+        return min(max(preferredX, minX), maxX)
     }
 
     private static func candidatePaths(
@@ -642,22 +663,38 @@ struct WorkflowEdgeRoutePlanner {
     }
 
     static func preferredOutgoingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        preferredSide(for: rect, toward: point)
-    }
-
-    static func preferredIncomingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        preferredSide(for: rect, toward: point)
-    }
-
-    private static func preferredSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
         let center = rect.center
         let dx = point.x - center.x
         let dy = point.y - center.y
+        let verticalThreshold = max(32, rect.height * 0.55)
 
-        if abs(dx) >= abs(dy) * 0.7 {
+        if dy >= verticalThreshold {
+            return .bottom
+        }
+        if dy <= -verticalThreshold {
+            return .top
+        }
+        if abs(dx) > abs(dy) * 1.2 {
             return dx >= 0 ? .right : .left
         }
+        return dy >= 0 ? .bottom : .top
+    }
 
+    static func preferredIncomingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
+        let center = rect.center
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let verticalThreshold = max(32, rect.height * 0.55)
+
+        if dy <= -verticalThreshold {
+            return .top
+        }
+        if dy >= verticalThreshold {
+            return .bottom
+        }
+        if abs(dx) > abs(dy) * 1.2 {
+            return dx >= 0 ? .right : .left
+        }
         return dy >= 0 ? .bottom : .top
     }
 
@@ -717,10 +754,10 @@ struct WorkflowEdgeRoutePlanner {
 private struct FanoutLayoutInfo {
     let turnY: CGFloat
     let centerTargetID: UUID?
-    let branchOffsetsByTargetID: [UUID: CGFloat]
+    let targetAnchorXByTargetID: [UUID: CGFloat]
 
-    func branchOffset(for targetID: UUID) -> CGFloat {
-        branchOffsetsByTargetID[targetID] ?? 0
+    func targetAnchorX(for targetID: UUID, default defaultX: CGFloat) -> CGFloat {
+        targetAnchorXByTargetID[targetID] ?? defaultX
     }
 }
 
