@@ -264,6 +264,7 @@ struct WorkflowEditorView: View {
                 }
                 newNode.position = CGPoint(x: sourceNode.position.x + 60, y: sourceNode.position.y + 60)
                 newNode.title = sourceNode.title
+                newNode.displayColorHex = sourceNode.displayColorHex
                 newNode.conditionExpression = sourceNode.conditionExpression
                 newNode.loopEnabled = sourceNode.loopEnabled
                 newNode.maxIterations = sourceNode.maxIterations
@@ -281,6 +282,7 @@ struct WorkflowEditorView: View {
 
                 var newEdge = WorkflowEdge(from: fromNodeID, to: toNodeID)
                 newEdge.label = sourceEdge.label
+                newEdge.displayColorHex = sourceEdge.displayColorHex
                 newEdge.conditionExpression = sourceEdge.conditionExpression
                 newEdge.requiresApproval = sourceEdge.requiresApproval
                 newEdge.dataMapping = sourceEdge.dataMapping
@@ -839,6 +841,50 @@ struct EditorToolbar: View {
                 }
             }
 
+            if hasNodeSelection || selectedEdgeID != nil {
+                WorkflowToolbarGroup(title: "Style") {
+                    HStack(spacing: 8) {
+                        if hasNodeSelection {
+                            Menu {
+                                ForEach(CanvasAccentColorPreset.allCases) { preset in
+                                    Button {
+                                        applyNodeColor(preset.hex)
+                                    } label: {
+                                        styleMenuLabel(title: preset.title, color: preset.color)
+                                    }
+                                }
+                                Divider()
+                                Button("恢复节点默认色") {
+                                    applyNodeColor(nil)
+                                }
+                            } label: {
+                                toolbarMenuLabel(title: "节点颜色", systemName: "paintpalette")
+                            }
+                            .menuStyle(.borderlessButton)
+                        }
+
+                        if let selectedEdgeID {
+                            Menu {
+                                ForEach(CanvasAccentColorPreset.allCases) { preset in
+                                    Button {
+                                        applyEdgeColor(preset.hex, edgeID: selectedEdgeID)
+                                    } label: {
+                                        styleMenuLabel(title: preset.title, color: preset.color)
+                                    }
+                                }
+                                Divider()
+                                Button("恢复连线默认色") {
+                                    applyEdgeColor(nil, edgeID: selectedEdgeID)
+                                }
+                            } label: {
+                                toolbarMenuLabel(title: "连线颜色", systemName: "scribble.variable")
+                            }
+                            .menuStyle(.borderlessButton)
+                        }
+                    }
+                }
+            }
+
             Spacer(minLength: 0)
         }
         .padding(.horizontal)
@@ -879,6 +925,33 @@ struct EditorToolbar: View {
         selectedNodeIDs = Set(workflow.nodes.map(\.id))
         selectedBoundaryIDs = Set(workflow.boundaries.map(\.id))
         selectedEdgeID = nil
+    }
+
+    private func activeNodeSelection() -> Set<UUID> {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs
+        }
+        if let selectedNodeID {
+            return [selectedNodeID]
+        }
+        return []
+    }
+
+    private func applyNodeColor(_ colorHex: String?) {
+        appState.setNodeColor(colorHex, for: activeNodeSelection())
+    }
+
+    private func applyEdgeColor(_ colorHex: String?, edgeID: UUID) {
+        appState.setEdgeColor(colorHex, for: [edgeID])
+    }
+
+    private func styleMenuLabel(title: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+            Text(title)
+        }
     }
 
     private func toolbarIconButton(systemName: String, action: @escaping () -> Void, tooltip: String) -> some View {
@@ -1179,6 +1252,365 @@ private struct WorkflowToolbarGroup<Content: View>: View {
     }
 }
 
+private enum AgentCollectionSort: String, CaseIterable, Identifiable {
+    case updated = "Recently Updated"
+    case name = "Name"
+    case model = "Model"
+    case connections = "Connections"
+
+    var id: String { rawValue }
+}
+
+private enum AgentCollectionFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case onCanvas = "On Canvas"
+    case withSoulFile = "With SOUL"
+    case attention = "Needs Attention"
+
+    var id: String { rawValue }
+}
+
+private struct AgentCollectionItem: Identifiable {
+    let agent: Agent
+    let nodeID: UUID?
+    let soulSourcePath: String?
+    let statusLabel: String
+    let statusSystemImage: String
+    let statusColor: Color
+    let statusIsProblem: Bool
+    let incomingConnections: Int
+    let outgoingConnections: Int
+
+    var id: UUID { agent.id }
+    var totalConnections: Int { incomingConnections + outgoingConnections }
+    var hasSoulFile: Bool { soulSourcePath != nil }
+    var isOnCanvas: Bool { nodeID != nil }
+    var soulDisplayName: String { soulSourcePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Project Cache" }
+    var soulDirectoryName: String? { soulSourcePath.map { URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent } }
+}
+
+private struct AgentActionFeedback: Identifiable {
+    let id = UUID()
+    let message: String
+    let isError: Bool
+}
+
+private func makeAgentCollectionItems(appState: AppState) -> [AgentCollectionItem] {
+    guard let project = appState.currentProject else { return [] }
+
+    return project.agents.map { agent in
+        let summary = appState.connectionSummary(for: agent.id)
+        let soulPath = appState.agentSoulFileURL(for: agent.id)?.path
+        let rawStatus = project.runtimeState.agentStates[agent.id.uuidString]
+        let status = runtimePresentation(for: rawStatus)
+
+        return AgentCollectionItem(
+            agent: agent,
+            nodeID: appState.workflowNodeID(for: agent.id),
+            soulSourcePath: soulPath,
+            statusLabel: status.label,
+            statusSystemImage: status.systemImage,
+            statusColor: status.color,
+            statusIsProblem: status.isProblem,
+            incomingConnections: summary.incoming,
+            outgoingConnections: summary.outgoing
+        )
+    }
+}
+
+private func runtimePresentation(for rawStatus: String?) -> (label: String, systemImage: String, color: Color, isProblem: Bool) {
+    let status = rawStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+
+    switch status {
+    case "", "idle", "ready":
+        return ("Ready", "checkmark.circle.fill", .green, false)
+    case "running":
+        return ("Running", "bolt.circle.fill", .blue, false)
+    case "reloaded":
+        return ("Reloaded", "arrow.clockwise.circle.fill", .green, false)
+    case "reload_failed", "error", "failed":
+        return ("Needs Reload", "exclamationmark.triangle.fill", .orange, true)
+    case "stopped":
+        return ("Stopped", "pause.circle.fill", .secondary, true)
+    default:
+        return (status.capitalized, "circle.fill", .secondary, false)
+    }
+}
+
+private func filterAgentItems(
+    _ items: [AgentCollectionItem],
+    searchText: String,
+    filter: AgentCollectionFilter,
+    sort: AgentCollectionSort
+) -> [AgentCollectionItem] {
+    let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+    let filtered = items.filter { item in
+        let matchesFilter: Bool
+        switch filter {
+        case .all:
+            matchesFilter = true
+        case .onCanvas:
+            matchesFilter = item.isOnCanvas
+        case .withSoulFile:
+            matchesFilter = item.hasSoulFile
+        case .attention:
+            matchesFilter = !item.hasSoulFile || !item.isOnCanvas || item.statusIsProblem
+        }
+
+        guard matchesFilter else { return false }
+        guard !trimmedSearchText.isEmpty else { return true }
+
+        let searchableText = [
+            item.agent.name,
+            item.agent.identity,
+            item.agent.description,
+            item.agent.openClawDefinition.modelIdentifier,
+            item.agent.openClawDefinition.runtimeProfile,
+            item.soulSourcePath,
+            item.agent.capabilities.joined(separator: " ")
+        ]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+
+        return searchableText.contains(trimmedSearchText)
+    }
+
+    return filtered.sorted { lhs, rhs in
+        switch sort {
+        case .updated:
+            if lhs.agent.updatedAt != rhs.agent.updatedAt {
+                return lhs.agent.updatedAt > rhs.agent.updatedAt
+            }
+            return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
+        case .name:
+            return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
+        case .model:
+            let lhsModel = lhs.agent.openClawDefinition.modelIdentifier
+            let rhsModel = rhs.agent.openClawDefinition.modelIdentifier
+            if lhsModel != rhsModel {
+                return lhsModel.localizedCaseInsensitiveCompare(rhsModel) == .orderedAscending
+            }
+            return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
+        case .connections:
+            if lhs.totalConnections != rhs.totalConnections {
+                return lhs.totalConnections > rhs.totalConnections
+            }
+            return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
+        }
+    }
+}
+
+private struct AgentCollectionToolbar: View {
+    @Binding var searchText: String
+    @Binding var filter: AgentCollectionFilter
+    @Binding var sort: AgentCollectionSort
+    let items: [AgentCollectionItem]
+    let visibleCount: Int
+    let feedback: AgentActionFeedback?
+
+    private var onCanvasCount: Int {
+        items.filter(\.isOnCanvas).count
+    }
+
+    private var withSoulCount: Int {
+        items.filter(\.hasSoulFile).count
+    }
+
+    private var attentionCount: Int {
+        items.filter { !$0.hasSoulFile || !$0.isOnCanvas || $0.statusIsProblem }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Search agents, models, identities, skills or SOUL paths", text: $searchText)
+                        .textFieldStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color(.controlBackgroundColor))
+                .cornerRadius(10)
+
+                Picker("Filter", selection: $filter) {
+                    ForEach(AgentCollectionFilter.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker("Sort", selection: $sort) {
+                    ForEach(AgentCollectionSort.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            HStack(spacing: 8) {
+                AgentCollectionBadge(systemImage: "person.3.fill", text: "\(visibleCount)/\(items.count) visible")
+                AgentCollectionBadge(systemImage: "square.grid.2x2", text: "\(onCanvasCount) on canvas")
+                AgentCollectionBadge(systemImage: "doc.text.fill", text: "\(withSoulCount) with SOUL")
+                AgentCollectionBadge(systemImage: "exclamationmark.triangle.fill", text: "\(attentionCount) need attention")
+            }
+
+            if let feedback {
+                HStack(spacing: 8) {
+                    Image(systemName: feedback.isError ? "xmark.octagon.fill" : "checkmark.circle.fill")
+                    Text(feedback.message)
+                        .lineLimit(2)
+                }
+                .font(.caption)
+                .foregroundColor(feedback.isError ? .red : .green)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(Color(.windowBackgroundColor))
+    }
+}
+
+private struct AgentCollectionBadge: View {
+    let systemImage: String
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(.controlBackgroundColor))
+            .cornerRadius(999)
+    }
+}
+
+private struct AgentCollectionEmptyState: View {
+    let searchText: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "tray")
+                .font(.system(size: 28))
+                .foregroundColor(.secondary)
+            Text("No agents match the current filter")
+                .font(.headline)
+            if !searchText.isEmpty {
+                Text("Try clearing or adjusting the search keywords.")
+                    .foregroundColor(.secondary)
+            } else {
+                Text("The current project has no agents in this category.")
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(32)
+    }
+}
+
+private struct AgentStatusPill: View {
+    let label: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        Label(label, systemImage: systemImage)
+            .font(.caption)
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.12))
+            .cornerRadius(999)
+    }
+}
+
+private struct AgentContextMenuContent: View {
+    let item: AgentCollectionItem
+    let canPaste: Bool
+    var onOpen: () -> Void
+    var onRevealSoul: () -> Void
+    var onOpenWorkspace: () -> Void
+    var onReloadSoul: () -> Void
+    var onEdit: () -> Void
+    var onManageSkills: () -> Void
+    var onConfigurePermissions: () -> Void
+    var onCopy: () -> Void
+    var onCut: () -> Void
+    var onPaste: () -> Void
+    var onDuplicate: () -> Void
+    var onExport: () -> Void
+    var onReset: () -> Void
+    var onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            Label("Focus Agent", systemImage: "scope")
+        }
+
+        Button(action: onEdit) {
+            Label("Edit SOUL.md", systemImage: "pencil.and.outline")
+        }
+
+        Button(action: onRevealSoul) {
+            Label(item.hasSoulFile ? "Reveal SOUL.md" : "Reveal Expected SOUL Location", systemImage: "doc.text.magnifyingglass")
+        }
+
+        Button(action: onOpenWorkspace) {
+            Label("Open Workspace", systemImage: "folder")
+        }
+
+        Button(action: onReloadSoul) {
+            Label("Reload SOUL from Disk", systemImage: "arrow.clockwise")
+        }
+
+        Divider()
+
+        Button(action: onManageSkills) {
+            Label("Manage Skills", systemImage: "star")
+        }
+
+        Button(action: onConfigurePermissions) {
+            Label("Configure Permissions", systemImage: "lock.shield")
+        }
+
+        Divider()
+
+        Button(action: onCopy) {
+            Label("Copy", systemImage: "doc.on.doc")
+        }
+
+        Button(action: onCut) {
+            Label("Cut", systemImage: "scissors")
+        }
+
+        Button(action: onPaste) {
+            Label("Paste", systemImage: "doc.on.clipboard")
+        }
+        .disabled(!canPaste)
+
+        Button(action: onDuplicate) {
+            Label("Duplicate", systemImage: "plus.square.on.square")
+        }
+
+        Button(action: onExport) {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+
+        Button(action: onReset) {
+            Label("Reset", systemImage: "arrow.counterclockwise")
+        }
+
+        Divider()
+
+        Button(role: .destructive, action: onDelete) {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+}
+
 // MARK: - 列表视图
 struct AgentListView: View {
     @EnvironmentObject var appState: AppState
@@ -1186,145 +1618,383 @@ struct AgentListView: View {
     var isConnectMode: Bool
     var connectFromAgentID: UUID?
     var onConnect: (UUID, UUID) -> Void
-    
-    @State private var draggedAgentID: UUID?
+
+    @State private var searchText = ""
+    @State private var filter: AgentCollectionFilter = .all
+    @State private var sort: AgentCollectionSort = .updated
     @State private var editingAgent: Agent?
-    @State private var showEditSheet = false
-    
+    @State private var skillsAgent: Agent?
+    @State private var permissionsAgent: Agent?
+    @State private var deleteCandidate: Agent?
+    @State private var feedback: AgentActionFeedback?
+
+    private var items: [AgentCollectionItem] {
+        makeAgentCollectionItems(appState: appState)
+    }
+
+    private var visibleItems: [AgentCollectionItem] {
+        filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // 表头
-            HStack {
-                Text("Status").frame(width: 60, alignment: .leading)
-                Text("Name").frame(minWidth: 100, alignment: .leading)
-                Text("ID").frame(width: 80, alignment: .leading)
-                Text("Model").frame(width: 80, alignment: .leading)
-                Text("Skills").frame(width: 60, alignment: .center)
-                Text("Actions").frame(width: 120, alignment: .center)
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(Color(.controlBackgroundColor))
-            
+            AgentCollectionToolbar(
+                searchText: $searchText,
+                filter: $filter,
+                sort: $sort,
+                items: items,
+                visibleCount: visibleItems.count,
+                feedback: feedback
+            )
+
             Divider()
-            
-            // 智能体列表
-            List {
-                ForEach(Array((appState.currentProject?.agents ?? []).enumerated()), id: \.element.id) { index, agent in
-                    AgentListRow(
-                        agent: agent,
-                        index: index,
-                        isSelected: selectedAgentID == agent.id,
-                        isConnectMode: isConnectMode,
-                        isConnectSource: connectFromAgentID == agent.id,
-                        onSelect: { selectedAgentID = agent.id },
-                        onEdit: {
-                            selectedAgentID = agent.id
-                            editingAgent = agent
-                            showEditSheet = true
-                        },
-                        onConnect: { targetID in
-                            if let sourceID = connectFromAgentID {
-                                onConnect(sourceID, targetID)
+
+            if visibleItems.isEmpty {
+                AgentCollectionEmptyState(searchText: searchText)
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Text("Status").frame(width: 120, alignment: .leading)
+                        Text("Agent").frame(minWidth: 220, alignment: .leading)
+                        Text("Model").frame(minWidth: 170, alignment: .leading)
+                        Text("Connections").frame(width: 110, alignment: .leading)
+                        Text("SOUL").frame(minWidth: 170, alignment: .leading)
+                        Text("Actions").frame(width: isConnectMode ? 210 : 180, alignment: .center)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(.controlBackgroundColor))
+
+                    List {
+                        ForEach(visibleItems) { item in
+                            AgentListRow(
+                                item: item,
+                                isSelected: selectedAgentID == item.agent.id,
+                                isConnectMode: isConnectMode,
+                                isConnectSource: connectFromAgentID == item.agent.id,
+                                onSelect: { selectAgent(item.agent.id, focusNode: false) },
+                                onOpen: { selectAgent(item.agent.id, focusNode: true) },
+                                onEdit: { beginEditing(item.agent.id) },
+                                onRevealSoul: { revealSoul(for: item.agent.id) },
+                                onDuplicate: { duplicateAgent(item.agent.id) },
+                                onDelete: { deleteCandidate = currentAgent(id: item.agent.id) ?? item.agent },
+                                onConnect: { targetID in connect(sourceID: connectFromAgentID, targetID: targetID) }
+                            )
+                            .contextMenu {
+                                AgentContextMenuContent(
+                                    item: item,
+                                    canPaste: NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil),
+                                    onOpen: { selectAgent(item.agent.id, focusNode: true) },
+                                    onRevealSoul: { revealSoul(for: item.agent.id) },
+                                    onOpenWorkspace: { openWorkspace(for: item.agent.id) },
+                                    onReloadSoul: { reloadSoul(for: item.agent.id) },
+                                    onEdit: { beginEditing(item.agent.id) },
+                                    onManageSkills: { skillsAgent = currentAgent(id: item.agent.id) ?? item.agent },
+                                    onConfigurePermissions: { permissionsAgent = currentAgent(id: item.agent.id) ?? item.agent },
+                                    onCopy: { copyAgent(item.agent.id) },
+                                    onCut: { cutAgent(item.agent.id) },
+                                    onPaste: pasteAgent,
+                                    onDuplicate: { duplicateAgent(item.agent.id) },
+                                    onExport: { export(agentID: item.agent.id) },
+                                    onReset: { resetAgent(item.agent.id) },
+                                    onDelete: { deleteCandidate = currentAgent(id: item.agent.id) ?? item.agent }
+                                )
                             }
                         }
-                    )
-                    
-                    .contextMenu {
-                        AgentContextMenu(agent: agent)
                     }
+                    .listStyle(.plain)
                 }
             }
-            .listStyle(.plain)
         }
-        .sheet(isPresented: $showEditSheet) {
-            if let editingAgent {
-                AgentEditSheet(agent: editingAgent, isPresented: $showEditSheet)
+        .sheet(item: $editingAgent) { agent in
+            AgentEditSheet(agent: agent, isPresented: bindingForAgentSheet($editingAgent))
+        }
+        .sheet(item: $skillsAgent) { agent in
+            SkillsManagementSheet(agent: agent, isPresented: bindingForAgentSheet($skillsAgent))
+        }
+        .sheet(item: $permissionsAgent) { agent in
+            PermissionsConfigSheet(agent: agent, isPresented: bindingForAgentSheet($permissionsAgent))
+        }
+        .alert("Delete Agent?", isPresented: deleteConfirmationBinding) {
+            Button("Delete", role: .destructive) {
+                if let candidate = deleteCandidate {
+                    appState.deleteAgent(candidate.id)
+                    if selectedAgentID == candidate.id {
+                        selectedAgentID = nil
+                    }
+                    showFeedback("Deleted \(candidate.name)", isError: false)
+                }
+                deleteCandidate = nil
+            }
+            Button("Cancel", role: .cancel) {
+                deleteCandidate = nil
+            }
+        } message: {
+            Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
+        }
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { deleteCandidate != nil },
+            set: { if !$0 { deleteCandidate = nil } }
+        )
+    }
+
+    private func bindingForAgentSheet(_ item: Binding<Agent?>) -> Binding<Bool> {
+        Binding(
+            get: { item.wrappedValue != nil },
+            set: { if !$0 { item.wrappedValue = nil } }
+        )
+    }
+
+    private func currentAgent(id: UUID) -> Agent? {
+        appState.currentProject?.agents.first(where: { $0.id == id })
+    }
+
+    private func selectAgent(_ agentID: UUID, focusNode: Bool) {
+        selectedAgentID = agentID
+        if focusNode {
+            _ = appState.focusAgentNode(agentID: agentID, createIfMissing: true, suggestedPosition: .zero)
+        }
+    }
+
+    private func beginEditing(_ agentID: UUID) {
+        guard let agent = currentAgent(id: agentID) else { return }
+        selectAgent(agentID, focusNode: false)
+        editingAgent = agent
+    }
+
+    private func connect(sourceID: UUID?, targetID: UUID) {
+        guard let sourceID else { return }
+        onConnect(sourceID, targetID)
+    }
+
+    private func revealSoul(for agentID: UUID) {
+        if let soulURL = appState.agentSoulFileURL(for: agentID) {
+            NSWorkspace.shared.activateFileViewerSelecting([soulURL])
+            showFeedback("Revealed \(soulURL.lastPathComponent)", isError: false)
+        } else {
+            showFeedback("No real SOUL.md file was found for this agent.", isError: true)
+        }
+    }
+
+    private func openWorkspace(for agentID: UUID) {
+        if let workspaceURL = appState.agentWorkspaceURL(for: agentID) {
+            NSWorkspace.shared.open(workspaceURL)
+            showFeedback("Opened workspace \(workspaceURL.lastPathComponent)", isError: false)
+        } else {
+            showFeedback("No workspace directory was found for this agent.", isError: true)
+        }
+    }
+
+    private func reloadSoul(for agentID: UUID) {
+        let result = appState.refreshAgentSoulMDFromSource(agentID: agentID)
+        showFeedback(result.message, isError: !result.success)
+        if result.success, editingAgent?.id == agentID {
+            editingAgent = currentAgent(id: agentID)
+        }
+    }
+
+    private func copyAgent(_ agentID: UUID) {
+        guard let agent = currentAgent(id: agentID) else { return }
+        let success = appState.copyAgent(agent)
+        showFeedback(success ? "Copied \(agent.name)" : "Copy failed", isError: !success)
+    }
+
+    private func cutAgent(_ agentID: UUID) {
+        let success = appState.cutAgent(agentID)
+        if success, selectedAgentID == agentID {
+            selectedAgentID = nil
+        }
+        let agentName = currentAgent(id: agentID)?.name ?? "agent"
+        showFeedback(success ? "Cut \(agentName)" : "Cut failed", isError: !success)
+    }
+
+    private func pasteAgent() {
+        if let newAgent = appState.pasteAgentFromPasteboard() {
+            selectedAgentID = newAgent.id
+            showFeedback("Pasted \(newAgent.name)", isError: false)
+        } else {
+            showFeedback("Paste failed", isError: true)
+        }
+    }
+
+    private func duplicateAgent(_ agentID: UUID) {
+        if let newAgent = appState.duplicateAgent(agentID, suffix: "Duplicate", offset: CGPoint(x: 50, y: 50)) {
+            selectedAgentID = newAgent.id
+            showFeedback("Duplicated \(newAgent.name)", isError: false)
+        } else {
+            showFeedback("Duplicate failed", isError: true)
+        }
+    }
+
+    private func export(agentID: UUID) {
+        guard let agent = currentAgent(id: agentID) else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(agent.name).json"
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                do {
+                    let data = try JSONEncoder().encode(agent)
+                    try data.write(to: url)
+                    showFeedback("Exported \(agent.name)", isError: false)
+                } catch {
+                    showFeedback("Export failed: \(error.localizedDescription)", isError: true)
+                }
+            }
+        }
+    }
+
+    private func resetAgent(_ agentID: UUID) {
+        guard var agent = currentAgent(id: agentID) else { return }
+        agent.updatedAt = Date()
+        appState.updateAgent(agent, reload: true)
+        showFeedback("Reset \(agent.name)", isError: false)
+    }
+
+    private func showFeedback(_ message: String, isError: Bool) {
+        feedback = AgentActionFeedback(message: message, isError: isError)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if feedback?.message == message {
+                feedback = nil
             }
         }
     }
 }
 
-struct AgentListRow: View {
-    let agent: Agent
-    let index: Int
+private struct AgentListRow: View {
+    let item: AgentCollectionItem
     let isSelected: Bool
     let isConnectMode: Bool
     let isConnectSource: Bool
     var onSelect: () -> Void
+    var onOpen: () -> Void
     var onEdit: () -> Void
+    var onRevealSoul: () -> Void
+    var onDuplicate: () -> Void
+    var onDelete: () -> Void
     var onConnect: (UUID) -> Void
-    
+
     var body: some View {
-        HStack {
-            // 状态指示
-            Circle()
-                .fill(Color.green)
-                .frame(width: 8, height: 8)
-                .frame(width: 60, alignment: .leading)
-            
-            // 名称
-            Text(agent.name)
-                .frame(minWidth: 100, alignment: .leading)
-            
-            // ID
-            Text(String(agent.id.uuidString.prefix(8)))
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 80, alignment: .leading)
-            
-            // 模型
-            Text(agent.openClawDefinition.modelIdentifier)
-                .font(.caption)
-                .frame(width: 80, alignment: .leading)
-            
-            // 技能数
-            Text("\(agent.capabilities.count)")
-                .font(.caption)
-                .frame(width: 60, alignment: .center)
-            
-            // 操作按钮
+        HStack(spacing: 12) {
+            AgentStatusPill(label: item.statusLabel, systemImage: item.statusSystemImage, color: item.statusColor)
+                .frame(width: 120, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.agent.name)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                Text(item.agent.identity)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                if !item.agent.description.isEmpty {
+                    Text(item.agent.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(minWidth: 220, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.agent.openClawDefinition.modelIdentifier)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                Text(item.agent.openClawDefinition.runtimeProfile)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 170, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("In \(item.incomingConnections) / Out \(item.outgoingConnections)")
+                    .font(.caption)
+                Text("\(item.agent.capabilities.count) skills")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 110, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.soulDisplayName)
+                    .font(.caption)
+                    .foregroundColor(item.hasSoulFile ? .primary : .orange)
+                    .lineLimit(1)
+                Text(item.soulDirectoryName ?? "Using project cache only")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 170, alignment: .leading)
+
             HStack(spacing: 8) {
+                Button(action: onOpen) {
+                    Image(systemName: "scope")
+                }
+                .buttonStyle(.borderless)
+                .help("Focus agent and sync selection")
+
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
                 }
                 .buttonStyle(.borderless)
-                
-                Button(action: {}) {
-                    Image(systemName: "doc.text")
+                .help("Edit real SOUL.md content")
+
+                Button(action: onRevealSoul) {
+                    Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
-                
-                Button(action: {}) {
+                .help("Reveal SOUL.md in Finder")
+
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .buttonStyle(.borderless)
+                .help("Duplicate agent")
+
+                Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                
+                .help("Delete agent")
+
                 if isConnectMode {
-                    Button(action: { onConnect(agent.id) }) {
+                    Button(action: { onConnect(item.agent.id) }) {
                         Image(systemName: "link")
                     }
                     .buttonStyle(.borderless)
                     .foregroundColor(.blue)
+                    .help("Connect from selected source agent")
                 }
             }
-            .frame(width: 120, alignment: .center)
-            
-            Spacer()
+            .frame(width: isConnectMode ? 210 : 180, alignment: .center)
+
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
-        .background(isSelected ? Color.accentColor.opacity(0.1) : (isConnectSource ? Color.blue.opacity(0.1) : Color.clear))
+        .padding(.vertical, 6)
+        .padding(.horizontal, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isSelected ? Color.accentColor.opacity(0.12) : (isConnectSource ? Color.blue.opacity(0.10) : Color.clear))
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             onSelect()
         }
+        .onTapGesture(count: 2) {
+            onEdit()
+        }
     }
 }
-
-
 
 // MARK: - 网格视图
 struct AgentGridView: View {
@@ -1333,109 +2003,350 @@ struct AgentGridView: View {
     var isConnectMode: Bool
     var connectFromAgentID: UUID?
     var onConnect: (UUID, UUID) -> Void
-    
-    let columns = [GridItem(.adaptive(minimum: 200))]
+
+    private let columns = [GridItem(.adaptive(minimum: 280, maximum: 380), spacing: 16)]
+
+    @State private var searchText = ""
+    @State private var filter: AgentCollectionFilter = .all
+    @State private var sort: AgentCollectionSort = .updated
     @State private var editingAgent: Agent?
-    @State private var showEditSheet = false
-    
+    @State private var skillsAgent: Agent?
+    @State private var permissionsAgent: Agent?
+    @State private var deleteCandidate: Agent?
+    @State private var feedback: AgentActionFeedback?
+
+    private var items: [AgentCollectionItem] {
+        makeAgentCollectionItems(appState: appState)
+    }
+
+    private var visibleItems: [AgentCollectionItem] {
+        filterAgentItems(items, searchText: searchText, filter: filter, sort: sort)
+    }
+
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(appState.currentProject?.agents ?? []) { agent in
-                    AgentGridCard(
-                        agent: agent,
-                        isSelected: selectedAgentID == agent.id,
-                        isConnectMode: isConnectMode,
-                        isConnectSource: connectFromAgentID == agent.id,
-                        onSelect: { selectedAgentID = agent.id },
-                        onEdit: {
-                            selectedAgentID = agent.id
-                            editingAgent = agent
-                            showEditSheet = true
-                        },
-                        onConnect: { targetID in
-                            if let sourceID = connectFromAgentID {
-                                onConnect(sourceID, targetID)
+        VStack(spacing: 0) {
+            AgentCollectionToolbar(
+                searchText: $searchText,
+                filter: $filter,
+                sort: $sort,
+                items: items,
+                visibleCount: visibleItems.count,
+                feedback: feedback
+            )
+
+            Divider()
+
+            if visibleItems.isEmpty {
+                AgentCollectionEmptyState(searchText: searchText)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(visibleItems) { item in
+                            AgentGridCard(
+                                item: item,
+                                isSelected: selectedAgentID == item.agent.id,
+                                isConnectMode: isConnectMode,
+                                isConnectSource: connectFromAgentID == item.agent.id,
+                                onSelect: { selectedAgentID = item.agent.id },
+                                onOpen: { focusAgent(item.agent.id) },
+                                onEdit: { beginEditing(item.agent.id) },
+                                onRevealSoul: { revealSoul(for: item.agent.id) },
+                                onOpenWorkspace: { openWorkspace(for: item.agent.id) },
+                                onDuplicate: { duplicateAgent(item.agent.id) },
+                                onDelete: { deleteCandidate = currentAgent(id: item.agent.id) ?? item.agent },
+                                onConnect: { targetID in
+                                    guard let sourceID = connectFromAgentID else { return }
+                                    onConnect(sourceID, targetID)
+                                }
+                            )
+                            .contextMenu {
+                                AgentContextMenuContent(
+                                    item: item,
+                                    canPaste: NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil),
+                                    onOpen: { focusAgent(item.agent.id) },
+                                    onRevealSoul: { revealSoul(for: item.agent.id) },
+                                    onOpenWorkspace: { openWorkspace(for: item.agent.id) },
+                                    onReloadSoul: { reloadSoul(for: item.agent.id) },
+                                    onEdit: { beginEditing(item.agent.id) },
+                                    onManageSkills: { skillsAgent = currentAgent(id: item.agent.id) ?? item.agent },
+                                    onConfigurePermissions: { permissionsAgent = currentAgent(id: item.agent.id) ?? item.agent },
+                                    onCopy: { copyAgent(item.agent.id) },
+                                    onCut: { cutAgent(item.agent.id) },
+                                    onPaste: pasteAgent,
+                                    onDuplicate: { duplicateAgent(item.agent.id) },
+                                    onExport: { export(agentID: item.agent.id) },
+                                    onReset: { resetAgent(item.agent.id) },
+                                    onDelete: { deleteCandidate = currentAgent(id: item.agent.id) ?? item.agent }
+                                )
                             }
                         }
-                    )
-                    .contextMenu {
-                        AgentContextMenu(agent: agent)
                     }
+                    .padding(16)
                 }
             }
-            .padding()
         }
-        .sheet(isPresented: $showEditSheet) {
-            if let editingAgent {
-                AgentEditSheet(agent: editingAgent, isPresented: $showEditSheet)
+        .sheet(item: $editingAgent) { agent in
+            AgentEditSheet(agent: agent, isPresented: bindingForAgentSheet($editingAgent))
+        }
+        .sheet(item: $skillsAgent) { agent in
+            SkillsManagementSheet(agent: agent, isPresented: bindingForAgentSheet($skillsAgent))
+        }
+        .sheet(item: $permissionsAgent) { agent in
+            PermissionsConfigSheet(agent: agent, isPresented: bindingForAgentSheet($permissionsAgent))
+        }
+        .alert("Delete Agent?", isPresented: deleteConfirmationBinding) {
+            Button("Delete", role: .destructive) {
+                if let candidate = deleteCandidate {
+                    appState.deleteAgent(candidate.id)
+                    if selectedAgentID == candidate.id {
+                        selectedAgentID = nil
+                    }
+                    showFeedback("Deleted \(candidate.name)", isError: false)
+                }
+                deleteCandidate = nil
+            }
+            Button("Cancel", role: .cancel) {
+                deleteCandidate = nil
+            }
+        } message: {
+            Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
+        }
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { deleteCandidate != nil },
+            set: { if !$0 { deleteCandidate = nil } }
+        )
+    }
+
+    private func bindingForAgentSheet(_ item: Binding<Agent?>) -> Binding<Bool> {
+        Binding(
+            get: { item.wrappedValue != nil },
+            set: { if !$0 { item.wrappedValue = nil } }
+        )
+    }
+
+    private func currentAgent(id: UUID) -> Agent? {
+        appState.currentProject?.agents.first(where: { $0.id == id })
+    }
+
+    private func focusAgent(_ agentID: UUID) {
+        selectedAgentID = agentID
+        _ = appState.focusAgentNode(agentID: agentID, createIfMissing: true, suggestedPosition: .zero)
+    }
+
+    private func beginEditing(_ agentID: UUID) {
+        guard let agent = currentAgent(id: agentID) else { return }
+        selectedAgentID = agentID
+        editingAgent = agent
+    }
+
+    private func revealSoul(for agentID: UUID) {
+        if let soulURL = appState.agentSoulFileURL(for: agentID) {
+            NSWorkspace.shared.activateFileViewerSelecting([soulURL])
+            showFeedback("Revealed \(soulURL.lastPathComponent)", isError: false)
+        } else {
+            showFeedback("No real SOUL.md file was found for this agent.", isError: true)
+        }
+    }
+
+    private func openWorkspace(for agentID: UUID) {
+        if let workspaceURL = appState.agentWorkspaceURL(for: agentID) {
+            NSWorkspace.shared.open(workspaceURL)
+            showFeedback("Opened workspace \(workspaceURL.lastPathComponent)", isError: false)
+        } else {
+            showFeedback("No workspace directory was found for this agent.", isError: true)
+        }
+    }
+
+    private func reloadSoul(for agentID: UUID) {
+        let result = appState.refreshAgentSoulMDFromSource(agentID: agentID)
+        showFeedback(result.message, isError: !result.success)
+        if result.success, editingAgent?.id == agentID {
+            editingAgent = currentAgent(id: agentID)
+        }
+    }
+
+    private func copyAgent(_ agentID: UUID) {
+        guard let agent = currentAgent(id: agentID) else { return }
+        let success = appState.copyAgent(agent)
+        showFeedback(success ? "Copied \(agent.name)" : "Copy failed", isError: !success)
+    }
+
+    private func cutAgent(_ agentID: UUID) {
+        let agentName = currentAgent(id: agentID)?.name ?? "agent"
+        let success = appState.cutAgent(agentID)
+        if success, selectedAgentID == agentID {
+            selectedAgentID = nil
+        }
+        showFeedback(success ? "Cut \(agentName)" : "Cut failed", isError: !success)
+    }
+
+    private func pasteAgent() {
+        if let newAgent = appState.pasteAgentFromPasteboard() {
+            selectedAgentID = newAgent.id
+            showFeedback("Pasted \(newAgent.name)", isError: false)
+        } else {
+            showFeedback("Paste failed", isError: true)
+        }
+    }
+
+    private func duplicateAgent(_ agentID: UUID) {
+        if let newAgent = appState.duplicateAgent(agentID, suffix: "Duplicate", offset: CGPoint(x: 50, y: 50)) {
+            selectedAgentID = newAgent.id
+            showFeedback("Duplicated \(newAgent.name)", isError: false)
+        } else {
+            showFeedback("Duplicate failed", isError: true)
+        }
+    }
+
+    private func export(agentID: UUID) {
+        guard let agent = currentAgent(id: agentID) else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(agent.name).json"
+
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                do {
+                    let data = try JSONEncoder().encode(agent)
+                    try data.write(to: url)
+                    showFeedback("Exported \(agent.name)", isError: false)
+                } catch {
+                    showFeedback("Export failed: \(error.localizedDescription)", isError: true)
+                }
+            }
+        }
+    }
+
+    private func resetAgent(_ agentID: UUID) {
+        guard var agent = currentAgent(id: agentID) else { return }
+        agent.updatedAt = Date()
+        appState.updateAgent(agent, reload: true)
+        showFeedback("Reset \(agent.name)", isError: false)
+    }
+
+    private func showFeedback(_ message: String, isError: Bool) {
+        feedback = AgentActionFeedback(message: message, isError: isError)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if feedback?.message == message {
+                feedback = nil
             }
         }
     }
 }
 
-struct AgentGridCard: View {
-    let agent: Agent
+private struct AgentGridCard: View {
+    let item: AgentCollectionItem
     let isSelected: Bool
     let isConnectMode: Bool
     let isConnectSource: Bool
     var onSelect: () -> Void
+    var onOpen: () -> Void
     var onEdit: () -> Void
+    var onRevealSoul: () -> Void
+    var onOpenWorkspace: () -> Void
+    var onDuplicate: () -> Void
+    var onDelete: () -> Void
     var onConnect: (UUID) -> Void
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 10, height: 10)
-                
-                Text(agent.name)
-                    .font(.headline)
-                
-                Spacer()
-                
-                if isConnectMode {
-                    Button(action: { onConnect(agent.id) }) {
-                        Image(systemName: "link")
-                    }
-                    .buttonStyle(.borderless)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.agent.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(item.agent.identity)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
+
+                Spacer()
+
+                AgentStatusPill(label: item.statusLabel, systemImage: item.statusSystemImage, color: item.statusColor)
             }
-            
-            Divider()
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Label("ID: \(String(agent.id.uuidString.prefix(8)))", systemImage: "number")
-                Label("Model: M2.5", systemImage: "cpu")
-                Label("Skills: \(agent.capabilities.count)", systemImage: "star")
+
+            if !item.agent.description.isEmpty {
+                Text(item.agent.description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label(item.agent.openClawDefinition.modelIdentifier, systemImage: "cpu")
+                Label(item.agent.openClawDefinition.runtimeProfile, systemImage: "dial.high")
+                Label("\(item.agent.capabilities.count) skills", systemImage: "star")
+                Label("In \(item.incomingConnections) / Out \(item.outgoingConnections)", systemImage: "arrow.left.arrow.right")
+                Label(item.hasSoulFile ? item.soulDisplayName : "Project cache only", systemImage: item.hasSoulFile ? "doc.text" : "exclamationmark.triangle")
             }
             .font(.caption)
             .foregroundColor(.secondary)
-            
-            HStack {
+
+            HStack(spacing: 10) {
+                Button(action: onOpen) {
+                    Label("Focus", systemImage: "scope")
+                }
+                .buttonStyle(.borderless)
+
                 Button(action: onEdit) {
                     Label("Edit", systemImage: "pencil")
                 }
                 .buttonStyle(.borderless)
-                
-                Spacer()
-                
-                Button(action: {}) {
-                    Label("Menu", systemImage: "ellipsis.circle")
+
+                Button(action: onRevealSoul) {
+                    Label("SOUL", systemImage: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
+
+                Spacer()
+
+                Button(action: onOpenWorkspace) {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.borderless)
+                .help("Open workspace")
+
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .buttonStyle(.borderless)
+                .help("Duplicate agent")
+
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete agent")
+
+                if isConnectMode {
+                    Button(action: { onConnect(item.agent.id) }) {
+                        Image(systemName: "link")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(.blue)
+                    .help("Connect from selected source agent")
+                }
             }
         }
-        .padding()
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.controlBackgroundColor))
-        .cornerRadius(8)
+        .cornerRadius(14)
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 14)
                 .stroke(isSelected ? Color.accentColor : (isConnectSource ? Color.blue : Color.clear), lineWidth: 2)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 14))
         .onTapGesture {
             onSelect()
+        }
+        .onTapGesture(count: 2) {
+            onEdit()
         }
     }
 }
@@ -1579,6 +2490,15 @@ struct AgentLibrarySidebar: View {
     var openClawAgents: [String] = []
     @State private var openClawExpanded: Bool = true
     @State private var projectExpanded: Bool = true
+    @State private var templateExpanded: Bool = false
+
+    private var templateGroups: [(category: AgentTemplateCategory, templates: [AgentTemplate])] {
+        AgentTemplateCatalog.categories.compactMap { category in
+            let templates = AgentTemplateCatalog.templates(in: category)
+            guard !templates.isEmpty else { return nil }
+            return (category, templates)
+        }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -1617,28 +2537,15 @@ struct AgentLibrarySidebar: View {
                 LazyVStack(spacing: 8) {
                     // OpenClaw Agents 组（仅在连接时显示）
                     if isOpenClawConnected && !openClawAgents.isEmpty {
-                        Button(action: { openClawExpanded.toggle() }) {
-                            HStack {
-                                Image(systemName: "network")
-                                Text(LocalizedString.openclawAgents)
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                Spacer()
-                                Text("\(openClawAgents.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.secondary.opacity(0.2))
-                                    .cornerRadius(4)
-                                Image(systemName: openClawExpanded ? "chevron.down" : "chevron.right")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal)
-                            .padding(.top, 8)
+                        AgentLibraryDisclosureHeader(
+                            title: LocalizedString.openclawAgents,
+                            systemImage: "network",
+                            count: openClawAgents.count,
+                            isExpanded: openClawExpanded,
+                            topPadding: 8
+                        ) {
+                            openClawExpanded.toggle()
                         }
-                        .buttonStyle(.plain)
 
                         if openClawExpanded {
                             ForEach(openClawAgents, id: \.self) { agentName in
@@ -1650,30 +2557,47 @@ struct AgentLibrarySidebar: View {
                         Divider()
                             .padding(.vertical, 8)
                     }
+
+                    AgentLibraryDisclosureHeader(
+                        title: "模板",
+                        systemImage: "square.stack.3d.up",
+                        count: AgentTemplateCatalog.templates.count,
+                        isExpanded: templateExpanded
+                    ) {
+                        templateExpanded.toggle()
+                    }
+
+                    if templateExpanded {
+                        ForEach(templateGroups, id: \.category) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(group.category.rawValue)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal, 4)
+
+                                ForEach(group.templates) { template in
+                                    TemplateLibraryItem(template: template) {
+                                        addTemplateNode(template)
+                                    }
+                                    .padding(.horizontal, 4)
+                                }
+                            }
+                        }
+
+                        Divider()
+                            .padding(.vertical, 8)
+                    }
                     
                     // 项目中的Agents
                     let projectAgents = appState.currentProject?.agents ?? []
-                    Button(action: { projectExpanded.toggle() }) {
-                        HStack {
-                            Image(systemName: "folder")
-                            Text(LocalizedString.projectAgents)
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                            Spacer()
-                            Text("\(projectAgents.count)")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.2))
-                                .cornerRadius(4)
-                            Image(systemName: projectExpanded ? "chevron.down" : "chevron.right")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.horizontal)
+                    AgentLibraryDisclosureHeader(
+                        title: LocalizedString.projectAgents,
+                        systemImage: "folder",
+                        count: projectAgents.count,
+                        isExpanded: projectExpanded
+                    ) {
+                        projectExpanded.toggle()
                     }
-                    .buttonStyle(.plain)
                     
                     if projectExpanded {
                         ForEach(projectAgents) { agent in
@@ -1762,6 +2686,11 @@ struct AgentLibrarySidebar: View {
         
         return []
     }
+
+    private func addTemplateNode(_ template: AgentTemplate) {
+        guard let agent = appState.addNewAgent(templateID: template.id) else { return }
+        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+    }
 }
 
 struct DraggableAgentItem: View {
@@ -1808,6 +2737,77 @@ struct NodeTypeButton: View {
     }
 }
 
+private struct AgentLibraryDisclosureHeader: View {
+    let title: String
+    let systemImage: String
+    let count: Int
+    let isExpanded: Bool
+    var topPadding: CGFloat = 0
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Image(systemName: systemImage)
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("\(count)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.2))
+                    .cornerRadius(4)
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal)
+            .padding(.top, topPadding)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct TemplateLibraryItem: View {
+    let template: AgentTemplate
+    let onAdd: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "shippingbox.fill")
+                .foregroundColor(.accentColor)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(template.name)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                Text(template.summary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onAdd) {
+                Image(systemName: "plus.circle")
+                    .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("基于该模板创建节点")
+        }
+        .padding(8)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(6)
+        .help("拖拽到画布可直接创建模板节点")
+        .onDrag { NSItemProvider(object: "template:\(template.id)" as NSString) }
+    }
+}
+
 // MARK: - 节点属性面板
 struct NodePropertyPanel: View {
     @EnvironmentObject var appState: AppState
@@ -1820,6 +2820,7 @@ struct NodePropertyPanel: View {
     @State private var conditionExpression: String = ""
     @State private var loopEnabled: Bool = false
     @State private var maxIterations: Double = 1
+    @State private var nodeDisplayColorHex: String?
     @State private var reloadStatus: String?
     @State private var soulSourcePath: String?
     @State private var outgoingEdgeDrafts: [UUID: EdgeDraft] = [:]
@@ -1860,6 +2861,42 @@ struct NodePropertyPanel: View {
                                     .textFieldStyle(.roundedBorder)
                             }
 
+                        }
+                        .padding(8)
+                    }
+
+                    GroupBox("Node Color Group") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                ForEach(CanvasAccentColorPreset.allCases) { preset in
+                                    Button {
+                                        nodeDisplayColorHex = preset.hex
+                                    } label: {
+                                        Circle()
+                                            .fill(preset.color)
+                                            .frame(width: 18, height: 18)
+                                            .overlay(
+                                                Circle()
+                                                    .stroke(
+                                                        CanvasStylePalette.normalizedHex(nodeDisplayColorHex) == preset.hex ? Color.primary : Color.clear,
+                                                        lineWidth: 2
+                                                    )
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(preset.title)
+                                }
+
+                                Button("默认") {
+                                    nodeDisplayColorHex = nil
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+
+                            Text("同色节点会自动归组，标签可在画布左上角直接编辑。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                         .padding(8)
                     }
@@ -1959,6 +2996,7 @@ struct NodePropertyPanel: View {
         conditionExpression = node.conditionExpression
         loopEnabled = node.loopEnabled
         maxIterations = Double(max(1, node.maxIterations))
+        nodeDisplayColorHex = CanvasStylePalette.normalizedHex(node.displayColorHex)
 
         if let agentID = node.agentID,
            let agent = getAgent(id: agentID) {
@@ -1977,6 +3015,7 @@ struct NodePropertyPanel: View {
     private func saveChanges() {
         var updatedNode = node
         updatedNode.title = node.type == .agent ? "" : nodeTitle
+        updatedNode.displayColorHex = CanvasStylePalette.normalizedHex(nodeDisplayColorHex)
         appState.updateNode(updatedNode)
 
         if let agentID = node.agentID,
@@ -2082,6 +3121,7 @@ struct EdgePropertyPanel: View {
     @State private var requiresApproval: Bool = false
     @State private var isBidirectional: Bool = false
     @State private var dataMappingText: String = ""
+    @State private var edgeDisplayColorHex: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2148,6 +3188,69 @@ struct EdgePropertyPanel: View {
                         .padding(8)
                     }
 
+                    GroupBox("Route Display") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            TextField("Label", text: $label)
+                                .textFieldStyle(.roundedBorder)
+
+                            TextField("Condition", text: $conditionExpression)
+                                .textFieldStyle(.roundedBorder)
+
+                            Toggle("Requires Approval", isOn: $requiresApproval)
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Data Mapping")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                TextEditor(text: $dataMappingText)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(minHeight: 90, maxHeight: 120)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+                                    )
+                            }
+                        }
+                        .padding(8)
+                    }
+
+                    GroupBox("Route Color Group") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                ForEach(CanvasAccentColorPreset.allCases) { preset in
+                                    Button {
+                                        edgeDisplayColorHex = preset.hex
+                                    } label: {
+                                        Circle()
+                                            .fill(preset.color)
+                                            .frame(width: 18, height: 18)
+                                            .overlay(
+                                                Circle()
+                                                    .stroke(
+                                                        CanvasStylePalette.normalizedHex(edgeDisplayColorHex) == preset.hex ? Color.primary : Color.clear,
+                                                        lineWidth: 2
+                                                    )
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(preset.title)
+                                }
+
+                                Button("默认") {
+                                    edgeDisplayColorHex = nil
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+
+                            Text("同色连线会自动归组，标签可在画布左上角直接编辑。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(8)
+                    }
+
                     GroupBox("Communication Direction") {
                         VStack(alignment: .leading, spacing: 10) {
                             Picker("Direction", selection: $isBidirectional) {
@@ -2190,6 +3293,11 @@ struct EdgePropertyPanel: View {
 
                 Spacer()
 
+                Button("Apply") {
+                    saveRouteDisplayChanges()
+                }
+                .buttonStyle(.bordered)
+
                 Button("Close") {
                     isPresented = false
                 }
@@ -2206,6 +3314,7 @@ struct EdgePropertyPanel: View {
             requiresApproval = edge.requiresApproval
             isBidirectional = isBidirectionalEdge(edge)
             dataMappingText = formattedDataMapping(edge.dataMapping)
+            edgeDisplayColorHex = CanvasStylePalette.normalizedHex(edge.displayColorHex)
         }
     }
 
@@ -2263,6 +3372,16 @@ struct EdgePropertyPanel: View {
 
     private func isBidirectionalEdge(_ edge: WorkflowEdge) -> Bool {
         edge.isBidirectional
+    }
+
+    private func saveRouteDisplayChanges() {
+        appState.updateEdge(edge.id) { updatedEdge in
+            updatedEdge.label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+            updatedEdge.conditionExpression = conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+            updatedEdge.requiresApproval = requiresApproval
+            updatedEdge.dataMapping = parseDataMapping()
+            updatedEdge.displayColorHex = CanvasStylePalette.normalizedHex(edgeDisplayColorHex)
+        }
     }
 }
 
@@ -2497,27 +3616,95 @@ struct AgentEditSheet: View {
     @State private var name: String = ""
     @State private var description: String = ""
     @State private var soulMD: String = ""
+    @State private var identity: String = ""
+    @State private var soulSourcePath: String?
+    @State private var statusMessage: String?
+    @State private var statusIsError = false
     
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Edit Agent: \(agent.name)")
-                .font(.headline)
-            
-            TextField("Name", text: $name)
-                .textFieldStyle(.roundedBorder)
-            
-            TextField("Description", text: $description)
-                .textFieldStyle(.roundedBorder)
-            
-            Text("SOUL.md Configuration")
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            
-            TextEditor(text: $soulMD)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 200)
-                .border(Color.gray.opacity(0.3))
-            
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Edit Agent: \(agent.name)")
+                        .font(.headline)
+                    Text("The editor now reads from the real SOUL source file when one is available.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("Close") {
+                    isPresented = false
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox("Agent Info") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            TextField("Name", text: $name)
+                                .textFieldStyle(.roundedBorder)
+
+                            TextField("Identity", text: $identity)
+                                .textFieldStyle(.roundedBorder)
+
+                            TextField("Description", text: $description)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        .padding(8)
+                    }
+
+                    GroupBox("SOUL Source") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(soulSourcePath ?? "No real SOUL.md file detected. Saving will create or reuse the best available path.")
+                                        .font(.caption)
+                                        .foregroundColor(soulSourcePath == nil ? .orange : .secondary)
+                                        .textSelection(.enabled)
+                                }
+                                Spacer()
+                            }
+
+                            HStack(spacing: 10) {
+                                Button("Reload From Disk") {
+                                    reloadFromSource()
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Reveal in Finder") {
+                                    revealSource()
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(soulSourcePath == nil)
+                            }
+
+                            TextEditor(text: $soulMD)
+                                .font(.system(.body, design: .monospaced))
+                                .frame(minHeight: 320)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+                                )
+                        }
+                        .padding(8)
+                    }
+
+                    if let statusMessage {
+                        HStack(spacing: 8) {
+                            Image(systemName: statusIsError ? "xmark.octagon.fill" : "checkmark.circle.fill")
+                            Text(statusMessage)
+                        }
+                        .font(.caption)
+                        .foregroundColor(statusIsError ? .red : .green)
+                    }
+                }
+                .padding()
+            }
+
             HStack {
                 Button("Cancel") {
                     isPresented = false
@@ -2528,13 +3715,13 @@ struct AgentEditSheet: View {
                 
                 Button("Save") {
                     saveChanges()
-                    isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
             }
+            .padding()
+            .background(.regularMaterial)
         }
-        .padding()
-        .frame(width: 500, height: 450)
+        .frame(width: 680, height: 620)
         .onAppear {
             loadAgentData()
         }
@@ -2544,18 +3731,70 @@ struct AgentEditSheet: View {
         if let project = appState.currentProject,
            let a = project.agents.first(where: { $0.id == agent.id }) {
             name = a.name
+            identity = a.identity
             description = a.description
-            soulMD = a.soulMD
+            if let loaded = appState.loadAgentSoulMDFromSource(agentID: a.id) {
+                soulMD = loaded.content
+                soulSourcePath = loaded.sourcePath
+                if loaded.sourcePath != nil {
+                    statusMessage = "Loaded the real SOUL source file."
+                    statusIsError = false
+                } else {
+                    statusMessage = "No SOUL source file was found. You are editing the project cache."
+                    statusIsError = true
+                }
+            } else {
+                soulMD = a.soulMD
+                soulSourcePath = nil
+                statusMessage = "Failed to resolve the current agent."
+                statusIsError = true
+            }
         }
     }
     
+    private func reloadFromSource() {
+        let result = appState.refreshAgentSoulMDFromSource(agentID: agent.id)
+        statusMessage = result.message
+        statusIsError = !result.success
+
+        if result.success, let loaded = appState.loadAgentSoulMDFromSource(agentID: agent.id) {
+            soulMD = loaded.content
+            soulSourcePath = loaded.sourcePath
+        }
+    }
+
+    private func revealSource() {
+        guard let soulSourcePath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: soulSourcePath)])
+    }
+
     private func saveChanges() {
-        var updatedAgent = agent
+        guard var updatedAgent = appState.currentProject?.agents.first(where: { $0.id == agent.id }) else {
+            statusMessage = "Failed to locate the current agent before saving."
+            statusIsError = true
+            return
+        }
+
+        let normalizedIdentity = identity.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.name = name
+        updatedAgent.identity = normalizedIdentity.isEmpty ? "generalist" : normalizedIdentity
         updatedAgent.description = description
         updatedAgent.soulMD = soulMD
         updatedAgent.updatedAt = Date()
+
+        let fileResult = appState.persistAgentSoulMDToSource(agentID: updatedAgent.id, soulMD: soulMD)
+        if fileResult.success {
+            let persistedPath = fileResult.message.replacingOccurrences(of: "已写入 ", with: "")
+            updatedAgent.openClawDefinition.soulSourcePath = persistedPath
+            soulSourcePath = persistedPath
+        }
+
         appState.updateAgent(updatedAgent, reload: true)
+        statusMessage = fileResult.success ? "Saved agent metadata and SOUL.md to the real source file." : fileResult.message
+        statusIsError = !fileResult.success
+        if fileResult.success {
+            isPresented = false
+        }
     }
 }
 

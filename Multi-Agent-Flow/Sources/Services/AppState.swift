@@ -244,6 +244,112 @@ enum CanvasColorPreset: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum CanvasGroupKind: String, Codable, Hashable, CaseIterable {
+    case node
+    case edge
+}
+
+struct CanvasColorGroup: Identifiable, Codable, Hashable {
+    var kind: CanvasGroupKind
+    var colorHex: String
+    var title: String
+
+    var id: String {
+        "\(kind.rawValue)-\(CanvasStylePalette.normalizedHex(colorHex) ?? colorHex.uppercased())"
+    }
+}
+
+enum CanvasAccentColorPreset: String, CaseIterable, Identifiable {
+    case blue
+    case teal
+    case green
+    case amber
+    case orange
+    case red
+    case pink
+    case violet
+    case slate
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .blue: return "蓝"
+        case .teal: return "青"
+        case .green: return "绿"
+        case .amber: return "琥珀"
+        case .orange: return "橙"
+        case .red: return "红"
+        case .pink: return "粉"
+        case .violet: return "紫"
+        case .slate: return "灰"
+        }
+    }
+
+    var hex: String {
+        switch self {
+        case .blue: return "2563EB"
+        case .teal: return "0F766E"
+        case .green: return "16A34A"
+        case .amber: return "D97706"
+        case .orange: return "EA580C"
+        case .red: return "DC2626"
+        case .pink: return "DB2777"
+        case .violet: return "7C3AED"
+        case .slate: return "475569"
+        }
+    }
+
+    var color: Color {
+        Color(canvasHex: hex) ?? .accentColor
+    }
+}
+
+enum CanvasStylePalette {
+    static func normalizedHex(_ hex: String?) -> String? {
+        guard let hex else { return nil }
+        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
+        guard cleaned.count == 6 || cleaned.count == 8 else { return nil }
+        return cleaned
+    }
+
+    static func color(from hex: String?) -> Color? {
+        guard let normalized = normalizedHex(hex) else { return nil }
+        return Color(canvasHex: normalized)
+    }
+}
+
+extension Color {
+    init?(canvasHex: String) {
+        let cleaned = canvasHex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard cleaned.count == 6 || cleaned.count == 8 else { return nil }
+
+        var value: UInt64 = 0
+        guard Scanner(string: cleaned).scanHexInt64(&value) else { return nil }
+
+        let r, g, b, a: UInt64
+        if cleaned.count == 8 {
+            r = (value >> 24) & 0xff
+            g = (value >> 16) & 0xff
+            b = (value >> 8) & 0xff
+            a = value & 0xff
+        } else {
+            r = (value >> 16) & 0xff
+            g = (value >> 8) & 0xff
+            b = value & 0xff
+            a = 0xff
+        }
+
+        self = Color(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
+    }
+}
+
 enum ContentToolbarItem: String, CaseIterable, Codable, Identifiable {
     case view
     case display
@@ -266,7 +372,6 @@ struct CanvasDisplaySettings: Codable {
     var lineWidth: CGFloat = 2
     var textScale: CGFloat = 1
     var lineColor: CanvasColorPreset = .blue
-    var textColor: CanvasColorPreset = .primary
 }
 
 class AppState: ObservableObject {
@@ -342,6 +447,12 @@ class AppState: ObservableObject {
     }
 
     private func bindProjectState() {
+        localizationManager.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
         taskManager.$tasks
             .sink { [weak self] _ in
                 self?.syncCurrentProjectFromManagers()
@@ -395,6 +506,13 @@ class AppState: ObservableObject {
                 self?.syncCurrentProjectFromManagers()
             }
             .store(in: &cancellables)
+    }
+
+    func updateCanvasDisplaySettings(_ updates: (inout CanvasDisplaySettings) -> Void) {
+        var settings = canvasDisplaySettings
+        updates(&settings)
+        canvasDisplaySettings = settings
+        objectWillChange.send()
     }
 
     private func syncCurrentProjectFromManagers() {
@@ -602,6 +720,8 @@ class AppState: ObservableObject {
     }
 
     func createNewProject(named projectName: String) {
+        teardownCurrentProjectSession(persistProject: currentProject != nil, clearProjectReference: true)
+
         let resolvedName: String
         if FileManager.default.fileExists(atPath: projectManager.projectURL(for: projectName).path) {
             resolvedName = projectManager.uniqueProjectName(baseName: projectName)
@@ -672,31 +792,63 @@ class AppState: ObservableObject {
             print("静默保存项目失败: \(error)")
         }
     }
-    
-    // 关闭当前项目
-    func closeProject() {
-        persistCurrentProjectSilently()
 
-        currentProjectFileURL = nil
+    private func teardownCurrentProjectSession(
+        persistProject: Bool,
+        clearProjectReference: Bool
+    ) {
+        let shouldPersist = persistProject && currentProject != nil
+        openClawManager.disconnect()
+        if shouldPersist {
+            syncCurrentProjectFromManagers()
+            persistCurrentProjectSilently()
+        }
         taskManager.reset()
         messageManager.reset()
         openClawService.resetExecutionSnapshot()
-        openClawManager.disconnect()
-        currentProject = nil
+        selectedNodeID = nil
+
+        if clearProjectReference {
+            currentProjectFileURL = nil
+            currentProject = nil
+        }
+    }
+
+    @discardableResult
+    private func writeAgentSoulToProjectMirror(
+        agent: Agent,
+        project: MAProject
+    ) -> (success: Bool, message: String, path: String?) {
+        guard let soulURL = openClawManager.projectMirrorSoulURL(for: agent, in: project) else {
+            return (false, "未找到可写入的项目镜像 SOUL.md 路径。", nil)
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try agent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+            return (true, "已写入 \(soulURL.path)", soulURL.path)
+        } catch {
+            return (false, "写入项目镜像 SOUL.md 失败: \(error.localizedDescription)", nil)
+        }
+    }
+    
+    // 关闭当前项目
+    func closeProject() {
+        teardownCurrentProjectSession(persistProject: true, clearProjectReference: true)
     }
     
     func deleteCurrentProject() {
         guard let project = currentProject, let currentProjectFileURL else { return }
+        teardownCurrentProjectSession(persistProject: false, clearProjectReference: true)
         projectManager.deleteProject(at: currentProjectFileURL, projectID: project.id)
-        closeProject()
     }
 
     func shutdown() {
+        openClawManager.disconnect()
         if currentProject != nil {
+            syncCurrentProjectFromManagers()
             persistCurrentProjectSilently()
         }
-
-        openClawManager.disconnect()
         stopAutoSave()
     }
 
@@ -715,6 +867,7 @@ class AppState: ObservableObject {
     func openProject(at url: URL) {
         do {
             let project = try projectManager.loadProject(from: url)
+            teardownCurrentProjectSession(persistProject: currentProject != nil, clearProjectReference: true)
             restoreProject(project, from: url)
         } catch {
             print("加载失败: \(error)")
@@ -836,7 +989,7 @@ class AppState: ObservableObject {
     }
 
     func connectOpenClaw(using config: OpenClawConfig? = nil, completion: ((Bool, String) -> Void)? = nil) {
-        guard let projectID = currentProject?.id else {
+        guard let project = snapshotCurrentProject() else {
             completion?(false, "请先创建或打开项目，再确认连接 OpenClaw。")
             return
         }
@@ -846,7 +999,8 @@ class AppState: ObservableObject {
             openClawManager.config.save()
         }
 
-        openClawManager.connect(for: projectID) { [weak self] success, message in
+        currentProject = project
+        openClawManager.connect(for: project) { [weak self] success, message in
             guard let self else { return }
             DispatchQueue.main.async {
                 self.syncCurrentProjectFromManagers()
@@ -859,12 +1013,11 @@ class AppState: ObservableObject {
     }
 
     func disconnectOpenClaw(completion: ((Bool, String) -> Void)? = nil) {
+        openClawManager.disconnect()
+        syncCurrentProjectFromManagers()
         if currentProject != nil {
             persistCurrentProjectSilently()
         }
-
-        openClawManager.disconnect()
-        syncCurrentProjectFromManagers()
         completion?(true, "OpenClaw 已断开并恢复到连接前状态。")
     }
 
@@ -1161,6 +1314,10 @@ class AppState: ObservableObject {
         guard let index = currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) else { return }
         let deduplication = enforceUniqueAgentNodes(in: workflow)
         currentProject?.workflows[index] = deduplication.workflow
+        if var syncedWorkflow = currentProject?.workflows[index] {
+            syncCanvasColorGroups(in: &syncedWorkflow)
+            currentProject?.workflows[index] = syncedWorkflow
+        }
         currentProject?.updatedAt = Date()
         objectWillChange.send()
         
@@ -1190,6 +1347,7 @@ class AppState: ObservableObject {
         updates(&project.workflows[index])
         let deduplication = enforceUniqueAgentNodes(in: project.workflows[index])
         project.workflows[index] = deduplication.workflow
+        syncCanvasColorGroups(in: &project.workflows[index])
         syncConversationPermissions(for: project.workflows, in: &project)
         project.updatedAt = Date()
         currentProject = project
@@ -1498,6 +1656,94 @@ class AppState: ObservableObject {
         }
     }
 
+    func setNodeColor(_ colorHex: String?, for nodeIDs: Set<UUID>) {
+        guard !nodeIDs.isEmpty else { return }
+        let normalizedColorHex = CanvasStylePalette.normalizedHex(colorHex)
+        updateMainWorkflow { workflow in
+            for index in workflow.nodes.indices where nodeIDs.contains(workflow.nodes[index].id) {
+                workflow.nodes[index].displayColorHex = normalizedColorHex
+            }
+            syncCanvasColorGroups(in: &workflow)
+        }
+    }
+
+    func setEdgeColor(_ colorHex: String?, for edgeIDs: Set<UUID>) {
+        guard !edgeIDs.isEmpty else { return }
+        let normalizedColorHex = CanvasStylePalette.normalizedHex(colorHex)
+        updateMainWorkflow { workflow in
+            for index in workflow.edges.indices where edgeIDs.contains(workflow.edges[index].id) {
+                workflow.edges[index].displayColorHex = normalizedColorHex
+            }
+            syncCanvasColorGroups(in: &workflow)
+        }
+    }
+
+    func updateColorGroupTitle(kind: CanvasGroupKind, colorHex: String, title: String) {
+        guard let normalizedHex = CanvasStylePalette.normalizedHex(colorHex) else { return }
+        updateMainWorkflow { workflow in
+            upsertCanvasColorGroup(
+                in: &workflow,
+                group: CanvasColorGroup(
+                    kind: kind,
+                    colorHex: normalizedHex,
+                    title: title.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            )
+            syncCanvasColorGroups(in: &workflow)
+        }
+    }
+
+    private func upsertCanvasColorGroup(in workflow: inout Workflow, group: CanvasColorGroup) {
+        if let index = workflow.colorGroups.firstIndex(where: {
+            $0.kind == group.kind && CanvasStylePalette.normalizedHex($0.colorHex) == CanvasStylePalette.normalizedHex(group.colorHex)
+        }) {
+            workflow.colorGroups[index].colorHex = group.colorHex
+            workflow.colorGroups[index].title = group.title
+        } else {
+            workflow.colorGroups.append(group)
+        }
+    }
+
+    private func syncCanvasColorGroups(in workflow: inout Workflow) {
+        let usedNodeColors = Set(workflow.nodes.compactMap { CanvasStylePalette.normalizedHex($0.displayColorHex) })
+        let usedEdgeColors = Set(workflow.edges.compactMap { CanvasStylePalette.normalizedHex($0.displayColorHex) })
+
+        var syncedGroups: [CanvasColorGroup] = []
+        for kind in CanvasGroupKind.allCases {
+            let usedColors = kind == .node ? usedNodeColors : usedEdgeColors
+            let existingGroups = workflow.colorGroups.filter { $0.kind == kind }
+
+            for colorHex in usedColors.sorted() {
+                if let existing = existingGroups.first(where: {
+                    CanvasStylePalette.normalizedHex($0.colorHex) == colorHex
+                }) {
+                    syncedGroups.append(
+                        CanvasColorGroup(
+                            kind: kind,
+                            colorHex: colorHex,
+                            title: existing.title
+                        )
+                    )
+                } else {
+                    syncedGroups.append(
+                        CanvasColorGroup(
+                            kind: kind,
+                            colorHex: colorHex,
+                            title: ""
+                        )
+                    )
+                }
+            }
+        }
+
+        workflow.colorGroups = syncedGroups.sorted {
+            if $0.kind != $1.kind {
+                return ($0.kind == .node ? 0 : 1) < ($1.kind == .node ? 0 : 1)
+            }
+            return $0.colorHex < $1.colorHex
+        }
+    }
+
     func setEdgeCommunicationDirection(edgeID: UUID, bidirectional: Bool) {
         guard let workflow = currentProject?.workflows.first,
               let edge = workflow.edges.first(where: { $0.id == edgeID }) else { return }
@@ -1530,16 +1776,20 @@ class AppState: ObservableObject {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == updatedAgent.id }) else { return }
 
-        let previousAgent = project.agents[index]
         project.agents[index] = updatedAgent
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
 
-        openClawManager.updateAgentSoulMD(
-            matching: [previousAgent.name, previousAgent.openClawDefinition.agentIdentifier, updatedAgent.name, updatedAgent.openClawDefinition.agentIdentifier],
-            soulMD: updatedAgent.soulMD
-        ) { [weak self] success, message in
+        let mirrorWrite = writeAgentSoulToProjectMirror(agent: updatedAgent, project: project)
+        if mirrorWrite.success, let path = mirrorWrite.path,
+           let refreshedProject = currentProject,
+           let refreshedIndex = refreshedProject.agents.firstIndex(where: { $0.id == updatedAgent.id }) {
+            currentProject?.agents[refreshedIndex].openClawDefinition.soulSourcePath = path
+        }
+        persistCurrentProjectSilently()
+
+        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] success, message in
             guard let self else { return }
             DispatchQueue.main.async {
                 self.openClawService.addLog(success ? .success : .warning, message)
@@ -1552,7 +1802,15 @@ class AppState: ObservableObject {
     }
 
     func loadAgentSoulMDFromSource(agentID: UUID) -> (content: String, sourcePath: String?)? {
-        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
+        guard let project = currentProject,
+              let agent = project.agents.first(where: { $0.id == agentID }) else { return nil }
+
+        if let mirrorURL = openClawManager.projectMirrorSoulURL(for: agent, in: project),
+           FileManager.default.fileExists(atPath: mirrorURL.path),
+           let content = try? String(contentsOf: mirrorURL, encoding: .utf8) {
+            return (content, mirrorURL.path)
+        }
+
         guard let soulURL = existingAgentSoulFileURL(for: agent) else {
             return (agent.soulMD, nil)
         }
@@ -1569,26 +1827,109 @@ class AppState: ObservableObject {
             return (false, "未找到目标 Agent。")
         }
 
+        var agent = project.agents[index]
+        agent.soulMD = soulMD
+
+        let mirrorWrite = writeAgentSoulToProjectMirror(agent: agent, project: project)
+        guard mirrorWrite.success else {
+            return (false, mirrorWrite.message)
+        }
+
+        if let path = mirrorWrite.path {
+            project.agents[index].openClawDefinition.soulSourcePath = path
+        }
+        project.agents[index].soulMD = soulMD
+        project.agents[index].updatedAt = Date()
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+        persistCurrentProjectSilently()
+
+        return (true, mirrorWrite.message)
+    }
+
+    func refreshAgentSoulMDFromSource(agentID: UUID) -> (success: Bool, message: String) {
+        guard var project = currentProject,
+              let index = project.agents.firstIndex(where: { $0.id == agentID }) else {
+            return (false, "未找到目标 Agent。")
+        }
+
         let agent = project.agents[index]
-        guard let soulURL = resolveAgentSoulFileURL(for: agent) else {
-            return (false, "未找到可写入的 SOUL.md 路径。")
+        guard let soulURL = existingAgentSoulFileURL(for: agent) else {
+            return (false, "未找到真实 SOUL.md 文件，当前仅存在项目缓存。")
         }
 
         do {
-            try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
-
-            project.agents[index].soulMD = soulMD
+            let content = try String(contentsOf: soulURL, encoding: .utf8)
+            project.agents[index].soulMD = content
+            project.agents[index].openClawDefinition.soulSourcePath = soulURL.path
             project.agents[index].updatedAt = Date()
             project.updatedAt = Date()
             currentProject = project
             objectWillChange.send()
             persistCurrentProjectSilently()
-
-            return (true, "已写入 \(soulURL.path)")
+            return (true, "已从 \(soulURL.path) 重新加载")
         } catch {
-            return (false, "写入 SOUL.md 失败: \(error.localizedDescription)")
+            return (false, "读取 SOUL.md 失败: \(error.localizedDescription)")
         }
+    }
+
+    func agentSoulFileURL(for agentID: UUID) -> URL? {
+        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
+        return existingAgentSoulFileURL(for: agent)
+    }
+
+    func agentWorkspaceURL(for agentID: UUID) -> URL? {
+        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
+
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ]
+
+        if let workspacePath = openClawManager.localAgentWorkspacePath(matching: candidateNames) {
+            return URL(fileURLWithPath: workspacePath, isDirectory: true)
+        }
+
+        if let soulURL = existingAgentSoulFileURL(for: agent) {
+            return soulURL.deletingLastPathComponent()
+        }
+
+        return agentSoulRootURL(for: agent)
+    }
+
+    @discardableResult
+    func focusAgentNode(
+        agentID: UUID,
+        createIfMissing: Bool = true,
+        suggestedPosition: CGPoint = .zero
+    ) -> UUID? {
+        let nodeID: UUID?
+        if createIfMissing {
+            nodeID = ensureAgentNode(agentID: agentID, suggestedPosition: suggestedPosition)
+        } else {
+            nodeID = workflowNodeID(for: agentID)
+        }
+
+        if let nodeID {
+            selectedNodeID = nodeID
+        }
+        return nodeID
+    }
+
+    func workflowNodeID(for agentID: UUID) -> UUID? {
+        currentProject?.workflows.first?.nodes.first(where: { $0.agentID == agentID && $0.type == .agent })?.id
+    }
+
+    func connectionSummary(for agentID: UUID) -> (incoming: Int, outgoing: Int) {
+        guard let workflow = currentProject?.workflows.first,
+              let nodeID = workflowNodeID(for: agentID) else {
+            return (0, 0)
+        }
+
+        let incoming = workflow.edges.filter { $0.toNodeID == nodeID }.count
+        let outgoing = workflow.edges.filter { $0.fromNodeID == nodeID }.count
+        return (incoming, outgoing)
     }
 
     func updateAgentOpenClawDefinition(
@@ -1616,6 +1957,16 @@ class AppState: ObservableObject {
     }
 
     private func existingAgentSoulFileURL(for agent: Agent) -> URL? {
+        if let directPath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
+            let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
+            if FileManager.default.fileExists(atPath: directURL.path) {
+                return directURL
+            }
+            if let nearbySoulURL = existingSoulFileURL(in: directURL.deletingLastPathComponent()) {
+                return nearbySoulURL
+            }
+        }
+
         for rootURL in agentSoulRootCandidates(for: agent) {
             if let soulURL = existingSoulFileURL(in: rootURL) {
                 return soulURL
@@ -1626,6 +1977,11 @@ class AppState: ObservableObject {
 
     private func agentSoulRootCandidates(for agent: Agent) -> [URL] {
         var roots: [URL] = []
+
+        if let project = currentProject,
+           let mirrorURL = openClawManager.projectMirrorSoulURL(for: agent, in: project) {
+            roots.append(mirrorURL.deletingLastPathComponent())
+        }
 
         let candidateNames = [
             agent.openClawDefinition.agentIdentifier,
@@ -2209,6 +2565,7 @@ class AppState: ObservableObject {
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
+        persistCurrentProjectSilently()
         return duplicated
     }
 
@@ -2253,6 +2610,7 @@ class AppState: ObservableObject {
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
+        persistCurrentProjectSilently()
         openClawManager.terminateAgent(agentID)
     }
 

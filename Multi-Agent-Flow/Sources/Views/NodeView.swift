@@ -9,6 +9,7 @@ import SwiftUI
 
 struct NodeView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var localizationManager = LocalizationManager.shared
     let node: WorkflowNode
     let isSelected: Bool
     let agent: Agent?
@@ -24,7 +25,7 @@ struct NodeView: View {
     var onTap: (() -> Void)?
     var accentColor: Color? = nil
     var textScale: CGFloat = 1
-    var textColor: Color = .primary
+    var textColor: Color = .black
 
     @State private var isHovered: Bool = false
     @State private var pulseAnimation: Bool = false
@@ -50,8 +51,18 @@ struct NodeView: View {
         }
         
         switch node.type {
-        case .start: return "Start"
-        case .agent: return "Agent"
+        case .start:
+            switch localizationManager.currentLanguage {
+            case .english: return "Start"
+            case .traditionalChinese: return "開始"
+            case .simplifiedChinese: return "开始"
+            }
+        case .agent:
+            switch localizationManager.currentLanguage {
+            case .english: return "Agent"
+            case .traditionalChinese: return "節點"
+            case .simplifiedChinese: return "节点"
+            }
         }
     }
     
@@ -160,7 +171,7 @@ struct NodeView: View {
     }
 
     private var connectionCountLabel: some View {
-        Text("In \(incomingConnections)  Out \(outgoingConnections)")
+        Text(connectionCountText)
             .font(.system(size: 9 * textScale, weight: .medium, design: .rounded))
             .lineLimit(1)
             .foregroundColor(textColor.opacity(0.8))
@@ -173,7 +184,7 @@ struct NodeView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 8 * textScale, weight: .semibold))
-                    Text("无出口，无法反馈消息")
+                    Text(noOutgoingWarningText)
                         .font(.system(size: 8 * textScale, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
@@ -193,7 +204,7 @@ struct NodeView: View {
                 HStack(spacing: 2) {
                     Image(systemName: "link")
                         .font(.system(size: 10 * textScale))
-                    Text("点击连接")
+                    Text(connectHintText)
                         .font(.system(size: 8 * textScale))
                 }
                 .foregroundColor(.orange)
@@ -266,6 +277,39 @@ struct NodeView: View {
     private func optionalText(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var connectionCountText: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "In \(incomingConnections)  Out \(outgoingConnections)"
+        case .traditionalChinese:
+            return "入 \(incomingConnections)  出 \(outgoingConnections)"
+        case .simplifiedChinese:
+            return "入 \(incomingConnections)  出 \(outgoingConnections)"
+        }
+    }
+
+    private var noOutgoingWarningText: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "No outbound route"
+        case .traditionalChinese:
+            return "無出口，無法回傳消息"
+        case .simplifiedChinese:
+            return "无出口，无法回传消息"
+        }
+    }
+
+    private var connectHintText: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "Tap to link"
+        case .traditionalChinese:
+            return "點擊連接"
+        case .simplifiedChinese:
+            return "点击连接"
+        }
     }
 }
 

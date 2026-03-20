@@ -9,7 +9,7 @@ import Foundation
 
 // 导入导出数据结构
 struct MultiAgentArchitecture: Codable {
-    var version: String = "1.0"
+    var version: String = "1.1"
     var exportedAt: Date
     var projectName: String
     var agents: [AgentExport]
@@ -32,6 +32,7 @@ struct MultiAgentArchitecture: Codable {
         var name: String
         var nodes: [NodeExport]
         var edges: [EdgeExport]
+        var colorGroups: [ColorGroupExport]?
     }
     
     struct NodeExport: Codable {
@@ -40,6 +41,7 @@ struct MultiAgentArchitecture: Codable {
         var type: String
         var position: CGPoint
         var title: String?
+        var displayColorHex: String?
         var conditionExpression: String?
         var loopEnabled: Bool?
         var maxIterations: Int?
@@ -50,9 +52,16 @@ struct MultiAgentArchitecture: Codable {
         var fromNodeID: UUID
         var toNodeID: UUID
         var label: String?
+        var displayColorHex: String?
         var conditionExpression: String?
         var requiresApproval: Bool?
         var isBidirectional: Bool?
+    }
+
+    struct ColorGroupExport: Codable {
+        var kind: String
+        var colorHex: String
+        var title: String
     }
     
     struct PermissionExport: Codable {
@@ -117,6 +126,7 @@ class ImportExportService {
                     type: node.type.rawValue,
                     position: node.position,
                     title: node.title,
+                    displayColorHex: node.displayColorHex,
                     conditionExpression: node.conditionExpression,
                     loopEnabled: node.loopEnabled,
                     maxIterations: node.maxIterations
@@ -129,6 +139,7 @@ class ImportExportService {
                     fromNodeID: edge.fromNodeID,
                     toNodeID: edge.toNodeID,
                     label: edge.label,
+                    displayColorHex: edge.displayColorHex,
                     conditionExpression: edge.conditionExpression,
                     requiresApproval: edge.requiresApproval,
                     isBidirectional: edge.isBidirectional
@@ -139,7 +150,14 @@ class ImportExportService {
                 id: workflow.id,
                 name: workflow.name,
                 nodes: nodeExports,
-                edges: edgeExports
+                edges: edgeExports,
+                colorGroups: workflow.colorGroups.map {
+                    MultiAgentArchitecture.ColorGroupExport(
+                        kind: $0.kind.rawValue,
+                        colorHex: $0.colorHex,
+                        title: $0.title
+                    )
+                }
             )
         }
         
@@ -236,6 +254,7 @@ class ImportExportService {
                 node.agentID = nodeExport.agentID.flatMap { idMapping[$0] }
                 node.position = nodeExport.position
                 node.title = nodeExport.title ?? ""
+                node.displayColorHex = nodeExport.displayColorHex
                 node.conditionExpression = nodeExport.conditionExpression ?? ""
                 node.loopEnabled = nodeExport.loopEnabled ?? false
                 node.maxIterations = nodeExport.maxIterations ?? 1
@@ -250,10 +269,20 @@ class ImportExportService {
                     to: nodeIDMapping[edgeExport.toNodeID] ?? edgeExport.toNodeID
                 )
                 edge.label = edgeExport.label ?? ""
+                edge.displayColorHex = edgeExport.displayColorHex
                 edge.conditionExpression = edgeExport.conditionExpression ?? ""
                 edge.requiresApproval = edgeExport.requiresApproval ?? false
                 edge.isBidirectional = edgeExport.isBidirectional ?? false
                 workflow.edges.append(edge)
+            }
+
+            workflow.colorGroups = (workflowExport.colorGroups ?? []).compactMap { groupExport in
+                guard let kind = CanvasGroupKind(rawValue: groupExport.kind) else { return nil }
+                return CanvasColorGroup(
+                    kind: kind,
+                    colorHex: groupExport.colorHex,
+                    title: groupExport.title
+                )
             }
             
             workflows.append(workflow)

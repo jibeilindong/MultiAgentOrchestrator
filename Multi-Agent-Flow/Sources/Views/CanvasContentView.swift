@@ -59,7 +59,7 @@ struct CanvasContentView: View {
                     lineColor: appState.canvasDisplaySettings.lineColor.color,
                     lineWidth: appState.canvasDisplaySettings.lineWidth,
                     textScale: appState.canvasDisplaySettings.textScale,
-                    textColor: appState.canvasDisplaySettings.textColor.color,
+                    textColor: .black,
                     selectedEdgeID: $selectedEdgeID,
                     onEdgeSelected: { edge in
                         suppressCanvasTapClear = true
@@ -150,6 +150,16 @@ struct CanvasContentView: View {
                 }
             }
             interactiveCanvas
+            .overlay(alignment: .topLeading) {
+                CanvasGroupLegendView(
+                    workflow: currentWorkflow,
+                    selectedNodeIDs: selectedNodeIDs,
+                    selectedEdgeID: selectedEdgeID,
+                    textScale: appState.canvasDisplaySettings.textScale
+                )
+                .padding(.top, 14)
+                .padding(.leading, 14)
+            }
             .background(
                 BlankCanvasDragMonitor(
                     isEnabled: { !(isLassoMode || isTransientLassoMode) },
@@ -274,6 +284,9 @@ struct CanvasContentView: View {
                             let rawType = String(agentName.dropFirst("nodeType:".count))
                             let nodeType = WorkflowNode.NodeType(rawValue: rawType) ?? WorkflowNode.NodeType.decoded(from: rawType)
                             addWorkflowNodeToCanvas(type: nodeType, at: location, geometry: geometry)
+                        } else if agentName.hasPrefix("template:") {
+                            let templateID = String(agentName.dropFirst("template:".count))
+                            addTemplateNodeToCanvas(templateID: templateID, at: location, geometry: geometry)
                         } else {
                             addAgentNodeToCanvas(agentName: agentName, at: location, geometry: geometry)
                         }
@@ -304,6 +317,19 @@ struct CanvasContentView: View {
         )
         let position = appState.snapPointToGrid(rawPosition)
         appState.addAgentNode(agentName: agentName, position: position)
+    }
+
+    private func addTemplateNodeToCanvas(templateID: String, at location: CGPoint, geometry: GeometryProxy) {
+        let centerX = geometry.size.width / 2
+        let centerY = geometry.size.height / 2
+        let rawPosition = CGPoint(
+            x: (location.x - centerX - offset.width) / scale,
+            y: (location.y - centerY - offset.height) / scale
+        )
+        let position = appState.snapPointToGrid(rawPosition)
+
+        guard let agent = appState.addNewAgent(templateID: templateID) else { return }
+        appState.addAgentNode(agentName: agent.name, position: position)
     }
 
     private func lassoGesture(in geometry: GeometryProxy) -> some Gesture {
@@ -795,6 +821,224 @@ struct DropIndicatorView: View {
                         .position(x: geometry.size.width - 70, y: geometry.size.height - 40)
                 }
             }
+        }
+    }
+}
+
+private struct CanvasGroupLegendView: View {
+    @EnvironmentObject var appState: AppState
+    @ObservedObject private var localizationManager = LocalizationManager.shared
+
+    let workflow: Workflow?
+    let selectedNodeIDs: Set<UUID>
+    let selectedEdgeID: UUID?
+    let textScale: CGFloat
+
+    @State private var titleDrafts: [String: String] = [:]
+
+    private var groups: [CanvasLegendGroup] {
+        guard let workflow else { return [] }
+
+        let storedGroupsByID = Dictionary(uniqueKeysWithValues: workflow.colorGroups.map { ($0.id, $0) })
+        let nodeGroups = Dictionary(grouping: workflow.nodes.compactMap { node -> (String, UUID)? in
+            guard let colorHex = CanvasStylePalette.normalizedHex(node.displayColorHex) else { return nil }
+            return (colorHex, node.id)
+        }, by: \.0)
+
+        let edgeGroups = Dictionary(grouping: workflow.edges.compactMap { edge -> (String, UUID)? in
+            guard let colorHex = CanvasStylePalette.normalizedHex(edge.displayColorHex) else { return nil }
+            return (colorHex, edge.id)
+        }, by: \.0)
+
+        let nodeLegendGroups = nodeGroups.keys.sorted().map { colorHex -> CanvasLegendGroup in
+            let id = CanvasColorGroup(kind: .node, colorHex: colorHex, title: "").id
+            let stored = storedGroupsByID[id]
+            let itemIDs = nodeGroups[colorHex]?.map(\.1) ?? []
+            return CanvasLegendGroup(
+                kind: .node,
+                colorHex: colorHex,
+                title: stored?.title ?? "",
+                itemCount: itemIDs.count,
+                isSelected: !selectedNodeIDs.isEmpty && itemIDs.contains(where: selectedNodeIDs.contains)
+            )
+        }
+
+        let edgeLegendGroups = edgeGroups.keys.sorted().map { colorHex -> CanvasLegendGroup in
+            let id = CanvasColorGroup(kind: .edge, colorHex: colorHex, title: "").id
+            let stored = storedGroupsByID[id]
+            let itemIDs = edgeGroups[colorHex]?.map(\.1) ?? []
+            return CanvasLegendGroup(
+                kind: .edge,
+                colorHex: colorHex,
+                title: stored?.title ?? "",
+                itemCount: itemIDs.count,
+                isSelected: selectedEdgeID.map { itemIDs.contains($0) } ?? false
+            )
+        }
+
+        return nodeLegendGroups + edgeLegendGroups
+    }
+
+    var body: some View {
+        if !groups.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(legendTitle)
+                    .font(.system(size: 11 * textScale, weight: .semibold))
+                    .foregroundColor(.secondary)
+
+                ForEach(groups) { group in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(CanvasStylePalette.color(from: group.colorHex) ?? .secondary)
+                            .frame(width: 12, height: 12)
+
+                        Text(group.kindTitle(language: localizationManager.currentLanguage))
+                            .font(.system(size: 10 * textScale, weight: .semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background((CanvasStylePalette.color(from: group.colorHex) ?? .secondary).opacity(0.12))
+                            .clipShape(Capsule())
+
+                        TextField(
+                            "",
+                            text: binding(for: group),
+                            prompt: Text(group.defaultTitle(language: localizationManager.currentLanguage))
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11 * textScale))
+                        .frame(width: 126)
+                        .onSubmit {
+                            commit(group)
+                        }
+
+                        Button {
+                            commit(group)
+                        } label: {
+                            Image(systemName: "checkmark.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
+                        .help(saveTitle)
+
+                        Text("\(group.itemCount)")
+                            .font(.system(size: 10 * textScale, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .frame(minWidth: 18)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(NSColor.windowBackgroundColor).opacity(group.isSelected ? 0.98 : 0.92))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(
+                                group.isSelected
+                                    ? (CanvasStylePalette.color(from: group.colorHex) ?? .accentColor).opacity(0.75)
+                                    : Color.black.opacity(0.08),
+                                lineWidth: group.isSelected ? 1.5 : 1
+                            )
+                    )
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(NSColor.windowBackgroundColor).opacity(0.92))
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
+            .onAppear {
+                syncDrafts()
+            }
+            .onChange(of: groups.map { "\($0.id)|\($0.title)|\($0.itemCount)" }) { _, _ in
+                syncDrafts()
+            }
+        }
+    }
+
+    private func binding(for group: CanvasLegendGroup) -> Binding<String> {
+        Binding(
+            get: { titleDrafts[group.id] ?? group.title },
+            set: { titleDrafts[group.id] = $0 }
+        )
+    }
+
+    private func syncDrafts() {
+        var nextDrafts = titleDrafts
+        let validIDs = Set(groups.map(\.id))
+
+        for group in groups where nextDrafts[group.id] == nil {
+            nextDrafts[group.id] = group.title
+        }
+
+        titleDrafts = nextDrafts.reduce(into: [String: String]()) { result, entry in
+            guard validIDs.contains(entry.key) else { return }
+            result[entry.key] = entry.value
+        }
+    }
+
+    private func commit(_ group: CanvasLegendGroup) {
+        appState.updateColorGroupTitle(
+            kind: group.kind,
+            colorHex: group.colorHex,
+            title: titleDrafts[group.id] ?? group.title
+        )
+    }
+
+    private var legendTitle: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "Color Groups"
+        case .traditionalChinese:
+            return "顏色分組"
+        case .simplifiedChinese:
+            return "颜色分组"
+        }
+    }
+
+    private var saveTitle: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "Save label"
+        case .traditionalChinese:
+            return "保存標籤"
+        case .simplifiedChinese:
+            return "保存标签"
+        }
+    }
+}
+
+private struct CanvasLegendGroup: Identifiable, Hashable {
+    let kind: CanvasGroupKind
+    let colorHex: String
+    let title: String
+    let itemCount: Int
+    let isSelected: Bool
+
+    var id: String {
+        CanvasColorGroup(kind: kind, colorHex: colorHex, title: title).id
+    }
+
+    func kindTitle(language: AppLanguage) -> String {
+        switch (kind, language) {
+        case (.node, .english): return "Node"
+        case (.edge, .english): return "Route"
+        case (.node, .traditionalChinese): return "節點"
+        case (.edge, .traditionalChinese): return "連線"
+        case (.node, .simplifiedChinese): return "节点"
+        case (.edge, .simplifiedChinese): return "连线"
+        }
+    }
+
+    func defaultTitle(language: AppLanguage) -> String {
+        switch (kind, language) {
+        case (.node, .english): return "Node group"
+        case (.edge, .english): return "Route group"
+        case (.node, .traditionalChinese): return "節點組"
+        case (.edge, .traditionalChinese): return "連線組"
+        case (.node, .simplifiedChinese): return "节点组"
+        case (.edge, .simplifiedChinese): return "连线组"
         }
     }
 }

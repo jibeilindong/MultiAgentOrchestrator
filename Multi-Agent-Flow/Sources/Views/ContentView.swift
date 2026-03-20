@@ -417,13 +417,11 @@ private struct CanvasDisplayToolbar: View {
                 ToolbarColorSelector(
                     title: "线色",
                     selection: appState.canvasDisplaySettings.lineColor,
-                    onSelect: { appState.canvasDisplaySettings.lineColor = $0 }
-                )
-
-                ToolbarColorSelector(
-                    title: "字色",
-                    selection: appState.canvasDisplaySettings.textColor,
-                    onSelect: { appState.canvasDisplaySettings.textColor = $0 }
+                    onSelect: { preset in
+                        appState.updateCanvasDisplaySettings { settings in
+                            settings.lineColor = preset
+                        }
+                    }
                 )
             }
         }
@@ -436,13 +434,17 @@ private struct CanvasDisplayToolbar: View {
     private func shiftLineWidth(by offset: Int) {
         let currentIndex = selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth)
         let nextIndex = min(max(currentIndex + offset, 0), lineWidthValues.count - 1)
-        appState.canvasDisplaySettings.lineWidth = lineWidthValues[nextIndex]
+        appState.updateCanvasDisplaySettings { settings in
+            settings.lineWidth = lineWidthValues[nextIndex]
+        }
     }
 
     private func shiftTextScale(by offset: Int) {
         let currentIndex = selectedIndex(in: textScaleValues, for: appState.canvasDisplaySettings.textScale)
         let nextIndex = min(max(currentIndex + offset, 0), textScaleValues.count - 1)
-        appState.canvasDisplaySettings.textScale = textScaleValues[nextIndex]
+        appState.updateCanvasDisplaySettings { settings in
+            settings.textScale = textScaleValues[nextIndex]
+        }
     }
 }
 
@@ -820,7 +822,7 @@ struct ToolbarCustomizationSheet: View {
         case .view:
             return "Zoom controls and log visibility"
         case .display:
-            return "Line width, text size and color controls"
+            return "Line width, text size and route color controls"
         case .language:
             return "Language switcher"
         }

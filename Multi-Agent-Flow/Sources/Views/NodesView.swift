@@ -43,7 +43,7 @@ struct NodesView: View {
                 onTap: { handleSingleTap(node) },
                 accentColor: displayColor(for: node),
                 textScale: appState.canvasDisplaySettings.textScale,
-                textColor: appState.canvasDisplaySettings.textColor.color
+                textColor: .black
             )
             .position(adjustedPosition(node.position))
             .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
@@ -171,9 +171,13 @@ struct NodesView: View {
     private func displayColor(for node: WorkflowNode) -> Color? {
         guard node.type == .agent else { return nil }
 
+        if let customColor = CanvasStylePalette.color(from: node.displayColorHex) {
+            return customColor
+        }
+
         if let agent = appState.getAgent(for: node),
            let colorHex = agent.colorHex,
-           let customColor = color(from: colorHex) {
+           let customColor = CanvasStylePalette.color(from: colorHex) {
             return customColor
         }
 
@@ -182,34 +186,5 @@ struct NodesView: View {
             return .red
         }
         return nil
-    }
-
-    private func color(from hex: String) -> Color? {
-        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        guard cleaned.count == 6 || cleaned.count == 8 else { return nil }
-
-        var value: UInt64 = 0
-        guard Scanner(string: cleaned).scanHexInt64(&value) else { return nil }
-
-        let r, g, b, a: UInt64
-        if cleaned.count == 8 {
-            r = (value >> 24) & 0xff
-            g = (value >> 16) & 0xff
-            b = (value >> 8) & 0xff
-            a = value & 0xff
-        } else {
-            r = (value >> 16) & 0xff
-            g = (value >> 8) & 0xff
-            b = value & 0xff
-            a = 0xff
-        }
-
-        return Color(
-            .sRGB,
-            red: Double(r) / 255,
-            green: Double(g) / 255,
-            blue: Double(b) / 255,
-            opacity: Double(a) / 255
-        )
     }
 }

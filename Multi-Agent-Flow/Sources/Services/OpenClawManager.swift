@@ -89,6 +89,11 @@ class OpenClawManager: ObservableObject {
         let importedAgentsURL: URL
     }
 
+    private struct MirrorStageResult {
+        var updatedAgentCount: Int = 0
+        var unresolvedAgentNames: [String] = []
+    }
+
     private var sessionContext: SessionContext?
     private var discoverySnapshotURL: URL?
     private var pluginStageCleanupPerformed = false
@@ -112,16 +117,37 @@ class OpenClawManager: ObservableObject {
     }
 
     func connect(for projectID: UUID? = nil, completion: ((Bool, String) -> Void)? = nil) {
+        connect(for: projectID, project: nil, completion: completion)
+    }
+
+    func connect(for project: MAProject, completion: ((Bool, String) -> Void)? = nil) {
+        connect(for: project.id, project: project, completion: completion)
+    }
+
+    private func connect(
+        for projectID: UUID? = nil,
+        project: MAProject? = nil,
+        completion: ((Bool, String) -> Void)? = nil
+    ) {
         status = .connecting
         config.save()
 
         let cleanupResult = cleanupStalePluginInstallStageArtifactsIfNeeded(using: config)
         let cleanupNote: String? = cleanupResult.success ? nil : cleanupResult.message
+        var stageNote: String?
 
         if let projectID, config.deploymentKind != .remoteServer {
             do {
                 try beginSession(for: projectID)
+                if let project {
+                    let stageResult = stageProjectAgentsIntoMirror(project)
+                    try applySessionMirrorToDeployment()
+                    stageNote = mirrorStageMessage(from: stageResult)
+                }
             } catch {
+                if projectID != nil {
+                    endSession(restoreOriginalState: true)
+                }
                 status = .error(error.localizedDescription)
                 completion?(false, error.localizedDescription)
                 return
@@ -133,11 +159,19 @@ class OpenClawManager: ObservableObject {
             if !success, projectID != nil {
                 self.endSession(restoreOriginalState: true)
             }
+            var extraNotes: [String] = []
+            if let stageNote, !stageNote.isEmpty {
+                extraNotes.append(stageNote)
+            }
+            if let cleanupNote, !cleanupNote.isEmpty {
+                extraNotes.append(cleanupNote)
+            }
+
             let finalMessage: String
-            if let cleanupNote {
-                finalMessage = "\(message)（附加信息：\(cleanupNote)）"
-            } else {
+            if extraNotes.isEmpty {
                 finalMessage = message
+            } else {
+                finalMessage = "\(message)（附加信息：\(extraNotes.joined(separator: "；"))）"
             }
             completion?(success, finalMessage)
         }
@@ -993,6 +1027,53 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    func projectMirrorSoulURL(for agent: Agent, in project: MAProject) -> URL? {
+        let mirrorURL: URL
+        let backupURL: URL?
+
+        if let sessionContext, sessionContext.projectID == project.id {
+            mirrorURL = sessionContext.mirrorURL
+            backupURL = sessionContext.backupURL
+        } else {
+            mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
+            backupURL = firstNonEmptyPath(project.openClaw.sessionBackupPath).map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            }
+        }
+
+        return resolveProjectMirrorSoulURL(for: agent, in: project, mirrorURL: mirrorURL, backupURL: backupURL)
+    }
+
+    func syncProjectAgentsToActiveSession(_ project: MAProject, completion: @escaping (Bool, String) -> Void) {
+        guard config.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持将项目镜像写回 OpenClaw 会话。")
+            return
+        }
+
+        let stageResult = stageProjectAgentsIntoMirror(project)
+
+        guard let sessionContext, sessionContext.projectID == project.id, isConnected else {
+            let note = mirrorStageMessage(from: stageResult) ?? "项目镜像已更新，待下次连接时应用。"
+            completion(true, note)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try self.applySessionMirrorToDeployment()
+                let message = self.mirrorStageMessage(from: stageResult)
+                    ?? "项目镜像已同步到当前 OpenClaw 会话。"
+                DispatchQueue.main.async {
+                    completion(true, message)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, "同步项目镜像到 OpenClaw 会话失败: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     func executeOpenClawCLI(
         arguments: [String],
         using config: OpenClawConfig? = nil,
@@ -1514,6 +1595,255 @@ class OpenClawManager: ObservableObject {
         return nil
     }
 
+    private func stageProjectAgentsIntoMirror(_ project: MAProject) -> MirrorStageResult {
+        let mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
+        let backupURL: URL? = {
+            if let sessionContext, sessionContext.projectID == project.id {
+                return sessionContext.backupURL
+            }
+            if let backupPath = firstNonEmptyPath(project.openClaw.sessionBackupPath) {
+                return URL(fileURLWithPath: backupPath, isDirectory: true)
+            }
+            return nil
+        }()
+
+        try? FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
+
+        var result = MirrorStageResult()
+        for agent in project.agents {
+            guard let soulURL = resolveProjectMirrorSoulURL(for: agent, in: project, mirrorURL: mirrorURL, backupURL: backupURL) else {
+                result.unresolvedAgentNames.append(agent.name)
+                continue
+            }
+
+            do {
+                try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try agent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+                result.updatedAgentCount += 1
+            } catch {
+                result.unresolvedAgentNames.append(agent.name)
+            }
+        }
+
+        return result
+    }
+
+    private func applySessionMirrorToDeployment() throws {
+        guard let sessionContext else { return }
+
+        switch config.deploymentKind {
+        case .local:
+            let openClawRoot = localOpenClawRootURL()
+            _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: sessionContext.mirrorURL)
+        case .container:
+            guard let deploymentRootPath = containerOpenClawRootPath(for: config) else {
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: 15,
+                    userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"]
+                )
+            }
+            try copyLocalContentsToDeployment(sessionContext.mirrorURL, deploymentRootPath: deploymentRootPath, using: config)
+        case .remoteServer:
+            break
+        }
+    }
+
+    private func mirrorStageMessage(from result: MirrorStageResult) -> String? {
+        var parts: [String] = []
+        if result.updatedAgentCount > 0 {
+            parts.append("已更新 \(result.updatedAgentCount) 个 agent 的项目镜像")
+        }
+        if !result.unresolvedAgentNames.isEmpty {
+            let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
+            parts.append("未能定位这些 agent 的 SOUL 路径：\(names)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "；")
+    }
+
+    private func resolveProjectMirrorSoulURL(
+        for agent: Agent,
+        in project: MAProject,
+        mirrorURL: URL,
+        backupURL: URL?
+    ) -> URL? {
+        let candidateNames = Array(
+            Set([
+                agent.name,
+                agent.openClawDefinition.agentIdentifier,
+                normalizedTargetIdentifier(for: agent)
+            ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        )
+
+        if let existingMirrorMatch = findMatchingSoulURL(in: mirrorURL, matching: candidateNames) {
+            return existingMirrorMatch
+        }
+
+        let sourceCandidates = mirrorSourceCandidates(for: agent, in: project, matching: candidateNames)
+        for sourceURL in sourceCandidates {
+            if let translated = translateURLToMirror(
+                sourceURL,
+                mirrorURL: mirrorURL,
+                currentBackupURL: backupURL,
+                project: project
+            ) {
+                return translated
+            }
+        }
+
+        if let backupURL,
+           let backupMatch = findMatchingSoulURL(in: backupURL, matching: candidateNames),
+           let translated = translateRelativeURL(backupMatch, from: backupURL, to: mirrorURL) {
+            return translated
+        }
+
+        let fallbackName = safePathComponent(normalizedTargetIdentifier(for: agent))
+        return mirrorURL
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent(fallbackName, isDirectory: true)
+            .appendingPathComponent("SOUL.md", isDirectory: false)
+    }
+
+    private func mirrorSourceCandidates(
+        for agent: Agent,
+        in project: MAProject,
+        matching candidateNames: [String]
+    ) -> [URL] {
+        var sources: [URL] = []
+
+        if let sourcePath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
+            sources.append(URL(fileURLWithPath: sourcePath, isDirectory: false))
+        }
+
+        if let localSoulURL = localAgentSoulURL(matching: candidateNames) {
+            sources.append(localSoulURL)
+        }
+
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey))
+        if let detectedRecord = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
+            if let directoryPath = firstNonEmptyPath(detectedRecord.directoryPath) {
+                sources.append(preferredSoulURL(in: URL(fileURLWithPath: directoryPath, isDirectory: true)))
+            }
+            if let copiedRootPath = firstNonEmptyPath(detectedRecord.copiedToProjectPath) {
+                sources.append(preferredSoulURL(in: URL(fileURLWithPath: copiedRootPath, isDirectory: true)))
+            }
+        }
+
+        if let memoryBackupPath = firstNonEmptyPath(agent.openClawDefinition.memoryBackupPath) {
+            let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
+            let rootURL = privateURL.lastPathComponent == "private" ? privateURL.deletingLastPathComponent() : privateURL
+            sources.append(preferredSoulURL(in: rootURL))
+        }
+
+        var seen = Set<String>()
+        return sources.filter { seen.insert($0.path).inserted }
+    }
+
+    private func translateURLToMirror(
+        _ sourceURL: URL,
+        mirrorURL: URL,
+        currentBackupURL: URL?,
+        project: MAProject
+    ) -> URL? {
+        if sourceURL.path == mirrorURL.path || sourceURL.path.hasPrefix(mirrorURL.path + "/") {
+            return sourceURL
+        }
+
+        var sourceRoots: [URL] = []
+        if let currentBackupURL {
+            sourceRoots.append(currentBackupURL)
+        }
+        if let previousMirrorPath = firstNonEmptyPath(project.openClaw.sessionMirrorPath) {
+            sourceRoots.append(URL(fileURLWithPath: previousMirrorPath, isDirectory: true))
+        }
+        if let previousBackupPath = firstNonEmptyPath(project.openClaw.sessionBackupPath) {
+            sourceRoots.append(URL(fileURLWithPath: previousBackupPath, isDirectory: true))
+        }
+        if config.deploymentKind == .local {
+            sourceRoots.append(localOpenClawRootURL())
+        }
+
+        var seen = Set<String>()
+        for sourceRoot in sourceRoots where seen.insert(sourceRoot.path).inserted {
+            if let translated = translateRelativeURL(sourceURL, from: sourceRoot, to: mirrorURL) {
+                return translated
+            }
+        }
+
+        return nil
+    }
+
+    private func translateRelativeURL(_ sourceURL: URL, from sourceRoot: URL, to targetRoot: URL) -> URL? {
+        let normalizedSourceRoot = sourceRoot.standardizedFileURL.path
+        let normalizedSourceURL = sourceURL.standardizedFileURL.path
+        guard normalizedSourceURL == normalizedSourceRoot || normalizedSourceURL.hasPrefix(normalizedSourceRoot + "/") else {
+            return nil
+        }
+
+        let relativePath = String(normalizedSourceURL.dropFirst(normalizedSourceRoot.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !relativePath.isEmpty else { return targetRoot }
+        return targetRoot.appendingPathComponent(relativePath, isDirectory: false)
+    }
+
+    private func findMatchingSoulURL(in rootURL: URL, matching candidateNames: [String]) -> URL? {
+        guard FileManager.default.fileExists(atPath: rootURL.path) else { return nil }
+
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
+        guard !normalizedNames.isEmpty else { return nil }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        var bestMatch: (score: Int, url: URL)?
+        for case let fileURL as URL in enumerator {
+            let filename = fileURL.lastPathComponent.lowercased()
+            guard filename == "soul.md" else { continue }
+
+            let score = scoreSoulURL(fileURL, matching: normalizedNames)
+            guard score > 0 else { continue }
+
+            if let currentBest = bestMatch {
+                if score > currentBest.score {
+                    bestMatch = (score, fileURL)
+                }
+            } else {
+                bestMatch = (score, fileURL)
+            }
+        }
+
+        return bestMatch?.url
+    }
+
+    private func scoreSoulURL(_ fileURL: URL, matching candidateNames: Set<String>) -> Int {
+        var score = 0
+        var current = fileURL.deletingLastPathComponent()
+
+        for depth in 0..<6 {
+            let normalizedComponent = normalizeAgentKey(current.lastPathComponent)
+            if candidateNames.contains(normalizedComponent) {
+                score = max(score, 100 - (depth * 10))
+            } else {
+                let pathComponent = normalizeAgentKey(current.path)
+                if candidateNames.contains(where: { !$0.isEmpty && pathComponent.contains($0) }) {
+                    score = max(score, 50 - (depth * 5))
+                }
+            }
+
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path {
+                break
+            }
+            current = parent
+        }
+
+        return score
+    }
     private func localAgentWorkspaceMap() -> [String: String] {
         let configURL = localOpenClawRootURL().appendingPathComponent("openclaw.json")
         guard

@@ -163,6 +163,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
     var type: NodeType
     var position: CGPoint
     var title: String
+    var displayColorHex: String?
     var conditionExpression: String
     var loopEnabled: Bool
     var maxIterations: Int
@@ -195,6 +196,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         case type
         case position
         case title
+        case displayColorHex
         case conditionExpression
         case loopEnabled
         case maxIterations
@@ -213,6 +215,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         self.type = type
         self.position = .zero
         self.title = type == .start ? "Start" : ""
+        self.displayColorHex = nil
         self.conditionExpression = ""
         self.loopEnabled = false
         self.maxIterations = 1
@@ -226,6 +229,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         type = WorkflowNode.NodeType(rawValue: rawType) ?? WorkflowNode.NodeType.decoded(from: rawType)
         position = try container.decode(CGPoint.self, forKey: .position)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        displayColorHex = try container.decodeIfPresent(String.self, forKey: .displayColorHex)
         conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
         loopEnabled = try container.decodeIfPresent(Bool.self, forKey: .loopEnabled) ?? false
         maxIterations = max(1, try container.decodeIfPresent(Int.self, forKey: .maxIterations) ?? 1)
@@ -242,6 +246,7 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         try container.encode(type.rawValue, forKey: .type)
         try container.encode(position, forKey: .position)
         try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(displayColorHex, forKey: .displayColorHex)
         try container.encode(conditionExpression, forKey: .conditionExpression)
         try container.encode(loopEnabled, forKey: .loopEnabled)
         try container.encode(maxIterations, forKey: .maxIterations)
@@ -257,6 +262,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
     var fromNodeID: UUID
     var toNodeID: UUID
     var label: String
+    var displayColorHex: String?
     var conditionExpression: String
     var requiresApproval: Bool
     var isBidirectional: Bool
@@ -268,6 +274,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         case fromNodeID
         case toNodeID
         case label
+        case displayColorHex
         case conditionExpression
         case requiresApproval
         case isBidirectional
@@ -283,6 +290,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         self.fromNodeID = from
         self.toNodeID = to
         self.label = ""
+        self.displayColorHex = nil
         self.conditionExpression = ""
         self.requiresApproval = false
         self.isBidirectional = false
@@ -294,6 +302,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         fromNodeID = try container.decode(UUID.self, forKey: .fromNodeID)
         toNodeID = try container.decode(UUID.self, forKey: .toNodeID)
         label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
+        displayColorHex = try container.decodeIfPresent(String.self, forKey: .displayColorHex)
         conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
         requiresApproval = try container.decodeIfPresent(Bool.self, forKey: .requiresApproval) ?? false
         isBidirectional = try container.decodeIfPresent(Bool.self, forKey: .isBidirectional) ?? false
@@ -325,6 +334,7 @@ struct Workflow: Codable, Identifiable, Hashable {
     var nodes: [WorkflowNode]
     var edges: [WorkflowEdge]
     var boundaries: [WorkflowBoundary]
+    var colorGroups: [CanvasColorGroup]
     var createdAt: Date
     var parentNodeID: UUID?  // 父工作流的节点ID（如果是子流程）
     // 子流程数据存储
@@ -337,6 +347,7 @@ struct Workflow: Codable, Identifiable, Hashable {
         case nodes
         case edges
         case boundaries
+        case colorGroups
         case createdAt
         case parentNodeID
         case inputSchema
@@ -349,6 +360,7 @@ struct Workflow: Codable, Identifiable, Hashable {
         self.nodes = []
         self.edges = []
         self.boundaries = []
+        self.colorGroups = []
         self.createdAt = Date()
     }
 
@@ -359,6 +371,7 @@ struct Workflow: Codable, Identifiable, Hashable {
         nodes = try container.decodeIfPresent([WorkflowNode].self, forKey: .nodes) ?? []
         edges = try container.decodeIfPresent([WorkflowEdge].self, forKey: .edges) ?? []
         boundaries = try container.decodeIfPresent([WorkflowBoundary].self, forKey: .boundaries) ?? []
+        colorGroups = try container.decodeIfPresent([CanvasColorGroup].self, forKey: .colorGroups) ?? []
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         parentNodeID = try container.decodeIfPresent(UUID.self, forKey: .parentNodeID)
         inputSchema = try container.decodeIfPresent([SubflowParameter].self, forKey: .inputSchema) ?? []
