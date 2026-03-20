@@ -22,6 +22,41 @@ actor OpenClawGatewayClient {
         let errorMessage: String?
     }
 
+    struct ChatSessionRecord: Hashable {
+        let key: String
+        let displayName: String?
+        let updatedAt: Double?
+    }
+
+    private struct ChatRunState {
+        var sessionKey: String?
+        var state: String?
+        var errorMessage: String?
+        var lastUpdatedAt = Date()
+
+        mutating func apply(payload: [String: Any]) {
+            if let sessionKey = (payload["sessionKey"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !sessionKey.isEmpty
+            {
+                self.sessionKey = sessionKey
+            }
+            if let state = (payload["state"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !state.isEmpty
+            {
+                self.state = state.lowercased()
+            }
+            if let errorMessage = (payload["errorMessage"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !errorMessage.isEmpty
+            {
+                self.errorMessage = errorMessage
+            }
+            lastUpdatedAt = Date()
+        }
+    }
+
     private struct RuntimeConfiguration: Equatable {
         let webSocketURL: URL
         let token: String?
@@ -95,6 +130,7 @@ actor OpenClawGatewayClient {
     private var tickWatchdogTask: _Concurrency.Task<Void, Never>?
     private var pendingResponses: [String: CheckedContinuation<GatewayResponseFrame, Error>] = [:]
     private var runStates: [String: AgentRunState] = [:]
+    private var chatRunStates: [String: ChatRunState] = [:]
     private var runObservers: [String: [ObserverRegistration]] = [:]
     private var isConnected = false
     private var lastTickAt = Date()
@@ -144,6 +180,32 @@ actor OpenClawGatewayClient {
             using: config
         )
         return parseRemoteAgents(from: response.payload)
+    }
+
+    func listSessions(using config: OpenClawConfig, limit: Int? = nil) async throws -> [ChatSessionRecord] {
+        var params: [String: Any] = [
+            "includeGlobal": true,
+            "includeUnknown": false
+        ]
+        if let limit, limit > 0 {
+            params["limit"] = limit
+        }
+
+        let response = try await request(
+            method: "sessions.list",
+            params: params,
+            timeoutSeconds: max(config.timeout, 5),
+            using: config
+        )
+
+        let payload = response.payload as? [String: Any]
+        let sessions = payload?["sessions"] as? [[String: Any]] ?? []
+        return sessions.compactMap { session in
+            guard let key = normalizedNonEmptyString(session["key"]) else { return nil }
+            let displayName = normalizedNonEmptyString(session["displayName"])
+            let updatedAt = session["updatedAt"] as? Double ?? (session["updatedAt"] as? NSNumber)?.doubleValue
+            return ChatSessionRecord(key: key, displayName: displayName, updatedAt: updatedAt)
+        }
     }
 
     func executeAgent(
@@ -222,6 +284,124 @@ actor OpenClawGatewayClient {
             assistantText: state.assistantText,
             sessionKey: state.sessionKey ?? requestedSessionKey,
             errorMessage: state.errorMessage
+        )
+    }
+
+    func executeChat(
+        using config: OpenClawConfig,
+        message: String,
+        sessionKey: String,
+        thinkingLevel: AgentThinkingLevel?,
+        timeoutSeconds: Int,
+        onAssistantTextUpdated: @escaping @Sendable (String) -> Void
+    ) async throws -> AgentExecutionResult {
+        let requestedSessionKey = sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestedSessionKey.isEmpty else {
+            throw gatewayError("Gateway chat invocation requires a session key.")
+        }
+
+        var params: [String: Any] = [
+            "sessionKey": requestedSessionKey,
+            "message": message,
+            "timeoutMs": max(1, timeoutSeconds) * 1000,
+            "idempotencyKey": UUID().uuidString
+        ]
+        if let thinkingLevel {
+            params["thinking"] = thinkingLevel.rawValue
+        }
+
+        let acceptedResponse = try await request(
+            method: "chat.send",
+            params: params,
+            timeoutSeconds: max(timeoutSeconds + 5, 15),
+            using: config
+        )
+
+        guard
+            let payload = acceptedResponse.payload as? [String: Any],
+            let runID = payload["runId"] as? String,
+            !runID.isEmpty
+        else {
+            throw gatewayError("Gateway chat invocation did not return a runId.")
+        }
+
+        let observerID = UUID()
+        registerObserver(id: observerID, for: runID, handler: onAssistantTextUpdated)
+        defer { removeObserver(id: observerID, for: runID) }
+
+        if let state = runStates[runID], !state.assistantText.isEmpty {
+            onAssistantTextUpdated(state.assistantText)
+        }
+
+        let waitResponse = try await request(
+            method: "agent.wait",
+            params: [
+                "runId": runID,
+                "timeoutMs": max(1, timeoutSeconds) * 1000
+            ],
+            timeoutSeconds: max(timeoutSeconds + 5, 15),
+            using: config
+        )
+
+        let waitPayload = waitResponse.payload as? [String: Any] ?? [:]
+        let waitStatus = normalizedNonEmptyString(waitPayload["status"]) ?? "unknown"
+        var agentState = runStates[runID] ?? AgentRunState()
+        let chatState = chatRunStates[runID]
+        let resolvedSessionKey = chatState?.sessionKey ?? requestedSessionKey
+
+        if let errorMessage = normalizedNonEmptyString(waitPayload["error"]) {
+            agentState.errorMessage = errorMessage
+            runStates[runID] = agentState
+        }
+
+        if waitStatus == "ok" || chatState?.state == "final" {
+            try? await _Concurrency.Task.sleep(nanoseconds: 150_000_000)
+            if let historyText = try await latestAssistantText(
+                using: config,
+                sessionKey: resolvedSessionKey
+            ), !historyText.isEmpty {
+                agentState.assistantText = historyText
+                runStates[runID] = agentState
+                onAssistantTextUpdated(historyText)
+            } else {
+                agentState = runStates[runID] ?? agentState
+            }
+        }
+
+        let finalStatus: String
+        switch chatState?.state {
+        case "final":
+            finalStatus = "ok"
+        case "aborted":
+            finalStatus = "aborted"
+        case "error":
+            finalStatus = "error"
+        default:
+            finalStatus = waitStatus
+        }
+
+        return AgentExecutionResult(
+            runID: runID,
+            status: finalStatus,
+            assistantText: agentState.assistantText,
+            sessionKey: resolvedSessionKey,
+            errorMessage: chatState?.errorMessage ?? agentState.errorMessage
+        )
+    }
+
+    func abortChatRun(
+        using config: OpenClawConfig,
+        sessionKey: String,
+        runID: String
+    ) async throws {
+        _ = try await request(
+            method: "chat.abort",
+            params: [
+                "sessionKey": sessionKey,
+                "runId": runID
+            ],
+            timeoutSeconds: max(config.timeout, 5),
+            using: config
         )
     }
 
@@ -510,6 +690,13 @@ actor OpenClawGatewayClient {
         switch eventName {
         case "tick":
             lastTickAt = Date()
+        case "chat":
+            guard let payload = object["payload"] as? [String: Any] else { return }
+            if let runID = normalizedNonEmptyString(payload["runId"]) {
+                var state = chatRunStates[runID] ?? ChatRunState()
+                state.apply(payload: payload)
+                chatRunStates[runID] = state
+            }
         case "agent":
             guard
                 let payload = object["payload"] as? [String: Any],
@@ -570,6 +757,67 @@ actor OpenClawGatewayClient {
             guard seen.insert(id.lowercased()).inserted else { return nil }
             return RemoteAgentRecord(id: id, name: displayName)
         }
+    }
+
+    private func requestChatHistoryPayload(
+        using config: OpenClawConfig,
+        sessionKey: String,
+        limit: Int? = nil
+    ) async throws -> [String: Any] {
+        var params: [String: Any] = [
+            "sessionKey": sessionKey
+        ]
+        if let limit, limit > 0 {
+            params["limit"] = limit
+        }
+
+        let response = try await request(
+            method: "chat.history",
+            params: params,
+            timeoutSeconds: max(config.timeout, 5),
+            using: config
+        )
+
+        return response.payload as? [String: Any] ?? [:]
+    }
+
+    private func latestAssistantText(
+        using config: OpenClawConfig,
+        sessionKey: String
+    ) async throws -> String? {
+        let payload = try await requestChatHistoryPayload(using: config, sessionKey: sessionKey)
+        let messages = payload["messages"] as? [Any] ?? []
+        for entry in messages.reversed() {
+            if let text = extractAssistantText(fromHistoryEntry: entry), !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private func extractAssistantText(fromHistoryEntry entry: Any) -> String? {
+        guard let message = entry as? [String: Any] else { return nil }
+        guard normalizedNonEmptyString(message["role"])?.lowercased() == "assistant" else { return nil }
+
+        if let contentItems = message["content"] as? [[String: Any]] {
+            let parts = contentItems.compactMap { item -> String? in
+                if let text = normalizedNonEmptyString(item["text"]) {
+                    return text
+                }
+                if let thinking = normalizedNonEmptyString(item["thinking"]) {
+                    return thinking
+                }
+                return nil
+            }
+            let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return joined.isEmpty ? nil : joined
+        }
+
+        if let content = normalizedNonEmptyString(message["content"]) {
+            return content
+        }
+
+        return nil
     }
 
     private func runtimeConfiguration(for config: OpenClawConfig) throws -> RuntimeConfiguration {

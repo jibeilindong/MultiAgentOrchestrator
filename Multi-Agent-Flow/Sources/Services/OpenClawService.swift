@@ -52,6 +52,22 @@ private enum WorkflowInstructionStyle {
     case fastWorkbenchEntry
 }
 
+private actor StreamingTextAccumulator {
+    private var lastVisibleText = ""
+
+    func delta(
+        for fullText: String,
+        extractor: @Sendable (String) -> String,
+        differ: @Sendable (String, String) -> String
+    ) -> String {
+        let visibleText = extractor(fullText)
+        let delta = differ(lastVisibleText, visibleText)
+        guard !delta.isEmpty else { return "" }
+        lastVisibleText = visibleText
+        return delta
+    }
+}
+
 struct ExecutionResult: Codable, Identifiable {
     let id: UUID
     let nodeID: UUID
@@ -1232,25 +1248,48 @@ class OpenClawService: ObservableObject {
 
                 _Concurrency.Task {
                     do {
-                        var lastVisibleText = ""
-                        let result = try await manager.executeGatewayAgentCommand(
-                            message: instruction,
-                            agentIdentifier: resolvedAgent.identifier,
-                            sessionKey: gatewaySessionKey,
-                            thinkingLevel: thinkingLevel,
-                            timeoutSeconds: max(1, serviceConfig.timeout),
-                            using: connectionConfig,
-                            onAssistantTextUpdated: { fullText in
-                                guard let onPartial, shouldStreamPlainOutput else { return }
-                                let visibleText = self.extractVisiblePlainResponse(from: fullText)
-                                let delta = self.streamingDelta(from: lastVisibleText, to: visibleText)
+                        let streamAccumulator = StreamingTextAccumulator()
+                        let onAssistantTextUpdated: @Sendable (String) -> Void = { fullText in
+                            guard let onPartial, shouldStreamPlainOutput else { return }
+                            _Concurrency.Task {
+                                let delta = await streamAccumulator.delta(
+                                    for: fullText,
+                                    extractor: Self.extractVisiblePlainResponseText(from:),
+                                    differ: Self.streamingDeltaText(from:to:)
+                                )
                                 guard !delta.isEmpty else { return }
-                                lastVisibleText = visibleText
                                 DispatchQueue.main.async {
                                     onPartial(delta)
                                 }
                             }
-                        )
+                        }
+                        let result: OpenClawGatewayClient.AgentExecutionResult
+                        if let sessionID, !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            await MainActor.run {
+                                self.addLog(
+                                    .info,
+                                    "Gateway chat session path enabled for remote workbench session \(gatewaySessionKey)."
+                                )
+                            }
+                            result = try await manager.executeGatewayChatCommand(
+                                message: instruction,
+                                sessionKey: gatewaySessionKey,
+                                thinkingLevel: thinkingLevel,
+                                timeoutSeconds: max(1, serviceConfig.timeout),
+                                using: connectionConfig,
+                                onAssistantTextUpdated: onAssistantTextUpdated
+                            )
+                        } else {
+                            result = try await manager.executeGatewayAgentCommand(
+                                message: instruction,
+                                agentIdentifier: resolvedAgent.identifier,
+                                sessionKey: gatewaySessionKey,
+                                thinkingLevel: thinkingLevel,
+                                timeoutSeconds: max(1, serviceConfig.timeout),
+                                using: connectionConfig,
+                                onAssistantTextUpdated: onAssistantTextUpdated
+                            )
+                        }
 
                         let normalizedText = result.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
                         let parsedOutput = await MainActor.run {
@@ -1673,6 +1712,10 @@ class OpenClawService: ObservableObject {
     }
 
     private func streamingDelta(from previous: String, to current: String) -> String {
+        Self.streamingDeltaText(from: previous, to: current)
+    }
+
+    private nonisolated static func streamingDeltaText(from previous: String, to current: String) -> String {
         guard !current.isEmpty else { return "" }
         if previous.isEmpty {
             return current
@@ -1934,6 +1977,10 @@ class OpenClawService: ObservableObject {
     }
 
     private func extractVisiblePlainResponse(from stdout: String) -> String {
+        Self.extractVisiblePlainResponseText(from: stdout)
+    }
+
+    private nonisolated static func extractVisiblePlainResponseText(from stdout: String) -> String {
         let normalized = stdout.replacingOccurrences(of: "\r", with: "")
         guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
 
@@ -1942,7 +1989,7 @@ class OpenClawService: ObservableObject {
             .filter { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return false }
-                if looksLikeRuntimeLog(trimmed) { return false }
+                if looksLikeRuntimeLogText(trimmed) { return false }
                 if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return false }
                 return true
             }
@@ -1955,6 +2002,10 @@ class OpenClawService: ObservableObject {
     }
 
     private func looksLikeRuntimeLog(_ text: String) -> Bool {
+        Self.looksLikeRuntimeLogText(text)
+    }
+
+    private nonisolated static func looksLikeRuntimeLogText(_ text: String) -> Bool {
         let lowercased = text.lowercased()
         if lowercased.hasPrefix("[plugins]") || lowercased.hasPrefix("[diagnostic]") || lowercased.hasPrefix("[model-fallback/decision]") {
             return true

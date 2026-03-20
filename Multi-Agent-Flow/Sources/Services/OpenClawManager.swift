@@ -1289,6 +1289,43 @@ class OpenClawManager: ObservableObject {
         )
     }
 
+    func executeGatewayChatCommand(
+        message: String,
+        sessionKey: String,
+        thinkingLevel: AgentThinkingLevel?,
+        timeoutSeconds: Int,
+        using config: OpenClawConfig? = nil,
+        onAssistantTextUpdated: @escaping @Sendable (String) -> Void
+    ) async throws -> OpenClawGatewayClient.AgentExecutionResult {
+        try await gatewayClient.executeChat(
+            using: config ?? self.config,
+            message: message,
+            sessionKey: sessionKey,
+            thinkingLevel: thinkingLevel,
+            timeoutSeconds: timeoutSeconds,
+            onAssistantTextUpdated: onAssistantTextUpdated
+        )
+    }
+
+    func listGatewaySessions(
+        using config: OpenClawConfig? = nil,
+        limit: Int? = nil
+    ) async throws -> [OpenClawGatewayClient.ChatSessionRecord] {
+        try await gatewayClient.listSessions(using: config ?? self.config, limit: limit)
+    }
+
+    func abortGatewayChatRun(
+        sessionKey: String,
+        runID: String,
+        using config: OpenClawConfig? = nil
+    ) async throws {
+        try await gatewayClient.abortChatRun(
+            using: config ?? self.config,
+            sessionKey: sessionKey,
+            runID: runID
+        )
+    }
+
     func resolvedOpenClawPath(using config: OpenClawConfig? = nil) -> String {
         resolveOpenClawPath(for: config ?? self.config)
     }
