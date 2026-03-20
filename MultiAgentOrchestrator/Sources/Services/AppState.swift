@@ -1397,6 +1397,47 @@ class AppState: ObservableObject {
         }
     }
 
+    func setEdgeCommunicationDirection(edgeID: UUID, bidirectional: Bool) {
+        guard let workflow = currentProject?.workflows.first,
+              let edge = workflow.edges.first(where: { $0.id == edgeID }) else { return }
+
+        updateMainWorkflow { workflow in
+            guard let edgeIndex = workflow.edges.firstIndex(where: { $0.id == edgeID }) else { return }
+            let currentEdge = workflow.edges[edgeIndex]
+            let reverseIndex = workflow.edges.firstIndex {
+                $0.fromNodeID == currentEdge.toNodeID && $0.toNodeID == currentEdge.fromNodeID
+            }
+
+            if bidirectional {
+                if let reverseIndex {
+                    if workflow.edges[reverseIndex].id != currentEdge.id {
+                        workflow.edges[reverseIndex].label = currentEdge.label
+                        workflow.edges[reverseIndex].conditionExpression = currentEdge.conditionExpression
+                        workflow.edges[reverseIndex].requiresApproval = currentEdge.requiresApproval
+                        workflow.edges[reverseIndex].dataMapping = currentEdge.dataMapping
+                    }
+                } else {
+                    var reverseEdge = WorkflowEdge(from: currentEdge.toNodeID, to: currentEdge.fromNodeID)
+                    reverseEdge.label = currentEdge.label
+                    reverseEdge.conditionExpression = currentEdge.conditionExpression
+                    reverseEdge.requiresApproval = currentEdge.requiresApproval
+                    reverseEdge.dataMapping = currentEdge.dataMapping
+                    workflow.edges.append(reverseEdge)
+                }
+            } else if let reverseIndex, workflow.edges[reverseIndex].id != currentEdge.id {
+                workflow.edges.remove(at: reverseIndex)
+            }
+        }
+
+        if let sourceAgentID = workflow.nodes.first(where: { $0.id == edge.fromNodeID })?.agentID,
+           let targetAgentID = workflow.nodes.first(where: { $0.id == edge.toNodeID })?.agentID {
+            setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
+            if bidirectional {
+                setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
+            }
+        }
+    }
+
     func updateAgent(_ updatedAgent: Agent, reload: Bool = false) {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == updatedAgent.id }) else { return }

@@ -2042,6 +2042,7 @@ struct EdgePropertyPanel: View {
     @State private var label: String = ""
     @State private var conditionExpression: String = ""
     @State private var requiresApproval: Bool = false
+    @State private var isBidirectional: Bool = false
     @State private var dataMappingText: String = ""
 
     var body: some View {
@@ -2088,6 +2089,10 @@ struct EdgePropertyPanel: View {
                                     text: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unlabeled route" : label,
                                     color: .accentColor
                                 )
+                                summaryBadge(
+                                    text: isBidirectional ? "Two-way" : "One-way",
+                                    color: .indigo
+                                )
                                 if requiresApproval {
                                     summaryBadge(text: "Approval", color: .orange)
                                 }
@@ -2102,6 +2107,18 @@ struct EdgePropertyPanel: View {
                             .foregroundColor(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
+
+                    GroupBox("Communication Direction") {
+                        Picker("Direction", selection: $isBidirectional) {
+                            Text("One-way").tag(false)
+                            Text("Two-way").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: isBidirectional) { _, newValue in
+                            appState.setEdgeCommunicationDirection(edgeID: edge.id, bidirectional: newValue)
+                        }
                         .padding(8)
                     }
                 }
@@ -2133,6 +2150,7 @@ struct EdgePropertyPanel: View {
             label = edge.label
             conditionExpression = edge.conditionExpression
             requiresApproval = edge.requiresApproval
+            isBidirectional = isBidirectionalEdge(edge)
             dataMappingText = formattedDataMapping(edge.dataMapping)
         }
     }
@@ -2187,6 +2205,15 @@ struct EdgePropertyPanel: View {
         }
 
         return node.type.rawValue.capitalized
+    }
+
+    private func isBidirectionalEdge(_ edge: WorkflowEdge) -> Bool {
+        guard let workflow = appState.currentProject?.workflows.first else { return false }
+        return workflow.edges.contains {
+            $0.fromNodeID == edge.toNodeID &&
+            $0.toNodeID == edge.fromNodeID &&
+            $0.id != edge.id
+        }
     }
 }
 

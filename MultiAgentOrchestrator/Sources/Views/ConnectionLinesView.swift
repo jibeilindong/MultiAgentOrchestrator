@@ -112,6 +112,7 @@ struct ConnectionLinesView: View {
             )
         }
 
+        let fanoutTurnYBySourceID = fanoutTurnYMap(for: candidates)
         let grouped = Dictionary(grouping: candidates, by: \.bundleKey)
         var layouts: [EdgeLayout] = []
 
@@ -131,13 +132,24 @@ struct ConnectionLinesView: View {
                         return nodeFrame(for: node, geometry: geometry)
                     }
 
-                let path = WorkflowEdgeRoutePlanner.route(
+                let path: [CGPoint]
+                if let turnY = fanoutTurnYBySourceID[candidate.edge.fromNodeID],
+                   let fanoutPath = WorkflowEdgeRoutePlanner.fanoutRoute(
                     from: candidate.fromFrame,
                     to: candidate.toFrame,
-                    avoiding: obstacles,
-                    preferredAxis: candidate.preferredAxis,
-                    laneOffset: laneOffsets[index]
-                )
+                    turnY: turnY,
+                    avoiding: obstacles
+                   ) {
+                    path = fanoutPath
+                } else {
+                    path = WorkflowEdgeRoutePlanner.route(
+                        from: candidate.fromFrame,
+                        to: candidate.toFrame,
+                        avoiding: obstacles,
+                        preferredAxis: candidate.preferredAxis,
+                        laneOffset: laneOffsets[index]
+                    )
+                }
 
                 layouts.append(
                     EdgeLayout(
@@ -152,6 +164,31 @@ struct ConnectionLinesView: View {
         }
 
         return layouts
+    }
+
+    private func fanoutTurnYMap(for candidates: [RoutedEdgeCandidate]) -> [UUID: CGFloat] {
+        let groupedBySource = Dictionary(grouping: candidates, by: { $0.edge.fromNodeID })
+        var turnYBySource: [UUID: CGFloat] = [:]
+
+        for (sourceID, group) in groupedBySource {
+            guard group.count >= 3,
+                  let sourceFrame = group.first?.fromFrame else { continue }
+
+            let downwardTargets = group.filter { candidate in
+                candidate.toFrame.center.y > sourceFrame.center.y + 18
+            }
+            guard downwardTargets.count >= 3 else { continue }
+
+            let targetTop = downwardTargets.map(\.toFrame.minY).min() ?? .greatestFiniteMagnitude
+            let sourceBottom = sourceFrame.maxY + 10
+            let availableGap = targetTop - sourceBottom
+            guard availableGap >= 70 else { continue }
+
+            let turnY = sourceBottom + min(max(availableGap * 0.45, 24), 80)
+            turnYBySource[sourceID] = min(turnY, targetTop - 14)
+        }
+
+        return turnYBySource
     }
 
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
@@ -330,6 +367,27 @@ struct WorkflowEdgeRoutePlanner {
         }
 
         return simplify(candidates.first ?? [start, end])
+    }
+
+    static func fanoutRoute(
+        from sourceFrame: CGRect,
+        to targetFrame: CGRect,
+        turnY: CGFloat,
+        avoiding obstacles: [CGRect]
+    ) -> [CGPoint]? {
+        let start = CGPoint(x: sourceFrame.midX, y: sourceFrame.maxY + anchorClearance)
+        let end = CGPoint(x: targetFrame.midX, y: targetFrame.minY - anchorClearance)
+        guard turnY > start.y + 4, turnY < end.y - 4 else { return nil }
+
+        let path = simplify([
+            start,
+            CGPoint(x: sourceFrame.midX, y: turnY),
+            CGPoint(x: targetFrame.midX, y: turnY),
+            end
+        ])
+
+        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
+        return isClear(path, blockedRects: blockedRects) ? path : nil
     }
 
     private static func candidatePaths(
