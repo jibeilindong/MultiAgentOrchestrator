@@ -43,8 +43,8 @@ struct WorkflowEditorView: View {
         
         var description: String {
             switch self {
-            case .unidirectional: return "One-way"
-            case .bidirectional: return "Two-way"
+            case .unidirectional: return LocalizedString.text("connection_one_way")
+            case .bidirectional: return LocalizedString.text("connection_two_way")
             }
         }
     }
@@ -59,6 +59,14 @@ struct WorkflowEditorView: View {
             case .list: return "list.bullet"
             case .grid: return "square.grid.2x2"
             case .architecture: return "network"
+            }
+        }
+
+        var displayTitle: String {
+            switch self {
+            case .list: return LocalizedString.text("view_mode_list")
+            case .grid: return LocalizedString.text("view_mode_grid")
+            case .architecture: return LocalizedString.text("view_mode_flow")
             }
         }
     }
@@ -781,7 +789,7 @@ struct EditorToolbar: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            WorkflowToolbarGroup(title: "View") {
+            WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_view")) {
                 HStack(spacing: 8) {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
                         toolbarModeButton(mode)
@@ -792,34 +800,34 @@ struct EditorToolbar: View {
                         .padding(.horizontal, 2)
 
                     Menu {
-                        Button("Zoom Out") { zoomOut() }
-                        Button("Reset Zoom") { resetView() }
-                        Button("Zoom In") { zoomIn() }
+                        Button(LocalizedString.zoomOut) { zoomOut() }
+                        Button(LocalizedString.resetZoom) { resetView() }
+                        Button(LocalizedString.zoomIn) { zoomIn() }
                     } label: {
-                        toolbarMenuLabel(title: "Zoom", systemName: "eye")
+                        toolbarMenuLabel(title: LocalizedString.text("zoom_label"), systemName: "eye")
                     }
                     .menuStyle(.borderlessButton)
 
                     toolbarIconToggleButton(
                         systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
-                        title: "Lasso",
+                        title: LocalizedString.text("lasso"),
                         action: toggleLassoMode,
                         isActive: isLassoMode,
-                        tooltip: "框选模式"
+                        tooltip: LocalizedString.text("lasso_tooltip")
                     )
                 }
             }
 
-            WorkflowToolbarGroup(title: "Execution") {
+            WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_execution")) {
                 HStack(spacing: 8) {
                     TemplatePickerButton(
                         selectedTemplateID: $quickAddTemplateID,
                         onSelect: { template in
                             onAddNodeWithTemplate(template.id)
                         },
-                        labelTitle: "Add Node",
+                        labelTitle: LocalizedString.text("add_node_toolbar"),
                         labelSystemImage: "plus.circle",
-                        blankActionTitle: "New Blank Agent Node",
+                        blankActionTitle: LocalizedString.text("new_blank_agent_node"),
                         onCreateBlank: {
                             onAddNode()
                         },
@@ -831,65 +839,65 @@ struct EditorToolbar: View {
                     )
 
                     Menu {
-                        Button("Add Boundary") { onAddBoundary() }
+                        Button(LocalizedString.text("add_boundary")) { onAddBoundary() }
                             .disabled(!hasNodeSelection)
-                        Button("Remove Boundary") { onDeleteBoundary() }
+                        Button(LocalizedString.text("remove_boundary")) { onDeleteBoundary() }
                             .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
                     } label: {
-                        toolbarMenuLabel(title: "Insert", systemName: "plus.square.on.square")
+                        toolbarMenuLabel(title: LocalizedString.text("insert_menu"), systemName: "plus.square.on.square")
                     }
                     .menuStyle(.borderlessButton)
 
                     Menu {
-                        Button("Undo") { appState.undoWorkflowChange() }
+                        Button(LocalizedString.undo) { appState.undoWorkflowChange() }
                             .disabled(!appState.canUndoWorkflowChange)
-                        Button("Redo") { appState.redoWorkflowChange() }
+                        Button(LocalizedString.redo) { appState.redoWorkflowChange() }
                             .disabled(!appState.canRedoWorkflowChange)
                         Divider()
-                        Button("Copy") { onCopySelection() }.disabled(!hasNodeSelection)
-                        Button("Cut") { onCutSelection() }.disabled(!hasNodeSelection)
-                        Button("Paste") { onPasteSelection() }
-                        Button("Select All") { selectAllItems() }
-                        Button("Delete") { onDeleteSelection() }.disabled(!hasNodeSelection && selectedBoundaryIDs.isEmpty && selectedEdgeID == nil)
+                        Button(LocalizedString.copy) { onCopySelection() }.disabled(!hasNodeSelection)
+                        Button(LocalizedString.cut) { onCutSelection() }.disabled(!hasNodeSelection)
+                        Button(LocalizedString.paste) { onPasteSelection() }
+                        Button(LocalizedString.selectAll) { selectAllItems() }
+                        Button(LocalizedString.delete) { onDeleteSelection() }.disabled(!hasNodeSelection && selectedBoundaryIDs.isEmpty && selectedEdgeID == nil)
                     } label: {
-                        toolbarMenuLabel(title: "Edit", systemName: "doc.on.doc")
+                        toolbarMenuLabel(title: LocalizedString.edit, systemName: "doc.on.doc")
                     }
                     .menuStyle(.borderlessButton)
 
                     Menu {
-                        Button("Align Left") { onAlignSelected(.left) }
+                        Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
                             .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button("Align Center") { onAlignSelected(.center) }
+                        Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
                             .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button("Align Right") { onAlignSelected(.right) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Divider()
-                        Button("Align Top") { onAlignSelected(.top) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button("Align Middle") { onAlignSelected(.middle) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button("Align Bottom") { onAlignSelected(.bottom) }
+                        Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
                             .disabled(!hasNodeSelection && !hasBoundarySelection)
                         Divider()
-                        Button("Distribute Horizontally") { onDistributeSelected(.horizontal) }
+                        Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
+                            .disabled(!hasNodeSelection && !hasBoundarySelection)
+                        Divider()
+                        Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
                             .disabled((selectedNodeIDs.count + selectedBoundaryIDs.count) < 3)
-                        Button("Distribute Vertically") { onDistributeSelected(.vertical) }
+                        Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
                             .disabled((selectedNodeIDs.count + selectedBoundaryIDs.count) < 3)
                         Divider()
-                        Button("Organize Connections") { onOrganizeConnections() }
-                        Button("Delete Selected Edge") { onDeleteSelectedEdge() }
+                        Button(LocalizedString.text("organize_connections")) { onOrganizeConnections() }
+                        Button(LocalizedString.text("delete_selected_edge")) { onDeleteSelectedEdge() }
                             .disabled(selectedEdgeID == nil)
                     } label: {
-                        toolbarMenuLabel(title: "Layout", systemName: "rectangle.3.group")
+                        toolbarMenuLabel(title: LocalizedString.text("layout_menu"), systemName: "rectangle.3.group")
                     }
                     .menuStyle(.borderlessButton)
 
                     toolbarIconToggleButton(
                         systemName: isConnectMode ? "link.circle.fill" : "link.circle",
-                        title: "Connect",
+                        title: LocalizedString.text("connect_toolbar"),
                         action: toggleConnectMode,
                         isActive: isConnectMode,
-                        tooltip: isConnectMode ? "取消创建连线" : "准备创建连线",
+                        tooltip: isConnectMode ? LocalizedString.text("connect_cancel_tooltip") : LocalizedString.text("connect_prepare_tooltip"),
                         prominent: true
                     )
 
@@ -900,16 +908,16 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: "list.bullet.clipboard",
-                        title: "Tasks",
+                        title: LocalizedString.text("tasks_toolbar"),
                         action: onGenerateTasks,
-                        tooltip: "生成任务"
+                        tooltip: LocalizedString.text("generate_tasks_tooltip")
                     )
 
                     Button(action: isRunning ? onStopTest : onRunTest) {
                         HStack(spacing: 8) {
                             Image(systemName: isRunning ? "stop.circle" : "play.circle")
                                 .font(.system(size: 15, weight: .semibold))
-                            Text(isRunning ? "Stop" : "Run")
+                            Text(isRunning ? LocalizedString.text("stop_action") : LocalizedString.text("run_action"))
                                 .font(.system(size: 12.5, weight: .semibold))
                                 .lineLimit(1)
                         }
@@ -924,19 +932,19 @@ struct EditorToolbar: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .help(isRunning ? "停止测试" : "运行测试")
+                    .help(isRunning ? LocalizedString.text("stop_test_tooltip") : LocalizedString.text("run_test_tooltip"))
 
                     toolbarIconButton(
                         systemName: "square.and.arrow.down",
-                        title: "Save",
+                        title: LocalizedString.save,
                         action: onSave,
-                        tooltip: "保存"
+                        tooltip: LocalizedString.text("save_tooltip")
                     )
                 }
             }
 
             if hasNodeSelection || selectedEdgeID != nil {
-                WorkflowToolbarGroup(title: "Style") {
+                WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_style")) {
                     HStack(spacing: 8) {
                         if hasNodeSelection {
                             Menu {
@@ -951,10 +959,10 @@ struct EditorToolbar: View {
                                 Button(action: {
                                     applyNodeColor(nil)
                                 }) {
-                                    styleMenuResetLabel(title: "恢复节点默认色")
+                                    styleMenuResetLabel(title: LocalizedString.text("reset_node_color"))
                                 }
                             } label: {
-                                toolbarMenuLabel(title: "节点颜色", systemName: "paintpalette")
+                                toolbarMenuLabel(title: LocalizedString.text("node_color"), systemName: "paintpalette")
                             }
                             .menuStyle(.borderlessButton)
                         }
@@ -972,10 +980,10 @@ struct EditorToolbar: View {
                                 Button(action: {
                                     applyEdgeColor(nil, edgeID: selectedEdgeID)
                                 }) {
-                                    styleMenuResetLabel(title: "恢复连线默认色")
+                                    styleMenuResetLabel(title: LocalizedString.text("reset_edge_color"))
                                 }
                             } label: {
-                                toolbarMenuLabel(title: "连线颜色", systemName: "scribble.variable")
+                                toolbarMenuLabel(title: LocalizedString.text("edge_color"), systemName: "scribble.variable")
                             }
                             .menuStyle(.borderlessButton)
                         }
@@ -1006,7 +1014,7 @@ struct EditorToolbar: View {
             HStack(spacing: 8) {
                 Image(systemName: mode.icon)
                     .font(.system(size: 14, weight: .semibold))
-                Text(mode == .architecture ? "Flow" : mode.rawValue)
+                Text(mode.displayTitle)
                     .font(.system(size: 12.5, weight: .semibold))
             }
             .padding(.horizontal, 12)
@@ -1023,7 +1031,7 @@ struct EditorToolbar: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(viewMode == mode ? Color.accentColor.opacity(0.1) : Color.black.opacity(0.06), lineWidth: 1)
         )
-        .help(mode.rawValue)
+        .help(mode.displayTitle)
     }
 
     private func toolbarMenuLabel(title: String, systemName: String) -> some View {
@@ -1193,7 +1201,7 @@ struct EditorToolbar: View {
             HStack(spacing: 8) {
                 Image(systemName: icon)
                     .font(.system(size: 13.5, weight: .semibold))
-                Text(type == .unidirectional ? "One-way" : "Two-way")
+                Text(type == .unidirectional ? LocalizedString.text("connection_one_way") : LocalizedString.text("connection_two_way"))
                     .font(.system(size: 12, weight: .semibold))
             }
             .foregroundColor(isActive ? .white : Color.primary.opacity(0.76))
@@ -1268,7 +1276,7 @@ struct EditorToolbar: View {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
-                Text("Saved \(lastSave.formatted(date: .omitted, time: .shortened))")
+                Text(LocalizedString.format("saved_at", lastSave.formatted(date: .omitted, time: .shortened)))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -1545,6 +1553,15 @@ private enum AgentCollectionSort: String, CaseIterable, Identifiable {
     case connections = "Connections"
 
     var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .updated: return LocalizedString.text("sort_recently_updated")
+        case .name: return LocalizedString.text("sort_name")
+        case .model: return LocalizedString.text("sort_model")
+        case .connections: return LocalizedString.text("sort_connections")
+        }
+    }
 }
 
 private enum AgentCollectionFilter: String, CaseIterable, Identifiable {
@@ -1554,6 +1571,15 @@ private enum AgentCollectionFilter: String, CaseIterable, Identifiable {
     case attention = "Needs Attention"
 
     var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .all: return LocalizedString.text("filter_all")
+        case .onCanvas: return LocalizedString.text("filter_on_canvas")
+        case .withSoulFile: return LocalizedString.text("filter_with_soul")
+        case .attention: return LocalizedString.text("filter_needs_attention")
+        }
+    }
 }
 
 private struct AgentCollectionItem: Identifiable {
@@ -1571,7 +1597,7 @@ private struct AgentCollectionItem: Identifiable {
     var totalConnections: Int { incomingConnections + outgoingConnections }
     var hasSoulFile: Bool { soulSourcePath != nil }
     var isOnCanvas: Bool { nodeID != nil }
-    var soulDisplayName: String { soulSourcePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Project Cache" }
+    var soulDisplayName: String { soulSourcePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? LocalizedString.text("project_cache_only") }
     var soulDirectoryName: String? { soulSourcePath.map { URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent } }
 }
 
@@ -1873,15 +1899,15 @@ private func runtimePresentation(for rawStatus: String?) -> (label: String, syst
 
     switch status {
     case "", "idle", "ready":
-        return ("Ready", "checkmark.circle.fill", .green, false)
+        return (LocalizedString.text("status_ready"), "checkmark.circle.fill", .green, false)
     case "running":
-        return ("Running", "bolt.circle.fill", .blue, false)
+        return (LocalizedString.text("status_running"), "bolt.circle.fill", .blue, false)
     case "reloaded":
-        return ("Reloaded", "arrow.clockwise.circle.fill", .green, false)
+        return (LocalizedString.text("status_reloaded"), "arrow.clockwise.circle.fill", .green, false)
     case "reload_failed", "error", "failed":
-        return ("Needs Reload", "exclamationmark.triangle.fill", .orange, true)
+        return (LocalizedString.text("status_needs_reload"), "exclamationmark.triangle.fill", .orange, true)
     case "stopped":
-        return ("Stopped", "pause.circle.fill", .secondary, true)
+        return (LocalizedString.text("status_stopped"), "pause.circle.fill", .secondary, true)
     default:
         return (status.capitalized, "circle.fill", .secondary, false)
     }
@@ -1965,7 +1991,7 @@ private struct AgentCollectionToolbar: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.secondary)
-                    TextField("Search agents, models, identities, skills or SOUL paths", text: $searchText)
+                    TextField(LocalizedString.text("agent_search_placeholder"), text: $searchText)
                         .textFieldStyle(.plain)
                 }
                 .padding(.horizontal, 10)
@@ -1973,26 +1999,26 @@ private struct AgentCollectionToolbar: View {
                 .background(Color(.controlBackgroundColor))
                 .cornerRadius(10)
 
-                Picker("Filter", selection: $filter) {
+                Picker(LocalizedString.text("filter_label"), selection: $filter) {
                     ForEach(AgentCollectionFilter.allCases) { option in
-                        Text(option.rawValue).tag(option)
+                        Text(option.displayTitle).tag(option)
                     }
                 }
                 .pickerStyle(.menu)
 
-                Picker("Sort", selection: $sort) {
+                Picker(LocalizedString.text("sort_label"), selection: $sort) {
                     ForEach(AgentCollectionSort.allCases) { option in
-                        Text(option.rawValue).tag(option)
+                        Text(option.displayTitle).tag(option)
                     }
                 }
                 .pickerStyle(.menu)
             }
 
             HStack(spacing: 8) {
-                AgentCollectionBadge(systemImage: "person.3.fill", text: "\(visibleCount)/\(snapshot.items.count) visible")
-                AgentCollectionBadge(systemImage: "square.grid.2x2", text: "\(snapshot.onCanvasCount) on canvas")
-                AgentCollectionBadge(systemImage: "doc.text.fill", text: "\(snapshot.withSoulCount) with SOUL")
-                AgentCollectionBadge(systemImage: "exclamationmark.triangle.fill", text: "\(snapshot.attentionCount) need attention")
+                AgentCollectionBadge(systemImage: "person.3.fill", text: LocalizedString.format("visible_count", visibleCount, snapshot.items.count))
+                AgentCollectionBadge(systemImage: "square.grid.2x2", text: LocalizedString.format("on_canvas_count", snapshot.onCanvasCount))
+                AgentCollectionBadge(systemImage: "doc.text.fill", text: LocalizedString.format("with_soul_count", snapshot.withSoulCount))
+                AgentCollectionBadge(systemImage: "exclamationmark.triangle.fill", text: LocalizedString.format("need_attention_count", snapshot.attentionCount))
             }
 
             if let feedback {
@@ -2034,13 +2060,13 @@ private struct AgentCollectionEmptyState: View {
             Image(systemName: "tray")
                 .font(.system(size: 28))
                 .foregroundColor(.secondary)
-            Text("No agents match the current filter")
+            Text(LocalizedString.text("no_agents_match_filter"))
                 .font(.headline)
             if !searchText.isEmpty {
-                Text("Try clearing or adjusting the search keywords.")
+                Text(LocalizedString.text("try_adjust_search"))
                     .foregroundColor(.secondary)
             } else {
-                Text("The current project has no agents in this category.")
+                Text(LocalizedString.text("no_agents_in_category"))
                     .foregroundColor(.secondary)
             }
         }
@@ -2085,66 +2111,66 @@ private struct AgentContextMenuContent: View {
 
     var body: some View {
         Button(action: onOpen) {
-            Label("Focus Agent", systemImage: "scope")
+            Label(LocalizedString.text("focus_agent"), systemImage: "scope")
         }
 
         Button(action: onEdit) {
-            Label("Edit SOUL.md", systemImage: "pencil.and.outline")
+            Label(LocalizedString.text("edit_soul_md"), systemImage: "pencil.and.outline")
         }
 
         Button(action: onRevealSoul) {
-            Label(item.hasSoulFile ? "Reveal SOUL.md" : "Reveal Expected SOUL Location", systemImage: "doc.text.magnifyingglass")
+            Label(item.hasSoulFile ? LocalizedString.text("reveal_soul_md") : LocalizedString.text("reveal_expected_soul"), systemImage: "doc.text.magnifyingglass")
         }
 
         Button(action: onOpenWorkspace) {
-            Label("Open Workspace", systemImage: "folder")
+            Label(LocalizedString.text("open_workspace"), systemImage: "folder")
         }
 
         Button(action: onReloadSoul) {
-            Label("Reload SOUL from Disk", systemImage: "arrow.clockwise")
+            Label(LocalizedString.text("reload_soul_disk"), systemImage: "arrow.clockwise")
         }
 
         Divider()
 
         Button(action: onManageSkills) {
-            Label("Manage Skills", systemImage: "star")
+            Label(LocalizedString.text("manage_skills"), systemImage: "star")
         }
 
         Button(action: onConfigurePermissions) {
-            Label("Configure Permissions", systemImage: "lock.shield")
+            Label(LocalizedString.text("configure_permissions"), systemImage: "lock.shield")
         }
 
         Divider()
 
         Button(action: onCopy) {
-            Label("Copy", systemImage: "doc.on.doc")
+            Label(LocalizedString.copy, systemImage: "doc.on.doc")
         }
 
         Button(action: onCut) {
-            Label("Cut", systemImage: "scissors")
+            Label(LocalizedString.cut, systemImage: "scissors")
         }
 
         Button(action: onPaste) {
-            Label("Paste", systemImage: "doc.on.clipboard")
+            Label(LocalizedString.paste, systemImage: "doc.on.clipboard")
         }
         .disabled(!canPaste)
 
         Button(action: onDuplicate) {
-            Label("Duplicate", systemImage: "plus.square.on.square")
+            Label(LocalizedString.text("duplicate"), systemImage: "plus.square.on.square")
         }
 
         Button(action: onExport) {
-            Label("Export", systemImage: "square.and.arrow.up")
+            Label(LocalizedString.text("export_action"), systemImage: "square.and.arrow.up")
         }
 
         Button(action: onReset) {
-            Label("Reset", systemImage: "arrow.counterclockwise")
+            Label(LocalizedString.text("reset_action"), systemImage: "arrow.counterclockwise")
         }
 
         Divider()
 
         Button(role: .destructive, action: onDelete) {
-            Label("Delete", systemImage: "trash")
+            Label(LocalizedString.delete, systemImage: "trash")
         }
     }
 }
@@ -2194,12 +2220,12 @@ private struct AgentListView: View {
             } else {
                 VStack(spacing: 0) {
                     HStack(spacing: 12) {
-                        Text("Status").frame(width: 120, alignment: .leading)
-                        Text("Agent").frame(minWidth: 220, alignment: .leading)
-                        Text("Model").frame(minWidth: 170, alignment: .leading)
-                        Text("Connections").frame(width: 110, alignment: .leading)
-                        Text("SOUL").frame(minWidth: 170, alignment: .leading)
-                        Text("Actions").frame(width: isConnectMode ? 210 : 180, alignment: .center)
+                        Text(LocalizedString.text("status_header")).frame(width: 120, alignment: .leading)
+                        Text(LocalizedString.text("agent_header")).frame(minWidth: 220, alignment: .leading)
+                        Text(LocalizedString.text("model_header")).frame(minWidth: 170, alignment: .leading)
+                        Text(LocalizedString.text("connections_header")).frame(width: 110, alignment: .leading)
+                        Text(LocalizedString.text("soul_header")).frame(minWidth: 170, alignment: .leading)
+                        Text(LocalizedString.text("actions_header")).frame(width: isConnectMode ? 210 : 180, alignment: .center)
                         Spacer(minLength: 0)
                     }
                     .font(.caption)
@@ -2258,22 +2284,22 @@ private struct AgentListView: View {
         .sheet(item: $permissionsAgent) { agent in
             PermissionsConfigSheet(agent: agent, isPresented: bindingForAgentSheet($permissionsAgent))
         }
-        .alert("Delete Agent?", isPresented: deleteConfirmationBinding) {
-            Button("Delete", role: .destructive) {
+        .alert(LocalizedString.text("delete_agent_title"), isPresented: deleteConfirmationBinding) {
+            Button(LocalizedString.delete, role: .destructive) {
                 if let candidate = deleteCandidate {
                     appState.deleteAgent(candidate.id)
                     if selectedAgentID == candidate.id {
                         selectedAgentID = nil
                     }
-                    showFeedback("Deleted \(candidate.name)", isError: false)
+                    showFeedback(LocalizedString.format("deleted_agent", candidate.name), isError: false)
                 }
                 deleteCandidate = nil
             }
-            Button("Cancel", role: .cancel) {
+            Button(LocalizedString.cancel, role: .cancel) {
                 deleteCandidate = nil
             }
         } message: {
-            Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
+            Text(deleteCandidate.map { LocalizedString.format("delete_agent_message", $0.name) } ?? "")
         }
         .onAppear {
             canPasteFromPasteboard = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
@@ -2338,18 +2364,18 @@ private struct AgentListView: View {
     private func revealSoul(for agentID: UUID) {
         if let soulURL = appState.agentSoulFileURL(for: agentID) {
             NSWorkspace.shared.activateFileViewerSelecting([soulURL])
-            showFeedback("Revealed \(soulURL.lastPathComponent)", isError: false)
+            showFeedback(LocalizedString.format("revealed_file", soulURL.lastPathComponent), isError: false)
         } else {
-            showFeedback("No real SOUL.md file was found for this agent.", isError: true)
+            showFeedback(LocalizedString.text("no_real_soul_file"), isError: true)
         }
     }
 
     private func openWorkspace(for agentID: UUID) {
         if let workspaceURL = appState.agentWorkspaceURL(for: agentID) {
             NSWorkspace.shared.open(workspaceURL)
-            showFeedback("Opened workspace \(workspaceURL.lastPathComponent)", isError: false)
+            showFeedback(LocalizedString.format("opened_workspace", workspaceURL.lastPathComponent), isError: false)
         } else {
-            showFeedback("No workspace directory was found for this agent.", isError: true)
+            showFeedback(LocalizedString.text("no_workspace_directory"), isError: true)
         }
     }
 
@@ -2364,7 +2390,7 @@ private struct AgentListView: View {
     private func copyAgent(_ agentID: UUID) {
         guard let agent = currentAgent(id: agentID) else { return }
         let success = appState.copyAgent(agent)
-        showFeedback(success ? "Copied \(agent.name)" : "Copy failed", isError: !success)
+        showFeedback(success ? LocalizedString.format("copied_agent", agent.name) : LocalizedString.text("copy_failed"), isError: !success)
     }
 
     private func cutAgent(_ agentID: UUID) {
@@ -2373,24 +2399,24 @@ private struct AgentListView: View {
             selectedAgentID = nil
         }
         let agentName = currentAgent(id: agentID)?.name ?? "agent"
-        showFeedback(success ? "Cut \(agentName)" : "Cut failed", isError: !success)
+        showFeedback(success ? LocalizedString.format("cut_agent", agentName) : LocalizedString.text("cut_failed"), isError: !success)
     }
 
     private func pasteAgent() {
         if let newAgent = appState.pasteAgentFromPasteboard() {
             selectedAgentID = newAgent.id
-            showFeedback("Pasted \(newAgent.name)", isError: false)
+            showFeedback(LocalizedString.format("pasted_agent", newAgent.name), isError: false)
         } else {
-            showFeedback("Paste failed", isError: true)
+            showFeedback(LocalizedString.text("paste_failed"), isError: true)
         }
     }
 
     private func duplicateAgent(_ agentID: UUID) {
-        if let newAgent = appState.duplicateAgent(agentID, suffix: "Duplicate", offset: CGPoint(x: 50, y: 50)) {
+        if let newAgent = appState.duplicateAgent(agentID, suffix: LocalizedString.text("duplicate_suffix"), offset: CGPoint(x: 50, y: 50)) {
             selectedAgentID = newAgent.id
-            showFeedback("Duplicated \(newAgent.name)", isError: false)
+            showFeedback(LocalizedString.format("duplicated_agent", newAgent.name), isError: false)
         } else {
-            showFeedback("Duplicate failed", isError: true)
+            showFeedback(LocalizedString.text("duplicate_failed"), isError: true)
         }
     }
 
@@ -2406,9 +2432,9 @@ private struct AgentListView: View {
                 do {
                     let data = try JSONEncoder().encode(agent)
                     try data.write(to: url)
-                    showFeedback("Exported \(agent.name)", isError: false)
+                    showFeedback(LocalizedString.format("exported_agent", agent.name), isError: false)
                 } catch {
-                    showFeedback("Export failed: \(error.localizedDescription)", isError: true)
+                    showFeedback(LocalizedString.format("export_failed", error.localizedDescription), isError: true)
                 }
             }
         }
@@ -2418,7 +2444,7 @@ private struct AgentListView: View {
         guard var agent = currentAgent(id: agentID) else { return }
         agent.updatedAt = Date()
         appState.updateAgent(agent, reload: true)
-        showFeedback("Reset \(agent.name)", isError: false)
+        showFeedback(LocalizedString.format("reset_agent", agent.name), isError: false)
     }
 
     private func showFeedback(_ message: String, isError: Bool) {
@@ -2492,9 +2518,9 @@ private struct AgentListRow: View {
                 .frame(minWidth: 170, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("In \(item.incomingConnections) / Out \(item.outgoingConnections)")
+                    Text(LocalizedString.format("in_out_connections", item.incomingConnections, item.outgoingConnections))
                         .font(.caption)
-                    Text("\(item.agent.capabilities.count) skills")
+                    Text(LocalizedString.format("skill_count_small", item.agent.capabilities.count))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -2505,7 +2531,7 @@ private struct AgentListRow: View {
                         .font(.caption)
                         .foregroundColor(item.hasSoulFile ? .primary : .orange)
                         .lineLimit(1)
-                    Text(item.soulDirectoryName ?? "Using project cache only")
+                    Text(item.soulDirectoryName ?? LocalizedString.text("using_project_cache_only"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -2527,31 +2553,31 @@ private struct AgentListRow: View {
                     Image(systemName: "scope")
                 }
                 .buttonStyle(.borderless)
-                .help("Focus agent and sync selection")
+                .help(LocalizedString.text("focus_agent_help"))
 
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
                 }
                 .buttonStyle(.borderless)
-                .help("Edit real SOUL.md content")
+                .help(LocalizedString.text("edit_soul_help"))
 
                 Button(action: onRevealSoul) {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
-                .help("Reveal SOUL.md in Finder")
+                .help(LocalizedString.text("reveal_soul_help"))
 
                 Button(action: onDuplicate) {
                     Image(systemName: "plus.square.on.square")
                 }
                 .buttonStyle(.borderless)
-                .help("Duplicate agent")
+                .help(LocalizedString.text("duplicate_agent_help"))
 
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("Delete agent")
+                .help(LocalizedString.text("delete_agent_help"))
 
                 if isConnectMode {
                     Button(action: { onConnect(item.agent.id) }) {
@@ -2559,7 +2585,7 @@ private struct AgentListRow: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundColor(.blue)
-                    .help("Connect from selected source agent")
+                    .help(LocalizedString.text("connect_from_selected_help"))
                 }
             }
             .frame(width: isConnectMode ? 210 : 180, alignment: .center)
@@ -2673,22 +2699,22 @@ private struct AgentGridView: View {
         .sheet(item: $permissionsAgent) { agent in
             PermissionsConfigSheet(agent: agent, isPresented: bindingForAgentSheet($permissionsAgent))
         }
-        .alert("Delete Agent?", isPresented: deleteConfirmationBinding) {
-            Button("Delete", role: .destructive) {
+        .alert(LocalizedString.text("delete_agent_title"), isPresented: deleteConfirmationBinding) {
+            Button(LocalizedString.delete, role: .destructive) {
                 if let candidate = deleteCandidate {
                     appState.deleteAgent(candidate.id)
                     if selectedAgentID == candidate.id {
                         selectedAgentID = nil
                     }
-                    showFeedback("Deleted \(candidate.name)", isError: false)
+                    showFeedback(LocalizedString.format("deleted_agent", candidate.name), isError: false)
                 }
                 deleteCandidate = nil
             }
-            Button("Cancel", role: .cancel) {
+            Button(LocalizedString.cancel, role: .cancel) {
                 deleteCandidate = nil
             }
         } message: {
-            Text(deleteCandidate.map { "Delete \"\($0.name)\" and remove its workflow node references?" } ?? "")
+            Text(deleteCandidate.map { LocalizedString.format("delete_agent_message", $0.name) } ?? "")
         }
         .onAppear {
             canPasteFromPasteboard = NSPasteboard.general.canReadObject(forClasses: [NSString.self], options: nil)
@@ -2746,18 +2772,18 @@ private struct AgentGridView: View {
     private func revealSoul(for agentID: UUID) {
         if let soulURL = appState.agentSoulFileURL(for: agentID) {
             NSWorkspace.shared.activateFileViewerSelecting([soulURL])
-            showFeedback("Revealed \(soulURL.lastPathComponent)", isError: false)
+            showFeedback(LocalizedString.format("revealed_file", soulURL.lastPathComponent), isError: false)
         } else {
-            showFeedback("No real SOUL.md file was found for this agent.", isError: true)
+            showFeedback(LocalizedString.text("no_real_soul_file"), isError: true)
         }
     }
 
     private func openWorkspace(for agentID: UUID) {
         if let workspaceURL = appState.agentWorkspaceURL(for: agentID) {
             NSWorkspace.shared.open(workspaceURL)
-            showFeedback("Opened workspace \(workspaceURL.lastPathComponent)", isError: false)
+            showFeedback(LocalizedString.format("opened_workspace", workspaceURL.lastPathComponent), isError: false)
         } else {
-            showFeedback("No workspace directory was found for this agent.", isError: true)
+            showFeedback(LocalizedString.text("no_workspace_directory"), isError: true)
         }
     }
 
@@ -2772,7 +2798,7 @@ private struct AgentGridView: View {
     private func copyAgent(_ agentID: UUID) {
         guard let agent = currentAgent(id: agentID) else { return }
         let success = appState.copyAgent(agent)
-        showFeedback(success ? "Copied \(agent.name)" : "Copy failed", isError: !success)
+        showFeedback(success ? LocalizedString.format("copied_agent", agent.name) : LocalizedString.text("copy_failed"), isError: !success)
     }
 
     private func cutAgent(_ agentID: UUID) {
@@ -2781,24 +2807,24 @@ private struct AgentGridView: View {
         if success, selectedAgentID == agentID {
             selectedAgentID = nil
         }
-        showFeedback(success ? "Cut \(agentName)" : "Cut failed", isError: !success)
+        showFeedback(success ? LocalizedString.format("cut_agent", agentName) : LocalizedString.text("cut_failed"), isError: !success)
     }
 
     private func pasteAgent() {
         if let newAgent = appState.pasteAgentFromPasteboard() {
             selectedAgentID = newAgent.id
-            showFeedback("Pasted \(newAgent.name)", isError: false)
+            showFeedback(LocalizedString.format("pasted_agent", newAgent.name), isError: false)
         } else {
-            showFeedback("Paste failed", isError: true)
+            showFeedback(LocalizedString.text("paste_failed"), isError: true)
         }
     }
 
     private func duplicateAgent(_ agentID: UUID) {
-        if let newAgent = appState.duplicateAgent(agentID, suffix: "Duplicate", offset: CGPoint(x: 50, y: 50)) {
+        if let newAgent = appState.duplicateAgent(agentID, suffix: LocalizedString.text("duplicate_suffix"), offset: CGPoint(x: 50, y: 50)) {
             selectedAgentID = newAgent.id
-            showFeedback("Duplicated \(newAgent.name)", isError: false)
+            showFeedback(LocalizedString.format("duplicated_agent", newAgent.name), isError: false)
         } else {
-            showFeedback("Duplicate failed", isError: true)
+            showFeedback(LocalizedString.text("duplicate_failed"), isError: true)
         }
     }
 
@@ -2814,9 +2840,9 @@ private struct AgentGridView: View {
                 do {
                     let data = try JSONEncoder().encode(agent)
                     try data.write(to: url)
-                    showFeedback("Exported \(agent.name)", isError: false)
+                    showFeedback(LocalizedString.format("exported_agent", agent.name), isError: false)
                 } catch {
-                    showFeedback("Export failed: \(error.localizedDescription)", isError: true)
+                    showFeedback(LocalizedString.format("export_failed", error.localizedDescription), isError: true)
                 }
             }
         }
@@ -2826,7 +2852,7 @@ private struct AgentGridView: View {
         guard var agent = currentAgent(id: agentID) else { return }
         agent.updatedAt = Date()
         appState.updateAgent(agent, reload: true)
-        showFeedback("Reset \(agent.name)", isError: false)
+        showFeedback(LocalizedString.format("reset_agent", agent.name), isError: false)
     }
 
     private func showFeedback(_ message: String, isError: Bool) {
@@ -2895,9 +2921,9 @@ private struct AgentGridCard: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(item.agent.openClawDefinition.modelIdentifier, systemImage: "cpu")
                     Label(item.agent.openClawDefinition.runtimeProfile, systemImage: "dial.high")
-                    Label("\(item.agent.capabilities.count) skills", systemImage: "star")
-                    Label("In \(item.incomingConnections) / Out \(item.outgoingConnections)", systemImage: "arrow.left.arrow.right")
-                    Label(item.hasSoulFile ? item.soulDisplayName : "Project cache only", systemImage: item.hasSoulFile ? "doc.text" : "exclamationmark.triangle")
+                    Label(LocalizedString.format("skill_count_small", item.agent.capabilities.count), systemImage: "star")
+                    Label(LocalizedString.format("in_out_connections", item.incomingConnections, item.outgoingConnections), systemImage: "arrow.left.arrow.right")
+                    Label(item.hasSoulFile ? item.soulDisplayName : LocalizedString.text("project_cache_only"), systemImage: item.hasSoulFile ? "doc.text" : "exclamationmark.triangle")
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -2912,17 +2938,17 @@ private struct AgentGridCard: View {
 
             HStack(spacing: 10) {
                 Button(action: onOpen) {
-                    Label("Focus", systemImage: "scope")
+                    Label(LocalizedString.text("focus"), systemImage: "scope")
                 }
                 .buttonStyle(.borderless)
 
                 Button(action: onEdit) {
-                    Label("Edit", systemImage: "pencil")
+                    Label(LocalizedString.text("edit_action"), systemImage: "pencil")
                 }
                 .buttonStyle(.borderless)
 
                 Button(action: onRevealSoul) {
-                    Label("SOUL", systemImage: "doc.text.magnifyingglass")
+                    Label(LocalizedString.text("soul_header"), systemImage: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless)
 
@@ -2932,19 +2958,19 @@ private struct AgentGridCard: View {
                     Image(systemName: "folder")
                 }
                 .buttonStyle(.borderless)
-                .help("Open workspace")
+                .help(LocalizedString.text("open_workspace_help"))
 
                 Button(action: onDuplicate) {
                     Image(systemName: "plus.square.on.square")
                 }
                 .buttonStyle(.borderless)
-                .help("Duplicate agent")
+                .help(LocalizedString.text("duplicate_agent_help"))
 
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("Delete agent")
+                .help(LocalizedString.text("delete_agent_help"))
 
                 if isConnectMode {
                     Button(action: { onConnect(item.agent.id) }) {
@@ -2952,7 +2978,7 @@ private struct AgentGridCard: View {
                     }
                     .buttonStyle(.borderless)
                     .foregroundColor(.blue)
-                    .help("Connect from selected source agent")
+                    .help(LocalizedString.text("connect_from_selected_help"))
                 }
             }
         }
@@ -3446,10 +3472,10 @@ struct NodePropertyPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Node Properties")
+                Text(LocalizedString.nodeProperties)
                     .font(.headline)
                 Spacer()
-                Button("Close") {
+                Button(LocalizedString.close) {
                     isPresented = false
                 }
                 .buttonStyle(.borderless)
@@ -3462,20 +3488,20 @@ struct NodePropertyPanel: View {
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    GroupBox("Node Info") {
+                    GroupBox(LocalizedString.text("node_info")) {
                         VStack(alignment: .leading, spacing: 8) {
-                            LabeledContent("ID") {
+                            LabeledContent(LocalizedString.text("id_label")) {
                                 Text(node.id.uuidString.prefix(8))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                             
-                            LabeledContent("Type") {
+                            LabeledContent(LocalizedString.text("type_label")) {
                                 Text(node.type.rawValue.capitalized)
                             }
 
                             if node.type != .agent {
-                                TextField("Title", text: $nodeTitle)
+                                TextField(LocalizedString.text("title_label"), text: $nodeTitle)
                                     .textFieldStyle(.roundedBorder)
                             }
 
@@ -3483,7 +3509,7 @@ struct NodePropertyPanel: View {
                         .padding(8)
                     }
 
-                    GroupBox("Node Color Group") {
+                    GroupBox(LocalizedString.text("node_color_group")) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 8) {
                                 ForEach(CanvasAccentColorPreset.allCases) { preset in
@@ -3505,14 +3531,14 @@ struct NodePropertyPanel: View {
                                     .help(preset.title)
                                 }
 
-                                Button("默认") {
+                                Button(LocalizedString.text("color_default")) {
                                     nodeDisplayColorHex = nil
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                             }
 
-                            Text("同色节点会自动归组，标签可在画布左上角直接编辑。")
+                            Text(LocalizedString.text("color_group_nodes_hint"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -3521,21 +3547,21 @@ struct NodePropertyPanel: View {
                     
                     if node.type == .agent, let agentID = node.agentID,
                        let agent = getAgent(id: agentID) {
-                        GroupBox("Agent: \(agent.name)") {
+                        GroupBox(LocalizedString.format("agent_section_title", agent.name)) {
                             VStack(alignment: .leading, spacing: 14) {
-                                TextField("Name", text: $nodeTitle)
+                                TextField(LocalizedString.name, text: $nodeTitle)
                                     .textFieldStyle(.roundedBorder)
 
-                                TextField("Description", text: $agentDescription)
+                                TextField(LocalizedString.description, text: $agentDescription)
                                     .textFieldStyle(.roundedBorder)
 
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("SOUL Source Path")
+                                    Text(LocalizedString.text("soul_source_path"))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
 
                                     if let soulSourcePath {
-                                        LabeledContent("Path") {
+                                        LabeledContent(LocalizedString.text("path_label")) {
                                             Text(soulSourcePath)
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
@@ -3543,7 +3569,7 @@ struct NodePropertyPanel: View {
                                                 .textSelection(.enabled)
                                         }
                                     } else {
-                                        Text("未定位到 SOUL 文件，当前编辑的是项目缓存。")
+                                        Text(LocalizedString.text("no_soul_file_project_cache"))
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                     }
@@ -3572,7 +3598,7 @@ struct NodePropertyPanel: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             
             HStack {
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
@@ -3580,7 +3606,7 @@ struct NodePropertyPanel: View {
                 
                 Spacer()
                 
-                Button("Apply") {
+                Button(LocalizedString.text("apply")) {
                 saveChanges()
                 isPresented = false
                 }
@@ -3642,7 +3668,7 @@ struct NodePropertyPanel: View {
             if !fileResult.success {
                 reloadStatus = fileResult.message
             } else {
-                soulSourcePath = fileResult.message.replacingOccurrences(of: "已写入 ", with: "")
+                soulSourcePath = appState.loadAgentSoulMDFromSource(agentID: agentID)?.sourcePath
             }
             agent.name = nodeTitle
             agent.description = agentDescription
@@ -3651,7 +3677,10 @@ struct NodePropertyPanel: View {
             agent.updatedAt = Date()
             appState.updateAgent(agent, reload: true)
             if fileResult.success {
-                reloadStatus = "Reload requested at \(Date.now.formatted(date: .omitted, time: .shortened))"
+                reloadStatus = LocalizedString.format(
+                    "reload_requested_at",
+                    Date.now.formatted(date: .omitted, time: .shortened)
+                )
             }
         }
     }
@@ -3670,7 +3699,7 @@ struct NodePropertyPanel: View {
     private func targetName(for edge: WorkflowEdge) -> String {
         guard let workflow = appState.currentProject?.workflows.first,
               let targetNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) else {
-            return "Unknown"
+            return LocalizedString.text("unknown_value")
         }
 
         if let targetAgent = targetNode.agentID.flatMap(getAgent(id:)) {
@@ -3712,15 +3741,15 @@ struct RouteEditorRow: View {
                     .font(.caption)
                     .fontWeight(.medium)
                 Spacer()
-                Toggle("Approval", isOn: $edge.requiresApproval)
+                Toggle(LocalizedString.text("approval"), isOn: $edge.requiresApproval)
                     .toggleStyle(.switch)
                     .labelsHidden()
             }
 
-            TextField("Condition label", text: $edge.label)
+            TextField(LocalizedString.text("condition_label"), text: $edge.label)
                 .textFieldStyle(.roundedBorder)
 
-            TextField("Condition expression", text: $edge.conditionExpression)
+            TextField(LocalizedString.text("condition_expression"), text: $edge.conditionExpression)
                 .textFieldStyle(.roundedBorder)
         }
         .padding(10)
@@ -3744,10 +3773,10 @@ struct EdgePropertyPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("Edge Properties", systemImage: "arrowshape.right")
+                Label(LocalizedString.text("edge_properties"), systemImage: "arrowshape.right")
                     .font(.headline)
                 Spacer()
-                Button("Close") {
+                Button(LocalizedString.close) {
                     isPresented = false
                 }
                 .buttonStyle(.borderless)
@@ -3759,11 +3788,11 @@ struct EdgePropertyPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    GroupBox("Route Summary") {
+                    GroupBox(LocalizedString.text("route_summary")) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("From: \(sourceName)")
-                            Text("To: \(targetName)")
-                            Text("Edge ID: \(edge.id.uuidString.prefix(8))")
+                            Text("\(LocalizedString.text("from_label")): \(sourceName)")
+                            Text("\(LocalizedString.text("to_label")): \(targetName)")
+                            Text("\(LocalizedString.text("edge_id")): \(edge.id.uuidString.prefix(8))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -3771,7 +3800,7 @@ struct EdgePropertyPanel: View {
                         .padding(8)
                     }
 
-                    GroupBox("Visual Summary") {
+                    GroupBox(LocalizedString.text("visual_summary")) {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 10) {
                                 summaryBadge(text: sourceName, color: .blue)
@@ -3782,21 +3811,21 @@ struct EdgePropertyPanel: View {
 
                             HStack(spacing: 8) {
                                 summaryBadge(
-                                    text: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unlabeled route" : label,
+                                    text: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? LocalizedString.text("unlabeled_route") : label,
                                     color: .accentColor
                                 )
                                 summaryBadge(
-                                    text: isBidirectional ? "Two-way" : "One-way",
+                                    text: isBidirectional ? LocalizedString.text("connection_two_way") : LocalizedString.text("connection_one_way"),
                                     color: .indigo
                                 )
                                 if requiresApproval {
-                                    summaryBadge(text: "Approval", color: .orange)
+                                    summaryBadge(text: LocalizedString.text("approval"), color: .orange)
                                 }
                             }
 
                             Text(
                                 conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    ? "No condition expression. This route is always eligible when reached."
+                                    ? LocalizedString.text("no_condition_expression_hint")
                                     : conditionExpression
                             )
                             .font(.caption)
@@ -3806,18 +3835,18 @@ struct EdgePropertyPanel: View {
                         .padding(8)
                     }
 
-                    GroupBox("Route Display") {
+                    GroupBox(LocalizedString.text("route_display")) {
                         VStack(alignment: .leading, spacing: 12) {
-                            TextField("Label", text: $label)
+                            TextField(LocalizedString.text("label_text"), text: $label)
                                 .textFieldStyle(.roundedBorder)
 
-                            TextField("Condition", text: $conditionExpression)
+                            TextField(LocalizedString.text("condition_text"), text: $conditionExpression)
                                 .textFieldStyle(.roundedBorder)
 
-                            Toggle("Requires Approval", isOn: $requiresApproval)
+                            Toggle(LocalizedString.text("requires_approval"), isOn: $requiresApproval)
 
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Data Mapping")
+                                Text(LocalizedString.text("data_mapping"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
 
@@ -3833,7 +3862,7 @@ struct EdgePropertyPanel: View {
                         .padding(8)
                     }
 
-                    GroupBox("Route Color Group") {
+                    GroupBox(LocalizedString.text("route_color_group")) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 8) {
                                 ForEach(CanvasAccentColorPreset.allCases) { preset in
@@ -3855,25 +3884,25 @@ struct EdgePropertyPanel: View {
                                     .help(preset.title)
                                 }
 
-                                Button("默认") {
+                                Button(LocalizedString.text("color_default")) {
                                     edgeDisplayColorHex = nil
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
                             }
 
-                            Text("同色连线会自动归组，标签可在画布左上角直接编辑。")
+                            Text(LocalizedString.text("color_group_edges_hint"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         .padding(8)
                     }
 
-                    GroupBox("Communication Direction") {
+                    GroupBox(LocalizedString.text("communication_direction")) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Picker("Direction", selection: $isBidirectional) {
-                                Text("One-way").tag(false)
-                                Text("Two-way").tag(true)
+                            Picker(LocalizedString.text("direction"), selection: $isBidirectional) {
+                                Text(LocalizedString.text("connection_one_way")).tag(false)
+                                Text(LocalizedString.text("connection_two_way")).tag(true)
                             }
                             .pickerStyle(.segmented)
                             .onChange(of: isBidirectional) { _, newValue in
@@ -3884,12 +3913,12 @@ struct EdgePropertyPanel: View {
                                 Button {
                                     appState.flipEdgeDirection(edgeID: edge.id)
                                 } label: {
-                                    Label("Reverse", systemImage: "arrow.left.arrow.right")
+                                    Label(LocalizedString.text("reverse"), systemImage: "arrow.left.arrow.right")
                                 }
                                 .buttonStyle(.bordered)
                                 .disabled(isBidirectional)
 
-                                Text(isBidirectional ? "Two-way keeps both directions." : "Use Reverse to swap the one-way direction.")
+                                Text(isBidirectional ? LocalizedString.text("two_way_direction_hint") : LocalizedString.text("reverse_direction_hint"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -3903,7 +3932,7 @@ struct EdgePropertyPanel: View {
             Divider()
 
             HStack {
-                Button("Delete Route", role: .destructive) {
+                Button(LocalizedString.text("delete_route"), role: .destructive) {
                     appState.removeEdge(edge.id)
                     isPresented = false
                 }
@@ -3911,12 +3940,12 @@ struct EdgePropertyPanel: View {
 
                 Spacer()
 
-                Button("Apply") {
+                Button(LocalizedString.text("apply")) {
                     saveRouteDisplayChanges()
                 }
                 .buttonStyle(.bordered)
 
-                Button("Close") {
+                Button(LocalizedString.close) {
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
@@ -3973,7 +4002,7 @@ struct EdgePropertyPanel: View {
     private func endpointName(for nodeID: UUID) -> String {
         guard let workflow = appState.currentProject?.workflows.first,
               let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
-            return "Unknown"
+            return LocalizedString.text("unknown_value")
         }
 
         if let agentID = node.agentID,
@@ -4024,57 +4053,57 @@ struct AgentContextMenu: View {
     
     var body: some View {
         Button(action: { openAgent() }) {
-            Label("Open", systemImage: "folder")
+            Label(LocalizedString.text("open_action"), systemImage: "folder")
         }
         
         Divider()
         
         Button(action: { copyAgent() }) {
-            Label("Copy", systemImage: "doc.on.doc")
+            Label(LocalizedString.copy, systemImage: "doc.on.doc")
         }
 
         Button(action: { cutAgent() }) {
-            Label("Cut", systemImage: "scissors")
+            Label(LocalizedString.cut, systemImage: "scissors")
         }
 
         Button(action: { pasteAgent() }) {
-            Label("Paste", systemImage: "doc.on.clipboard")
+            Label(LocalizedString.paste, systemImage: "doc.on.clipboard")
         }
         
         Divider()
         
         Button(action: { exportAgent() }) {
-            Label("Export", systemImage: "square.and.arrow.up")
+            Label(LocalizedString.text("export_action"), systemImage: "square.and.arrow.up")
         }
         
         Divider()
         
         Button(action: { showEditSheet = true }) {
-            Label("Edit SOUL.md", systemImage: "doc.text")
+            Label(LocalizedString.text("edit_soul_md"), systemImage: "doc.text")
         }
         
         Button(action: { showSkillsSheet = true }) {
-            Label("Manage Skills", systemImage: "star")
+            Label(LocalizedString.text("manage_skills"), systemImage: "star")
         }
         
         Button(action: { showPermissionsSheet = true }) {
-            Label("Configure Permissions", systemImage: "lock.shield")
+            Label(LocalizedString.text("configure_permissions"), systemImage: "lock.shield")
         }
         
         Divider()
         
         Button(action: { duplicateAgent() }) {
-            Label("Duplicate", systemImage: "plus.square.on.square")
+            Label(LocalizedString.text("duplicate"), systemImage: "plus.square.on.square")
         }
         
         Button(action: { resetAgent() }) {
-            Label("Reset", systemImage: "arrow.counterclockwise")
+            Label(LocalizedString.text("reset_action"), systemImage: "arrow.counterclockwise")
         }
         
         Divider()
         
         Button(action: { showDeleteAlert = true }) {
-            Label("Delete", systemImage: "trash")
+            Label(LocalizedString.delete, systemImage: "trash")
         }
         .foregroundColor(.red)
         
@@ -4126,39 +4155,39 @@ struct AgentContextMenu: View {
            project.agents.contains(where: { $0.id == agent.id }) {
             // Show agent details in properties panel
             appState.selectedNodeID = agent.id
-            showToastMessage("Opened: \(agent.name)", type: .info)
+            showToastMessage(LocalizedString.format("opened_agent", agent.name), type: .info)
         }
     }
     
     private func copyAgent() {
         if appState.copyAgent(agent) {
-            showToastMessage("Copied: \(agent.name)", type: .success)
+            showToastMessage(LocalizedString.format("copied_agent", agent.name), type: .success)
         } else {
-            showToastMessage("Copy failed", type: .error)
+            showToastMessage(LocalizedString.text("copy_failed"), type: .error)
         }
     }
 
     private func cutAgent() {
         if appState.cutAgent(agent.id) {
-            showToastMessage("Cut: \(agent.name)", type: .success)
+            showToastMessage(LocalizedString.format("cut_agent", agent.name), type: .success)
         } else {
-            showToastMessage("Cut failed", type: .error)
+            showToastMessage(LocalizedString.text("cut_failed"), type: .error)
         }
     }
 
     private func pasteAgent() {
         if let newAgent = appState.pasteAgentFromPasteboard() {
-            showToastMessage("Pasted: \(newAgent.name)", type: .success)
+            showToastMessage(LocalizedString.format("pasted_agent", newAgent.name), type: .success)
         } else {
-            showToastMessage("Paste failed", type: .error)
+            showToastMessage(LocalizedString.text("paste_failed"), type: .error)
         }
     }
     
     private func duplicateAgent() {
-        if let newAgent = appState.duplicateAgent(agent.id, suffix: "Duplicate", offset: CGPoint(x: 50, y: 50)) {
-            showToastMessage("Duplicated: \(newAgent.name)", type: .success)
+        if let newAgent = appState.duplicateAgent(agent.id, suffix: LocalizedString.text("duplicate_suffix"), offset: CGPoint(x: 50, y: 50)) {
+            showToastMessage(LocalizedString.format("duplicated_agent", newAgent.name), type: .success)
         } else {
-            showToastMessage("Duplicate failed", type: .error)
+            showToastMessage(LocalizedString.text("duplicate_failed"), type: .error)
         }
     }
     
@@ -4172,9 +4201,9 @@ struct AgentContextMenu: View {
                 do {
                     let data = try JSONEncoder().encode(agent)
                     try data.write(to: url)
-                    self.showToastMessage("Exported: \(agent.name)", type: .success)
+                    self.showToastMessage(LocalizedString.format("exported_agent", agent.name), type: .success)
                 } catch {
-                    self.showToastMessage("Export failed: \(error.localizedDescription)", type: .error)
+                    self.showToastMessage(LocalizedString.format("export_failed", error.localizedDescription), type: .error)
                 }
             }
         }
@@ -4184,7 +4213,7 @@ struct AgentContextMenu: View {
         var updatedAgent = agent
         updatedAgent.updatedAt = Date()
         appState.updateAgent(updatedAgent, reload: true)
-        showToastMessage("Reset: \(agent.name)", type: .success)
+        showToastMessage(LocalizedString.format("reset_agent", agent.name), type: .success)
     }
 }
 
@@ -4243,14 +4272,14 @@ struct AgentEditSheet: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Edit Agent: \(agent.name)")
+                    Text(LocalizedString.format("agent_edit_title", agent.name))
                         .font(.headline)
-                    Text("The editor now reads from the real SOUL source file when one is available.")
+                    Text(LocalizedString.text("agent_editor_real_source_hint"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Button("Close") {
+                Button(LocalizedString.close) {
                     isPresented = false
                 }
                 .buttonStyle(.borderless)
@@ -4261,25 +4290,25 @@ struct AgentEditSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    GroupBox("Agent Info") {
+                    GroupBox(LocalizedString.text("agent_info")) {
                         VStack(alignment: .leading, spacing: 12) {
-                            TextField("Name", text: $name)
+                            TextField(LocalizedString.name, text: $name)
                                 .textFieldStyle(.roundedBorder)
 
-                            TextField("Identity", text: $identity)
+                            TextField(LocalizedString.text("identity"), text: $identity)
                                 .textFieldStyle(.roundedBorder)
 
-                            TextField("Description", text: $description)
+                            TextField(LocalizedString.description, text: $description)
                                 .textFieldStyle(.roundedBorder)
                         }
                         .padding(8)
                     }
 
-                    GroupBox("SOUL Source") {
+                    GroupBox(LocalizedString.text("soul_source")) {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(alignment: .top) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(soulSourcePath ?? "No real SOUL.md file detected. Saving will create or reuse the best available path.")
+                                    Text(soulSourcePath ?? LocalizedString.text("no_real_soul_detected"))
                                         .font(.caption)
                                         .foregroundColor(soulSourcePath == nil ? .orange : .secondary)
                                         .textSelection(.enabled)
@@ -4288,12 +4317,12 @@ struct AgentEditSheet: View {
                             }
 
                             HStack(spacing: 10) {
-                                Button("Reload From Disk") {
+                                Button(LocalizedString.text("reload_from_disk")) {
                                     reloadFromSource()
                                 }
                                 .buttonStyle(.bordered)
 
-                                Button("Reveal in Finder") {
+                                Button(LocalizedString.text("reveal_in_finder")) {
                                     revealSource()
                                 }
                                 .buttonStyle(.bordered)
@@ -4324,14 +4353,14 @@ struct AgentEditSheet: View {
             }
 
             HStack {
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
                 
                 Spacer()
                 
-                Button("Save") {
+                Button(LocalizedString.save) {
                     saveChanges()
                 }
                 .buttonStyle(.borderedProminent)
@@ -4355,16 +4384,16 @@ struct AgentEditSheet: View {
                 soulMD = loaded.content
                 soulSourcePath = loaded.sourcePath
                 if loaded.sourcePath != nil {
-                    statusMessage = "Loaded the real SOUL source file."
+                    statusMessage = LocalizedString.text("loaded_real_soul_source")
                     statusIsError = false
                 } else {
-                    statusMessage = "No SOUL source file was found. You are editing the project cache."
+                    statusMessage = LocalizedString.text("no_soul_source_found_editing_cache")
                     statusIsError = true
                 }
             } else {
                 soulMD = a.soulMD
                 soulSourcePath = nil
-                statusMessage = "Failed to resolve the current agent."
+                statusMessage = LocalizedString.text("failed_resolve_current_agent")
                 statusIsError = true
             }
         }
@@ -4388,7 +4417,7 @@ struct AgentEditSheet: View {
 
     private func saveChanges() {
         guard var updatedAgent = appState.currentProject?.agents.first(where: { $0.id == agent.id }) else {
-            statusMessage = "Failed to locate the current agent before saving."
+            statusMessage = LocalizedString.text("failed_locate_current_agent_before_saving")
             statusIsError = true
             return
         }
@@ -4402,13 +4431,13 @@ struct AgentEditSheet: View {
 
         let fileResult = appState.persistAgentSoulMDToSource(agentID: updatedAgent.id, soulMD: soulMD)
         if fileResult.success {
-            let persistedPath = fileResult.message.replacingOccurrences(of: "已写入 ", with: "")
+            let persistedPath = appState.loadAgentSoulMDFromSource(agentID: updatedAgent.id)?.sourcePath
             updatedAgent.openClawDefinition.soulSourcePath = persistedPath
             soulSourcePath = persistedPath
         }
 
         appState.updateAgent(updatedAgent, reload: true)
-        statusMessage = fileResult.success ? "Saved agent metadata and SOUL.md to the real source file." : fileResult.message
+        statusMessage = fileResult.success ? LocalizedString.text("saved_agent_metadata_real_source") : fileResult.message
         statusIsError = !fileResult.success
         if fileResult.success {
             isPresented = false
@@ -4427,17 +4456,17 @@ struct SkillsManagementSheet: View {
     
     var body: some View {
         VStack(spacing: 16) {
-            Text("Manage Skills: \(agent.name)")
+            Text(LocalizedString.format("manage_skills_title", agent.name))
                 .font(.headline)
             
             // Current skills
             VStack(alignment: .leading) {
-                Text("Current Skills")
+                Text(LocalizedString.text("current_skills"))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                 
                 if selectedSkills.isEmpty {
-                    Text("No skills assigned")
+                    Text(LocalizedString.text("no_skills_assigned"))
                         .foregroundColor(.secondary)
                 } else {
                     FlowLayout(spacing: 8) {
@@ -4454,7 +4483,7 @@ struct SkillsManagementSheet: View {
             
             // Available skills
             VStack(alignment: .leading) {
-                Text("Available Skills")
+                Text(LocalizedString.text("available_skills"))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                 
@@ -4468,14 +4497,14 @@ struct SkillsManagementSheet: View {
             }
             
             HStack {
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
                 
                 Spacer()
                 
-                Button("Save") {
+                Button(LocalizedString.save) {
                     saveSkills()
                     isPresented = false
                 }
@@ -4545,7 +4574,7 @@ struct PermissionsConfigSheet: View {
     
     var body: some View {
         VStack(spacing: 16) {
-            Text("Configure Permissions: \(agent.name)")
+            Text(LocalizedString.format("configure_permissions_title", agent.name))
                 .font(.headline)
             
             if let project = appState.currentProject {
@@ -4564,7 +4593,7 @@ struct PermissionsConfigSheet: View {
             }
             
             HStack {
-                Button("Close") {
+                Button(LocalizedString.close) {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
@@ -4577,9 +4606,9 @@ struct PermissionsConfigSheet: View {
     private func permissionText(for otherAgent: Agent) -> String {
         if let project = appState.currentProject {
             let perm = project.permission(from: agent, to: otherAgent)
-            return perm == .allow ? "Allowed" : "Denied"
+            return perm == .allow ? LocalizedString.allowed : LocalizedString.denied
         }
-        return "Unknown"
+        return LocalizedString.text("permission_unknown")
     }
 }
 
@@ -4595,22 +4624,22 @@ struct DeleteConfirmation: View {
                 .font(.largeTitle)
                 .foregroundColor(.red)
             
-            Text("Delete Agent?")
+            Text(LocalizedString.text("delete_agent_title"))
                 .font(.headline)
             
-            Text("Are you sure you want to delete \"\(agent.name)\"? This action cannot be undone.")
+            Text(LocalizedString.format("delete_agent_cannot_undo", agent.name))
                 .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
             
             HStack {
-                Button("Cancel") {
+                Button(LocalizedString.cancel) {
                     isPresented = false
                 }
                 .buttonStyle(.bordered)
                 
                 Spacer()
                 
-                Button("Delete") {
+                Button(LocalizedString.delete) {
                     deleteAgent()
                     isPresented = false
                 }
@@ -4657,10 +4686,10 @@ struct TestExecutionPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Workflow Test Execution")
+                Text(LocalizedString.text("workflow_test_execution"))
                     .font(.headline)
                 Spacer()
-                Text("Step \(execution.currentStep)/\(execution.steps.count)")
+                Text(LocalizedString.format("step_of_total", execution.currentStep, execution.steps.count))
                     .foregroundColor(.secondary)
             }
             

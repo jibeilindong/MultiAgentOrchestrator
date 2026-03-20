@@ -34,7 +34,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
         VStack(spacing: 0) {
             // 控制面板
             HStack {
-                Text(LocalizedString.workflowEditor)
+                Text(LocalizedString.execution)
                     .font(.title2)
                 
                 Spacer()
@@ -63,7 +63,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                 Button(action: { showLogs.toggle() }) {
                     HStack {
                         Image(systemName: showLogs ? "doc.text.fill" : "doc.text")
-                        Text(LocalizedString.logs)
+                        Text(showLogs ? LocalizedString.text("hide_logs") : LocalizedString.text("show_logs"))
                     }
                 }
                 .disabled(openClawService.executionLogs.isEmpty && !isExecuting)
@@ -237,10 +237,10 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
             let successRate = total > 0 ? Double(completed) / Double(total) * 100 : 0
             
             HStack(spacing: 20) {
-                StatCard(title: "Total", value: "\(total)", color: .primary)
-                StatCard(title: "Completed", value: "\(completed)", color: .green)
-                StatCard(title: "Failed", value: "\(failed)", color: .red)
-                StatCard(title: "Success Rate", value: String(format: "%.1f%%", successRate),
+                StatCard(title: LocalizedString.text("execution_total"), value: "\(total)", color: .primary)
+                StatCard(title: LocalizedString.text("execution_completed"), value: "\(completed)", color: .green)
+                StatCard(title: LocalizedString.text("execution_failed_summary"), value: "\(failed)", color: .red)
+                StatCard(title: LocalizedString.text("execution_success_rate"), value: String(format: "%.1f%%", successRate),
                         color: successRate > 80 ? .green : .orange)
             }
         }
@@ -267,11 +267,11 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
             
             if let workflow = selectedWorkflow {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Selected Workflow: \(workflow.name)")
+                    Text(LocalizedString.format("selected_workflow", workflow.name))
                         .font(.headline)
                     
                     let agentNodes = workflow.nodes.filter { $0.type == .agent }
-                    Text("\(agentNodes.count) agent nodes, \(workflow.edges.count) connections")
+                    Text(LocalizedString.format("workflow_agent_connections_summary", agentNodes.count, workflow.edges.count))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

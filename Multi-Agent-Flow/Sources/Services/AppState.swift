@@ -855,15 +855,15 @@ class AppState: ObservableObject {
         project: MAProject
     ) -> (success: Bool, message: String, path: String?) {
         guard let soulURL = openClawManager.projectMirrorSoulURL(for: agent, in: project) else {
-            return (false, "未找到可写入的项目镜像 SOUL.md 路径。", nil)
+            return (false, LocalizedString.text("soul_mirror_path_not_found"), nil)
         }
 
         do {
             try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try agent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
-            return (true, "已写入 \(soulURL.path)", soulURL.path)
+            return (true, LocalizedString.format("wrote_to_path", soulURL.path), soulURL.path)
         } catch {
-            return (false, "写入项目镜像 SOUL.md 失败: \(error.localizedDescription)", nil)
+            return (false, LocalizedString.format("write_project_mirror_failed", error.localizedDescription), nil)
         }
     }
     
@@ -1886,7 +1886,7 @@ class AppState: ObservableObject {
     func persistAgentSoulMDToSource(agentID: UUID, soulMD: String) -> (success: Bool, message: String) {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == agentID }) else {
-            return (false, "未找到目标 Agent。")
+            return (false, LocalizedString.text("agent_not_found"))
         }
 
         var agent = project.agents[index]
@@ -1913,12 +1913,12 @@ class AppState: ObservableObject {
     func refreshAgentSoulMDFromSource(agentID: UUID) -> (success: Bool, message: String) {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == agentID }) else {
-            return (false, "未找到目标 Agent。")
+            return (false, LocalizedString.text("agent_not_found"))
         }
 
         let agent = project.agents[index]
         guard let soulURL = existingAgentSoulFileURL(for: agent) else {
-            return (false, "未找到真实 SOUL.md 文件，当前仅存在项目缓存。")
+            return (false, LocalizedString.text("no_real_soul_file_project_cache"))
         }
 
         do {
@@ -1930,9 +1930,9 @@ class AppState: ObservableObject {
             currentProject = project
             objectWillChange.send()
             persistCurrentProjectSilently()
-            return (true, "已从 \(soulURL.path) 重新加载")
+            return (true, LocalizedString.format("reloaded_from_path", soulURL.path))
         } catch {
-            return (false, "读取 SOUL.md 失败: \(error.localizedDescription)")
+            return (false, LocalizedString.format("read_soul_failed", error.localizedDescription))
         }
     }
 
