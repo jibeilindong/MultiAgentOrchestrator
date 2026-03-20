@@ -232,6 +232,640 @@ enum OpsAnomalyClusterBuilder {
     }
 }
 
+enum OpsHistoryInsightBuilder {
+    nonisolated static func contextCards(
+        metric: OpsHistoryMetric,
+        focusTitle: String,
+        totalAgents: Int,
+        traceRows: [OpsTraceSummaryRow],
+        anomalyRows: [OpsAnomalyRow],
+        agentRows: [OpsAgentHealthRow],
+        cronRuns: [OpsCronRunRow]
+    ) -> [OpsContextCard] {
+        switch metric {
+        case .workflowReliability:
+            let failed = traceRows.filter { $0.status == .failed }.count
+            let openClaw = traceRows.filter { $0.sourceLabel == "OpenClaw" }.count
+            let runtimeAnomalies = anomalyRows.filter {
+                $0.sourceLabel == "Runtime" || $0.sourceLabel == "Tool"
+            }.count
+            return [
+                OpsContextCard(
+                    id: "wf-failed",
+                    title: "Failed Traces",
+                    value: "\(failed)",
+                    detail: "\(focusTitle) traces in current scope",
+                    tone: failed == 0 ? .green : .red
+                ),
+                OpsContextCard(
+                    id: "wf-openclaw",
+                    title: "OpenClaw Share",
+                    value: "\(openClaw)",
+                    detail: "External traces matching this scope",
+                    tone: .teal
+                ),
+                OpsContextCard(
+                    id: "wf-runtime",
+                    title: "Runtime Signals",
+                    value: "\(runtimeAnomalies)",
+                    detail: "Runtime and tool anomalies in scope",
+                    tone: runtimeAnomalies == 0 ? .green : .orange
+                )
+            ]
+        case .agentEngagement:
+            return [
+                OpsContextCard(
+                    id: "eng-active",
+                    title: "Scoped Agents",
+                    value: "\(agentRows.count)",
+                    detail: "Agents matching the current focus",
+                    tone: agentRows.isEmpty ? .secondary : .blue
+                ),
+                OpsContextCard(
+                    id: "eng-total",
+                    title: "Total Agents",
+                    value: "\(totalAgents)",
+                    detail: "Agents defined for this project",
+                    tone: .secondary
+                ),
+                OpsContextCard(
+                    id: "eng-completed",
+                    title: "Completed Runs",
+                    value: "\(agentRows.reduce(0) { $0 + $1.completedCount })",
+                    detail: "Completed runs in scope",
+                    tone: .green
+                )
+            ]
+        case .memoryDiscipline:
+            let scopedTracked = agentRows.filter(\.hasTrackedMemory).count
+            let untracked = max(agentRows.count - scopedTracked, 0)
+            let coverageRate = agentRows.isEmpty
+                ? "-"
+                : "\(Int((Double(scopedTracked) / Double(agentRows.count) * 100).rounded()))%"
+            return [
+                OpsContextCard(
+                    id: "mem-tracked",
+                    title: "Tracked Memory",
+                    value: "\(scopedTracked)",
+                    detail: "Agents in scope with backup coverage",
+                    tone: scopedTracked == 0 ? .secondary : .green
+                ),
+                OpsContextCard(
+                    id: "mem-gap",
+                    title: "Coverage Gaps",
+                    value: "\(untracked)",
+                    detail: "Agents in scope missing tracked memory",
+                    tone: untracked == 0 ? .green : .orange
+                ),
+                OpsContextCard(
+                    id: "mem-total",
+                    title: "Coverage Rate",
+                    value: coverageRate,
+                    detail: "Current memory discipline posture",
+                    tone: untracked == 0 ? .green : .blue
+                )
+            ]
+        case .errorBudget:
+            let critical = anomalyRows.filter { $0.status == .critical }.count
+            let timeouts = anomalyRows.filter {
+                $0.detailText.localizedCaseInsensitiveContains("timeout")
+                    || $0.fullDetailText.localizedCaseInsensitiveContains("timeout")
+            }.count
+            let failedTraces = traceRows.filter { $0.status == .failed }.count
+            return [
+                OpsContextCard(
+                    id: "err-critical",
+                    title: "Critical Alerts",
+                    value: "\(critical)",
+                    detail: "Critical anomalies currently retained",
+                    tone: critical == 0 ? .green : .red
+                ),
+                OpsContextCard(
+                    id: "err-timeout",
+                    title: "Timeout Signals",
+                    value: "\(timeouts)",
+                    detail: "Timeout-tagged anomalies in scope",
+                    tone: timeouts == 0 ? .green : .orange
+                ),
+                OpsContextCard(
+                    id: "err-failed",
+                    title: "Failed Executions",
+                    value: "\(failedTraces)",
+                    detail: "Recent failed traces in scope",
+                    tone: failedTraces == 0 ? .green : .red
+                )
+            ]
+        case .cronReliability:
+            let failedRuns = cronRuns.filter { $0.statusText != "OK" }.count
+            let successRate = cronRuns.isEmpty
+                ? nil
+                : Double(cronRuns.filter { $0.statusText == "OK" }.count) / Double(cronRuns.count) * 100
+            return [
+                OpsContextCard(
+                    id: "cron-rate",
+                    title: "Success Rate",
+                    value: successRate.map { "\(Int($0.rounded()))%" } ?? "-",
+                    detail: "Scoped cron reliability from retained runs",
+                    tone: (successRate ?? 0) >= 90 ? .green : .orange
+                ),
+                OpsContextCard(
+                    id: "cron-failed",
+                    title: "Failed Runs",
+                    value: "\(failedRuns)",
+                    detail: "Failed or timed-out cron runs in scope",
+                    tone: failedRuns == 0 ? .green : .red
+                ),
+                OpsContextCard(
+                    id: "cron-latest",
+                    title: "Recent Samples",
+                    value: "\(cronRuns.count)",
+                    detail: "Most recent ingested cron runs in scope",
+                    tone: .blue
+                )
+            ]
+        }
+    }
+
+    nonisolated static func signalRows(
+        metric: OpsHistoryMetric,
+        anomalyRows: [OpsAnomalyRow],
+        traceRows: [OpsTraceSummaryRow],
+        agentRows: [OpsAgentHealthRow],
+        cronRuns: [OpsCronRunRow]
+    ) -> [OpsHistorySignalRow] {
+        switch metric {
+        case .workflowReliability:
+            let anomalySignals = anomalyRows
+                .filter { $0.sourceLabel != "Cron" }
+                .map { anomaly in
+                    OpsHistorySignalRow(
+                        id: "anomaly-\(anomaly.id)",
+                        title: anomaly.title,
+                        badge: anomaly.sourceLabel,
+                        detail: anomaly.detailText,
+                        occurredAt: anomaly.occurredAt,
+                        tone: anomalyTone(for: anomaly.sourceLabel),
+                        anomaly: anomaly,
+                        trace: nil,
+                        cronRun: nil
+                    )
+                }
+
+            let traceSignals = traceRows
+                .filter { $0.status == .failed }
+                .map { trace in
+                    OpsHistorySignalRow(
+                        id: "trace-\(trace.id.uuidString)",
+                        title: trace.agentName,
+                        badge: trace.sourceLabel,
+                        detail: trace.previewText,
+                        occurredAt: trace.startedAt,
+                        tone: traceTone(for: trace.status),
+                        anomaly: nil,
+                        trace: trace,
+                        cronRun: nil
+                    )
+                }
+
+            return (anomalySignals + traceSignals)
+                .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
+        case .agentEngagement:
+            return agentRows
+                .sorted { lhs, rhs in
+                    if lhs.completedCount != rhs.completedCount {
+                        return lhs.completedCount > rhs.completedCount
+                    }
+                    return (lhs.lastActivityAt ?? .distantPast) > (rhs.lastActivityAt ?? .distantPast)
+                }
+                .prefix(6)
+                .map { row in
+                    OpsHistorySignalRow(
+                        id: "agent-\(row.id.uuidString)",
+                        title: row.agentName,
+                        badge: row.stateText,
+                        detail: "Completed \(row.completedCount) • Failed \(row.failedCount) • Last \(row.lastActivityAt?.formatted(date: .omitted, time: .shortened) ?? "inactive")",
+                        occurredAt: row.lastActivityAt,
+                        tone: healthTone(for: row.status),
+                        anomaly: nil,
+                        trace: nil,
+                        cronRun: nil
+                    )
+                }
+        case .memoryDiscipline:
+            return agentRows
+                .sorted { lhs, rhs in
+                    if lhs.hasTrackedMemory != rhs.hasTrackedMemory {
+                        return !lhs.hasTrackedMemory && rhs.hasTrackedMemory
+                    }
+                    return lhs.agentName < rhs.agentName
+                }
+                .prefix(6)
+                .map { row in
+                    OpsHistorySignalRow(
+                        id: "memory-\(row.id.uuidString)",
+                        title: row.agentName,
+                        badge: row.hasTrackedMemory ? "Tracked" : "Gap",
+                        detail: row.hasTrackedMemory
+                            ? "Memory backup path is configured for this agent."
+                            : "This agent is missing tracked memory backup coverage.",
+                        occurredAt: row.lastActivityAt,
+                        tone: row.hasTrackedMemory ? .green : .orange,
+                        anomaly: nil,
+                        trace: nil,
+                        cronRun: nil
+                    )
+                }
+        case .errorBudget:
+            return anomalyRows
+                .sorted { lhs, rhs in
+                    if lhs.status != rhs.status {
+                        return lhs.status == .critical && rhs.status != .critical
+                    }
+                    return lhs.occurredAt > rhs.occurredAt
+                }
+                .prefix(6)
+                .map { anomaly in
+                    OpsHistorySignalRow(
+                        id: "budget-\(anomaly.id)",
+                        title: anomaly.title,
+                        badge: anomaly.status == .critical ? "Critical" : anomaly.sourceLabel,
+                        detail: anomaly.detailText,
+                        occurredAt: anomaly.occurredAt,
+                        tone: healthTone(for: anomaly.status),
+                        anomaly: anomaly,
+                        trace: nil,
+                        cronRun: nil
+                    )
+                }
+        case .cronReliability:
+            return cronRuns
+                .map { run in
+                    OpsHistorySignalRow(
+                        id: "cron-\(run.id)",
+                        title: run.cronName,
+                        badge: run.statusText,
+                        detail: "\(run.duration.map(formatDuration) ?? "-") • \(run.summaryText)",
+                        occurredAt: run.runAt,
+                        tone: run.statusText == "OK" ? .green : .red,
+                        anomaly: anomalyRows.first(where: { $0.sourceLabel == "Cron" && $0.title == run.cronName }),
+                        trace: nil,
+                        cronRun: run
+                    )
+                }
+                .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
+        }
+    }
+
+    nonisolated static func daySummaryCards(
+        metric: OpsHistoryMetric,
+        point: OpsMetricHistoryPoint?,
+        rows: [OpsHistorySignalRow],
+        selectedDate: Date
+    ) -> [OpsContextCard] {
+        let signalCount = rows.count
+        let actionableCount = rows.filter { $0.anomaly != nil || $0.trace != nil || $0.cronRun != nil }.count
+        let criticalCount = rows.filter { $0.badge == "Critical" || $0.badge == "Error" }.count
+
+        return [
+            OpsContextCard(
+                id: "day-sample",
+                title: "Sample",
+                value: point.map { metric.formattedValue($0.value) } ?? "-",
+                detail: selectedDate.formatted(date: .abbreviated, time: .omitted),
+                tone: metricTone(for: metric)
+            ),
+            OpsContextCard(
+                id: "day-signals",
+                title: "Signals",
+                value: "\(signalCount)",
+                detail: "Rows captured for this day",
+                tone: signalCount == 0 ? .secondary : .blue
+            ),
+            OpsContextCard(
+                id: "day-actionable",
+                title: "Actionable",
+                value: "\(actionableCount)",
+                detail: "Rows that can open detail panels",
+                tone: actionableCount == 0 ? .secondary : .teal
+            ),
+            OpsContextCard(
+                id: "day-critical",
+                title: "Critical",
+                value: "\(criticalCount)",
+                detail: "High-risk signals on this day",
+                tone: criticalCount == 0 ? .green : .red
+            )
+        ]
+    }
+
+    nonisolated private static func healthTone(for status: OpsHealthStatus) -> OpsAccentTone {
+        switch status {
+        case .healthy:
+            return .green
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        case .neutral:
+            return .secondary
+        }
+    }
+
+    nonisolated private static func anomalyTone(for sourceLabel: String) -> OpsAccentTone {
+        switch sourceLabel {
+        case "Cron":
+            return .red
+        case "Tool":
+            return .teal
+        case "OpenClaw":
+            return .orange
+        default:
+            return .blue
+        }
+    }
+
+    nonisolated private static func traceTone(for status: ExecutionStatus) -> OpsAccentTone {
+        switch status {
+        case .completed:
+            return .green
+        case .failed:
+            return .red
+        case .running:
+            return .orange
+        case .waiting:
+            return .blue
+        case .idle:
+            return .secondary
+        }
+    }
+
+    nonisolated private static func formatDuration(_ duration: TimeInterval) -> String {
+        if duration >= 60 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            return "\(minutes)m \(seconds)s"
+        }
+        return String(format: "%.1fs", duration)
+    }
+
+    nonisolated private static func metricTone(for metric: OpsHistoryMetric) -> OpsAccentTone {
+        switch metric {
+        case .workflowReliability:
+            return .green
+        case .agentEngagement:
+            return .blue
+        case .memoryDiscipline:
+            return .orange
+        case .errorBudget:
+            return .red
+        case .cronReliability:
+            return .teal
+        }
+    }
+}
+
+enum OpsHistoryNarrativeBuilder {
+    nonisolated static func deltaText(for series: OpsMetricHistorySeries) -> String {
+        guard let latest = series.latestPoint?.value else {
+            return "No historical samples yet"
+        }
+
+        guard let previous = series.previousPoint?.value else {
+            return "First sample: \(series.metric.formattedValue(latest))"
+        }
+
+        let delta = latest - previous
+        if series.metric == .errorBudget {
+            let sign = delta > 0 ? "+" : ""
+            return "Changed \(sign)\(Int(delta.rounded())) since previous sample"
+        }
+
+        let sign = delta > 0 ? "+" : ""
+        return "Changed \(sign)\(Int(delta.rounded())) pts since previous sample"
+    }
+
+    nonisolated static func narrative(
+        for series: OpsMetricHistorySeries,
+        focusText: String
+    ) -> String {
+        let latestText = series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "no sample"
+        let deltaText = deltaText(for: series)
+
+        switch series.metric {
+        case .workflowReliability:
+            return "\(focusText) workflow reliability is currently \(latestText). \(deltaText), with recent runtime and tool anomalies shown below for faster root-cause review."
+        case .agentEngagement:
+            return "\(focusText) agent engagement is currently \(latestText). \(deltaText), and the signal rows highlight which agents are carrying or losing activity."
+        case .memoryDiscipline:
+            return "\(focusText) memory discipline is currently \(latestText). \(deltaText), with contributor rows showing which agents are covered by tracked memory backups."
+        case .errorBudget:
+            return "\(focusText) error budget is currently \(latestText). \(deltaText), so the rows below focus on the newest failure, timeout, and escalation signals."
+        case .cronReliability:
+            return "\(focusText) cron reliability is currently \(latestText). \(deltaText), and the related signals below show the latest scheduled runs feeding this trend."
+        }
+    }
+}
+
+enum OpsAnomalyInsightBuilder {
+    nonisolated static func explorerCards(
+        rows: [OpsAnomalyRow],
+        clusters: [OpsAnomalyCluster],
+        timeWindowDetail: String
+    ) -> [OpsContextCard] {
+        let criticalCount = rows.filter { $0.status == .critical }.count
+        let cronCount = rows.filter { $0.sourceLabel == "Cron" }.count
+        let linkedTraceCount = rows.filter { $0.linkedSpanID != nil }.count
+        let repeatedClusters = clusters.filter { $0.occurrenceCount > 1 }.count
+
+        return [
+            OpsContextCard(
+                id: "matching",
+                title: "Matching",
+                value: "\(rows.count)",
+                detail: timeWindowDetail,
+                tone: rows.isEmpty ? .secondary : .blue
+            ),
+            OpsContextCard(
+                id: "critical",
+                title: "Critical",
+                value: "\(criticalCount)",
+                detail: "Highest-severity anomalies in scope",
+                tone: criticalCount == 0 ? .green : .red
+            ),
+            OpsContextCard(
+                id: "cron",
+                title: "Cron Impact",
+                value: "\(cronCount)",
+                detail: "Scheduled run anomalies in scope",
+                tone: cronCount == 0 ? .green : .orange
+            ),
+            OpsContextCard(
+                id: "clusters",
+                title: "Repeated Clusters",
+                value: "\(repeatedClusters)",
+                detail: "\(linkedTraceCount) trace-linked rows retained",
+                tone: repeatedClusters == 0 ? .secondary : .teal
+            )
+        ]
+    }
+}
+
+enum OpsAnomalyClusterInsightBuilder {
+    nonisolated static func trendText(
+        occurrenceCount: Int,
+        recent24HourCount: Int,
+        includeEarlierBreakdown: Bool
+    ) -> String {
+        guard includeEarlierBreakdown else {
+            return "24h \(recent24HourCount)"
+        }
+
+        let olderCount = max(occurrenceCount - recent24HourCount, 0)
+        return "24h \(recent24HourCount) • earlier \(olderCount)"
+    }
+}
+
+enum OpsHistoryScopeMatcher {
+    enum Kind {
+        case project
+        case agent
+        case tool
+        case cron
+
+        fileprivate init(_ mode: OpsHistoryFocusMode) {
+            switch mode {
+            case .project:
+                self = .project
+            case .agent:
+                self = .agent
+            case .tool:
+                self = .tool
+            case .cron:
+                self = .cron
+            }
+        }
+    }
+
+    nonisolated static func matches(
+        _ row: OpsAnomalyRow,
+        kind: Kind,
+        matchKey: String
+    ) -> Bool {
+        switch kind {
+        case .project:
+            return true
+        case .agent:
+            return matchesAnyText(
+                [
+                    row.title,
+                    row.detailText,
+                    row.fullDetailText,
+                    row.sourceService ?? ""
+                ],
+                matchKey: matchKey
+            )
+        case .tool:
+            guard row.sourceLabel == "Tool" else { return false }
+            return matchesAnyText(
+                [
+                    row.title,
+                    row.detailText,
+                    row.fullDetailText,
+                    row.sourceService ?? ""
+                ],
+                matchKey: matchKey
+            )
+        case .cron:
+            guard row.sourceLabel == "Cron" else { return false }
+            return normalized(row.title) == normalized(matchKey)
+        }
+    }
+
+    nonisolated static func matches(
+        _ row: OpsTraceSummaryRow,
+        kind: Kind,
+        matchKey: String
+    ) -> Bool {
+        switch kind {
+        case .project:
+            return true
+        case .agent:
+            return normalized(row.agentName) == normalized(matchKey)
+        case .tool:
+            return matchesAnyText(
+                [
+                    row.previewText,
+                    row.routingAction ?? "",
+                    row.outputType.rawValue
+                ],
+                matchKey: matchKey
+            )
+        case .cron:
+            return false
+        }
+    }
+
+    nonisolated static func matches(
+        _ row: OpsAgentHealthRow,
+        kind: Kind,
+        matchKey: String
+    ) -> Bool {
+        switch kind {
+        case .project:
+            return true
+        case .agent:
+            return normalized(row.agentName) == normalized(matchKey)
+        case .tool, .cron:
+            return false
+        }
+    }
+
+    nonisolated static func matches(
+        _ row: OpsCronRunRow,
+        kind: Kind,
+        matchKey: String
+    ) -> Bool {
+        switch kind {
+        case .project:
+            return true
+        case .agent:
+            return matchesAnyText(
+                [
+                    row.cronName,
+                    row.summaryText
+                ],
+                matchKey: matchKey
+            )
+        case .tool:
+            return matchesAnyText(
+                [
+                    row.summaryText,
+                    row.cronName
+                ],
+                matchKey: matchKey
+            )
+        case .cron:
+            return normalized(row.cronName) == normalized(matchKey)
+        }
+    }
+
+    nonisolated private static func matchesAnyText(
+        _ texts: [String],
+        matchKey: String
+    ) -> Bool {
+        let needle = normalized(matchKey)
+        guard !needle.isEmpty else { return true }
+        return texts
+            .joined(separator: " ")
+            .lowercased()
+            .contains(needle)
+    }
+
+    nonisolated private static func normalized(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 private enum OpsCenterPage: String, CaseIterable, Identifiable {
     case liveOverview
     case projectHistory
@@ -535,6 +1169,9 @@ struct MonitoringDashboardView: View {
                 matchKey: project?.name.lowercased() ?? "project",
                 scopeValue: "project"
             )
+    }
+    private var historyScopeMatcherKind: OpsHistoryScopeMatcher.Kind {
+        .init(selectedHistoryFocusMode)
     }
     private var anomalyWindowStart: Date? {
         guard let dayCount = selectedAnomalyTimeWindow.dayCount else { return nil }
@@ -1029,7 +1666,7 @@ struct MonitoringDashboardView: View {
                             )
                             historyStatPill(
                                 title: "Delta",
-                                value: historyDeltaText(for: series)
+                                value: OpsHistoryNarrativeBuilder.deltaText(for: series)
                             )
                         }
 
@@ -1841,7 +2478,7 @@ struct MonitoringDashboardView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(isSelected ? historyColor(for: series.metric) : .primary)
 
-            Text(historyDeltaText(for: series))
+            Text(OpsHistoryNarrativeBuilder.deltaText(for: series))
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(2)
@@ -1882,42 +2519,11 @@ struct MonitoringDashboardView: View {
     }
 
     private var anomalyExplorerCards: [OpsContextCard] {
-        let rows = filteredAnomalyRows
-        let criticalCount = rows.filter { $0.status == .critical }.count
-        let cronCount = rows.filter { $0.sourceLabel == "Cron" }.count
-        let linkedTraceCount = rows.filter { $0.linkedSpanID != nil }.count
-        let repeatedClusters = anomalyClusters.filter { $0.occurrenceCount > 1 }.count
-
-        return [
-            OpsContextCard(
-                id: "matching",
-                title: "Matching",
-                value: "\(rows.count)",
-                detail: selectedAnomalyTimeWindow.detailText,
-                color: rows.isEmpty ? .secondary : .blue
-            ),
-            OpsContextCard(
-                id: "critical",
-                title: "Critical",
-                value: "\(criticalCount)",
-                detail: "Highest-severity anomalies in scope",
-                color: criticalCount == 0 ? .green : .red
-            ),
-            OpsContextCard(
-                id: "cron",
-                title: "Cron Impact",
-                value: "\(cronCount)",
-                detail: "Scheduled run anomalies in scope",
-                color: cronCount == 0 ? .green : .orange
-            ),
-            OpsContextCard(
-                id: "clusters",
-                title: "Repeated Clusters",
-                value: "\(repeatedClusters)",
-                detail: "\(linkedTraceCount) trace-linked rows retained",
-                color: repeatedClusters == 0 ? .secondary : .teal
-            )
-        ]
+        OpsAnomalyInsightBuilder.explorerCards(
+            rows: filteredAnomalyRows,
+            clusters: anomalyClusters,
+            timeWindowDetail: selectedAnomalyTimeWindow.detailText
+        )
     }
 
     private func historyFocusOptions(for mode: OpsHistoryFocusMode) -> [OpsHistoryFocusOption] {
@@ -2022,7 +2628,14 @@ struct MonitoringDashboardView: View {
                 Text("Scope: \(effectiveSelectedHistoryFocus.title)")
                     .font(.caption.weight(.medium))
                     .foregroundColor(historyColor(for: series.metric))
-                Text(historyNarrative(for: series))
+                Text(
+                    OpsHistoryNarrativeBuilder.narrative(
+                        for: series,
+                        focusText: selectedHistoryFocusMode == .project
+                            ? "Project-wide"
+                            : effectiveSelectedHistoryFocus.title
+                    )
+                )
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -2059,27 +2672,6 @@ struct MonitoringDashboardView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .padding(.top, 6)
-    }
-
-    private func historyNarrative(for series: OpsMetricHistorySeries) -> String {
-        let latestText = series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "no sample"
-        let deltaText = historyDeltaText(for: series)
-        let focusText = selectedHistoryFocusMode == .project
-            ? "Project-wide"
-            : "\(effectiveSelectedHistoryFocus.title)"
-
-        switch series.metric {
-        case .workflowReliability:
-            return "\(focusText) workflow reliability is currently \(latestText). \(deltaText), with recent runtime and tool anomalies shown below for faster root-cause review."
-        case .agentEngagement:
-            return "\(focusText) agent engagement is currently \(latestText). \(deltaText), and the signal rows highlight which agents are carrying or losing activity."
-        case .memoryDiscipline:
-            return "\(focusText) memory discipline is currently \(latestText). \(deltaText), with contributor rows showing which agents are covered by tracked memory backups."
-        case .errorBudget:
-            return "\(focusText) error budget is currently \(latestText). \(deltaText), so the rows below focus on the newest failure, timeout, and escalation signals."
-        case .cronReliability:
-            return "\(focusText) cron reliability is currently \(latestText). \(deltaText), and the related signals below show the latest scheduled runs feeding this trend."
-        }
     }
 
     private func historyDateID(for date: Date) -> String {
@@ -2186,40 +2778,12 @@ struct MonitoringDashboardView: View {
         rows: [OpsHistorySignalRow],
         selectedDate: Date
     ) -> [OpsContextCard] {
-        let signalCount = rows.count
-        let actionableCount = rows.filter { $0.anomaly != nil || $0.trace != nil || $0.cronRun != nil }.count
-        let criticalCount = rows.filter { $0.badge == "Critical" || $0.badge == "Error" }.count
-
-        return [
-            OpsContextCard(
-                id: "day-sample",
-                title: "Sample",
-                value: point.map { metric.formattedValue($0.value) } ?? "-",
-                detail: selectedDate.formatted(date: .abbreviated, time: .omitted),
-                color: historyColor(for: metric)
-            ),
-            OpsContextCard(
-                id: "day-signals",
-                title: "Signals",
-                value: "\(signalCount)",
-                detail: "Rows captured for this day",
-                color: signalCount == 0 ? .secondary : .blue
-            ),
-            OpsContextCard(
-                id: "day-actionable",
-                title: "Actionable",
-                value: "\(actionableCount)",
-                detail: "Rows that can open detail panels",
-                color: actionableCount == 0 ? .secondary : .teal
-            ),
-            OpsContextCard(
-                id: "day-critical",
-                title: "Critical",
-                value: "\(criticalCount)",
-                detail: "High-risk signals on this day",
-                color: criticalCount == 0 ? .green : .red
-            )
-        ]
+        OpsHistoryInsightBuilder.daySummaryCards(
+            metric: metric,
+            point: point,
+            rows: rows,
+            selectedDate: selectedDate
+        )
     }
 
     private func historyContextCards(for metric: OpsHistoryMetric) -> [OpsContextCard] {
@@ -2227,48 +2791,15 @@ struct MonitoringDashboardView: View {
         let focusedAnomalyRows = opsSnapshot.anomalyRows.filter(matchesHistoryFocus)
         let focusedAgentRows = opsSnapshot.agentRows.filter(matchesHistoryFocus)
         let focusedCronRuns = opsSnapshot.cronRuns.filter(matchesHistoryFocus)
-
-        switch metric {
-        case .workflowReliability:
-            let failed = focusedTraceRows.filter { $0.status == .failed }.count
-            let openClaw = focusedTraceRows.filter { $0.sourceLabel == "OpenClaw" }.count
-            let runtimeAnomalies = focusedAnomalyRows.filter { $0.sourceLabel == "Runtime" || $0.sourceLabel == "Tool" }.count
-            return [
-                OpsContextCard(id: "wf-failed", title: "Failed Traces", value: "\(failed)", detail: "\(effectiveSelectedHistoryFocus.title) traces in current scope", color: failed == 0 ? .green : .red),
-                OpsContextCard(id: "wf-openclaw", title: "OpenClaw Share", value: "\(openClaw)", detail: "External traces matching this scope", color: .teal),
-                OpsContextCard(id: "wf-runtime", title: "Runtime Signals", value: "\(runtimeAnomalies)", detail: "Runtime and tool anomalies in scope", color: runtimeAnomalies == 0 ? .green : .orange)
-            ]
-        case .agentEngagement:
-            return [
-                OpsContextCard(id: "eng-active", title: "Scoped Agents", value: "\(focusedAgentRows.count)", detail: "Agents matching the current focus", color: focusedAgentRows.isEmpty ? .secondary : .blue),
-                OpsContextCard(id: "eng-total", title: "Total Agents", value: "\(opsSnapshot.totalAgents)", detail: "Agents defined for this project", color: .secondary),
-                OpsContextCard(id: "eng-completed", title: "Completed Runs", value: "\(focusedAgentRows.reduce(0) { $0 + $1.completedCount })", detail: "Completed runs in scope", color: .green)
-            ]
-        case .memoryDiscipline:
-            let scopedTracked = focusedAgentRows.filter(\.hasTrackedMemory).count
-            let untracked = max(focusedAgentRows.count - scopedTracked, 0)
-            return [
-                OpsContextCard(id: "mem-tracked", title: "Tracked Memory", value: "\(scopedTracked)", detail: "Agents in scope with backup coverage", color: scopedTracked == 0 ? .secondary : .green),
-                OpsContextCard(id: "mem-gap", title: "Coverage Gaps", value: "\(untracked)", detail: "Agents in scope missing tracked memory", color: untracked == 0 ? .green : .orange),
-                OpsContextCard(id: "mem-total", title: "Coverage Rate", value: focusedAgentRows.isEmpty ? "-" : "\(Int((Double(scopedTracked) / Double(focusedAgentRows.count) * 100).rounded()))%", detail: "Current memory discipline posture", color: untracked == 0 ? .green : .blue)
-            ]
-        case .errorBudget:
-            let critical = focusedAnomalyRows.filter { $0.status == .critical }.count
-            let timeouts = focusedAnomalyRows.filter { $0.detailText.localizedCaseInsensitiveContains("timeout") || $0.fullDetailText.localizedCaseInsensitiveContains("timeout") }.count
-            return [
-                OpsContextCard(id: "err-critical", title: "Critical Alerts", value: "\(critical)", detail: "Critical anomalies currently retained", color: critical == 0 ? .green : .red),
-                OpsContextCard(id: "err-timeout", title: "Timeout Signals", value: "\(timeouts)", detail: "Timeout-tagged anomalies in scope", color: timeouts == 0 ? .green : .orange),
-                OpsContextCard(id: "err-failed", title: "Failed Executions", value: "\(focusedTraceRows.filter { $0.status == .failed }.count)", detail: "Recent failed traces in scope", color: focusedTraceRows.contains(where: { $0.status == .failed }) ? .red : .green)
-            ]
-        case .cronReliability:
-            let failedRuns = focusedCronRuns.filter { $0.statusText != "OK" }.count
-            let successRate = focusedCronRuns.isEmpty ? nil : Double(focusedCronRuns.filter { $0.statusText == "OK" }.count) / Double(focusedCronRuns.count) * 100
-            return [
-                OpsContextCard(id: "cron-rate", title: "Success Rate", value: successRate.map { "\(Int($0.rounded()))%" } ?? "-", detail: "Scoped cron reliability from retained runs", color: (successRate ?? 0) >= 90 ? .green : .orange),
-                OpsContextCard(id: "cron-failed", title: "Failed Runs", value: "\(failedRuns)", detail: "Failed or timed-out cron runs in scope", color: failedRuns == 0 ? .green : .red),
-                OpsContextCard(id: "cron-latest", title: "Recent Samples", value: "\(focusedCronRuns.count)", detail: "Most recent ingested cron runs in scope", color: .blue)
-            ]
-        }
+        return OpsHistoryInsightBuilder.contextCards(
+            metric: metric,
+            focusTitle: effectiveSelectedHistoryFocus.title,
+            totalAgents: opsSnapshot.totalAgents,
+            traceRows: focusedTraceRows,
+            anomalyRows: focusedAnomalyRows,
+            agentRows: focusedAgentRows,
+            cronRuns: focusedCronRuns
+        )
     }
 
     private func historySignalRows(for metric: OpsHistoryMetric) -> [OpsHistorySignalRow] {
@@ -2290,126 +2821,13 @@ struct MonitoringDashboardView: View {
         let focusedTraceRows = opsSnapshot.traceRows.filter(matchesHistoryFocus)
         let focusedAgentRows = opsSnapshot.agentRows.filter(matchesHistoryFocus)
         let focusedCronRuns = opsSnapshot.cronRuns.filter(matchesHistoryFocus)
-
-        switch metric {
-        case .workflowReliability:
-            let anomalySignals = focusedAnomalyRows
-                .filter { $0.sourceLabel != "Cron" }
-                .map { anomaly in
-                    OpsHistorySignalRow(
-                        id: "anomaly-\(anomaly.id)",
-                        title: anomaly.title,
-                        badge: anomaly.sourceLabel,
-                        detail: anomaly.detailText,
-                        occurredAt: anomaly.occurredAt,
-                        color: anomalySourceColor(for: anomaly.sourceLabel),
-                        anomaly: anomaly,
-                        trace: nil,
-                        cronRun: nil
-                    )
-                }
-
-            let traceSignals = focusedTraceRows
-                .filter { $0.status == .failed }
-                .map { trace in
-                    OpsHistorySignalRow(
-                        id: "trace-\(trace.id.uuidString)",
-                        title: trace.agentName,
-                        badge: trace.sourceLabel,
-                        detail: trace.previewText,
-                        occurredAt: trace.startedAt,
-                        color: traceStatusColor(for: trace.status),
-                        anomaly: nil,
-                        trace: trace,
-                        cronRun: nil
-                    )
-                }
-
-            return (anomalySignals + traceSignals)
-                .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
-        case .agentEngagement:
-            return focusedAgentRows
-                .sorted { lhs, rhs in
-                    if lhs.completedCount != rhs.completedCount {
-                        return lhs.completedCount > rhs.completedCount
-                    }
-                    return (lhs.lastActivityAt ?? .distantPast) > (rhs.lastActivityAt ?? .distantPast)
-                }
-                .prefix(6)
-                .map { row in
-                    OpsHistorySignalRow(
-                        id: "agent-\(row.id.uuidString)",
-                        title: row.agentName,
-                        badge: row.stateText,
-                        detail: "Completed \(row.completedCount) • Failed \(row.failedCount) • Last \(row.lastActivityAt?.formatted(date: .omitted, time: .shortened) ?? "inactive")",
-                        occurredAt: row.lastActivityAt,
-                        color: opsColor(for: row.status),
-                        anomaly: nil,
-                        trace: nil,
-                        cronRun: nil
-                    )
-                }
-        case .memoryDiscipline:
-            return focusedAgentRows
-                .sorted { lhs, rhs in
-                    if lhs.hasTrackedMemory != rhs.hasTrackedMemory {
-                        return !lhs.hasTrackedMemory && rhs.hasTrackedMemory
-                    }
-                    return lhs.agentName < rhs.agentName
-                }
-                .prefix(6)
-                .map { row in
-                    OpsHistorySignalRow(
-                        id: "memory-\(row.id.uuidString)",
-                        title: row.agentName,
-                        badge: row.hasTrackedMemory ? "Tracked" : "Gap",
-                        detail: row.hasTrackedMemory ? "Memory backup path is configured for this agent." : "This agent is missing tracked memory backup coverage.",
-                        occurredAt: row.lastActivityAt,
-                        color: row.hasTrackedMemory ? .green : .orange,
-                        anomaly: nil,
-                        trace: nil,
-                        cronRun: nil
-                    )
-                }
-        case .errorBudget:
-            return focusedAnomalyRows
-                .sorted { lhs, rhs in
-                    if lhs.status != rhs.status {
-                        return lhs.status == .critical && rhs.status != .critical
-                    }
-                    return lhs.occurredAt > rhs.occurredAt
-                }
-                .prefix(6)
-                .map { anomaly in
-                    OpsHistorySignalRow(
-                        id: "budget-\(anomaly.id)",
-                        title: anomaly.title,
-                        badge: anomaly.status == .critical ? "Critical" : anomaly.sourceLabel,
-                        detail: anomaly.detailText,
-                        occurredAt: anomaly.occurredAt,
-                        color: opsColor(for: anomaly.status),
-                        anomaly: anomaly,
-                        trace: nil,
-                        cronRun: nil
-                    )
-                }
-        case .cronReliability:
-            return focusedCronRuns
-                .map { run in
-                    OpsHistorySignalRow(
-                        id: "cron-\(run.id)",
-                        title: run.cronName,
-                        badge: run.statusText,
-                        detail: "\(run.duration.map(formatOpsDuration) ?? "-") • \(run.summaryText)",
-                        occurredAt: run.runAt,
-                        color: run.statusText == "OK" ? .green : .red,
-                        anomaly: opsSnapshot.anomalyRows.first(where: { $0.sourceLabel == "Cron" && $0.title == run.cronName }),
-                        trace: nil,
-                        cronRun: run
-                    )
-                }
-                .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
-        }
+        return OpsHistoryInsightBuilder.signalRows(
+            metric: metric,
+            anomalyRows: focusedAnomalyRows,
+            traceRows: focusedTraceRows,
+            agentRows: focusedAgentRows,
+            cronRuns: focusedCronRuns
+        )
     }
 
     private func historySignalRowView(_ row: OpsHistorySignalRow) -> some View {
@@ -2516,93 +2934,35 @@ struct MonitoringDashboardView: View {
     }
 
     private func matchesHistoryFocus(_ row: OpsAnomalyRow) -> Bool {
-        switch selectedHistoryFocusMode {
-        case .project:
-            return true
-        case .agent:
-            return historyFocusMatchesAnyText([
-                row.title,
-                row.detailText,
-                row.fullDetailText,
-                row.sourceService ?? ""
-            ])
-        case .tool:
-            guard row.sourceLabel == "Tool" else { return false }
-            return historyFocusMatchesAnyText([
-                row.title,
-                row.detailText,
-                row.fullDetailText,
-                row.sourceService ?? ""
-            ])
-        case .cron:
-            guard row.sourceLabel == "Cron" else { return false }
-            return row.title.lowercased() == effectiveSelectedHistoryFocus.matchKey
-        }
+        OpsHistoryScopeMatcher.matches(
+            row,
+            kind: historyScopeMatcherKind,
+            matchKey: effectiveSelectedHistoryFocus.matchKey
+        )
     }
 
     private func matchesHistoryFocus(_ row: OpsTraceSummaryRow) -> Bool {
-        switch selectedHistoryFocusMode {
-        case .project:
-            return true
-        case .agent:
-            return row.agentName.lowercased() == effectiveSelectedHistoryFocus.matchKey
-        case .tool:
-            return historyFocusMatchesAnyText([
-                row.previewText,
-                row.routingAction ?? "",
-                row.outputType.rawValue
-            ])
-        case .cron:
-            return false
-        }
+        OpsHistoryScopeMatcher.matches(
+            row,
+            kind: historyScopeMatcherKind,
+            matchKey: effectiveSelectedHistoryFocus.matchKey
+        )
     }
 
     private func matchesHistoryFocus(_ row: OpsAgentHealthRow) -> Bool {
-        switch selectedHistoryFocusMode {
-        case .project:
-            return true
-        case .agent:
-            return row.agentName.lowercased() == effectiveSelectedHistoryFocus.matchKey
-        case .tool, .cron:
-            return false
-        }
+        OpsHistoryScopeMatcher.matches(
+            row,
+            kind: historyScopeMatcherKind,
+            matchKey: effectiveSelectedHistoryFocus.matchKey
+        )
     }
 
     private func matchesHistoryFocus(_ row: OpsCronRunRow) -> Bool {
-        switch selectedHistoryFocusMode {
-        case .project:
-            return true
-        case .agent:
-            return historyFocusMatchesAnyText([
-                row.cronName,
-                row.summaryText
-            ])
-        case .tool:
-            return historyFocusMatchesAnyText([
-                row.summaryText,
-                row.cronName
-            ])
-        case .cron:
-            return row.cronName.lowercased() == effectiveSelectedHistoryFocus.matchKey
-        }
-    }
-
-    private func historyFocusMatchesAnyText(_ texts: [String]) -> Bool {
-        let needle = effectiveSelectedHistoryFocus.matchKey
-        guard !needle.isEmpty else { return true }
-        return texts
-            .joined(separator: " ")
-            .lowercased()
-            .contains(needle)
-    }
-
-    private func clusterTrendText(_ cluster: OpsAnomalyCluster) -> String {
-        if selectedAnomalyTimeWindow == .last24Hours {
-            return "24h \(cluster.recent24HourCount)"
-        }
-
-        let olderCount = max(cluster.occurrenceCount - cluster.recent24HourCount, 0)
-        return "24h \(cluster.recent24HourCount) • earlier \(olderCount)"
+        OpsHistoryScopeMatcher.matches(
+            row,
+            kind: historyScopeMatcherKind,
+            matchKey: effectiveSelectedHistoryFocus.matchKey
+        )
     }
 
     private func anomalyClusterButton(_ cluster: OpsAnomalyCluster) -> some View {
@@ -2645,7 +3005,13 @@ struct MonitoringDashboardView: View {
                         Text(cluster.sourceService ?? cluster.sourceLabel)
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        Text(clusterTrendText(cluster))
+                        Text(
+                            OpsAnomalyClusterInsightBuilder.trendText(
+                                occurrenceCount: cluster.occurrenceCount,
+                                recent24HourCount: cluster.recent24HourCount,
+                                includeEarlierBreakdown: selectedAnomalyTimeWindow != .last24Hours
+                            )
+                        )
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         Text("First \(cluster.firstOccurredAt.formatted(date: .abbreviated, time: .shortened))")
@@ -2673,25 +3039,6 @@ struct MonitoringDashboardView: View {
         .padding(.vertical, 8)
         .background(Color.white.opacity(0.4))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func historyDeltaText(for series: OpsMetricHistorySeries) -> String {
-        guard let latest = series.latestPoint?.value else {
-            return "No historical samples yet"
-        }
-
-        guard let previous = series.previousPoint?.value else {
-            return "First sample: \(series.metric.formattedValue(latest))"
-        }
-
-        let delta = latest - previous
-        if series.metric == .errorBudget {
-            let sign = delta > 0 ? "+" : ""
-            return "Changed \(sign)\(Int(delta.rounded())) since previous sample"
-        }
-
-        let sign = delta > 0 ? "+" : ""
-        return "Changed \(sign)\(Int(delta.rounded())) pts since previous sample"
     }
 
     private func logColor(for level: ExecutionLogEntry.LogLevel) -> Color {
@@ -3029,12 +3376,40 @@ private struct OpsToolPanelModel: Identifiable {
     var id: String { "\(projectID.uuidString)::\(detail.toolIdentifier.lowercased())" }
 }
 
-private struct OpsContextCard: Identifiable {
+enum OpsAccentTone {
+    case secondary
+    case green
+    case red
+    case orange
+    case teal
+    case blue
+
+    var color: Color {
+        switch self {
+        case .secondary:
+            return .secondary
+        case .green:
+            return .green
+        case .red:
+            return .red
+        case .orange:
+            return .orange
+        case .teal:
+            return .teal
+        case .blue:
+            return .blue
+        }
+    }
+}
+
+struct OpsContextCard: Identifiable {
     let id: String
     let title: String
     let value: String
     let detail: String
-    let color: Color
+    let tone: OpsAccentTone
+
+    var color: Color { tone.color }
 }
 
 private struct OpsHistoryFocusOption: Identifiable, Hashable {
@@ -3051,16 +3426,18 @@ private struct OpsHistoryDateOption: Identifiable, Hashable {
     let title: String
 }
 
-private struct OpsHistorySignalRow: Identifiable {
+struct OpsHistorySignalRow: Identifiable {
     let id: String
     let title: String
     let badge: String
     let detail: String
     let occurredAt: Date?
-    let color: Color
+    let tone: OpsAccentTone
     let anomaly: OpsAnomalyRow?
     let trace: OpsTraceSummaryRow?
     let cronRun: OpsCronRunRow?
+
+    var color: Color { tone.color }
 }
 
 struct OpsAnomalyCluster: Identifiable {

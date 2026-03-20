@@ -1116,25 +1116,30 @@ class AppState: ObservableObject {
         let token = UUID()
         latestSilentPersistToken = token
 
-        persistenceQueue.async { [weak self] in
-            guard let self else { return }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(project)
 
-            do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                let data = try encoder.encode(project)
-                try data.write(to: destinationURL, options: .atomic)
+            persistenceQueue.async { [weak self] in
+                guard let self else { return }
 
-                DispatchQueue.main.async {
-                    guard self.latestSilentPersistToken == token else { return }
-                    self.currentProjectFileURL = destinationURL
-                    self.projectManager.loadProjectList()
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    print("静默保存项目失败: \(error)")
+                do {
+                    try data.write(to: destinationURL, options: .atomic)
+
+                    DispatchQueue.main.async {
+                        guard self.latestSilentPersistToken == token else { return }
+                        self.currentProjectFileURL = destinationURL
+                        self.projectManager.loadProjectList()
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        print("静默保存项目失败: \(error)")
+                    }
                 }
             }
+        } catch {
+            print("静默编码项目失败: \(error)")
         }
     }
 

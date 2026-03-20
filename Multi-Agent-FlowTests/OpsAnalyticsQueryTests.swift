@@ -1075,7 +1075,7 @@ final class OpsAnalyticsQueryTests: XCTestCase {
     }
 
     func testCronAnomalyRunMatcherFallsBackToTimeThenSummary() {
-        let now = Date()
+        let now = Date(timeIntervalSinceReferenceDate: 600)
         let minuteMatchedRun = makeCronRunRow(
             cronName: "nightly-sync",
             statusText: "FAILED",
@@ -1347,6 +1347,584 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         ])
     }
 
+    func testHistoryInsightBuilderBuildsWorkflowContextCards() {
+        let cards = OpsHistoryInsightBuilder.contextCards(
+            metric: .workflowReliability,
+            focusTitle: "Planner",
+            totalAgents: 5,
+            traceRows: [
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .failed,
+                    startedAt: Date(),
+                    sourceLabel: "Runtime",
+                    previewText: "Runtime failed"
+                ),
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .completed,
+                    startedAt: Date(),
+                    sourceLabel: "OpenClaw",
+                    previewText: "Recovered"
+                )
+            ],
+            anomalyRows: [
+                makeAnomalyRow(
+                    id: "runtime",
+                    title: "Planner Error",
+                    sourceLabel: "Runtime",
+                    detailText: "Runtime issue",
+                    fullDetailText: "Runtime issue",
+                    occurredAt: Date(),
+                    status: .critical,
+                    statusText: "error",
+                    sourceService: "multi-agent-flow.execution",
+                    linkedSpanID: nil
+                ),
+                makeAnomalyRow(
+                    id: "tool",
+                    title: "Search Timeout",
+                    sourceLabel: "Tool",
+                    detailText: "Tool issue",
+                    fullDetailText: "Tool issue",
+                    occurredAt: Date(),
+                    status: .warning,
+                    statusText: "timeout",
+                    sourceService: "openclaw.external-tool-result",
+                    linkedSpanID: nil
+                ),
+                makeAnomalyRow(
+                    id: "cron",
+                    title: "Nightly Sync",
+                    sourceLabel: "Cron",
+                    detailText: "Cron issue",
+                    fullDetailText: "Cron issue",
+                    occurredAt: Date(),
+                    status: .warning,
+                    statusText: "timeout",
+                    sourceService: nil,
+                    linkedSpanID: nil
+                )
+            ],
+            agentRows: [],
+            cronRuns: []
+        )
+
+        XCTAssertEqual(cards.map(\.id), ["wf-failed", "wf-openclaw", "wf-runtime"])
+        XCTAssertEqual(cards.map(\.value), ["1", "1", "2"])
+        XCTAssertEqual(cards.map(\.tone), [.red, .teal, .orange])
+        XCTAssertEqual(cards.first?.detail, "Planner traces in current scope")
+    }
+
+    func testHistoryInsightBuilderBuildsWorkflowSignalRowsInDescendingTimeOrder() {
+        let now = Date()
+        let failedTrace = makeTraceRow(
+            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111") ?? UUID(),
+            agentName: "Planner",
+            status: .failed,
+            startedAt: now.addingTimeInterval(-120),
+            sourceLabel: "OpenClaw",
+            previewText: "Trace failed"
+        )
+        let rows = OpsHistoryInsightBuilder.signalRows(
+            metric: .workflowReliability,
+            anomalyRows: [
+                makeAnomalyRow(
+                    id: "runtime-new",
+                    title: "Planner Drift",
+                    sourceLabel: "Runtime",
+                    detailText: "Budget exceeded",
+                    fullDetailText: "Budget exceeded",
+                    occurredAt: now.addingTimeInterval(-60),
+                    status: .warning,
+                    statusText: "warning",
+                    sourceService: "multi-agent-flow.execution",
+                    linkedSpanID: nil
+                ),
+                makeAnomalyRow(
+                    id: "cron-old",
+                    title: "Nightly Sync Failed",
+                    sourceLabel: "Cron",
+                    detailText: "Should be excluded",
+                    fullDetailText: "Should be excluded",
+                    occurredAt: now.addingTimeInterval(-30),
+                    status: .critical,
+                    statusText: "error",
+                    sourceService: nil,
+                    linkedSpanID: nil
+                )
+            ],
+            traceRows: [
+                failedTrace,
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .completed,
+                    startedAt: now.addingTimeInterval(-10),
+                    sourceLabel: "Runtime",
+                    previewText: "Completed trace should be ignored"
+                )
+            ],
+            agentRows: [],
+            cronRuns: []
+        )
+
+        XCTAssertEqual(rows.map(\.id), ["anomaly-runtime-new", "trace-\(failedTrace.id.uuidString)"])
+        XCTAssertEqual(rows.map(\.badge), ["Runtime", "OpenClaw"])
+        XCTAssertEqual(rows.map(\.tone), [.blue, .red])
+        XCTAssertEqual(rows.count, 2)
+    }
+
+    func testHistoryInsightBuilderBuildsMemoryContextCards() {
+        let cards = OpsHistoryInsightBuilder.contextCards(
+            metric: .memoryDiscipline,
+            focusTitle: "Project",
+            totalAgents: 4,
+            traceRows: [],
+            anomalyRows: [],
+            agentRows: [
+                makeAgentRow(
+                    agentName: "Planner",
+                    stateText: "Active",
+                    status: .healthy,
+                    completedCount: 4,
+                    failedCount: 0,
+                    lastActivityAt: Date(),
+                    hasTrackedMemory: true
+                ),
+                makeAgentRow(
+                    agentName: "Scout",
+                    stateText: "Waiting",
+                    status: .warning,
+                    completedCount: 1,
+                    failedCount: 1,
+                    lastActivityAt: Date(),
+                    hasTrackedMemory: false
+                )
+            ],
+            cronRuns: []
+        )
+
+        XCTAssertEqual(cards.map(\.id), ["mem-tracked", "mem-gap", "mem-total"])
+        XCTAssertEqual(cards.map(\.value), ["1", "1", "50%"])
+        XCTAssertEqual(cards.map(\.tone), [.green, .orange, .blue])
+    }
+
+    func testHistoryInsightBuilderBuildsCronSignalRowsWithLinkedAnomalyAndFormattedDuration() throws {
+        let now = Date()
+        let matchingAnomaly = makeAnomalyRow(
+            id: "cron-anomaly",
+            title: "nightly-sync",
+            sourceLabel: "Cron",
+            detailText: "Job timed out",
+            fullDetailText: "Job timed out",
+            occurredAt: now.addingTimeInterval(-30),
+            status: .critical,
+            statusText: "FAILED",
+            sourceService: nil,
+            linkedSpanID: nil
+        )
+        let rows = OpsHistoryInsightBuilder.signalRows(
+            metric: .cronReliability,
+            anomalyRows: [matchingAnomaly],
+            traceRows: [],
+            agentRows: [],
+            cronRuns: [
+                makeCronRunRow(
+                    cronName: "nightly-sync",
+                    statusText: "FAILED",
+                    runAt: now,
+                    summaryText: "Nightly sync timed out",
+                    jobID: "job-1",
+                    runID: UUID().uuidString,
+                    sourcePath: nil,
+                    duration: 65
+                ),
+                makeCronRunRow(
+                    cronName: "other-cron",
+                    statusText: "OK",
+                    runAt: now.addingTimeInterval(-300),
+                    summaryText: "Healthy",
+                    jobID: "job-2",
+                    runID: UUID().uuidString,
+                    sourcePath: nil,
+                    duration: 5.2
+                )
+            ]
+        )
+
+        let first = try XCTUnwrap(rows.first)
+        XCTAssertEqual(rows.map(\.title), ["nightly-sync", "other-cron"])
+        XCTAssertEqual(first.badge, "FAILED")
+        XCTAssertEqual(first.tone, .red)
+        XCTAssertEqual(first.detail, "1m 5s • Nightly sync timed out")
+        XCTAssertEqual(first.anomaly?.id, matchingAnomaly.id)
+        XCTAssertEqual(rows.last?.detail, "5.2s • Healthy")
+    }
+
+    func testHistoryScopeMatcherMatchesAgentScopeAcrossRows() {
+        let anomaly = makeAnomalyRow(
+            id: "runtime",
+            title: "Planner Drift",
+            sourceLabel: "Runtime",
+            detailText: "Planner exceeded budget",
+            fullDetailText: "Planner exceeded budget during execution",
+            occurredAt: Date(),
+            status: .warning,
+            statusText: "warning",
+            sourceService: "multi-agent-flow.execution",
+            linkedSpanID: nil
+        )
+        let trace = makeTraceRow(
+            agentName: "Planner",
+            status: .failed,
+            startedAt: Date(),
+            sourceLabel: "Runtime",
+            previewText: "Planner failed"
+        )
+        let agent = makeAgentRow(
+            agentName: "Planner",
+            stateText: "Active",
+            status: .healthy,
+            completedCount: 3,
+            failedCount: 1,
+            lastActivityAt: Date(),
+            hasTrackedMemory: true
+        )
+        let cron = makeCronRunRow(
+            cronName: "heartbeat",
+            statusText: "FAILED",
+            runAt: Date(),
+            summaryText: "Planner heartbeat stalled",
+            jobID: "job-1",
+            runID: UUID().uuidString,
+            sourcePath: nil
+        )
+
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(anomaly, kind: .agent, matchKey: "planner"))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(trace, kind: .agent, matchKey: "planner"))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(agent, kind: .agent, matchKey: "planner"))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(cron, kind: .agent, matchKey: "planner"))
+
+        XCTAssertFalse(
+            OpsHistoryScopeMatcher.matches(
+                makeTraceRow(
+                    agentName: "Scout",
+                    status: .failed,
+                    startedAt: Date(),
+                    sourceLabel: "Runtime",
+                    previewText: "Scout failed"
+                ),
+                kind: .agent,
+                matchKey: "planner"
+            )
+        )
+    }
+
+    func testHistoryScopeMatcherMatchesToolScopeOnlyForToolRelevantRows() {
+        let toolAnomaly = makeAnomalyRow(
+            id: "tool",
+            title: "Search Timeout",
+            sourceLabel: "Tool",
+            detailText: "search.web timed out",
+            fullDetailText: "search.web timed out after retry",
+            occurredAt: Date(),
+            status: .warning,
+            statusText: "timeout",
+            sourceService: "search.web",
+            linkedSpanID: nil
+        )
+        let runtimeAnomaly = makeAnomalyRow(
+            id: "runtime",
+            title: "Search Timeout",
+            sourceLabel: "Runtime",
+            detailText: "search.web timed out",
+            fullDetailText: "search.web timed out after retry",
+            occurredAt: Date(),
+            status: .warning,
+            statusText: "timeout",
+            sourceService: "search.web",
+            linkedSpanID: nil
+        )
+        let trace = makeTraceRow(
+            agentName: "Planner",
+            status: .failed,
+            startedAt: Date(),
+            sourceLabel: "OpenClaw",
+            previewText: "Tool search.web failed"
+        )
+        let cron = makeCronRunRow(
+            cronName: "nightly-sync",
+            statusText: "FAILED",
+            runAt: Date(),
+            summaryText: "search.web provider unavailable",
+            jobID: "job-2",
+            runID: UUID().uuidString,
+            sourcePath: nil
+        )
+
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(toolAnomaly, kind: .tool, matchKey: "search.web"))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(trace, kind: .tool, matchKey: "search.web"))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(cron, kind: .tool, matchKey: "search.web"))
+        XCTAssertFalse(OpsHistoryScopeMatcher.matches(runtimeAnomaly, kind: .tool, matchKey: "search.web"))
+        XCTAssertFalse(
+            OpsHistoryScopeMatcher.matches(
+                makeAgentRow(
+                    agentName: "Planner",
+                    stateText: "Active",
+                    status: .healthy,
+                    completedCount: 1,
+                    failedCount: 0,
+                    lastActivityAt: Date(),
+                    hasTrackedMemory: true
+                ),
+                kind: .tool,
+                matchKey: "search.web"
+            )
+        )
+    }
+
+    func testHistoryScopeMatcherMatchesCronScopeByExactIdentifierAndProjectScopeAlwaysMatches() {
+        let cronAnomaly = makeAnomalyRow(
+            id: "cron",
+            title: "nightly-sync",
+            sourceLabel: "Cron",
+            detailText: "Nightly sync failed",
+            fullDetailText: "Nightly sync failed",
+            occurredAt: Date(),
+            status: .critical,
+            statusText: "FAILED",
+            sourceService: nil,
+            linkedSpanID: nil
+        )
+        let cronRun = makeCronRunRow(
+            cronName: "nightly-sync",
+            statusText: "FAILED",
+            runAt: Date(),
+            summaryText: "Nightly sync failed",
+            jobID: "job-3",
+            runID: UUID().uuidString,
+            sourcePath: nil
+        )
+        let trace = makeTraceRow(
+            agentName: "Planner",
+            status: .completed,
+            startedAt: Date(),
+            sourceLabel: "Runtime",
+            previewText: "Unrelated"
+        )
+
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(cronAnomaly, kind: .cron, matchKey: "NIGHTLY-SYNC"))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(cronRun, kind: .cron, matchKey: "NIGHTLY-SYNC"))
+        XCTAssertFalse(OpsHistoryScopeMatcher.matches(trace, kind: .cron, matchKey: "nightly-sync"))
+
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(cronAnomaly, kind: .project, matchKey: ""))
+        XCTAssertTrue(OpsHistoryScopeMatcher.matches(trace, kind: .project, matchKey: ""))
+    }
+
+    func testAnomalyInsightBuilderBuildsExplorerCards() {
+        let now = Date()
+        let rows = [
+            makeAnomalyRow(
+                id: "critical-cron",
+                title: "nightly-sync",
+                sourceLabel: "Cron",
+                detailText: "Timed out",
+                fullDetailText: "Timed out",
+                occurredAt: now,
+                status: .critical,
+                statusText: "FAILED",
+                sourceService: nil,
+                linkedSpanID: UUID()
+            ),
+            makeAnomalyRow(
+                id: "warning-tool",
+                title: "search.web",
+                sourceLabel: "Tool",
+                detailText: "Provider unavailable",
+                fullDetailText: "Provider unavailable",
+                occurredAt: now.addingTimeInterval(-60),
+                status: .warning,
+                statusText: "error",
+                sourceService: "openclaw.external-tool-result",
+                linkedSpanID: nil
+            ),
+            makeAnomalyRow(
+                id: "warning-tool-2",
+                title: "search.web",
+                sourceLabel: "Tool",
+                detailText: "Provider timeout",
+                fullDetailText: "Provider timeout",
+                occurredAt: now.addingTimeInterval(-120),
+                status: .warning,
+                statusText: "timeout",
+                sourceService: "openclaw.external-tool-result",
+                linkedSpanID: nil
+            )
+        ]
+        let clusters = OpsAnomalyClusterBuilder.clusters(from: rows, now: now)
+
+        let cards = OpsAnomalyInsightBuilder.explorerCards(
+            rows: rows,
+            clusters: clusters,
+            timeWindowDetail: "Signals from the last 7 days"
+        )
+
+        XCTAssertEqual(cards.map(\.id), ["matching", "critical", "cron", "clusters"])
+        XCTAssertEqual(cards.map(\.value), ["3", "1", "1", "1"])
+        XCTAssertEqual(cards.map(\.tone), [.blue, .red, .orange, .teal])
+        XCTAssertEqual(cards.last?.detail, "1 trace-linked rows retained")
+    }
+
+    func testHistoryNarrativeBuilderBuildsDeltaTextAcrossSampleStates() {
+        let start = Date(timeIntervalSinceReferenceDate: 10_000)
+
+        let emptySeries = OpsMetricHistorySeries(metric: .workflowReliability, points: [])
+        XCTAssertEqual(
+            OpsHistoryNarrativeBuilder.deltaText(for: emptySeries),
+            "No historical samples yet"
+        )
+
+        let firstSampleSeries = makeHistorySeries(
+            metric: .workflowReliability,
+            start: start,
+            values: [83]
+        )
+        XCTAssertEqual(
+            OpsHistoryNarrativeBuilder.deltaText(for: firstSampleSeries),
+            "First sample: 83%"
+        )
+
+        let reliabilitySeries = makeHistorySeries(
+            metric: .workflowReliability,
+            start: start,
+            values: [78, 84]
+        )
+        XCTAssertEqual(
+            OpsHistoryNarrativeBuilder.deltaText(for: reliabilitySeries),
+            "Changed +6 pts since previous sample"
+        )
+
+        let errorBudgetSeries = makeHistorySeries(
+            metric: .errorBudget,
+            start: start,
+            values: [3, 1]
+        )
+        XCTAssertEqual(
+            OpsHistoryNarrativeBuilder.deltaText(for: errorBudgetSeries),
+            "Changed -2 since previous sample"
+        )
+    }
+
+    func testHistoryNarrativeBuilderBuildsMetricSpecificNarrative() {
+        let series = makeHistorySeries(
+            metric: .cronReliability,
+            start: Date(timeIntervalSinceReferenceDate: 20_000),
+            values: [55, 80]
+        )
+
+        XCTAssertEqual(
+            OpsHistoryNarrativeBuilder.narrative(for: series, focusText: "Project-wide"),
+            "Project-wide cron reliability is currently 80%. Changed +25 pts since previous sample, and the related signals below show the latest scheduled runs feeding this trend."
+        )
+    }
+
+    func testAnomalyClusterInsightBuilderSummarizesRecentAndEarlierCounts() {
+        XCTAssertEqual(
+            OpsAnomalyClusterInsightBuilder.trendText(
+                occurrenceCount: 5,
+                recent24HourCount: 2,
+                includeEarlierBreakdown: false
+            ),
+            "24h 2"
+        )
+
+        XCTAssertEqual(
+            OpsAnomalyClusterInsightBuilder.trendText(
+                occurrenceCount: 5,
+                recent24HourCount: 2,
+                includeEarlierBreakdown: true
+            ),
+            "24h 2 • earlier 3"
+        )
+
+        XCTAssertEqual(
+            OpsAnomalyClusterInsightBuilder.trendText(
+                occurrenceCount: 1,
+                recent24HourCount: 3,
+                includeEarlierBreakdown: true
+            ),
+            "24h 3 • earlier 0"
+        )
+    }
+
+    func testHistoryInsightBuilderBuildsDaySummaryCards() {
+        let selectedDate = Date(timeIntervalSinceReferenceDate: 123_456)
+        let rows = [
+            OpsHistorySignalRow(
+                id: "critical",
+                title: "Planner Failure",
+                badge: "Critical",
+                detail: "Needs action",
+                occurredAt: selectedDate,
+                tone: .red,
+                anomaly: makeAnomalyRow(
+                    id: "critical",
+                    title: "Planner Failure",
+                    sourceLabel: "Runtime",
+                    detailText: "Needs action",
+                    fullDetailText: "Needs action",
+                    occurredAt: selectedDate,
+                    status: .critical,
+                    statusText: "error",
+                    sourceService: "multi-agent-flow.execution",
+                    linkedSpanID: nil
+                ),
+                trace: nil,
+                cronRun: nil
+            ),
+            OpsHistorySignalRow(
+                id: "info",
+                title: "Background signal",
+                badge: "Info",
+                detail: "No panel",
+                occurredAt: selectedDate,
+                tone: .blue,
+                anomaly: nil,
+                trace: nil,
+                cronRun: nil
+            ),
+            OpsHistorySignalRow(
+                id: "error-trace",
+                title: "Failed Trace",
+                badge: "Error",
+                detail: "Trace panel",
+                occurredAt: selectedDate,
+                tone: .red,
+                anomaly: nil,
+                trace: makeTraceRow(
+                    agentName: "Planner",
+                    status: .failed,
+                    startedAt: selectedDate,
+                    sourceLabel: "Runtime",
+                    previewText: "Trace panel"
+                ),
+                cronRun: nil
+            )
+        ]
+        let point = OpsMetricHistoryPoint(date: selectedDate, value: 83)
+
+        let cards = OpsHistoryInsightBuilder.daySummaryCards(
+            metric: .workflowReliability,
+            point: point,
+            rows: rows,
+            selectedDate: selectedDate
+        )
+
+        XCTAssertEqual(cards.map(\.id), ["day-sample", "day-signals", "day-actionable", "day-critical"])
+        XCTAssertEqual(cards.map(\.value), ["83%", "3", "2", "2"])
+        XCTAssertEqual(cards.map(\.tone), [.green, .blue, .teal, .red])
+    }
+
     private func makeProjectID() -> UUID {
         let projectID = UUID()
         projectIDsToClean.append(projectID)
@@ -1564,6 +2142,22 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         dayFormatter.string(from: date)
     }
 
+    private func makeHistorySeries(
+        metric: OpsHistoryMetric,
+        start: Date,
+        values: [Double]
+    ) -> OpsMetricHistorySeries {
+        OpsMetricHistorySeries(
+            metric: metric,
+            points: values.enumerated().map { index, value in
+                OpsMetricHistoryPoint(
+                    date: start.addingTimeInterval(TimeInterval(index * 86_400)),
+                    value: value
+                )
+            }
+        )
+    }
+
     private func makeCronRunRow(
         cronName: String,
         statusText: String,
@@ -1571,19 +2165,63 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         summaryText: String,
         jobID: String?,
         runID: String?,
-        sourcePath: String?
+        sourcePath: String?,
+        duration: TimeInterval? = nil
     ) -> OpsCronRunRow {
         OpsCronRunRow(
             id: "\(cronName)-\(jobID ?? UUID().uuidString)",
             cronName: cronName,
             statusText: statusText,
             runAt: runAt,
-            duration: nil,
+            duration: duration,
             deliveryStatus: nil,
             summaryText: summaryText,
             jobID: jobID,
             runID: runID,
             sourcePath: sourcePath
+        )
+    }
+
+    private func makeTraceRow(
+        id: UUID = UUID(),
+        agentName: String,
+        status: ExecutionStatus,
+        startedAt: Date,
+        sourceLabel: String,
+        previewText: String
+    ) -> OpsTraceSummaryRow {
+        OpsTraceSummaryRow(
+            id: id,
+            agentName: agentName,
+            status: status,
+            duration: nil,
+            startedAt: startedAt,
+            routingAction: nil,
+            outputType: .agentFinalResponse,
+            sourceLabel: sourceLabel,
+            previewText: previewText
+        )
+    }
+
+    private func makeAgentRow(
+        agentName: String,
+        stateText: String,
+        status: OpsHealthStatus,
+        completedCount: Int,
+        failedCount: Int,
+        lastActivityAt: Date?,
+        hasTrackedMemory: Bool
+    ) -> OpsAgentHealthRow {
+        OpsAgentHealthRow(
+            id: UUID(),
+            agentName: agentName,
+            stateText: stateText,
+            status: status,
+            completedCount: completedCount,
+            failedCount: failedCount,
+            averageDuration: nil,
+            lastActivityAt: lastActivityAt,
+            hasTrackedMemory: hasTrackedMemory
         )
     }
 

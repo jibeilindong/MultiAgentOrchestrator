@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type {
+  ExecutionOutputType,
   MAProject,
   OpenClawConfig,
   ProjectOpenClawAgentRecord,
@@ -37,6 +38,31 @@ declare global {
     detectedAgents: ProjectOpenClawDetectedAgentRecord[];
   }
 
+  interface OpenClawAgentExecutionRequest {
+    agentIdentifier: string;
+    message: string;
+    sessionID?: string | null;
+    thinkingLevel?: string | null;
+    timeoutSeconds?: number | null;
+  }
+
+  interface OpenClawRoutingDecision {
+    action: "stop" | "selected" | "all";
+    targets: string[];
+    reason: string | null;
+  }
+
+  interface OpenClawAgentExecutionResult {
+    success: boolean;
+    message: string;
+    agentIdentifier: string;
+    output: string;
+    outputType: ExecutionOutputType;
+    rawStdout: string;
+    rawStderr: string;
+    routingDecision: OpenClawRoutingDecision | null;
+  }
+
   interface Window {
     desktopApi?: {
       platform: string;
@@ -56,6 +82,10 @@ declare global {
       connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult>;
       detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult>;
       disconnectOpenClaw(): Promise<OpenClawActionResult>;
+      executeOpenClawAgent(
+        config: OpenClawConfig,
+        request: OpenClawAgentExecutionRequest
+      ): Promise<OpenClawAgentExecutionResult>;
     };
   }
 }

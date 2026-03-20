@@ -8,6 +8,7 @@ import type {
   TaskStatus,
   Workflow,
   WorkflowFallbackRoutingPolicy,
+  WorkflowLaunchTestCase,
   WorkflowNodeType
 } from "@multi-agent-flow/domain";
 import { toSwiftDate } from "./swift-date";
@@ -83,6 +84,27 @@ interface TaskDraft {
   metadata?: Record<string, string>;
 }
 
+interface WorkflowLaunchTestCaseDraft {
+  name?: string;
+  prompt?: string;
+  requiredAgentNames?: string[];
+  forbiddenAgentNames?: string[];
+  expectedRoutingActions?: string[];
+  expectedOutputTypes?: string[];
+  maxSteps?: number | null;
+  notes?: string;
+}
+
+interface AgentDraft {
+  name?: string;
+  identity?: string;
+  description?: string;
+  soulMD?: string;
+  capabilities?: string[];
+  colorHex?: string | null;
+  openClawDefinition?: Partial<Agent["openClawDefinition"]>;
+}
+
 function sanitizeTaskTags(tags: string[] | undefined): string[] {
   if (!tags) {
     return [];
@@ -109,12 +131,86 @@ function sanitizeTaskMetadata(metadata: Record<string, string> | undefined): Rec
   );
 }
 
+function sanitizeAgentEnvironment(environment: Record<string, string> | undefined): Record<string, string> {
+  if (!environment) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(environment)
+      .map(([key, value]) => [key.trim(), value.trim()])
+      .filter(([key, value]) => key.length > 0 && value.length > 0)
+  );
+}
+
 function sanitizeDuration(value: number | null | undefined): number | null {
   if (value == null || Number.isNaN(value)) {
     return null;
   }
 
   return Math.max(0, Math.round(value));
+}
+
+function sanitizeStringList(values: string[] | undefined): string[] {
+  if (!values) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function sanitizeLaunchMaxSteps(value: number | null | undefined): number | null {
+  if (value == null || Number.isNaN(value)) {
+    return null;
+  }
+
+  return Math.max(1, Math.round(value));
+}
+
+function createWorkflowLaunchTestCaseRecord(
+  workflow: Workflow,
+  draft: WorkflowLaunchTestCaseDraft = {}
+): WorkflowLaunchTestCase {
+  return {
+    id: createUUID(),
+    name: draft.name?.trim() || `Launch Case ${workflow.launchTestCases.length + 1}`,
+    prompt: draft.prompt?.trim() || "Reply with a concise readiness confirmation.",
+    requiredAgentNames: sanitizeStringList(draft.requiredAgentNames),
+    forbiddenAgentNames: sanitizeStringList(draft.forbiddenAgentNames),
+    expectedRoutingActions: sanitizeStringList(draft.expectedRoutingActions),
+    expectedOutputTypes: sanitizeStringList(draft.expectedOutputTypes),
+    maxSteps: sanitizeLaunchMaxSteps(draft.maxSteps),
+    notes: draft.notes?.trim() ?? ""
+  };
+}
+
+function patchWorkflowLaunchTestCaseRecord(
+  testCase: WorkflowLaunchTestCase,
+  patch: WorkflowLaunchTestCaseDraft
+): WorkflowLaunchTestCase {
+  return {
+    ...testCase,
+    name: patch.name === undefined ? testCase.name : patch.name.trim() || testCase.name,
+    prompt: patch.prompt === undefined ? testCase.prompt : patch.prompt.trim(),
+    requiredAgentNames:
+      patch.requiredAgentNames === undefined ? testCase.requiredAgentNames : sanitizeStringList(patch.requiredAgentNames),
+    forbiddenAgentNames:
+      patch.forbiddenAgentNames === undefined ? testCase.forbiddenAgentNames : sanitizeStringList(patch.forbiddenAgentNames),
+    expectedRoutingActions:
+      patch.expectedRoutingActions === undefined
+        ? testCase.expectedRoutingActions
+        : sanitizeStringList(patch.expectedRoutingActions),
+    expectedOutputTypes:
+      patch.expectedOutputTypes === undefined ? testCase.expectedOutputTypes : sanitizeStringList(patch.expectedOutputTypes),
+    maxSteps: patch.maxSteps === undefined ? testCase.maxSteps ?? null : sanitizeLaunchMaxSteps(patch.maxSteps),
+    notes: patch.notes === undefined ? testCase.notes : patch.notes.trim()
+  };
 }
 
 function reconcileTaskLifecycle(task: Task, previousTask?: Task): Task {
@@ -461,6 +557,69 @@ export function addAgentToProject(project: MAProject, baseName = "New Agent"): M
   });
 }
 
+export function updateAgentInProject(project: MAProject, agentId: string, patch: AgentDraft): MAProject {
+  let didChange = false;
+
+  const nextAgents = project.agents.map((agent) => {
+    if (agent.id !== agentId) {
+      return agent;
+    }
+
+    const nextAgent: Agent = {
+      ...agent,
+      name: patch.name === undefined ? agent.name : patch.name.trim() || agent.name,
+      identity: patch.identity === undefined ? agent.identity : patch.identity.trim() || agent.identity,
+      description: patch.description === undefined ? agent.description : patch.description.trim(),
+      soulMD: patch.soulMD === undefined ? agent.soulMD : patch.soulMD,
+      capabilities: patch.capabilities === undefined ? agent.capabilities : sanitizeStringList(patch.capabilities),
+      colorHex: patch.colorHex === undefined ? agent.colorHex ?? null : sanitizeProjectPath(patch.colorHex),
+      openClawDefinition: {
+        ...agent.openClawDefinition,
+        agentIdentifier:
+          patch.openClawDefinition?.agentIdentifier === undefined
+            ? agent.openClawDefinition.agentIdentifier
+            : patch.openClawDefinition.agentIdentifier.trim(),
+        modelIdentifier:
+          patch.openClawDefinition?.modelIdentifier === undefined
+            ? agent.openClawDefinition.modelIdentifier
+            : patch.openClawDefinition.modelIdentifier.trim(),
+        runtimeProfile:
+          patch.openClawDefinition?.runtimeProfile === undefined
+            ? agent.openClawDefinition.runtimeProfile
+            : patch.openClawDefinition.runtimeProfile.trim(),
+        memoryBackupPath:
+          patch.openClawDefinition?.memoryBackupPath === undefined
+            ? agent.openClawDefinition.memoryBackupPath ?? null
+            : sanitizeProjectPath(patch.openClawDefinition.memoryBackupPath),
+        soulSourcePath:
+          patch.openClawDefinition?.soulSourcePath === undefined
+            ? agent.openClawDefinition.soulSourcePath ?? null
+            : sanitizeProjectPath(patch.openClawDefinition.soulSourcePath),
+        environment:
+          patch.openClawDefinition?.environment === undefined
+            ? agent.openClawDefinition.environment
+            : sanitizeAgentEnvironment(patch.openClawDefinition.environment)
+      },
+      updatedAt: toSwiftDate()
+    };
+
+    if (JSON.stringify(nextAgent) !== JSON.stringify(agent)) {
+      didChange = true;
+    }
+
+    return nextAgent;
+  });
+
+  if (!didChange) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    agents: nextAgents
+  });
+}
+
 export function addTaskToProject(project: MAProject, draft: TaskDraft = {}): MAProject {
   return withUpdatedAt({
     ...project,
@@ -631,6 +790,89 @@ export function setWorkflowFallbackRoutingPolicy(
   return updateWorkflow(project, workflowId, (workflow) => ({
     ...workflow,
     fallbackRoutingPolicy
+  }));
+}
+
+export function addWorkflowLaunchTestCase(
+  project: MAProject,
+  workflowId: string,
+  draft: WorkflowLaunchTestCaseDraft = {}
+): MAProject {
+  const workflow = project.workflows.find((item) => item.id === workflowId);
+  if (!workflow) {
+    return project;
+  }
+
+  const nextCase = createWorkflowLaunchTestCaseRecord(workflow, draft);
+  return updateWorkflow(project, workflowId, (currentWorkflow) => ({
+    ...currentWorkflow,
+    launchTestCases: [...currentWorkflow.launchTestCases, nextCase]
+  }));
+}
+
+export function updateWorkflowLaunchTestCase(
+  project: MAProject,
+  workflowId: string,
+  testCaseId: string,
+  patch: WorkflowLaunchTestCaseDraft
+): MAProject {
+  let didChange = false;
+
+  const nextWorkflows = project.workflows.map((workflow) => {
+    if (workflow.id !== workflowId) {
+      return workflow;
+    }
+
+    const nextCases = workflow.launchTestCases.map((testCase) => {
+      if (testCase.id !== testCaseId) {
+        return testCase;
+      }
+
+      const nextCase = patchWorkflowLaunchTestCaseRecord(testCase, patch);
+      if (JSON.stringify(nextCase) !== JSON.stringify(testCase)) {
+        didChange = true;
+      }
+      return nextCase;
+    });
+
+    if (!didChange) {
+      return workflow;
+    }
+
+    return {
+      ...workflow,
+      launchTestCases: nextCases
+    };
+  });
+
+  if (!didChange) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    workflows: nextWorkflows
+  });
+}
+
+export function removeWorkflowLaunchTestCase(
+  project: MAProject,
+  workflowId: string,
+  testCaseId: string
+): MAProject {
+  const workflow = project.workflows.find((item) => item.id === workflowId);
+  if (!workflow) {
+    return project;
+  }
+
+  const nextCases = workflow.launchTestCases.filter((testCase) => testCase.id !== testCaseId);
+  if (nextCases.length === workflow.launchTestCases.length) {
+    return project;
+  }
+
+  return updateWorkflow(project, workflowId, (currentWorkflow) => ({
+    ...currentWorkflow,
+    launchTestCases: nextCases
   }));
 }
 

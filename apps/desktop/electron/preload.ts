@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ExecutionOutputType,
   MAProject,
   OpenClawConfig,
   ProjectOpenClawAgentRecord,
@@ -33,6 +34,31 @@ interface OpenClawActionResult {
   availableAgents: string[];
   activeAgents: ProjectOpenClawAgentRecord[];
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+}
+
+interface OpenClawAgentExecutionRequest {
+  agentIdentifier: string;
+  message: string;
+  sessionID?: string | null;
+  thinkingLevel?: string | null;
+  timeoutSeconds?: number | null;
+}
+
+interface OpenClawRoutingDecision {
+  action: "stop" | "selected" | "all";
+  targets: string[];
+  reason: string | null;
+}
+
+interface OpenClawAgentExecutionResult {
+  success: boolean;
+  message: string;
+  agentIdentifier: string;
+  output: string;
+  outputType: ExecutionOutputType;
+  rawStdout: string;
+  rawStderr: string;
+  routingDecision: OpenClawRoutingDecision | null;
 }
 
 contextBridge.exposeInMainWorld("desktopApi", {
@@ -74,5 +100,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
   },
   disconnectOpenClaw(): Promise<OpenClawActionResult> {
     return ipcRenderer.invoke("openClaw:disconnect");
+  },
+  executeOpenClawAgent(config: OpenClawConfig, request: OpenClawAgentExecutionRequest): Promise<OpenClawAgentExecutionResult> {
+    return ipcRenderer.invoke("openClaw:executeAgent", { config, request });
   }
 });

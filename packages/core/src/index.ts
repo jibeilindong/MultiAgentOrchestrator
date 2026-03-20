@@ -1,4 +1,5 @@
 export * from "./json";
+export * from "./launch-verification";
 export * from "./project-factory";
 export * from "./project-mutators";
 export * from "./project-repository";

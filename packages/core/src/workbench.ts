@@ -34,6 +34,39 @@ export interface WorkbenchApprovalResult {
   completedNodeCount: number;
 }
 
+export interface WorkbenchRealEntryExecution {
+  entryNodeId: string;
+  agentId: string;
+  agentIdentifier: string;
+  success: boolean;
+  output: string;
+  outputType: ExecutionOutputType;
+  engineMessage?: string | null;
+  rawStdout?: string;
+  rawStderr?: string;
+}
+
+export interface WorkbenchLiveNodeExecution {
+  nodeId: string;
+  agentId: string;
+  agentIdentifier: string;
+  success: boolean;
+  output: string;
+  outputType: ExecutionOutputType;
+  routingAction?: string | null;
+  routingTargets?: string[];
+  routingReason?: string | null;
+  engineMessage?: string | null;
+  rawStdout?: string;
+  rawStderr?: string;
+}
+
+export interface WorkbenchLiveApprovalCheckpoint {
+  edgeId: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+}
+
 function sanitizePathSegment(value: string): string {
   const normalized = value
     .trim()
@@ -489,6 +522,315 @@ function executeWorkflowNodes(
   };
 }
 
+function createWorkbenchTaskSeed(
+  project: MAProject,
+  workflow: Workflow,
+  prompt: string,
+  leadAgent: Agent,
+  entryNode: WorkflowNode
+) {
+  const task = createTaskRecord({
+    title: summarizePrompt(prompt),
+    description: prompt,
+    assignedAgentID: leadAgent.id,
+    workflowNodeID: entryNode.id,
+    workflowID: workflow.id,
+    prompt,
+    tags: ["workbench", workflow.name]
+  });
+  const workspaceRecord = createWorkspaceRecord(project, task, leadAgent, project.taskData);
+  const workbenchSessionID = `workbench-${project.runtimeState.sessionID}-${workflow.id}-${leadAgent.id}`;
+  task.metadata.workbenchSessionID = workbenchSessionID;
+  task.metadata.entryNodeIDs = entryNode.id;
+  task.metadata.entryAgentIDs = leadAgent.id;
+  if (workspaceRecord) {
+    task.metadata.workspaceRelativePath = workspaceRecord.workspaceRelativePath;
+  }
+
+  const userMessage = createMessageRecord({
+    fromAgentID: leadAgent.id,
+    toAgentID: leadAgent.id,
+    type: "Task",
+    content: prompt,
+    status: "Read",
+    metadata: {
+      channel: "workbench",
+      role: "user",
+      kind: "input",
+      workflowID: workflow.id,
+      taskID: task.id,
+      workbenchSessionID
+    }
+  });
+
+  return {
+    task,
+    workspaceRecord,
+    workbenchSessionID,
+    userMessage
+  };
+}
+
+export function publishWorkbenchPromptWithLiveExecution(
+  project: MAProject,
+  workflowId: string,
+  prompt: string,
+  executions: WorkbenchLiveNodeExecution[],
+  approvalCheckpoints: WorkbenchLiveApprovalCheckpoint[] = []
+): WorkbenchPublishResult {
+  const workflow = project.workflows.find((item) => item.id === workflowId);
+  const trimmedPrompt = prompt.trim();
+  const firstExecution = executions[0];
+  if (!workflow || !trimmedPrompt || !firstExecution) {
+    return {
+      project,
+      taskId: "",
+      pendingApprovalCount: 0,
+      completedNodeCount: 0
+    };
+  }
+
+  const entryNode = workflow.nodes.find((node) => node.id === firstExecution.nodeId);
+  const leadAgent = project.agents.find((agent) => agent.id === firstExecution.agentId) ?? null;
+  if (!entryNode || !leadAgent) {
+    return {
+      project,
+      taskId: "",
+      pendingApprovalCount: 0,
+      completedNodeCount: 0
+    };
+  }
+
+  const { task, workspaceRecord, userMessage } = createWorkbenchTaskSeed(
+    project,
+    workflow,
+    trimmedPrompt,
+    leadAgent,
+    entryNode
+  );
+  task.metadata.liveExecution = "true";
+  task.metadata.liveAgentIdentifier = firstExecution.agentIdentifier;
+
+  const nodeMap = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+  const agentMap = new Map(project.agents.map((agent) => [agent.id, agent] as const));
+  const completedNodeIDs = new Set<string>();
+  const executionLogs: ExecutionLogEntry[] = [
+    createExecutionLog("INFO", `Workbench published task "${task.title}" to workflow ${workflow.name}.`)
+  ];
+  const executionResults: ExecutionResult[] = [];
+  const messages: Message[] = [userMessage];
+  const pendingApprovalMessageIDs: string[] = [];
+  const runtimeAgentStates: Record<string, string> = {};
+  let hadFailure = false;
+
+  for (const execution of executions) {
+    const node = nodeMap.get(execution.nodeId);
+    const agent = agentMap.get(execution.agentId);
+    if (!node || !agent) {
+      hadFailure = true;
+      executionLogs.push(
+        createExecutionLog("ERROR", `Skipped a live execution receipt because node or agent metadata was missing.`, execution.nodeId)
+      );
+      continue;
+    }
+
+    const visibleOutput =
+      execution.output.trim() || execution.engineMessage?.trim() || "OpenClaw returned no visible output.";
+    const result = createExecutionResult({
+      nodeID: node.id,
+      agentID: agent.id,
+      status: execution.success ? "Completed" : "Failed",
+      output: visibleOutput,
+      outputType: execution.outputType,
+      routingAction: execution.routingAction ?? null,
+      routingTargets: execution.routingTargets ?? [],
+      routingReason: execution.routingReason ?? execution.engineMessage ?? null
+    });
+    executionResults.push(result);
+
+    messages.push(
+      createMessageRecord({
+        fromAgentID: agent.id,
+        toAgentID: agent.id,
+        type: execution.success ? "Notification" : "Data",
+        content: visibleOutput,
+        status: execution.success ? "Delivered" : "Failed",
+        metadata: {
+          channel: "workbench",
+          role: "assistant",
+          kind: "output",
+          workflowID: workflow.id,
+          taskID: task.id,
+          nodeID: node.id,
+          agentName: agent.name,
+          outputType: execution.outputType,
+          liveExecution: "true",
+          liveAgentIdentifier: execution.agentIdentifier
+        }
+      })
+    );
+
+    executionLogs.push(
+      createExecutionLog(
+        execution.success ? "SUCCESS" : "ERROR",
+        execution.success
+          ? `OpenClaw executed ${agent.name} (${execution.agentIdentifier}) for node ${node.title || agent.name}.`
+          : `OpenClaw failed while executing ${agent.name} (${execution.agentIdentifier}) for node ${node.title || agent.name}.`,
+        node.id
+      )
+    );
+
+    if (execution.routingAction || (execution.routingTargets?.length ?? 0) > 0) {
+      executionLogs.push(
+        createExecutionLog(
+          "INFO",
+          `Routing decision: ${execution.routingAction ?? "selected"}${
+            execution.routingTargets && execution.routingTargets.length > 0
+              ? ` -> ${execution.routingTargets.join(", ")}`
+              : ""
+          }${execution.routingReason ? ` (${execution.routingReason})` : ""}`,
+          node.id
+        )
+      );
+    }
+
+    if (execution.engineMessage?.trim()) {
+      executionLogs.push(createExecutionLog(execution.success ? "INFO" : "ERROR", execution.engineMessage.trim(), node.id));
+    }
+    if (execution.rawStderr?.trim()) {
+      executionLogs.push(createExecutionLog("WARN", execution.rawStderr.trim(), node.id));
+    }
+
+    if (execution.success) {
+      completedNodeIDs.add(node.id);
+      runtimeAgentStates[agent.id] = "completed";
+    } else {
+      hadFailure = true;
+      runtimeAgentStates[agent.id] = "failed";
+    }
+  }
+
+  for (const checkpoint of approvalCheckpoints) {
+    const sourceNode = nodeMap.get(checkpoint.sourceNodeId);
+    const targetNode = nodeMap.get(checkpoint.targetNodeId);
+    const sourceAgent = sourceNode?.agentID ? agentMap.get(sourceNode.agentID) : null;
+    const targetAgent = targetNode?.agentID ? agentMap.get(targetNode.agentID) : null;
+    if (!sourceNode || !targetNode || !sourceAgent || !targetAgent) {
+      continue;
+    }
+
+    const approvalMessage = createMessageRecord({
+      fromAgentID: sourceAgent.id,
+      toAgentID: targetAgent.id,
+      type: "Notification",
+      content: `Approval required before routing from ${sourceAgent.name} to ${targetAgent.name}.`,
+      status: "Waiting for Approval",
+      requiresApproval: true,
+      metadata: {
+        channel: "workbench",
+        role: "system",
+        kind: "approval",
+        workflowID: workflow.id,
+        taskID: task.id,
+        edgeID: checkpoint.edgeId,
+        sourceNodeID: sourceNode.id,
+        targetNodeID: targetNode.id,
+        sourceAgentName: sourceAgent.name,
+        targetAgentName: targetAgent.name,
+        liveExecution: "true"
+      }
+    });
+    messages.push(approvalMessage);
+    pendingApprovalMessageIDs.push(approvalMessage.id);
+    runtimeAgentStates[targetAgent.id] = "waiting_approval";
+    executionLogs.push(
+      createExecutionLog("WARN", `Routing from ${sourceAgent.name} to ${targetAgent.name} is waiting for approval.`, targetNode.id)
+    );
+  }
+
+  task.metadata.completedNodeIDs = serializeMetadataList(completedNodeIDs);
+  task.metadata.pendingApprovalMessageIDs = serializeMetadataList(pendingApprovalMessageIDs);
+  task.metadata.lastWorkbenchRunAt = String(toSwiftDate());
+
+  const finalTask = updateTaskLifecycle(
+    task,
+    hadFailure || pendingApprovalMessageIDs.length > 0 ? "Blocked" : "Done"
+  );
+
+  const nextWorkspaceIndex =
+    workspaceRecord == null ? project.workspaceIndex : [...project.workspaceIndex, workspaceRecord];
+  const nextMemoryData =
+    workspaceRecord == null
+      ? project.memoryData
+      : {
+          ...project.memoryData,
+          taskExecutionMemories: [
+            ...project.memoryData.taskExecutionMemories,
+            {
+              id: createUUID(),
+              taskID: finalTask.id,
+              workspaceRelativePath: workspaceRecord.workspaceRelativePath,
+              backupLabel: hadFailure
+                ? "live-run-failed"
+                : pendingApprovalMessageIDs.length > 0
+                  ? "live-run-awaiting-approval"
+                  : "live-run",
+              lastCapturedAt: toSwiftDate()
+            }
+          ],
+          lastBackupAt: toSwiftDate()
+        };
+
+  return {
+    project: {
+      ...project,
+      tasks: [...project.tasks, finalTask],
+      messages: [...project.messages, ...messages],
+      executionLogs: [...project.executionLogs, ...executionLogs],
+      executionResults: [...project.executionResults, ...executionResults],
+      workspaceIndex: nextWorkspaceIndex,
+      memoryData: nextMemoryData,
+      runtimeState: {
+        ...project.runtimeState,
+        messageQueue: Array.from(new Set([...project.runtimeState.messageQueue, ...pendingApprovalMessageIDs])),
+        agentStates: {
+          ...project.runtimeState.agentStates,
+          ...runtimeAgentStates
+        },
+        lastUpdated: toSwiftDate()
+      },
+      updatedAt: toSwiftDate()
+    },
+    taskId: finalTask.id,
+    pendingApprovalCount: pendingApprovalMessageIDs.length,
+    completedNodeCount: completedNodeIDs.size
+  };
+}
+
+export function publishWorkbenchPromptWithRealEntryExecution(
+  project: MAProject,
+  workflowId: string,
+  prompt: string,
+  execution: WorkbenchRealEntryExecution
+): WorkbenchPublishResult {
+  return publishWorkbenchPromptWithLiveExecution(project, workflowId, prompt, [
+    {
+      nodeId: execution.entryNodeId,
+      agentId: execution.agentId,
+      agentIdentifier: execution.agentIdentifier,
+      success: execution.success,
+      output: execution.output,
+      outputType: execution.outputType,
+      routingAction: execution.success ? "live_entry" : "live_entry_failed",
+      routingTargets: [],
+      routingReason: execution.engineMessage ?? null,
+      engineMessage: execution.engineMessage,
+      rawStdout: execution.rawStdout,
+      rawStderr: execution.rawStderr
+    }
+  ]);
+}
+
 export function publishWorkbenchPrompt(
   project: MAProject,
   workflowId: string,
@@ -740,6 +1082,237 @@ export function reviewWorkbenchApproval(
 
   return {
     project: nextProject,
+    taskId: finalTask.id,
+    pendingApprovalCount: pendingApprovalMessageIDs.size,
+    completedNodeCount: completedNodeIDs.size
+  };
+}
+
+export function reviewWorkbenchApprovalWithLiveExecution(
+  project: MAProject,
+  messageId: string,
+  decision: "approve" | "reject",
+  executions: WorkbenchLiveNodeExecution[] = [],
+  approvalCheckpoints: WorkbenchLiveApprovalCheckpoint[] = []
+): WorkbenchApprovalResult {
+  if (decision === "reject") {
+    return reviewWorkbenchApproval(project, messageId, decision);
+  }
+
+  const approvalMessage = project.messages.find((message) => message.id === messageId);
+  if (!approvalMessage || approvalMessage.status !== "Waiting for Approval") {
+    return {
+      project,
+      taskId: null,
+      pendingApprovalCount: 0,
+      completedNodeCount: 0
+    };
+  }
+
+  const workflowId = approvalMessage.metadata.workflowID;
+  const taskId = approvalMessage.metadata.taskID;
+  const workflow = project.workflows.find((item) => item.id === workflowId);
+  const task = project.tasks.find((item) => item.id === taskId);
+  if (!workflow || !task) {
+    return {
+      project,
+      taskId: taskId ?? null,
+      pendingApprovalCount: 0,
+      completedNodeCount: 0
+    };
+  }
+
+  const updatedMessages: Message[] = project.messages.map((message) => {
+    if (message.id !== messageId) {
+      return message;
+    }
+
+    return {
+      ...message,
+      status: "Approved",
+      approvedBy: "operator",
+      approvalTimestamp: toSwiftDate(),
+      timestamp: toSwiftDate()
+    };
+  });
+
+  const nodeMap = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+  const agentMap = new Map(project.agents.map((agent) => [agent.id, agent] as const));
+  const completedNodeIDs = new Set(parseMetadataList(task.metadata.completedNodeIDs));
+  const pendingApprovalMessageIDs = new Set(parseMetadataList(task.metadata.pendingApprovalMessageIDs));
+  pendingApprovalMessageIDs.delete(messageId);
+  const runtimeQueue = new Set(project.runtimeState.messageQueue);
+  runtimeQueue.delete(messageId);
+  const runtimeAgentStates: Record<string, string> = {};
+
+  const taskIndex = project.tasks.findIndex((item) => item.id === task.id);
+  const executionLogs: ExecutionLogEntry[] = [
+    createExecutionLog("SUCCESS", `Approved routing request ${messageId.slice(0, 8)} for task ${task.title}.`)
+  ];
+  const additionalMessages: Message[] = [];
+  const additionalResults: ExecutionResult[] = [];
+  let hadFailure = false;
+
+  for (const execution of executions) {
+    const node = nodeMap.get(execution.nodeId);
+    const agent = agentMap.get(execution.agentId);
+    if (!node || !agent) {
+      hadFailure = true;
+      executionLogs.push(
+        createExecutionLog("ERROR", "Skipped a live approval execution because node or agent metadata was missing.", execution.nodeId)
+      );
+      continue;
+    }
+
+    const visibleOutput =
+      execution.output.trim() || execution.engineMessage?.trim() || "OpenClaw returned no visible output.";
+    additionalResults.push(
+      createExecutionResult({
+        nodeID: node.id,
+        agentID: agent.id,
+        status: execution.success ? "Completed" : "Failed",
+        output: visibleOutput,
+        outputType: execution.outputType,
+        routingAction: execution.routingAction ?? null,
+        routingTargets: execution.routingTargets ?? [],
+        routingReason: execution.routingReason ?? execution.engineMessage ?? null
+      })
+    );
+
+    additionalMessages.push(
+      createMessageRecord({
+        fromAgentID: agent.id,
+        toAgentID: agent.id,
+        type: execution.success ? "Notification" : "Data",
+        content: visibleOutput,
+        status: execution.success ? "Delivered" : "Failed",
+        metadata: {
+          channel: "workbench",
+          role: "assistant",
+          kind: "output",
+          workflowID: workflow.id,
+          taskID: task.id,
+          nodeID: node.id,
+          agentName: agent.name,
+          outputType: execution.outputType,
+          liveExecution: "true",
+          liveAgentIdentifier: execution.agentIdentifier
+        }
+      })
+    );
+
+    executionLogs.push(
+      createExecutionLog(
+        execution.success ? "SUCCESS" : "ERROR",
+        execution.success
+          ? `OpenClaw executed ${agent.name} (${execution.agentIdentifier}) after approval.`
+          : `OpenClaw failed while executing ${agent.name} (${execution.agentIdentifier}) after approval.`,
+        node.id
+      )
+    );
+    if (execution.routingAction || (execution.routingTargets?.length ?? 0) > 0) {
+      executionLogs.push(
+        createExecutionLog(
+          "INFO",
+          `Routing decision: ${execution.routingAction ?? "selected"}${
+            execution.routingTargets && execution.routingTargets.length > 0
+              ? ` -> ${execution.routingTargets.join(", ")}`
+              : ""
+          }${execution.routingReason ? ` (${execution.routingReason})` : ""}`,
+          node.id
+        )
+      );
+    }
+    if (execution.engineMessage?.trim()) {
+      executionLogs.push(createExecutionLog(execution.success ? "INFO" : "ERROR", execution.engineMessage.trim(), node.id));
+    }
+    if (execution.rawStderr?.trim()) {
+      executionLogs.push(createExecutionLog("WARN", execution.rawStderr.trim(), node.id));
+    }
+
+    if (execution.success) {
+      completedNodeIDs.add(node.id);
+      runtimeAgentStates[agent.id] = "completed";
+    } else {
+      hadFailure = true;
+      runtimeAgentStates[agent.id] = "failed";
+    }
+  }
+
+  for (const checkpoint of approvalCheckpoints) {
+    const sourceNode = nodeMap.get(checkpoint.sourceNodeId);
+    const targetNode = nodeMap.get(checkpoint.targetNodeId);
+    const sourceAgent = sourceNode?.agentID ? agentMap.get(sourceNode.agentID) : null;
+    const targetAgent = targetNode?.agentID ? agentMap.get(targetNode.agentID) : null;
+    if (!sourceNode || !targetNode || !sourceAgent || !targetAgent) {
+      continue;
+    }
+
+    const approvalRecord = createMessageRecord({
+      fromAgentID: sourceAgent.id,
+      toAgentID: targetAgent.id,
+      type: "Notification",
+      content: `Approval required before routing from ${sourceAgent.name} to ${targetAgent.name}.`,
+      status: "Waiting for Approval",
+      requiresApproval: true,
+      metadata: {
+        channel: "workbench",
+        role: "system",
+        kind: "approval",
+        workflowID: workflow.id,
+        taskID: task.id,
+        edgeID: checkpoint.edgeId,
+        sourceNodeID: sourceNode.id,
+        targetNodeID: targetNode.id,
+        sourceAgentName: sourceAgent.name,
+        targetAgentName: targetAgent.name,
+        liveExecution: "true"
+      }
+    });
+    additionalMessages.push(approvalRecord);
+    pendingApprovalMessageIDs.add(approvalRecord.id);
+    runtimeQueue.add(approvalRecord.id);
+    runtimeAgentStates[targetAgent.id] = "waiting_approval";
+    executionLogs.push(
+      createExecutionLog("WARN", `Routing from ${sourceAgent.name} to ${targetAgent.name} is waiting for approval.`, targetNode.id)
+    );
+  }
+
+  const nextTask = {
+    ...task,
+    metadata: {
+      ...task.metadata,
+      completedNodeIDs: serializeMetadataList(completedNodeIDs),
+      pendingApprovalMessageIDs: serializeMetadataList(pendingApprovalMessageIDs),
+      lastWorkbenchRunAt: String(toSwiftDate())
+    }
+  };
+  const finalTask = updateTaskLifecycle(
+    nextTask,
+    hadFailure || pendingApprovalMessageIDs.size > 0 ? "Blocked" : "Done"
+  );
+
+  const nextTasks = [...project.tasks];
+  nextTasks[taskIndex] = finalTask;
+
+  return {
+    project: {
+      ...project,
+      tasks: nextTasks,
+      messages: [...updatedMessages, ...additionalMessages],
+      executionLogs: [...project.executionLogs, ...executionLogs],
+      executionResults: [...project.executionResults, ...additionalResults],
+      runtimeState: {
+        ...project.runtimeState,
+        messageQueue: Array.from(runtimeQueue),
+        agentStates: {
+          ...project.runtimeState.agentStates,
+          ...runtimeAgentStates
+        },
+        lastUpdated: toSwiftDate()
+      },
+      updatedAt: toSwiftDate()
+    },
     taskId: finalTask.id,
     pendingApprovalCount: pendingApprovalMessageIDs.size,
     completedNodeCount: completedNodeIDs.size

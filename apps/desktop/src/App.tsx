@@ -2,17 +2,25 @@ import {
   addAgentToProject,
   addNodeToWorkflow,
   addTaskToProject,
+  addWorkflowLaunchTestCase,
   addWorkflowToProject,
   assignAgentToNode,
   assignAgentToNodes,
   assignTaskToAgent,
+  calculateWorkflowLaunchVerificationSignature,
   connectWorkflowNodes,
+  evaluateWorkflowLaunchTestCase,
+  finalizeWorkflowLaunchVerification,
   fromSwiftDate,
+  type WorkflowLaunchExecutionObservation,
   generateTasksFromWorkflow,
   moveTaskToStatus,
+  resolveWorkflowLaunchTestCases,
+  runWorkflowLaunchVerification,
   repositionWorkflowNode,
   repositionWorkflowNodes,
   removeEdgeFromWorkflow,
+  removeWorkflowLaunchTestCase,
   removeNodesFromWorkflow,
   removeTaskFromProject,
   removeWorkflowFromProject,
@@ -21,11 +29,15 @@ import {
   renameWorkflowNode,
   reviewWorkbenchApproval,
   publishWorkbenchPrompt,
+  publishWorkbenchPromptWithLiveExecution,
   setWorkflowEdgeApprovalRequired,
   setWorkflowEdgeBidirectional,
   setWorkflowFallbackRoutingPolicy,
+  reviewWorkbenchApprovalWithLiveExecution,
   syncOpenClawState,
   importDetectedOpenClawAgents,
+  updateAgentInProject,
+  updateWorkflowLaunchTestCase,
   updateOpenClawConfig,
   updateOpenClawSessionPaths,
   updateProjectTaskDataSettings,
@@ -39,7 +51,11 @@ import type {
   OpenClawDeploymentKind,
   TaskPriority,
   TaskStatus,
+  Workflow,
+  WorkflowEdge,
   WorkflowFallbackRoutingPolicy,
+  WorkflowLaunchTestCase,
+  WorkflowVerificationStatus,
   WorkflowNodeType
 } from "@multi-agent-flow/domain";
 import {
@@ -102,6 +118,44 @@ function parseTagInput(value: string): string[] {
   );
 }
 
+function parseMetadataCsv(value?: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatCsvInput(values: string[]): string {
+  return values.join(", ");
+}
+
+function parseKeyValueLines(value: string): Record<string, string> {
+  return Object.fromEntries(
+    value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const separatorIndex = line.indexOf("=");
+        if (separatorIndex < 0) {
+          return [line, ""];
+        }
+        return [line.slice(0, separatorIndex).trim(), line.slice(separatorIndex + 1).trim()];
+      })
+      .filter(([key, lineValue]) => key.length > 0 && lineValue.length > 0)
+  );
+}
+
+function formatKeyValueLines(value: Record<string, string>): string {
+  return Object.entries(value)
+    .map(([key, itemValue]) => `${key}=${itemValue}`)
+    .join("\n");
+}
+
 function resolveWorkbenchMessageTone(message: Message): "user" | "assistant" | "system" | "approval" {
   if (message.status === "Waiting for Approval" || message.metadata.kind === "approval") {
     return "approval";
@@ -141,6 +195,122 @@ function resolveEntryAgentNodeIds(project: MAProject, workflowId: string): strin
     .map((node) => node.id);
 
   return Array.from(new Set(candidateIds));
+}
+
+function buildSuggestedLaunchTestCaseDraft(project: MAProject, workflow: Workflow) {
+  const entryNodeIds = new Set(resolveEntryAgentNodeIds(project, workflow.id));
+  const agentNameById = new Map(
+    project.agents.map((agent) => [agent.id, agent.name.trim()] as const)
+  );
+  const requiredAgentNames = Array.from(
+    new Set(
+      workflow.nodes
+        .filter((node) => entryNodeIds.has(node.id) && node.agentID)
+        .map((node) => agentNameById.get(node.agentID ?? ""))
+        .filter((name): name is string => Boolean(name))
+    )
+  );
+  const forbiddenAgentNames = Array.from(
+    new Set(
+      workflow.nodes
+        .filter((node) => node.type === "agent" && !entryNodeIds.has(node.id) && node.agentID)
+        .map((node) => agentNameById.get(node.agentID ?? ""))
+        .filter((name): name is string => Boolean(name))
+    )
+  );
+
+  return {
+    name: `Launch Case ${workflow.launchTestCases.length + 1}`,
+    prompt: "Reply with a concise readiness confirmation unless downstream collaboration is truly required.",
+    requiredAgentNames,
+    forbiddenAgentNames,
+    expectedRoutingActions: [],
+    expectedOutputTypes: ["agent_final_response"],
+    maxSteps: requiredAgentNames.length > 0 ? Math.max(1, requiredAgentNames.length) : null,
+    notes: "Tighten these expectations to match your real launch contract before shipping."
+  };
+}
+
+function resolveRuntimeAgentIdentifier(project: MAProject, agentId: string | null | undefined): string {
+  const agent = project.agents.find((item) => item.id === agentId) ?? null;
+  const candidates = [
+    agent?.openClawDefinition.agentIdentifier,
+    agent?.name,
+    project.openClaw.config.defaultAgent
+  ];
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return "default";
+}
+
+function normalizeRouteKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function buildWorkflowOutgoingEdges(workflow: Workflow): Map<string, WorkflowEdge[]> {
+  const outgoing = new Map<string, WorkflowEdge[]>();
+  for (const edge of workflow.edges) {
+    const current = outgoing.get(edge.fromNodeID) ?? [];
+    current.push(edge);
+    outgoing.set(edge.fromNodeID, current);
+
+    if (edge.isBidirectional) {
+      const reversed = outgoing.get(edge.toNodeID) ?? [];
+      reversed.push({
+        ...edge,
+        fromNodeID: edge.toNodeID,
+        toNodeID: edge.fromNodeID
+      });
+      outgoing.set(edge.toNodeID, reversed);
+    }
+  }
+  return outgoing;
+}
+
+function resolveLiveRoutingTargets(
+  project: MAProject,
+  workflow: Workflow,
+  nodeId: string,
+  routingDecision: OpenClawRoutingDecision | null
+): Array<{ edge: WorkflowEdge; targetNodeId: string }> {
+  const outgoingEdges = buildWorkflowOutgoingEdges(workflow).get(nodeId) ?? [];
+  if (outgoingEdges.length === 0 || !routingDecision) {
+    return [];
+  }
+
+  if (routingDecision.action === "stop") {
+    return [];
+  }
+
+  if (routingDecision.action === "all") {
+    return outgoingEdges.map((edge) => ({ edge, targetNodeId: edge.toNodeID }));
+  }
+
+  const nodeMap = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+  const requested = new Set(routingDecision.targets.map(normalizeRouteKey).filter(Boolean));
+  if (requested.size === 0) {
+    return [];
+  }
+
+  return outgoingEdges.filter((edge) => {
+    const targetNode = nodeMap.get(edge.toNodeID);
+    const targetAgent =
+      project.agents.find((agent) => agent.id === targetNode?.agentID) ?? null;
+    const candidateKeys = [
+      targetNode?.id,
+      targetNode?.id.slice(0, 8),
+      targetNode?.title,
+      targetAgent?.name,
+      targetAgent?.openClawDefinition.agentIdentifier
+    ]
+      .filter((value): value is string => Boolean(value))
+      .map(normalizeRouteKey);
+    return candidateKeys.some((key) => requested.has(key));
+  }).map((edge) => ({ edge, targetNodeId: edge.toNodeID }));
 }
 
 function formatDate(value?: number | null): string {
@@ -200,6 +370,28 @@ function formatRelativeDate(value?: number | null): string {
 
   const diffDays = Math.round(diffHours / 24);
   return `${diffDays}d ago`;
+}
+
+function verificationStatusLabel(status: WorkflowVerificationStatus): string {
+  switch (status) {
+    case "pass":
+      return "Pass";
+    case "warn":
+      return "Warn";
+    case "fail":
+      return "Fail";
+  }
+}
+
+function verificationStatusToken(status: WorkflowVerificationStatus): string {
+  switch (status) {
+    case "pass":
+      return "done";
+    case "warn":
+      return "in-progress";
+    case "fail":
+      return "blocked";
+  }
 }
 
 function computeOpenClawReadiness(project: MAProject) {
@@ -288,6 +480,7 @@ export function App() {
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("Medium");
   const [newTaskAgentId, setNewTaskAgentId] = useState("");
   const [newTaskTags, setNewTaskTags] = useState("");
+  const [verificationAction, setVerificationAction] = useState<"run" | null>(null);
   const [workbenchPrompt, setWorkbenchPrompt] = useState("");
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const [workbenchAction, setWorkbenchAction] = useState<"publish" | `approval:${string}` | null>(null);
@@ -305,6 +498,16 @@ export function App() {
   const filePath = projectState?.filePath ?? null;
   const activeWorkflow =
     project?.workflows.find((workflow) => workflow.id === activeWorkflowId) ?? project?.workflows[0] ?? null;
+  const launchVerificationReport = activeWorkflow?.lastLaunchVerificationReport ?? null;
+  const currentLaunchVerificationSignature =
+    project && activeWorkflow
+      ? calculateWorkflowLaunchVerificationSignature(activeWorkflow, project.agents)
+      : null;
+  const launchVerificationIsStale = Boolean(
+    launchVerificationReport &&
+      currentLaunchVerificationSignature &&
+      launchVerificationReport.workflowSignature !== currentLaunchVerificationSignature
+  );
   const selectedNode =
     selectedNodeIds.length === 1
       ? activeWorkflow?.nodes.find((node) => node.id === selectedNodeIds[0]) ?? null
@@ -571,6 +774,155 @@ export function App() {
     }
   }
 
+  async function runLiveWorkflowExecutions(
+    currentProject: MAProject,
+    workflow: Workflow,
+    prompt: string,
+    initialRoutes: Array<{ edge: WorkflowEdge | null; targetNodeId: string }>,
+    seedVisitCounts?: Map<string, number>
+  ) {
+    const liveExecutions: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3] = [];
+    const approvalCheckpoints: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4] = [];
+    const visitCounts = seedVisitCounts ? new Map(seedVisitCounts) : new Map<string, number>();
+    const queue = [...initialRoutes];
+
+    while (queue.length > 0) {
+      const nextRoute = queue.shift();
+      if (!nextRoute) {
+        continue;
+      }
+
+      const targetNode = workflow.nodes.find((node) => node.id === nextRoute.targetNodeId) ?? null;
+      const targetAgent =
+        currentProject.agents.find((agent) => agent.id === targetNode?.agentID) ?? null;
+
+      if (!targetNode || !targetAgent) {
+        continue;
+      }
+
+      if (nextRoute.edge?.requiresApproval) {
+        approvalCheckpoints.push({
+          edgeId: nextRoute.edge.id,
+          sourceNodeId: nextRoute.edge.fromNodeID,
+          targetNodeId: nextRoute.targetNodeId
+        });
+        continue;
+      }
+
+      const allowedVisits = Math.max(1, targetNode.loopEnabled ? targetNode.maxIterations : 1);
+      const nextVisitCount = (visitCounts.get(targetNode.id) ?? 0) + 1;
+      if (nextVisitCount > allowedVisits) {
+        continue;
+      }
+      visitCounts.set(targetNode.id, nextVisitCount);
+
+      const execution = await requireDesktopApi().executeOpenClawAgent(currentProject.openClaw.config, {
+        agentIdentifier: resolveRuntimeAgentIdentifier(currentProject, targetAgent.id),
+        message: prompt,
+        sessionID: `workbench-${currentProject.runtimeState.sessionID}-${workflow.id}-${targetAgent.id}`,
+        timeoutSeconds: currentProject.openClaw.config.timeout
+      });
+
+      liveExecutions.push({
+        nodeId: targetNode.id,
+        agentId: targetAgent.id,
+        agentIdentifier: execution.agentIdentifier,
+        success: execution.success,
+        output: execution.output,
+        outputType: execution.outputType,
+        routingAction: execution.routingDecision?.action ?? "stop",
+        routingTargets: execution.routingDecision?.targets ?? [],
+        routingReason: execution.routingDecision?.reason ?? execution.message,
+        engineMessage: execution.message,
+        rawStdout: execution.rawStdout,
+        rawStderr: execution.rawStderr
+      });
+
+      if (!execution.success) {
+        continue;
+      }
+
+      const nextTargets = resolveLiveRoutingTargets(
+        currentProject,
+        workflow,
+        targetNode.id,
+        execution.routingDecision
+      );
+      for (const nextTarget of nextTargets) {
+        queue.push({ edge: nextTarget.edge, targetNodeId: nextTarget.targetNodeId });
+      }
+    }
+
+    return {
+      liveExecutions,
+      approvalCheckpoints
+    };
+  }
+
+  async function runLiveWorkflowCase(currentProject: MAProject, workflow: Workflow, prompt: string) {
+    const entryNodeIds = resolveEntryAgentNodeIds(currentProject, workflow.id);
+    const leadEntryNode = workflow.nodes.find((node) => node.id === entryNodeIds[0]) ?? null;
+    const leadAgent =
+      currentProject.agents.find((agent) => agent.id === leadEntryNode?.agentID) ?? null;
+
+    if (!leadEntryNode || !leadAgent) {
+      return {
+        liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
+        approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
+        errorMessage: "No executable entry agent was resolved for this workflow."
+      };
+    }
+
+    const liveExecution = await requireDesktopApi().executeOpenClawAgent(currentProject.openClaw.config, {
+      agentIdentifier: resolveRuntimeAgentIdentifier(currentProject, leadAgent.id),
+      message: prompt,
+      sessionID: `workbench-${currentProject.runtimeState.sessionID}-${workflow.id}-${leadAgent.id}`,
+      timeoutSeconds: currentProject.openClaw.config.timeout
+    });
+
+    const initialExecution: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3][number] = {
+      nodeId: leadEntryNode.id,
+      agentId: leadAgent.id,
+      agentIdentifier: liveExecution.agentIdentifier,
+      success: liveExecution.success,
+      output: liveExecution.output,
+      outputType: liveExecution.outputType,
+      routingAction: liveExecution.routingDecision?.action ?? (liveExecution.success ? "stop" : "live_entry_failed"),
+      routingTargets: liveExecution.routingDecision?.targets ?? [],
+      routingReason: liveExecution.routingDecision?.reason ?? liveExecution.message,
+      engineMessage: liveExecution.message,
+      rawStdout: liveExecution.rawStdout,
+      rawStderr: liveExecution.rawStderr
+    };
+
+    if (!liveExecution.success) {
+      return {
+        liveExecutions: [initialExecution],
+        approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
+        errorMessage: liveExecution.message
+      };
+    }
+
+    const downstreamWork = await runLiveWorkflowExecutions(
+      currentProject,
+      workflow,
+      prompt,
+      resolveLiveRoutingTargets(currentProject, workflow, leadEntryNode.id, liveExecution.routingDecision).map(
+        (target) => ({
+          edge: target.edge,
+          targetNodeId: target.targetNodeId
+        })
+      ),
+      new Map([[leadEntryNode.id, 1]])
+    );
+
+    return {
+      liveExecutions: [initialExecution, ...downstreamWork.liveExecutions],
+      approvalCheckpoints: downstreamWork.approvalCheckpoints,
+      errorMessage: null
+    };
+  }
+
   async function refreshRecentProjects() {
     const recent = await requireDesktopApi().listRecentProjects();
     startTransition(() => {
@@ -779,6 +1131,160 @@ export function App() {
       (current) => setWorkflowFallbackRoutingPolicy(current, activeWorkflow.id, nextPolicy),
       "Updated fallback routing policy."
     );
+  }
+
+  function handleUpdateAgent(
+    agentId: string,
+    patch: {
+      name?: string;
+      identity?: string;
+      description?: string;
+      soulMD?: string;
+      capabilities?: string[];
+      openClawDefinition?: Partial<MAProject["agents"][number]["openClawDefinition"]>;
+    }
+  ) {
+    updateProject((current) => updateAgentInProject(current, agentId, patch), undefined);
+  }
+
+  function handleAddLaunchTestCase() {
+    if (!project || !activeWorkflow) {
+      return;
+    }
+
+    updateProject((current) => {
+      const workflow = current.workflows.find((item) => item.id === activeWorkflow.id) ?? null;
+      if (!workflow) {
+        return current;
+      }
+
+      return addWorkflowLaunchTestCase(current, workflow.id, buildSuggestedLaunchTestCaseDraft(current, workflow));
+    }, "Added a saved launch verification case.");
+  }
+
+  function handleUpdateLaunchTestCase(
+    testCaseId: string,
+    patch: {
+      name?: string;
+      prompt?: string;
+      requiredAgentNames?: string[];
+      forbiddenAgentNames?: string[];
+      expectedRoutingActions?: string[];
+      expectedOutputTypes?: string[];
+      maxSteps?: number | null;
+      notes?: string;
+    }
+  ) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject((current) => updateWorkflowLaunchTestCase(current, activeWorkflow.id, testCaseId, patch), undefined);
+  }
+
+  function handleRemoveLaunchTestCase(testCaseId: string) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => removeWorkflowLaunchTestCase(current, activeWorkflow.id, testCaseId),
+      "Removed the saved launch verification case."
+    );
+  }
+
+  async function handleRunLaunchVerification() {
+    if (!project || !activeWorkflow) {
+      return;
+    }
+
+    setVerificationAction("run");
+    setWorkbenchError(null);
+    try {
+      const seeded = runWorkflowLaunchVerification(project, activeWorkflow.id);
+      if (!seeded.report) {
+        setWorkbenchError("The workflow could not be prepared for launch verification.");
+        return;
+      }
+
+      commitProject(seeded.project, "Started launch verification.", { recordHistory: false });
+
+      if (seeded.report.status === "fail") {
+        setStatus("Launch verification stopped on static blockers.");
+        return;
+      }
+
+      const verificationProject = seeded.project;
+      const verificationWorkflow =
+        verificationProject.workflows.find((workflow) => workflow.id === activeWorkflow.id) ?? null;
+      if (!verificationWorkflow) {
+        setWorkbenchError("The workflow disappeared before verification could continue.");
+        return;
+      }
+
+      const testCases = resolveWorkflowLaunchTestCases(verificationProject, verificationWorkflow.id);
+      if (testCases.length === 0) {
+        const finalized = finalizeWorkflowLaunchVerification(
+          verificationProject,
+          verificationWorkflow.id,
+          [],
+          []
+        );
+        commitProject(finalized.project, "Launch verification completed with static checks only.", {
+          recordHistory: false
+        });
+        return;
+      }
+
+      const caseReports: ReturnType<typeof evaluateWorkflowLaunchTestCase>[] = [];
+      const runtimeFindings: string[] = [];
+
+      for (const testCase of testCases) {
+        const liveCase = await runLiveWorkflowCase(verificationProject, verificationWorkflow, testCase.prompt);
+        const approvalCheckpoints = liveCase.approvalCheckpoints ?? [];
+        const observations: WorkflowLaunchExecutionObservation[] = liveCase.liveExecutions.map((execution) => ({
+          agentID: execution.agentId,
+          status: execution.success ? "Completed" : "Failed",
+          outputType: execution.outputType,
+          routingAction: execution.routingAction ?? null,
+          routingTargets: execution.routingTargets ?? []
+        }));
+
+        const caseRuntimeFindings: string[] = [];
+        if (liveCase.errorMessage) {
+          caseRuntimeFindings.push(`${testCase.name}: ${liveCase.errorMessage}`);
+        }
+        if (approvalCheckpoints.length > 0) {
+          caseRuntimeFindings.push(
+            `${testCase.name}: encountered ${approvalCheckpoints.length} approval checkpoint(s) during verification.`
+          );
+        }
+        if (liveCase.liveExecutions.some((execution) => !execution.success)) {
+          caseRuntimeFindings.push(`${testCase.name}: one or more nodes failed during runtime verification.`);
+        }
+
+        runtimeFindings.push(...caseRuntimeFindings);
+        caseReports.push(
+          evaluateWorkflowLaunchTestCase(
+            verificationProject,
+            verificationWorkflow.id,
+            testCase,
+            observations,
+            caseRuntimeFindings
+          )
+        );
+      }
+
+      const finalized = finalizeWorkflowLaunchVerification(
+        verificationProject,
+        verificationWorkflow.id,
+        runtimeFindings,
+        caseReports
+      );
+      commitProject(finalized.project, "Launch verification report refreshed.", { recordHistory: false });
+    } finally {
+      setVerificationAction(null);
+    }
   }
 
   function handleRemoveActiveWorkflow() {
@@ -1378,7 +1884,7 @@ export function App() {
     }
   }
 
-  function handlePublishWorkbenchPrompt() {
+  async function handlePublishWorkbenchPrompt() {
     if (!project || !activeWorkflow) {
       return;
     }
@@ -1402,6 +1908,36 @@ export function App() {
     setWorkbenchAction("publish");
     setWorkbenchError(null);
     try {
+      const liveCase = await runLiveWorkflowCase(project, activeWorkflow, trimmedPrompt);
+      if (liveCase.liveExecutions.length > 0 && liveCase.liveExecutions[0]?.success) {
+        const liveResult = publishWorkbenchPromptWithLiveExecution(
+          project,
+          activeWorkflow.id,
+          trimmedPrompt,
+          liveCase.liveExecutions,
+          liveCase.approvalCheckpoints
+        );
+
+        if (!liveResult.taskId) {
+          setWorkbenchError("Live execution finished, but the workbench receipt could not be recorded.");
+          return;
+        }
+
+        commitProject(
+          liveResult.project,
+          liveResult.pendingApprovalCount > 0
+            ? `Published workbench task with ${liveResult.completedNodeCount} real execution receipt(s) and ${liveResult.pendingApprovalCount} approval checkpoint(s).`
+            : `Published workbench task with ${liveResult.completedNodeCount} real OpenClaw execution receipt(s).`
+        );
+        setWorkbenchPrompt("");
+        setSelectedTaskId(liveResult.taskId);
+        return;
+      }
+
+      if (liveCase.errorMessage) {
+        setStatus(`Live OpenClaw execution was unavailable. Falling back to synthetic receipt: ${liveCase.errorMessage}`);
+      }
+
       const result = publishWorkbenchPrompt(project, activeWorkflow.id, trimmedPrompt);
       if (!result.taskId) {
         setWorkbenchError("Workbench publish could not resolve an executable entry agent.");
@@ -1421,7 +1957,7 @@ export function App() {
     }
   }
 
-  function handleWorkbenchApproval(messageId: string, decision: "approve" | "reject") {
+  async function handleWorkbenchApproval(messageId: string, decision: "approve" | "reject") {
     if (!project) {
       return;
     }
@@ -1429,6 +1965,51 @@ export function App() {
     setWorkbenchAction(`approval:${messageId}`);
     setWorkbenchError(null);
     try {
+      const approvalMessage = project.messages.find((message) => message.id === messageId) ?? null;
+      const linkedTask =
+        project.tasks.find((task) => task.id === approvalMessage?.metadata.taskID) ?? null;
+      const linkedWorkflow =
+        project.workflows.find((workflow) => workflow.id === approvalMessage?.metadata.workflowID) ?? null;
+      const targetNode =
+        linkedWorkflow?.nodes.find((node) => node.id === approvalMessage?.metadata.targetNodeID) ?? null;
+
+      if (
+        decision === "approve" &&
+        approvalMessage &&
+        linkedTask?.metadata.liveExecution === "true" &&
+        linkedWorkflow &&
+        targetNode?.agentID &&
+        project.openClaw.isConnected
+      ) {
+        const completedNodeIds = parseMetadataCsv(linkedTask.metadata.completedNodeIDs);
+        const visitCounts = new Map(completedNodeIds.map((nodeId) => [nodeId, 1] as const));
+        const downstreamWork = await runLiveWorkflowExecutions(
+          project,
+          linkedWorkflow,
+          linkedTask.metadata.prompt ?? linkedTask.description,
+          [{ edge: null, targetNodeId: targetNode.id }],
+          visitCounts
+        );
+        const liveApprovalResult = reviewWorkbenchApprovalWithLiveExecution(
+          project,
+          messageId,
+          decision,
+          downstreamWork.liveExecutions,
+          downstreamWork.approvalCheckpoints
+        );
+
+        commitProject(
+          liveApprovalResult.project,
+          liveApprovalResult.pendingApprovalCount > 0
+            ? `Approval granted. ${liveApprovalResult.completedNodeCount} node(s) completed and ${liveApprovalResult.pendingApprovalCount} checkpoint(s) remain.`
+            : `Approval granted and downstream OpenClaw execution completed.`
+        );
+        if (liveApprovalResult.taskId) {
+          setSelectedTaskId(liveApprovalResult.taskId);
+        }
+        return;
+      }
+
       const result = reviewWorkbenchApproval(project, messageId, decision);
       commitProject(
         result.project,
@@ -1727,10 +2308,123 @@ export function App() {
               {project.agents.length > 0 ? (
                 <div className="listStack">
                   {project.agents.map((agent) => (
-                    <div key={agent.id} className="listCard">
-                      <strong>{agent.name}</strong>
-                      <span>{agent.identity}</span>
-                      <span>{agent.openClawDefinition.modelIdentifier}</span>
+                    <div key={agent.id} className="inspectorCard">
+                      <div className="dashboardListItemHeader">
+                        <strong>{agent.name}</strong>
+                        <span>{agent.identity}</span>
+                      </div>
+                      <div className="inspectorGrid">
+                        <label className="field compactField">
+                          <span>Agent name</span>
+                          <input
+                            value={agent.name}
+                            onChange={(event) => handleUpdateAgent(agent.id, { name: event.target.value })}
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>Identity</span>
+                          <input
+                            value={agent.identity}
+                            onChange={(event) => handleUpdateAgent(agent.id, { identity: event.target.value })}
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>Capabilities</span>
+                          <input
+                            value={formatCsvInput(agent.capabilities)}
+                            placeholder="basic, planner, reviewer"
+                            onChange={(event) =>
+                              handleUpdateAgent(agent.id, { capabilities: parseTagInput(event.target.value) })
+                            }
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>OpenClaw agent ID</span>
+                          <input
+                            value={agent.openClawDefinition.agentIdentifier}
+                            onChange={(event) =>
+                              handleUpdateAgent(agent.id, {
+                                openClawDefinition: { agentIdentifier: event.target.value }
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>Model</span>
+                          <input
+                            value={agent.openClawDefinition.modelIdentifier}
+                            onChange={(event) =>
+                              handleUpdateAgent(agent.id, {
+                                openClawDefinition: { modelIdentifier: event.target.value }
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>Runtime profile</span>
+                          <input
+                            value={agent.openClawDefinition.runtimeProfile}
+                            placeholder="default"
+                            onChange={(event) =>
+                              handleUpdateAgent(agent.id, {
+                                openClawDefinition: { runtimeProfile: event.target.value }
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>Memory backup path</span>
+                          <input
+                            value={agent.openClawDefinition.memoryBackupPath ?? ""}
+                            placeholder="/path/to/state"
+                            onChange={(event) =>
+                              handleUpdateAgent(agent.id, {
+                                openClawDefinition: { memoryBackupPath: event.target.value || null }
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field compactField">
+                          <span>SOUL source path</span>
+                          <input
+                            value={agent.openClawDefinition.soulSourcePath ?? ""}
+                            placeholder="/path/to/SOUL.md"
+                            onChange={(event) =>
+                              handleUpdateAgent(agent.id, {
+                                openClawDefinition: { soulSourcePath: event.target.value || null }
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+                      <label className="field">
+                        <span>Description</span>
+                        <textarea
+                          value={agent.description}
+                          placeholder="Describe this agent's responsibility."
+                          onChange={(event) => handleUpdateAgent(agent.id, { description: event.target.value })}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Environment overrides</span>
+                        <textarea
+                          value={formatKeyValueLines(agent.openClawDefinition.environment)}
+                          placeholder={"OPENAI_API_KEY=...\nOPENCLAW_PROFILE=prod"}
+                          onChange={(event) =>
+                            handleUpdateAgent(agent.id, {
+                              openClawDefinition: { environment: parseKeyValueLines(event.target.value) }
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>SOUL prompt</span>
+                        <textarea
+                          value={agent.soulMD}
+                          placeholder="# Agent prompt"
+                          onChange={(event) => handleUpdateAgent(agent.id, { soulMD: event.target.value })}
+                        />
+                      </label>
                     </div>
                   ))}
                 </div>
@@ -1826,6 +2520,267 @@ export function App() {
                     <span>Zoom: {Math.round(canvasZoom * 100)}%</span>
                     <span>Undo: {projectHistory.past.length}</span>
                     <span>Selected nodes: {selectedNodeIds.length}</span>
+                  </div>
+
+                  <div className="formStack">
+                    <span className="sectionLabel">Launch verification</span>
+                    <div className="inspectorCard">
+                      <div className="dashboardPanelHeader">
+                        <h3>Preflight check</h3>
+                        <span>{activeWorkflow.launchTestCases.length} saved case(s)</span>
+                      </div>
+                      <p className="canvasHint">
+                        This desktop pass checks structure, entry routing, agent bindings, and other launch blockers before execution.
+                      </p>
+                      <div className="taskMeta">
+                        <span>
+                          {activeWorkflow.launchTestCases.length > 0
+                            ? `${activeWorkflow.launchTestCases.length} saved case(s) will run.`
+                            : "No saved cases yet. Built-in smoke cases will run until you add workflow-specific contracts."}
+                        </span>
+                        {launchVerificationIsStale ? <span>Current report is stale and should be rerun.</span> : null}
+                      </div>
+                      <div className="inspectorActions">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleRunLaunchVerification();
+                          }}
+                          disabled={verificationAction !== null}
+                        >
+                          {verificationAction === "run" ? "Running..." : "Run launch verification"}
+                        </button>
+                        <button type="button" onClick={handleAddLaunchTestCase}>
+                          Add saved case
+                        </button>
+                      </div>
+                      {activeWorkflow.launchTestCases.length > 0 ? (
+                        <div className="dashboardList">
+                          {activeWorkflow.launchTestCases.map((testCase: WorkflowLaunchTestCase) => (
+                            <article key={testCase.id} className="dashboardListItem">
+                              <div className="dashboardListItemHeader">
+                                <strong>{testCase.name}</strong>
+                                <button
+                                  type="button"
+                                  className="ghostDangerButton"
+                                  onClick={() => handleRemoveLaunchTestCase(testCase.id)}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <label className="field">
+                                <span>Prompt</span>
+                                <textarea
+                                  value={testCase.prompt}
+                                  placeholder="Describe the prompt this workflow must handle during launch."
+                                  onChange={(event) =>
+                                    handleUpdateLaunchTestCase(testCase.id, { prompt: event.target.value })
+                                  }
+                                />
+                              </label>
+                              <div className="inspectorGrid">
+                                <label className="field compactField">
+                                  <span>Case name</span>
+                                  <input
+                                    value={testCase.name}
+                                    placeholder="Launch Case"
+                                    onChange={(event) =>
+                                      handleUpdateLaunchTestCase(testCase.id, { name: event.target.value })
+                                    }
+                                  />
+                                </label>
+                                <label className="field compactField">
+                                  <span>Required agents</span>
+                                  <input
+                                    value={formatCsvInput(testCase.requiredAgentNames)}
+                                    placeholder="Coordinator, Planner"
+                                    onChange={(event) =>
+                                      handleUpdateLaunchTestCase(testCase.id, {
+                                        requiredAgentNames: parseTagInput(event.target.value)
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="field compactField">
+                                  <span>Forbidden agents</span>
+                                  <input
+                                    value={formatCsvInput(testCase.forbiddenAgentNames)}
+                                    placeholder="Escalation Bot"
+                                    onChange={(event) =>
+                                      handleUpdateLaunchTestCase(testCase.id, {
+                                        forbiddenAgentNames: parseTagInput(event.target.value)
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="field compactField">
+                                  <span>Routing actions</span>
+                                  <input
+                                    value={formatCsvInput(testCase.expectedRoutingActions)}
+                                    placeholder="stop, route"
+                                    onChange={(event) =>
+                                      handleUpdateLaunchTestCase(testCase.id, {
+                                        expectedRoutingActions: parseTagInput(event.target.value)
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="field compactField">
+                                  <span>Output types</span>
+                                  <input
+                                    value={formatCsvInput(testCase.expectedOutputTypes)}
+                                    placeholder="agent_final_response"
+                                    onChange={(event) =>
+                                      handleUpdateLaunchTestCase(testCase.id, {
+                                        expectedOutputTypes: parseTagInput(event.target.value)
+                                      })
+                                    }
+                                  />
+                                </label>
+                                <label className="field compactField">
+                                  <span>Max steps</span>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    value={testCase.maxSteps ?? ""}
+                                    placeholder="Optional"
+                                    onChange={(event) =>
+                                      handleUpdateLaunchTestCase(testCase.id, {
+                                        maxSteps:
+                                          event.target.value.trim().length === 0
+                                            ? null
+                                            : Number(event.target.value)
+                                      })
+                                    }
+                                  />
+                                </label>
+                              </div>
+                              <label className="field">
+                                <span>Notes</span>
+                                <textarea
+                                  value={testCase.notes}
+                                  placeholder="Capture the specific contract you expect this workflow to keep."
+                                  onChange={(event) =>
+                                    handleUpdateLaunchTestCase(testCase.id, { notes: event.target.value })
+                                  }
+                                />
+                              </label>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="emptyState">
+                          Save your own launch cases here when you want workflow-specific prompts, routing expectations, and step limits instead of the built-in smoke coverage.
+                        </p>
+                      )}
+
+                      {launchVerificationReport ? (
+                        <div className="dashboardList">
+                          <article className="dashboardListItem">
+                            <div className="dashboardListItemHeader">
+                              <strong>Latest report</strong>
+                              <span
+                                className={`taskPriorityBadge taskPriority-${toClassToken(
+                                  verificationStatusToken(launchVerificationReport.status)
+                                )}`}
+                              >
+                                {verificationStatusLabel(launchVerificationReport.status)}
+                              </span>
+                            </div>
+                            <div className="taskMeta">
+                              <span>Started {formatDate(launchVerificationReport.startedAt)}</span>
+                              <span>Completed {formatDate(launchVerificationReport.completedAt)}</span>
+                              <span>Signature {launchVerificationReport.workflowSignature.slice(0, 20)}...</span>
+                              <span>{launchVerificationReport.testCaseReports.length} runtime case result(s)</span>
+                            </div>
+                            {launchVerificationIsStale ? (
+                              <p className="dashboardEventBody">
+                                This report no longer matches the current workflow or saved launch cases. Re-run launch verification to refresh it.
+                              </p>
+                            ) : null}
+                            {launchVerificationReport.staticFindings.length > 0 ? (
+                              <div className="dashboardChecklist">
+                                {launchVerificationReport.staticFindings.map((finding) => (
+                                  <div key={finding} className="dashboardChecklistItem">
+                                    <strong>
+                                      {launchVerificationReport.status === "fail" ? "Blocker" : "Attention"}
+                                    </strong>
+                                    <span>{finding}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="emptyState">No launch blockers were found in the current workflow structure.</p>
+                            )}
+                            {launchVerificationReport.runtimeFindings.length > 0 ? (
+                              <div className="dashboardList">
+                                {launchVerificationReport.runtimeFindings.map((finding) => (
+                                  <article key={finding} className="dashboardListItem">
+                                    <p className="dashboardEventBody">{finding}</p>
+                                  </article>
+                                ))}
+                              </div>
+                            ) : null}
+                            {launchVerificationReport.testCaseReports.length > 0 ? (
+                              <div className="dashboardList">
+                                {launchVerificationReport.testCaseReports.map((caseReport) => (
+                                  <article key={caseReport.id} className="dashboardListItem">
+                                    <div className="dashboardListItemHeader">
+                                      <strong>{caseReport.name}</strong>
+                                      <span
+                                        className={`taskPriorityBadge taskPriority-${toClassToken(
+                                          verificationStatusToken(caseReport.status)
+                                        )}`}
+                                      >
+                                        {verificationStatusLabel(caseReport.status)}
+                                      </span>
+                                    </div>
+                                    <p className="dashboardEventBody">{caseReport.prompt}</p>
+                                    <div className="taskMeta">
+                                      <span>{caseReport.actualStepCount} step(s)</span>
+                                      <span>
+                                        Agents {caseReport.actualAgents.length > 0 ? caseReport.actualAgents.join(", ") : "none"}
+                                      </span>
+                                      <span>
+                                        Routes{" "}
+                                        {caseReport.actualRoutingActions.length > 0
+                                          ? caseReport.actualRoutingActions.join(", ")
+                                          : "none"}
+                                      </span>
+                                      <span>
+                                        Outputs{" "}
+                                        {caseReport.actualOutputTypes.length > 0
+                                          ? caseReport.actualOutputTypes.join(", ")
+                                          : "none"}
+                                      </span>
+                                    </div>
+                                    {caseReport.notes.length > 0 ? (
+                                      <div className="dashboardChecklist">
+                                        {caseReport.notes.map((note, index) => (
+                                          <div
+                                            key={`${caseReport.id}-${index}-${note}`}
+                                            className="dashboardChecklistItem"
+                                          >
+                                            <strong>{caseReport.status === "fail" ? "Issue" : "Note"}</strong>
+                                            <span>{note}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className="emptyState">This case completed without additional findings.</p>
+                                    )}
+                                  </article>
+                                ))}
+                              </div>
+                            ) : null}
+                          </article>
+                        </div>
+                      ) : (
+                        <p className="emptyState">
+                          No launch verification report yet. Run the preflight check to record a workflow readiness snapshot.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
                   <div className="formStack">
@@ -2552,7 +3507,7 @@ export function App() {
                               <div className="taskQuickActions">
                                 <button
                                   type="button"
-                                  onClick={() => handleWorkbenchApproval(message.id, "approve")}
+                                  onClick={() => void handleWorkbenchApproval(message.id, "approve")}
                                   disabled={workbenchAction === approvalActionKey}
                                 >
                                   {workbenchAction === approvalActionKey ? "Working..." : "Approve"}
@@ -2560,7 +3515,7 @@ export function App() {
                                 <button
                                   type="button"
                                   className="dangerButton"
-                                  onClick={() => handleWorkbenchApproval(message.id, "reject")}
+                                  onClick={() => void handleWorkbenchApproval(message.id, "reject")}
                                   disabled={workbenchAction === approvalActionKey}
                                 >
                                   Reject
@@ -2595,7 +3550,7 @@ export function App() {
                     <div className="inspectorActions">
                       <button
                         type="button"
-                        onClick={handlePublishWorkbenchPrompt}
+                        onClick={() => void handlePublishWorkbenchPrompt()}
                         disabled={workbenchAction !== null}
                       >
                         {workbenchAction === "publish" ? "Publishing..." : "Publish to workflow"}
@@ -2628,7 +3583,7 @@ export function App() {
                               <div className="taskQuickActions">
                                 <button
                                   type="button"
-                                  onClick={() => handleWorkbenchApproval(message.id, "approve")}
+                                  onClick={() => void handleWorkbenchApproval(message.id, "approve")}
                                   disabled={workbenchAction === approvalActionKey}
                                 >
                                   {workbenchAction === approvalActionKey ? "Working..." : "Approve"}
@@ -2636,7 +3591,7 @@ export function App() {
                                 <button
                                   type="button"
                                   className="dangerButton"
-                                  onClick={() => handleWorkbenchApproval(message.id, "reject")}
+                                  onClick={() => void handleWorkbenchApproval(message.id, "reject")}
                                   disabled={workbenchAction === approvalActionKey}
                                 >
                                   Reject

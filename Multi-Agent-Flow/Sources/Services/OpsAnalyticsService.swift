@@ -133,7 +133,7 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         }
     }
 
-    func formattedValue(_ value: Double) -> String {
+    nonisolated func formattedValue(_ value: Double) -> String {
         switch self {
         case .workflowReliability, .agentEngagement, .memoryDiscipline, .cronReliability:
             return "\(Int(value.rounded()))%"
@@ -156,8 +156,8 @@ struct OpsMetricHistorySeries: Identifiable {
 
     var id: String { metric.id }
 
-    var latestPoint: OpsMetricHistoryPoint? { points.last }
-    var previousPoint: OpsMetricHistoryPoint? { points.dropLast().last }
+    nonisolated var latestPoint: OpsMetricHistoryPoint? { points.last }
+    nonisolated var previousPoint: OpsMetricHistoryPoint? { points.dropLast().last }
 }
 
 struct OpsTraceRelatedSpan: Identifiable {

@@ -724,6 +724,21 @@ body {
   color: #b42318;
 }
 
+.taskPriority-done {
+  background: rgba(15, 118, 110, 0.14);
+  color: #0f766e;
+}
+
+.taskPriority-in-progress {
+  background: rgba(180, 83, 9, 0.14);
+  color: #b45309;
+}
+
+.taskPriority-blocked {
+  background: rgba(180, 35, 24, 0.14);
+  color: #b42318;
+}
+
 .taskQuickActions {
   display: flex;
   flex-wrap: wrap;

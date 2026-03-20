@@ -13,6 +13,7 @@ import {
   toSwiftDate
 } from "@multi-agent-flow/core";
 import type {
+  ExecutionOutputType,
   MAProject,
   OpenClawConfig,
   ProjectOpenClawAgentRecord,
@@ -68,6 +69,31 @@ interface OpenClawActionResult {
   availableAgents: string[];
   activeAgents: ProjectOpenClawAgentRecord[];
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+}
+
+interface OpenClawAgentExecutionRequest {
+  agentIdentifier: string;
+  message: string;
+  sessionID?: string | null;
+  thinkingLevel?: string | null;
+  timeoutSeconds?: number | null;
+}
+
+interface OpenClawRoutingDecision {
+  action: "stop" | "selected" | "all";
+  targets: string[];
+  reason: string | null;
+}
+
+interface OpenClawAgentExecutionResult {
+  success: boolean;
+  message: string;
+  agentIdentifier: string;
+  output: string;
+  outputType: ExecutionOutputType;
+  rawStdout: string;
+  rawStderr: string;
+  routingDecision: OpenClawRoutingDecision | null;
 }
 
 interface DirectoryInspection {
@@ -476,6 +502,333 @@ async function runCommand(command: string, args: string[], options?: { timeoutMs
   });
 }
 
+async function runOpenClawDeploymentCommand(
+  config: OpenClawConfig,
+  args: string[],
+  options?: { timeoutMs?: number }
+) {
+  switch (config.deploymentKind) {
+    case "local":
+      return runCommand(resolveLocalBinaryPath(config), args, options);
+    case "container": {
+      const engine = config.container.engine.trim() || "docker";
+      const containerName = config.container.containerName.trim();
+      if (!containerName) {
+        throw new Error("Container name is required.");
+      }
+      return runCommand(engine, ["exec", containerName, "openclaw", ...args], options);
+    }
+    case "remoteServer":
+      throw new Error("Remote server mode does not support direct OpenClaw CLI execution yet.");
+  }
+}
+
+function normalizedNonEmpty(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function firstNonEmptyString(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function stringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => {
+        if (typeof item === "string") {
+          return normalizedNonEmpty(item) ? [normalizedNonEmpty(item) as string] : [];
+        }
+        if (item && typeof item === "object") {
+          const candidate = firstNonEmptyString(item as Record<string, unknown>, [
+            "name",
+            "agent",
+            "agent_id",
+            "id",
+            "node",
+            "target"
+          ]);
+          return candidate ? [candidate] : [];
+        }
+        return [];
+      })
+      .filter((item): item is string => typeof item === "string");
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function extractJSONPayloads(text: string): string[] {
+  const chars = Array.from(text);
+  const payloads: string[] = [];
+
+  for (let startIndex = 0; startIndex < chars.length; startIndex += 1) {
+    const opening = chars[startIndex];
+    if (opening !== "{" && opening !== "[") {
+      continue;
+    }
+
+    const stack = [opening];
+    let inString = false;
+    let escaping = false;
+
+    for (let index = startIndex + 1; index < chars.length; index += 1) {
+      const char = chars[index];
+
+      if (inString) {
+        if (escaping) {
+          escaping = false;
+        } else if (char === "\\") {
+          escaping = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = true;
+        continue;
+      }
+
+      if (char === "{" || char === "[") {
+        stack.push(char);
+        continue;
+      }
+
+      if (char !== "}" && char !== "]") {
+        continue;
+      }
+
+      const last = stack.at(-1);
+      const matched = (last === "{" && char === "}") || (last === "[" && char === "]");
+      if (!matched) {
+        break;
+      }
+
+      stack.pop();
+      if (stack.length === 0) {
+        payloads.push(chars.slice(startIndex, index + 1).join(""));
+        break;
+      }
+    }
+  }
+
+  return payloads;
+}
+
+function extractFinalResponseCandidate(json: unknown): string | null {
+  if (typeof json === "string") {
+    return normalizedNonEmpty(json);
+  }
+
+  if (Array.isArray(json)) {
+    for (let index = json.length - 1; index >= 0; index -= 1) {
+      const candidate = extractFinalResponseCandidate(json[index]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  if (!json || typeof json !== "object") {
+    return null;
+  }
+
+  const record = json as Record<string, unknown>;
+  const direct = firstNonEmptyString(record, ["final", "content", "message", "response", "output", "text", "answer"]);
+  if (direct) {
+    return direct;
+  }
+
+  for (const key of ["choices", "messages", "result", "data", "payload"]) {
+    const value = record[key];
+    if (value === undefined) {
+      continue;
+    }
+    const candidate = extractFinalResponseCandidate(value);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function routingDecisionFromObject(object: unknown): OpenClawRoutingDecision | null {
+  if (!object || typeof object !== "object") {
+    return null;
+  }
+
+  const record = object as Record<string, unknown>;
+  const rawAction = firstNonEmptyString(record, ["action", "mode", "decision", "type"])?.toLowerCase();
+  const action =
+    rawAction === "all" || rawAction === "broadcast" || rawAction === "fanout"
+      ? "all"
+      : rawAction === "selected" || rawAction === "select" || rawAction === "route" || rawAction === "delegate"
+        ? "selected"
+        : rawAction === "stop" || rawAction === "none" || rawAction === "finish" || rawAction === "done"
+          ? "stop"
+          : null;
+
+  if (!action) {
+    return null;
+  }
+
+  return {
+    action,
+    targets: stringArray(record.targets ?? record.next_agents ?? record.nextAgents ?? record.agents),
+    reason: firstNonEmptyString(record, ["reason", "why", "note", "summary"])
+  };
+}
+
+function extractRoutingDecision(text: string): OpenClawRoutingDecision | null {
+  const payloads = extractJSONPayloads(text);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    try {
+      const json = JSON.parse(payloads[index]) as unknown;
+      if (json && typeof json === "object") {
+        const record = json as Record<string, unknown>;
+        const nested = record.workflow_route ?? record.route ?? record.routing ?? json;
+        const decision = routingDecisionFromObject(nested);
+        if (decision) {
+          return decision;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function stripRoutingDirective(text: string): string {
+  const normalized = text.replace(/\r/g, "");
+  const lines = normalized.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const candidate = lines[index]?.trim();
+    if (!candidate) {
+      continue;
+    }
+    if (extractRoutingDecision(candidate)) {
+      lines.splice(index, 1);
+      break;
+    }
+    break;
+  }
+  return lines.join("\n").trim();
+}
+
+function extractAgentResponse(stdout: string): { output: string; outputType: ExecutionOutputType; routingDecision: OpenClawRoutingDecision | null } {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return {
+      output: "",
+      outputType: "empty",
+      routingDecision: null
+    };
+  }
+
+  const routingDecision = extractRoutingDecision(trimmed);
+  const payloads = extractJSONPayloads(trimmed);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    try {
+      const json = JSON.parse(payloads[index]) as unknown;
+      const candidate = extractFinalResponseCandidate(json);
+      if (candidate) {
+        return {
+          output: stripRoutingDirective(candidate),
+          outputType: "agent_final_response",
+          routingDecision
+        };
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const stripped = stripRoutingDirective(trimmed);
+  return {
+    output: stripped,
+    outputType: stripped ? "agent_final_response" : "runtime_log",
+    routingDecision
+  };
+}
+
+async function executeOpenClawAgent(
+  config: OpenClawConfig,
+  request: OpenClawAgentExecutionRequest
+): Promise<OpenClawAgentExecutionResult> {
+  const agentIdentifier = request.agentIdentifier.trim() || config.defaultAgent.trim() || "default";
+  const message = request.message.trim();
+  if (!message) {
+    return {
+      success: false,
+      message: "Execution message is required.",
+      agentIdentifier,
+      output: "",
+      outputType: "empty",
+      rawStdout: "",
+      rawStderr: "",
+      routingDecision: null
+    };
+  }
+
+  const args = ["agent", "--agent", agentIdentifier, "--message", message];
+  if (request.sessionID?.trim()) {
+    args.push("--session-id", request.sessionID.trim());
+  }
+  if (request.thinkingLevel?.trim()) {
+    args.push("--thinking", request.thinkingLevel.trim());
+  }
+  args.push("--timeout", String(Math.max(1, Math.round(request.timeoutSeconds ?? config.timeout ?? 30))));
+
+  try {
+    const { stdout, stderr } = await runOpenClawDeploymentCommand(config, args, {
+      timeoutMs: Math.max(5, Math.round(request.timeoutSeconds ?? config.timeout ?? 30)) * 1000
+    });
+    const parsed = extractAgentResponse(stdout ?? "");
+    const stderrText = (stderr ?? "").trim();
+    const success = parsed.output.length > 0 || !stderrText;
+
+    return {
+      success,
+      message: success ? "OpenClaw agent execution completed." : stderrText || "OpenClaw agent execution failed.",
+      agentIdentifier,
+      output: parsed.output,
+      outputType: success ? parsed.outputType : "error_summary",
+      rawStdout: stdout ?? "",
+      rawStderr: stderr ?? "",
+      routingDecision: parsed.routingDecision
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+      agentIdentifier,
+      output: "",
+      outputType: "error_summary",
+      rawStdout: "",
+      rawStderr: "",
+      routingDecision: null
+    };
+  }
+}
+
 async function testLocalOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
   const binaryPath = resolveLocalBinaryPath(config);
   try {
@@ -765,6 +1118,13 @@ function registerProjectIpcHandlers() {
       detectedAgents: []
     };
   });
+
+  ipcMain.handle(
+    "openClaw:executeAgent",
+    async (_event, payload: { config: OpenClawConfig; request: OpenClawAgentExecutionRequest }): Promise<OpenClawAgentExecutionResult> => {
+      return executeOpenClawAgent(payload.config, payload.request);
+    }
+  );
 }
 
 app.whenReady().then(() => {
