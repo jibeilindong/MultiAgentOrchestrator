@@ -4,7 +4,47 @@ import SQLite3
 struct OpsAnalyticsPersistenceSummary {
     let dailyActivity: [OpsDailyActivityPoint]
     let historicalSeries: [OpsMetricHistorySeries]
+    let cronSummary: OpsCronReliabilitySummary?
+    let cronRuns: [OpsCronRunRow]
     let traceRows: [OpsTraceSummaryRow]
+}
+
+private struct ExternalOpsArtifactsSignature {
+    let cronSignature: String
+    let sessionSignature: String
+
+    var joined: String { "\(cronSignature)::\(sessionSignature)" }
+}
+
+private struct ExternalCronRunArtifact {
+    let externalID: String
+    let date: String
+    let cronName: String
+    let jobID: String?
+    let runID: String?
+    let runAt: Date
+    let status: String
+    let errorText: String?
+    let durationMs: Double?
+    let deliveryStatus: String?
+    let summaryText: String?
+    let sourcePath: String
+}
+
+private struct ExternalSessionTraceArtifact {
+    let spanID: String
+    let traceID: String
+    let agentName: String
+    let status: String
+    let executionStatus: ExecutionStatus
+    let outputType: ExecutionOutputType
+    let startedAt: Date
+    let completedAt: Date?
+    let durationMs: Double?
+    let previewText: String
+    let outputText: String
+    let attributes: [String: String]
+    let eventsText: String?
 }
 
 final class OpsAnalyticsStore {
@@ -44,6 +84,8 @@ final class OpsAnalyticsStore {
 
             guard createSchema(in: db) else { return nil }
 
+            let externalSignature = makeExternalArtifactsSignature(project: project)
+
             let syncSignature = makeSyncSignature(
                 project: project,
                 totalAgents: totalAgents,
@@ -53,7 +95,8 @@ final class OpsAnalyticsStore {
                 failedExecutions: failedExecutions,
                 warningLogCount: warningLogCount,
                 errorLogCount: errorLogCount,
-                executionResults: executionResults
+                executionResults: executionResults,
+                externalSignature: externalSignature.joined
             )
 
             if lastSyncSignatureByProjectID[project.id] != syncSignature {
@@ -72,12 +115,18 @@ final class OpsAnalyticsStore {
                     agentNamesByID: agentNamesByID,
                     isConnected: isConnected
                 )
+                ingestExternalOpenClawArtifacts(
+                    db: db,
+                    project: project
+                )
                 lastSyncSignatureByProjectID[project.id] = syncSignature
             }
 
             return OpsAnalyticsPersistenceSummary(
                 dailyActivity: loadDailyActivity(db: db, projectID: project.id, days: 14),
                 historicalSeries: loadGoalMetricSeries(db: db, projectID: project.id, days: 30),
+                cronSummary: loadCronReliabilitySummary(db: db, projectID: project.id, days: 14),
+                cronRuns: loadRecentCronRuns(db: db, projectID: project.id, limit: 8),
                 traceRows: loadRecentTraceRows(db: db, projectID: project.id, limit: 10)
             )
         }
@@ -173,7 +222,53 @@ final class OpsAnalyticsStore {
         CREATE INDEX IF NOT EXISTS idx_spans_project_start ON spans(project_id, start_time);
         """
 
-        return sqlite3_exec(db, schemaSQL, nil, nil, nil) == SQLITE_OK
+        guard sqlite3_exec(db, schemaSQL, nil, nil, nil) == SQLITE_OK else { return false }
+
+        let cronColumnDefinitions: [(name: String, definition: String)] = [
+            ("external_id", "TEXT"),
+            ("run_at", "TEXT"),
+            ("duration_ms", "REAL"),
+            ("delivery_status", "TEXT"),
+            ("summary", "TEXT"),
+            ("source_path", "TEXT")
+        ]
+
+        for column in cronColumnDefinitions {
+            guard ensureColumnExists(db: db, table: "cron_runs", column: column.name, definition: column.definition) else {
+                return false
+            }
+        }
+
+        let supplementalIndexSQL = """
+        CREATE INDEX IF NOT EXISTS idx_cron_runs_project_run_at ON cron_runs(project_id, run_at);
+        CREATE INDEX IF NOT EXISTS idx_cron_runs_project_date ON cron_runs(project_id, date);
+        """
+
+        return sqlite3_exec(db, supplementalIndexSQL, nil, nil, nil) == SQLITE_OK
+    }
+
+    private func ensureColumnExists(
+        db: OpaquePointer,
+        table: String,
+        column: String,
+        definition: String
+    ) -> Bool {
+        let pragmaSQL = "PRAGMA table_info(\(table));"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, pragmaSQL, -1, &statement, nil) == SQLITE_OK, let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let columnCString = sqlite3_column_text(statement, 1) else { continue }
+            if String(cString: columnCString) == column {
+                return true
+            }
+        }
+
+        let alterSQL = "ALTER TABLE \(table) ADD COLUMN \(column) \(definition);"
+        return sqlite3_exec(db, alterSQL, nil, nil, nil) == SQLITE_OK
     }
 
     private func makeSyncSignature(
@@ -185,7 +280,8 @@ final class OpsAnalyticsStore {
         failedExecutions: Int,
         warningLogCount: Int,
         errorLogCount: Int,
-        executionResults: [ExecutionResult]
+        executionResults: [ExecutionResult],
+        externalSignature: String
     ) -> String {
         let latestResultID = executionResults.last?.id.uuidString ?? "none"
         let latestUpdatedAt = project.updatedAt.timeIntervalSinceReferenceDate
@@ -199,8 +295,95 @@ final class OpsAnalyticsStore {
             String(warningLogCount),
             String(errorLogCount),
             latestResultID,
-            String(latestUpdatedAt)
+            String(latestUpdatedAt),
+            externalSignature
         ].joined(separator: "::")
+    }
+
+    private func makeExternalArtifactsSignature(project: MAProject) -> ExternalOpsArtifactsSignature {
+        let cronFiles = openClawCronRunFiles(for: project)
+        let sessionFiles = openClawSessionFiles(for: project, limit: 60)
+
+        return ExternalOpsArtifactsSignature(
+            cronSignature: signature(for: cronFiles),
+            sessionSignature: signature(for: sessionFiles)
+        )
+    }
+
+    private func signature(for files: [URL]) -> String {
+        guard !files.isEmpty else { return "none" }
+
+        let latestStamp = files.compactMap { file -> String? in
+            guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let date = values.contentModificationDate else {
+                return nil
+            }
+            return "\(file.lastPathComponent):\(date.timeIntervalSinceReferenceDate)"
+        }
+        .sorted()
+        .last ?? "unknown"
+
+        return "\(files.count):\(latestStamp)"
+    }
+
+    private func openClawCandidateBackupRoots(for project: MAProject) -> [URL] {
+        var roots: [URL] = [ProjectManager.shared.openClawBackupDirectory(for: project.id)]
+
+        if let sessionBackupPath = project.openClaw.sessionBackupPath,
+           !sessionBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            roots.append(URL(fileURLWithPath: sessionBackupPath, isDirectory: true))
+        }
+
+        return Array(Dictionary(uniqueKeysWithValues: roots.map { ($0.standardizedFileURL.path, $0) }).values)
+    }
+
+    private func openClawCronRunFiles(for project: MAProject) -> [URL] {
+        openClawCandidateBackupRoots(for: project)
+            .flatMap { root in
+                let cronRunsURL = root.appendingPathComponent("cron/runs", isDirectory: true)
+                return ((try? FileManager.default.contentsOfDirectory(
+                    at: cronRunsURL,
+                    includingPropertiesForKeys: [.contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                )) ?? [])
+                .filter { $0.pathExtension == "jsonl" }
+            }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return leftDate > rightDate
+            }
+    }
+
+    private func openClawSessionFiles(for project: MAProject, limit: Int) -> [URL] {
+        let files = openClawCandidateBackupRoots(for: project)
+            .flatMap { root in
+                let agentsURL = root.appendingPathComponent("agents", isDirectory: true)
+                let agentDirectories = (try? FileManager.default.contentsOfDirectory(
+                    at: agentsURL,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                )) ?? []
+
+                return agentDirectories.flatMap { agentDirectory in
+                    let sessionsURL = agentDirectory.appendingPathComponent("sessions", isDirectory: true)
+                    return ((try? FileManager.default.contentsOfDirectory(
+                        at: sessionsURL,
+                        includingPropertiesForKeys: [.contentModificationDateKey],
+                        options: [.skipsHiddenFiles]
+                    )) ?? [])
+                    .filter { url in
+                        url.pathExtension == "jsonl" && !url.lastPathComponent.contains(".deleted.")
+                    }
+                }
+            }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return leftDate > rightDate
+            }
+
+        return Array(files.prefix(limit))
     }
 
     private func persistCurrentAnalytics(
@@ -413,6 +596,32 @@ final class OpsAnalyticsStore {
         }
     }
 
+    private func ingestExternalOpenClawArtifacts(
+        db: OpaquePointer,
+        project: MAProject
+    ) {
+        let projectID = project.id.uuidString
+        let cronArtifacts = openClawCronRunFiles(for: project).flatMap(loadCronArtifacts(from:))
+
+        replaceCronRuns(
+            db: db,
+            projectID: projectID,
+            artifacts: cronArtifacts
+        )
+        rebuildCronReliabilityGoalMetrics(
+            db: db,
+            projectID: projectID,
+            artifacts: cronArtifacts
+        )
+
+        let sessionArtifacts = openClawSessionFiles(for: project, limit: 60).compactMap(loadExternalSessionArtifact(from:))
+        replaceExternalSessionSpans(
+            db: db,
+            projectID: projectID,
+            artifacts: sessionArtifacts
+        )
+    }
+
     private func deleteSpans(
         db: OpaquePointer,
         traceID: String
@@ -494,6 +703,153 @@ final class OpsAnalyticsStore {
         sqlite3_step(statement)
     }
 
+    private func replaceCronRuns(
+        db: OpaquePointer,
+        projectID: String,
+        artifacts: [ExternalCronRunArtifact]
+    ) {
+        let deleteSQL = "DELETE FROM cron_runs WHERE project_id = ?;"
+        var deleteStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK, let deleteStatement {
+            bindText(projectID, to: 1, in: deleteStatement)
+            sqlite3_step(deleteStatement)
+            sqlite3_finalize(deleteStatement)
+        }
+
+        let insertSQL = """
+        INSERT INTO cron_runs
+        (project_id, date, cron_name, slot_time, status, job_id, run_id, error, external_id, run_at, duration_ms, delivery_status, summary, source_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, insertSQL, -1, &statement, nil) == SQLITE_OK, let statement else { return }
+        defer { sqlite3_finalize(statement) }
+
+        for artifact in artifacts {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+
+            bindText(projectID, to: 1, in: statement)
+            bindText(artifact.date, to: 2, in: statement)
+            bindText(artifact.cronName, to: 3, in: statement)
+            bindText(iso8601.string(from: artifact.runAt), to: 4, in: statement)
+            bindText(artifact.status, to: 5, in: statement)
+            bindText(artifact.jobID, to: 6, in: statement)
+            bindText(artifact.runID, to: 7, in: statement)
+            bindText(artifact.errorText, to: 8, in: statement)
+            bindText(artifact.externalID, to: 9, in: statement)
+            bindText(iso8601.string(from: artifact.runAt), to: 10, in: statement)
+            if let durationMs = artifact.durationMs {
+                sqlite3_bind_double(statement, 11, durationMs)
+            } else {
+                sqlite3_bind_null(statement, 11)
+            }
+            bindText(artifact.deliveryStatus, to: 12, in: statement)
+            bindText(artifact.summaryText, to: 13, in: statement)
+            bindText(artifact.sourcePath, to: 14, in: statement)
+            sqlite3_step(statement)
+        }
+    }
+
+    private func rebuildCronReliabilityGoalMetrics(
+        db: OpaquePointer,
+        projectID: String,
+        artifacts: [ExternalCronRunArtifact]
+    ) {
+        let deleteSQL = "DELETE FROM goal_metrics WHERE project_id = ? AND goal = 'cron_reliability';"
+        var deleteStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK, let deleteStatement {
+            bindText(projectID, to: 1, in: deleteStatement)
+            sqlite3_step(deleteStatement)
+            sqlite3_finalize(deleteStatement)
+        }
+
+        guard !artifacts.isEmpty else { return }
+
+        var countsByDate: [String: (success: Int, failed: Int)] = [:]
+        for artifact in artifacts {
+            var bucket = countsByDate[artifact.date, default: (0, 0)]
+            if isSuccessfulCronStatus(artifact.status) {
+                bucket.success += 1
+            } else {
+                bucket.failed += 1
+            }
+            countsByDate[artifact.date] = bucket
+        }
+
+        for (date, bucket) in countsByDate {
+            let total = bucket.success + bucket.failed
+            let successRate = total > 0 ? (Double(bucket.success) / Double(total)) * 100.0 : 0
+
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: date,
+                goal: "cron_reliability",
+                metric: "success_rate",
+                value: successRate,
+                unit: "%",
+                breakdown: [
+                    "successful_runs": "\(bucket.success)",
+                    "failed_runs": "\(bucket.failed)"
+                ]
+            )
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: date,
+                goal: "cron_reliability",
+                metric: "successful_runs",
+                value: Double(bucket.success),
+                unit: "count",
+                breakdown: nil
+            )
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: date,
+                goal: "cron_reliability",
+                metric: "failed_runs",
+                value: Double(bucket.failed),
+                unit: "count",
+                breakdown: nil
+            )
+        }
+    }
+
+    private func replaceExternalSessionSpans(
+        db: OpaquePointer,
+        projectID: String,
+        artifacts: [ExternalSessionTraceArtifact]
+    ) {
+        let deleteSQL = "DELETE FROM spans WHERE project_id = ? AND service = 'openclaw.external-session';"
+        var deleteStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, deleteSQL, -1, &deleteStatement, nil) == SQLITE_OK, let deleteStatement {
+            bindText(projectID, to: 1, in: deleteStatement)
+            sqlite3_step(deleteStatement)
+            sqlite3_finalize(deleteStatement)
+        }
+
+        for artifact in artifacts {
+            upsertSpan(
+                db: db,
+                spanID: artifact.spanID,
+                projectID: projectID,
+                traceID: artifact.traceID,
+                parentSpanID: nil,
+                name: artifact.agentName,
+                service: "openclaw.external-session",
+                status: artifact.status,
+                startTime: artifact.startedAt,
+                endTime: artifact.completedAt,
+                durationMs: artifact.durationMs,
+                attributes: artifact.attributes,
+                eventsText: artifact.eventsText
+            )
+        }
+    }
+
     private func upsertSpan(
         db: OpaquePointer,
         spanID: String,
@@ -506,12 +862,13 @@ final class OpsAnalyticsStore {
         startTime: Date,
         endTime: Date?,
         durationMs: Double?,
-        attributes: [String: String]
+        attributes: [String: String],
+        eventsText: String? = nil
     ) {
         let sql = """
         INSERT OR REPLACE INTO spans
         (span_id, project_id, trace_id, parent_span_id, name, service, status, start_time, end_time, duration_ms, attributes, events, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'));
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'));
         """
 
         var statement: OpaquePointer?
@@ -533,6 +890,7 @@ final class OpsAnalyticsStore {
             sqlite3_bind_null(statement, 10)
         }
         bindText(jsonString(from: attributes), to: 11, in: statement)
+        bindText(eventsText, to: 12, in: statement)
         sqlite3_step(statement)
     }
 
@@ -605,9 +963,10 @@ final class OpsAnalyticsStore {
         limit: Int
     ) -> [OpsTraceSummaryRow] {
         let sql = """
-        SELECT span_id, start_time, duration_ms, attributes
+        SELECT span_id, start_time, duration_ms, attributes, service, status
         FROM spans
-        WHERE project_id = ? AND service = 'multi-agent-flow.execution'
+        WHERE project_id = ?
+          AND service IN ('multi-agent-flow.execution', 'openclaw.external-session')
         ORDER BY start_time DESC
         LIMIT ?;
         """
@@ -624,6 +983,8 @@ final class OpsAnalyticsStore {
             guard let spanCString = sqlite3_column_text(statement, 0),
                   let startCString = sqlite3_column_text(statement, 1),
                   let attributesCString = sqlite3_column_text(statement, 3),
+                  let serviceCString = sqlite3_column_text(statement, 4),
+                  let statusCString = sqlite3_column_text(statement, 5),
                   let id = UUID(uuidString: String(cString: spanCString)),
                   let startedAt = iso8601.date(from: String(cString: startCString)) else {
                 continue
@@ -631,7 +992,9 @@ final class OpsAnalyticsStore {
 
             let durationMs = sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 2)
             let attributes = dictionary(from: String(cString: attributesCString))
-            let executionStatus = ExecutionStatus(rawValue: attributes["execution_status"] ?? "") ?? .idle
+            let service = String(cString: serviceCString)
+            let status = String(cString: statusCString)
+            let executionStatus = ExecutionStatus(rawValue: attributes["execution_status"] ?? "") ?? executionStatus(forSpanStatus: status)
             let outputType = ExecutionOutputType(rawValue: attributes["output_type"] ?? "") ?? .empty
 
             rows.append(
@@ -643,6 +1006,7 @@ final class OpsAnalyticsStore {
                     startedAt: startedAt,
                     routingAction: emptyToNil(attributes["routing_action"]),
                     outputType: outputType,
+                    sourceLabel: service == "openclaw.external-session" ? "OpenClaw" : "Runtime",
                     previewText: attributes["preview_text"] ?? "No output"
                 )
             )
@@ -665,6 +1029,7 @@ final class OpsAnalyticsStore {
             OR (goal = 'agent_engagement' AND metric = 'engagement_rate')
             OR (goal = 'memory_discipline' AND metric = 'tracked_rate')
             OR (goal = 'error_budget' AND metric = 'error_count')
+            OR (goal = 'cron_reliability' AND metric = 'success_rate')
           )
         ORDER BY date ASC;
         """
@@ -845,6 +1210,114 @@ final class OpsAnalyticsStore {
         return rows
     }
 
+    private func loadCronReliabilitySummary(
+        db: OpaquePointer,
+        projectID: UUID,
+        days: Int
+    ) -> OpsCronReliabilitySummary? {
+        let sql = """
+        SELECT status, COALESCE(run_at, slot_time, created_at)
+        FROM cron_runs
+        WHERE project_id = ? AND date >= date('now', ?);
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        bindText("-\(days) days", to: 2, in: statement)
+
+        var successfulRuns = 0
+        var failedRuns = 0
+        var latestRunAt: Date?
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let statusCString = sqlite3_column_text(statement, 0) else { continue }
+
+            let status = String(cString: statusCString)
+            if isSuccessfulCronStatus(status) {
+                successfulRuns += 1
+            } else {
+                failedRuns += 1
+            }
+
+            if let runDateCString = sqlite3_column_text(statement, 1),
+               let runDate = iso8601.date(from: String(cString: runDateCString)) {
+                latestRunAt = max(latestRunAt ?? .distantPast, runDate)
+            }
+        }
+
+        let totalRuns = successfulRuns + failedRuns
+        guard totalRuns > 0 else { return nil }
+
+        return OpsCronReliabilitySummary(
+            successRate: (Double(successfulRuns) / Double(totalRuns)) * 100.0,
+            successfulRuns: successfulRuns,
+            failedRuns: failedRuns,
+            latestRunAt: latestRunAt
+        )
+    }
+
+    private func loadRecentCronRuns(
+        db: OpaquePointer,
+        projectID: UUID,
+        limit: Int
+    ) -> [OpsCronRunRow] {
+        let sql = """
+        SELECT
+            COALESCE(external_id, run_id, job_id, cron_name || '-' || COALESCE(run_at, slot_time, created_at)),
+            cron_name,
+            status,
+            COALESCE(run_at, slot_time, created_at),
+            duration_ms,
+            delivery_status,
+            summary,
+            error
+        FROM cron_runs
+        WHERE project_id = ?
+        ORDER BY COALESCE(run_at, slot_time, created_at) DESC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+        sqlite3_bind_int(statement, 2, Int32(limit))
+
+        var rows: [OpsCronRunRow] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idCString = sqlite3_column_text(statement, 0),
+                  let cronNameCString = sqlite3_column_text(statement, 1),
+                  let statusCString = sqlite3_column_text(statement, 2),
+                  let runAtCString = sqlite3_column_text(statement, 3),
+                  let runAt = iso8601.date(from: String(cString: runAtCString)) else {
+                continue
+            }
+
+            let durationMs = sqlite3_column_type(statement, 4) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 4)
+            let deliveryStatus = sqlite3_column_type(statement, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 5))
+            let summary = sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 6))
+            let error = sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 7))
+
+            rows.append(
+                OpsCronRunRow(
+                    id: String(cString: idCString),
+                    cronName: String(cString: cronNameCString),
+                    statusText: formattedCronStatus(String(cString: statusCString)),
+                    runAt: runAt,
+                    duration: durationMs.map { $0 / 1000.0 },
+                    deliveryStatus: emptyToNil(deliveryStatus),
+                    summaryText: emptyToNil(summary) ?? emptyToNil(error) ?? "No summary captured"
+                )
+            )
+        }
+
+        return rows
+    }
+
     private func summarizeRelatedSpan(name: String, attributes: [String: String]) -> String {
         if name == "Routing Decision" {
             let action = emptyToNil(attributes["routing_action"]) ?? "none"
@@ -859,6 +1332,276 @@ final class OpsAnalyticsStore {
         }
 
         return emptyToNil(attributes["preview_text"]) ?? name
+    }
+
+    private func loadCronArtifacts(from fileURL: URL) -> [ExternalCronRunArtifact] {
+        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }
+
+        var artifactsByID: [String: ExternalCronRunArtifact] = [:]
+        contents.enumerateLines { [self] line, _ in
+            guard let object = self.jsonObject(from: line),
+                  let runAt = self.millisecondsDate(from: object["runAtMs"]) ?? self.millisecondsDate(from: object["ts"]) else {
+                return
+            }
+
+            let jobID = self.stringValue(object["jobId"]) ?? fileURL.deletingPathExtension().lastPathComponent
+            let runID = self.stringValue(object["sessionId"])
+            let externalID = runID ?? "\(jobID)-\(Int(runAt.timeIntervalSince1970 * 1000))"
+            let status = self.normalizedCronStatus(self.stringValue(object["status"]) ?? "unknown")
+
+            artifactsByID[externalID] = ExternalCronRunArtifact(
+                externalID: externalID,
+                date: self.dayFormatter.string(from: runAt),
+                cronName: self.cronDisplayName(from: object, fileURL: fileURL),
+                jobID: jobID,
+                runID: runID,
+                runAt: runAt,
+                status: status,
+                errorText: self.emptyToNil(self.stringValue(object["error"])),
+                durationMs: self.doubleValue(from: object["durationMs"]),
+                deliveryStatus: self.emptyToNil(self.stringValue(object["deliveryStatus"])),
+                summaryText: self.emptyToNil(self.stringValue(object["summary"])),
+                sourcePath: fileURL.path
+            )
+        }
+
+        return artifactsByID.values.sorted { $0.runAt > $1.runAt }
+    }
+
+    private func loadExternalSessionArtifact(from fileURL: URL) -> ExternalSessionTraceArtifact? {
+        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+
+        let agentName = fileURL.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+        let fallbackSessionID = fileURL.deletingPathExtension().lastPathComponent
+        var sessionID = fallbackSessionID
+        var startDate: Date?
+        var lastEventDate: Date?
+        var provider: String?
+        var model: String?
+        var cwd: String?
+        var userMessages = 0
+        var assistantMessages = 0
+        var toolCalls = 0
+        var toolErrors = 0
+        var lastAssistantText: String?
+        var lastToolText: String?
+
+        contents.enumerateLines { [self] line, _ in
+            guard let object = self.jsonObject(from: line) else { return }
+
+            if object["type"] as? String == "session" {
+                sessionID = self.stringValue(object["id"]) ?? fallbackSessionID
+                startDate = startDate ?? self.iso8601.date(from: self.stringValue(object["timestamp"]) ?? "")
+                cwd = self.emptyToNil(self.stringValue(object["cwd"]))
+            }
+
+            if object["type"] as? String == "model_change" {
+                provider = self.emptyToNil(self.stringValue(object["provider"])) ?? provider
+                model = self.emptyToNil(self.stringValue(object["modelId"])) ?? model
+            }
+
+            if object["type"] as? String == "custom",
+               object["customType"] as? String == "model-snapshot",
+               let data = object["data"] as? [String: Any] {
+                provider = self.emptyToNil(self.stringValue(data["provider"])) ?? provider
+                model = self.emptyToNil(self.stringValue(data["modelId"])) ?? model
+            }
+
+            if let eventDate = self.sessionEventDate(from: object) {
+                startDate = min(startDate ?? eventDate, eventDate)
+                lastEventDate = max(lastEventDate ?? eventDate, eventDate)
+            }
+
+            guard object["type"] as? String == "message",
+                  let message = object["message"] as? [String: Any],
+                  let role = message["role"] as? String else {
+                return
+            }
+
+            let content = message["content"] as? [[String: Any]] ?? []
+            switch role {
+            case "user":
+                userMessages += 1
+            case "assistant":
+                assistantMessages += 1
+                let assistantText = content.compactMap { item -> String? in
+                    guard item["type"] as? String == "text" else { return nil }
+                    return self.emptyToNil(self.stringValue(item["text"]))
+                }
+                .joined(separator: "\n\n")
+                if let text = self.emptyToNil(assistantText) {
+                    lastAssistantText = text
+                }
+                toolCalls += content.filter { $0["type"] as? String == "toolCall" }.count
+            case "toolResult":
+                if let isError = message["isError"] as? Bool, isError {
+                    toolErrors += 1
+                }
+                let toolText = content.compactMap { item -> String? in
+                    guard item["type"] as? String == "text" else { return nil }
+                    return self.emptyToNil(self.stringValue(item["text"]))
+                }
+                .joined(separator: "\n")
+                if let text = self.emptyToNil(toolText) {
+                    lastToolText = text
+                }
+            default:
+                break
+            }
+        }
+
+        guard let startedAt = startDate else { return nil }
+
+        let outputText = limitedText(lastAssistantText ?? lastToolText ?? "No assistant summary captured", maxLength: 8000)
+        let executionStatus: ExecutionStatus = toolErrors > 0 ? .failed : (assistantMessages > 0 ? .completed : .waiting)
+        let outputType: ExecutionOutputType = toolErrors > 0 ? .errorSummary : (lastAssistantText == nil ? .runtimeLog : .agentFinalResponse)
+
+        var attributes: [String: String] = [
+            "agent_name": agentName,
+            "execution_status": executionStatus.rawValue,
+            "output_type": outputType.rawValue,
+            "preview_text": outputText.compactSingleLinePreview(limit: 160),
+            "output_text": outputText,
+            "session_path": fileURL.path,
+            "source_label": "OpenClaw"
+        ]
+
+        if let provider {
+            attributes["provider"] = provider
+        }
+        if let model {
+            attributes["model"] = model
+        }
+        if let cwd {
+            attributes["cwd"] = cwd
+        }
+
+        let eventsTextLines: [String] = [
+            "User messages: \(userMessages)",
+            "Assistant messages: \(assistantMessages)",
+            "Tool calls: \(toolCalls)",
+            "Tool errors: \(toolErrors)",
+            model.map { "Model: \($0)" } ?? "",
+            provider.map { "Provider: \($0)" } ?? ""
+        ]
+        .filter { !$0.isEmpty }
+        let eventsText = eventsTextLines.joined(separator: "\n")
+
+        return ExternalSessionTraceArtifact(
+            spanID: sessionID,
+            traceID: sessionID.replacingOccurrences(of: "-", with: ""),
+            agentName: agentName,
+            status: executionStatus == .failed ? "error" : (executionStatus == .completed ? "ok" : "warning"),
+            executionStatus: executionStatus,
+            outputType: outputType,
+            startedAt: startedAt,
+            completedAt: lastEventDate,
+            durationMs: lastEventDate.map { $0.timeIntervalSince(startedAt) * 1000.0 },
+            previewText: outputText.compactSingleLinePreview(limit: 160),
+            outputText: outputText,
+            attributes: attributes,
+            eventsText: emptyToNil(eventsText)
+        )
+    }
+
+    private func cronDisplayName(from object: [String: Any], fileURL: URL) -> String {
+        if let sessionKey = stringValue(object["sessionKey"]) {
+            let parts = sessionKey.split(separator: ":").map(String.init)
+            if let agentIndex = parts.firstIndex(of: "agent"), agentIndex + 1 < parts.count {
+                let agentName = parts[agentIndex + 1]
+                return agentName == "main" ? "Main Cron" : "Cron / \(agentName)"
+            }
+        }
+
+        let fallback = fileURL.deletingPathExtension().lastPathComponent
+        return "Cron / \(String(fallback.prefix(8)))"
+    }
+
+    private func normalizedCronStatus(_ status: String) -> String {
+        let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? "unknown" : normalized
+    }
+
+    private func isSuccessfulCronStatus(_ status: String) -> Bool {
+        ["ok", "success", "completed", "delivered"].contains(normalizedCronStatus(status))
+    }
+
+    private func formattedCronStatus(_ status: String) -> String {
+        switch normalizedCronStatus(status) {
+        case "ok", "success", "completed":
+            return "OK"
+        case "error", "failed", "timeout":
+            return "Error"
+        default:
+            return status.capitalized
+        }
+    }
+
+    private func executionStatus(forSpanStatus status: String) -> ExecutionStatus {
+        switch status.lowercased() {
+        case "ok":
+            return .completed
+        case "error":
+            return .failed
+        case "warning":
+            return .waiting
+        default:
+            return .idle
+        }
+    }
+
+    private func jsonObject(from line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object
+    }
+
+    private func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let value as String:
+            return value
+        case let value as NSNumber:
+            return value.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private func doubleValue(from value: Any?) -> Double? {
+        switch value {
+        case let value as NSNumber:
+            return value.doubleValue
+        case let value as String:
+            return Double(value)
+        default:
+            return nil
+        }
+    }
+
+    private func millisecondsDate(from value: Any?) -> Date? {
+        guard let milliseconds = doubleValue(from: value) else { return nil }
+        return Date(timeIntervalSince1970: milliseconds / 1000.0)
+    }
+
+    private func sessionEventDate(from object: [String: Any]) -> Date? {
+        if let timestamp = stringValue(object["timestamp"]),
+           let date = iso8601.date(from: timestamp) {
+            return date
+        }
+
+        if let message = object["message"] as? [String: Any],
+           let timestamp = message["timestamp"] {
+            return millisecondsDate(from: timestamp)
+        }
+
+        return nil
+    }
+
+    private func limitedText(_ text: String, maxLength: Int) -> String {
+        if text.count <= maxLength { return text }
+        return String(text.prefix(maxLength)) + "..."
     }
 
     private func bindText(_ text: String?, to index: Int32, in statement: OpaquePointer) {

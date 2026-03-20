@@ -45,7 +45,34 @@ struct OpsTraceSummaryRow: Identifiable {
     let startedAt: Date
     let routingAction: String?
     let outputType: ExecutionOutputType
+    let sourceLabel: String
     let previewText: String
+}
+
+enum OpsHistoryCategory: String, CaseIterable, Identifiable {
+    case all
+    case runtime
+    case cron
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All"
+        case .runtime: return "Runtime"
+        case .cron: return "Cron"
+        }
+    }
+}
+
+enum OpsHistoryWindow: Int, CaseIterable, Identifiable {
+    case last7Days = 7
+    case last14Days = 14
+    case last30Days = 30
+
+    var id: Int { rawValue }
+
+    var title: String { "\(rawValue)d" }
 }
 
 enum OpsHistoryMetric: String, CaseIterable, Identifiable {
@@ -53,6 +80,7 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
     case agentEngagement
     case memoryDiscipline
     case errorBudget
+    case cronReliability
 
     var id: String { rawValue }
 
@@ -62,6 +90,7 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .agentEngagement: return "Agent Engagement"
         case .memoryDiscipline: return "Memory Discipline"
         case .errorBudget: return "Error Budget"
+        case .cronReliability: return "Cron Reliability"
         }
     }
 
@@ -71,6 +100,7 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .agentEngagement: return "agent_engagement"
         case .memoryDiscipline: return "memory_discipline"
         case .errorBudget: return "error_budget"
+        case .cronReliability: return "cron_reliability"
         }
     }
 
@@ -80,6 +110,16 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .agentEngagement: return "engagement_rate"
         case .memoryDiscipline: return "tracked_rate"
         case .errorBudget: return "error_count"
+        case .cronReliability: return "success_rate"
+        }
+    }
+
+    var category: OpsHistoryCategory {
+        switch self {
+        case .cronReliability:
+            return .cron
+        case .workflowReliability, .agentEngagement, .memoryDiscipline, .errorBudget:
+            return .runtime
         }
     }
 
@@ -89,12 +129,13 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .agentEngagement: return "Share of project agents that were active"
         case .memoryDiscipline: return "Share of agents with tracked memory coverage"
         case .errorBudget: return "Errors recorded in recent runtime activity"
+        case .cronReliability: return "Successful scheduled runs as a percentage of total cron executions"
         }
     }
 
     func formattedValue(_ value: Double) -> String {
         switch self {
-        case .workflowReliability, .agentEngagement, .memoryDiscipline:
+        case .workflowReliability, .agentEngagement, .memoryDiscipline, .cronReliability:
             return "\(Int(value.rounded()))%"
         case .errorBudget:
             return "\(Int(value.rounded()))"
@@ -128,6 +169,23 @@ struct OpsTraceRelatedSpan: Identifiable {
     let startedAt: Date
     let completedAt: Date?
     let duration: TimeInterval?
+    let summaryText: String
+}
+
+struct OpsCronReliabilitySummary {
+    let successRate: Double
+    let successfulRuns: Int
+    let failedRuns: Int
+    let latestRunAt: Date?
+}
+
+struct OpsCronRunRow: Identifiable {
+    let id: String
+    let cronName: String
+    let statusText: String
+    let runAt: Date
+    let duration: TimeInterval?
+    let deliveryStatus: String?
     let summaryText: String
 }
 
@@ -168,6 +226,8 @@ struct OpsAnalyticsSnapshot {
     let goalCards: [OpsGoalCard]
     let dailyActivity: [OpsDailyActivityPoint]
     let historicalSeries: [OpsMetricHistorySeries]
+    let cronSummary: OpsCronReliabilitySummary?
+    let cronRuns: [OpsCronRunRow]
     let agentRows: [OpsAgentHealthRow]
     let traceRows: [OpsTraceSummaryRow]
 
@@ -184,6 +244,8 @@ struct OpsAnalyticsSnapshot {
         goalCards: [],
         dailyActivity: [],
         historicalSeries: [],
+        cronSummary: nil,
+        cronRuns: [],
         agentRows: [],
         traceRows: []
     )
@@ -229,16 +291,6 @@ final class OpsAnalyticsService: ObservableObject {
         )
         let trackedMemoryAgentIDs = makeTrackedMemoryAgentIDs(project: project)
         let averageDuration = completedResults.compactMap(\.duration).average
-        let goalCards = makeGoalCards(
-            isConnected: isConnected,
-            totalAgents: totalAgents,
-            activeAgents: activeAgentIDs.count,
-            trackedMemoryAgents: trackedMemoryAgentIDs.count,
-            completedExecutions: completedResults.count,
-            failedExecutions: failedResults.count,
-            warningLogCount: warningLogs.count,
-            errorLogCount: errorLogs.count
-        )
 
         let resultBucketsByAgentID = Dictionary(grouping: executionResults, by: \.agentID)
         let logBucketsByAgentID = Dictionary(grouping: executionLogs.compactMap { entry -> (UUID, ExecutionLogEntry)? in
@@ -288,6 +340,7 @@ final class OpsAnalyticsService: ObservableObject {
                     startedAt: result.startedAt,
                     routingAction: result.routingAction,
                     outputType: result.outputType,
+                    sourceLabel: "Runtime",
                     previewText: result.output.compactSingleLinePreview(limit: 160)
                 )
             }
@@ -312,6 +365,18 @@ final class OpsAnalyticsService: ObservableObject {
             isConnected: isConnected
         )
 
+        let goalCards = makeGoalCards(
+            isConnected: isConnected,
+            totalAgents: totalAgents,
+            activeAgents: activeAgentIDs.count,
+            trackedMemoryAgents: trackedMemoryAgentIDs.count,
+            completedExecutions: completedResults.count,
+            failedExecutions: failedResults.count,
+            warningLogCount: warningLogs.count,
+            errorLogCount: errorLogs.count,
+            cronSummary: persistenceSummary?.cronSummary
+        )
+
         snapshot = OpsAnalyticsSnapshot(
             generatedAt: Date(),
             totalAgents: totalAgents,
@@ -325,6 +390,8 @@ final class OpsAnalyticsService: ObservableObject {
             goalCards: goalCards,
             dailyActivity: persistenceSummary?.dailyActivity ?? dailyActivity,
             historicalSeries: persistenceSummary?.historicalSeries ?? [],
+            cronSummary: persistenceSummary?.cronSummary,
+            cronRuns: persistenceSummary?.cronRuns ?? [],
             agentRows: agentRows,
             traceRows: persistenceSummary?.traceRows ?? traceRows
         )
@@ -342,14 +409,15 @@ final class OpsAnalyticsService: ObservableObject {
         completedExecutions: Int,
         failedExecutions: Int,
         warningLogCount: Int,
-        errorLogCount: Int
+        errorLogCount: Int,
+        cronSummary: OpsCronReliabilitySummary?
     ) -> [OpsGoalCard] {
         let totalExecutions = completedExecutions + failedExecutions
         let reliabilityRate = totalExecutions > 0 ? Double(completedExecutions) / Double(totalExecutions) : nil
         let engagementRate = totalAgents > 0 ? Double(activeAgents) / Double(totalAgents) : nil
         let memoryRate = totalAgents > 0 ? Double(trackedMemoryAgents) / Double(totalAgents) : nil
 
-        return [
+        var cards = [
             OpsGoalCard(
                 id: "openclaw_readiness",
                 title: "OpenClaw Readiness",
@@ -386,6 +454,20 @@ final class OpsAnalyticsService: ObservableObject {
                 status: makeErrorBudgetStatus(errorCount: errorLogCount, warningCount: warningLogCount)
             )
         ]
+
+        if let cronSummary {
+            cards.append(
+                OpsGoalCard(
+                    id: "cron_reliability",
+                    title: "Cron Reliability",
+                    valueText: "\(Int(cronSummary.successRate.rounded()))%",
+                    detailText: "\(cronSummary.successfulRuns) ok / \(cronSummary.failedRuns) failed",
+                    status: makeRateStatus(cronSummary.successRate / 100.0, healthy: 0.9, warning: 0.75)
+                )
+            )
+        }
+
+        return cards
     }
 
     private func makeDailyActivity(

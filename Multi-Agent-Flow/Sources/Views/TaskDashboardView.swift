@@ -28,6 +28,8 @@ struct MonitoringDashboardView: View {
     @State private var opsSnapshot: OpsAnalyticsSnapshot = .empty
     @State private var pendingMetricsRefreshWorkItem: DispatchWorkItem?
     @State private var selectedOpsCenterPage: OpsCenterPage = .liveOverview
+    @State private var selectedHistoryCategory: OpsHistoryCategory = .all
+    @State private var selectedHistoryWindow: OpsHistoryWindow = .last30Days
     @State private var selectedHistoryMetric: OpsHistoryMetric = .workflowReliability
     @State private var selectedTracePanel: OpsTracePanelModel?
 
@@ -35,6 +37,7 @@ struct MonitoringDashboardView: View {
     private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
     private var executionState: ExecutionState? { appState.openClawService.executionState }
     private let metricsRefreshDebounce: TimeInterval = 0.25
+    private let historyCalendar = Calendar.autoupdatingCurrent
 
     private var recentTasks: [Task] {
         appState.taskManager.tasks.sorted { $0.createdAt > $1.createdAt }.prefix(8).map { $0 }
@@ -57,8 +60,31 @@ struct MonitoringDashboardView: View {
     private var idleAgentCount: Int {
         metrics.idleAgentCount
     }
+    private var filteredHistoricalSeries: [OpsMetricHistorySeries] {
+        let cutoffDate = historyCalendar.date(
+            byAdding: .day,
+            value: -(selectedHistoryWindow.rawValue - 1),
+            to: historyCalendar.startOfDay(for: Date())
+        ) ?? .distantPast
+
+        return opsSnapshot.historicalSeries
+            .filter { series in
+                selectedHistoryCategory == .all || series.metric.category == selectedHistoryCategory
+            }
+            .map { series in
+                OpsMetricHistorySeries(
+                    metric: series.metric,
+                    points: series.points.filter { $0.date >= cutoffDate }
+                )
+            }
+    }
+    private var effectiveSelectedHistoryMetric: OpsHistoryMetric {
+        filteredHistoricalSeries.first(where: { $0.metric == selectedHistoryMetric })?.metric
+            ?? filteredHistoricalSeries.first?.metric
+            ?? selectedHistoryMetric
+    }
     private var selectedHistorySeries: OpsMetricHistorySeries? {
-        opsSnapshot.historicalSeries.first { $0.metric == selectedHistoryMetric }
+        filteredHistoricalSeries.first { $0.metric == effectiveSelectedHistoryMetric }
     }
     private var dashboardRefreshSignature: String {
         let projectSignature = project.map {
@@ -134,6 +160,7 @@ struct MonitoringDashboardView: View {
                         if selectedOpsCenterPage == .liveOverview {
                             opsOverviewSection
                             opsDailyActivitySection
+                            opsCronReliabilitySection
                             opsAgentHealthSection
                         } else {
                             opsProjectHistorySection
@@ -258,19 +285,32 @@ struct MonitoringDashboardView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Project History")
                         .font(.headline)
-                    Text("30-day project-level trend view inspired by OA CLI goal metrics.")
+                    Text("OA CLI-inspired project metrics with runtime and cron history overlays.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
-
-                Text("Window: 30d")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
 
-            if opsSnapshot.historicalSeries.allSatisfy({ $0.points.isEmpty }) {
+            HStack(spacing: 12) {
+                Picker("History Category", selection: $selectedHistoryCategory) {
+                    ForEach(OpsHistoryCategory.allCases) { category in
+                        Text(category.title).tag(category)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker("History Window", selection: $selectedHistoryWindow) {
+                    ForEach(OpsHistoryWindow.allCases) { window in
+                        Text(window.title).tag(window)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 180)
+            }
+
+            if filteredHistoricalSeries.allSatisfy({ $0.points.isEmpty }) {
                 Text("Project history will populate after the first analytics sync.")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -280,11 +320,11 @@ struct MonitoringDashboardView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
-                    ForEach(opsSnapshot.historicalSeries) { series in
+                    ForEach(filteredHistoricalSeries) { series in
                         Button {
                             selectedHistoryMetric = series.metric
                         } label: {
-                            historyMetricCard(series: series, isSelected: selectedHistoryMetric == series.metric)
+                            historyMetricCard(series: series, isSelected: effectiveSelectedHistoryMetric == series.metric)
                         }
                         .buttonStyle(.plain)
                     }
@@ -344,6 +384,103 @@ struct MonitoringDashboardView: View {
                     .background(Color(.controlBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+            }
+        }
+    }
+
+    private var opsCronReliabilitySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Cron Reliability")
+                        .font(.headline)
+                    Text("External OpenClaw scheduled runs ingested from backup artifacts.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if let latestRunAt = opsSnapshot.cronSummary?.latestRunAt {
+                    Text("Latest \(latestRunAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let summary = opsSnapshot.cronSummary {
+                HStack(spacing: 16) {
+                    monitoringCard(
+                        title: "Success Rate",
+                        value: "\(Int(summary.successRate.rounded()))%",
+                        detail: "\(summary.successfulRuns) successful runs",
+                        color: summary.successRate >= 90 ? .green : (summary.successRate >= 75 ? .orange : .red)
+                    )
+                    monitoringCard(
+                        title: "Failed Runs",
+                        value: "\(summary.failedRuns)",
+                        detail: "Last 14 days",
+                        color: summary.failedRuns == 0 ? .green : .red
+                    )
+                    monitoringCard(
+                        title: "Recent Runs",
+                        value: "\(opsSnapshot.cronRuns.count)",
+                        detail: "Showing latest ingested executions",
+                        color: .blue
+                    )
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(opsSnapshot.cronRuns) { row in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text(row.runAt.formatted(date: .omitted, time: .standard))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .frame(width: 72, alignment: .leading)
+
+                            monitoringPill(
+                                title: row.statusText,
+                                color: row.statusText == "OK" ? .green : .red
+                            )
+                            .frame(width: 78, alignment: .leading)
+
+                            Text(row.cronName)
+                                .font(.caption)
+                                .frame(width: 110, alignment: .leading)
+
+                            Text(row.duration.map(formatOpsDuration) ?? "-")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 56, alignment: .leading)
+
+                            Text(row.deliveryStatus ?? "-")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .frame(width: 76, alignment: .leading)
+
+                            Text(row.summaryText)
+                                .font(.caption)
+                                .lineLimit(2)
+
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.white.opacity(0.4))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                Text("No external cron runs have been discovered yet.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
         }
     }
@@ -476,12 +613,15 @@ struct MonitoringDashboardView: View {
                                     .foregroundColor(.secondary)
                                     .frame(width: 72, alignment: .leading)
 
+                                monitoringPill(title: row.sourceLabel, color: traceSourceColor(for: row.sourceLabel))
+                                    .frame(width: 84, alignment: .leading)
+
                                 monitoringPill(title: row.status.displayName, color: traceStatusColor(for: row.status))
                                     .frame(width: 92, alignment: .leading)
 
                                 Text(row.agentName)
                                     .font(.caption)
-                                    .frame(width: 120, alignment: .leading)
+                                    .frame(width: 112, alignment: .leading)
 
                                 Text(row.duration.map(formatOpsDuration) ?? "-")
                                     .font(.caption)
@@ -1000,7 +1140,12 @@ struct MonitoringDashboardView: View {
         case .agentEngagement: return .blue
         case .memoryDiscipline: return .orange
         case .errorBudget: return .red
+        case .cronReliability: return .teal
         }
+    }
+
+    private func traceSourceColor(for sourceLabel: String) -> Color {
+        sourceLabel == "OpenClaw" ? .teal : .blue
     }
 
     private func traceStatusColor(for status: ExecutionStatus) -> Color {
@@ -1039,7 +1184,7 @@ struct MonitoringDashboardView: View {
             traceID: row.id.uuidString.replacingOccurrences(of: "-", with: ""),
             parentSpanID: nil,
             spanName: row.agentName,
-            service: "multi-agent-flow.execution",
+            service: row.sourceLabel == "OpenClaw" ? "openclaw.external-session" : "multi-agent-flow.execution",
             statusText: row.status == .failed ? "error" : "ok",
             agentName: row.agentName,
             executionStatus: row.status,
@@ -1065,6 +1210,8 @@ struct MonitoringDashboardView: View {
     }
 
     private func relatedLogs(for detail: OpsTraceDetail) -> [ExecutionLogEntry] {
+        guard detail.service != "openclaw.external-session" else { return [] }
+
         let lowerBound = detail.startedAt.addingTimeInterval(-15)
         let upperBound = (detail.completedAt ?? detail.startedAt).addingTimeInterval(30)
 
@@ -1322,6 +1469,10 @@ private struct OpsTraceDetailSheet: View {
                 }
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+                    detailCard(
+                        title: "Source",
+                        value: detail.service == "openclaw.external-session" ? "OpenClaw Backup" : "Runtime"
+                    )
                     detailCard(title: "Agent", value: detail.agentName)
                     detailCard(title: "Output", value: detail.outputType.rawValue)
                     detailCard(title: "Route", value: detail.routingAction ?? "N/A")

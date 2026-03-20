@@ -5,10 +5,22 @@ import {
   assignAgentToNode,
   connectWorkflowNodes,
   fromSwiftDate,
-  renameProject
+  repositionWorkflowNode,
+  removeEdgeFromWorkflow,
+  removeNodeFromWorkflow,
+  removeWorkflowFromProject,
+  renameProject,
+  renameWorkflow,
+  renameWorkflowNode,
+  setWorkflowFallbackRoutingPolicy
 } from "@multi-agent-flow/core";
-import type { MAProject, WorkflowNodeType } from "@multi-agent-flow/domain";
+import type {
+  MAProject,
+  WorkflowFallbackRoutingPolicy,
+  WorkflowNodeType
+} from "@multi-agent-flow/domain";
 import { startTransition, useEffect, useState } from "react";
+import { WorkflowCanvasPreview } from "./components/WorkflowCanvasPreview";
 
 type BusyAction = "new" | "open" | "save" | "saveAs" | null;
 
@@ -285,6 +297,41 @@ export function App() {
     );
   }
 
+  function handleWorkflowNameChange(nextName: string) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => renameWorkflow(current, activeWorkflow.id, nextName),
+      "Updated workflow name."
+    );
+  }
+
+  function handleWorkflowPolicyChange(nextPolicy: WorkflowFallbackRoutingPolicy) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => setWorkflowFallbackRoutingPolicy(current, activeWorkflow.id, nextPolicy),
+      "Updated fallback routing policy."
+    );
+  }
+
+  function handleRemoveActiveWorkflow() {
+    if (!project || !activeWorkflow) {
+      return;
+    }
+
+    const remainingWorkflows = project.workflows.filter((workflow) => workflow.id !== activeWorkflow.id);
+    updateProject(
+      (current) => removeWorkflowFromProject(current, activeWorkflow.id),
+      "Removed workflow from the project."
+    );
+    setActiveWorkflowId(remainingWorkflows[0]?.id ?? null);
+  }
+
   function handleConnectNodes() {
     if (!activeWorkflow || !connectionFromNodeId || !connectionToNodeId) {
       return;
@@ -294,6 +341,51 @@ export function App() {
       (current) => connectWorkflowNodes(current, activeWorkflow.id, connectionFromNodeId, connectionToNodeId),
       "Connected workflow nodes."
     );
+
+    setConnectionFromNodeId("");
+    setConnectionToNodeId("");
+  }
+
+  function clearCanvasConnectionSelection(nextStatus?: string) {
+    setConnectionFromNodeId("");
+    setConnectionToNodeId("");
+    if (nextStatus) {
+      setStatus(nextStatus);
+    }
+  }
+
+  function handleCanvasNodeClick(nodeId: string) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    if (!connectionFromNodeId) {
+      setConnectionFromNodeId(nodeId);
+      setConnectionToNodeId("");
+      setStatus("Selected the source node. Click another node on the canvas to create an edge.");
+      return;
+    }
+
+    if (connectionFromNodeId === nodeId) {
+      clearCanvasConnectionSelection("Cleared canvas edge selection.");
+      return;
+    }
+
+    setConnectionToNodeId(nodeId);
+    updateProject(
+      (current) => connectWorkflowNodes(current, activeWorkflow.id, connectionFromNodeId, nodeId),
+      "Connected workflow nodes from the canvas."
+    );
+    setConnectionFromNodeId("");
+    setConnectionToNodeId("");
+  }
+
+  function handleCanvasBackgroundClick() {
+    if (!connectionFromNodeId && !connectionToNodeId) {
+      return;
+    }
+
+    clearCanvasConnectionSelection("Cleared canvas edge selection.");
   }
 
   function handleAssignAgent(nodeId: string, agentId: string | null) {
@@ -304,6 +396,66 @@ export function App() {
     updateProject(
       (current) => assignAgentToNode(current, activeWorkflow.id, nodeId, agentId),
       "Updated workflow node assignment."
+    );
+  }
+
+  function handleRenameNode(nodeId: string, title: string) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => renameWorkflowNode(current, activeWorkflow.id, nodeId, title),
+      "Updated node title."
+    );
+  }
+
+  function handleRemoveNode(nodeId: string) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => removeNodeFromWorkflow(current, activeWorkflow.id, nodeId),
+      "Removed workflow node and related edges."
+    );
+
+    if (connectionFromNodeId === nodeId) {
+      setConnectionFromNodeId("");
+    }
+
+    if (connectionToNodeId === nodeId) {
+      setConnectionToNodeId("");
+    }
+  }
+
+  function handleRemoveEdge(edgeId: string) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => removeEdgeFromWorkflow(current, activeWorkflow.id, edgeId),
+      "Removed workflow edge."
+    );
+  }
+
+  function handleNodePositionChange(nodeId: string, x: number, y: number) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject((current) => repositionWorkflowNode(current, activeWorkflow.id, nodeId, x, y));
+  }
+
+  function handleNodePositionCommit(nodeId: string, x: number, y: number) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => repositionWorkflowNode(current, activeWorkflow.id, nodeId, x, y),
+      "Updated node position."
     );
   }
 
@@ -437,6 +589,39 @@ export function App() {
 
               {activeWorkflow ? (
                 <>
+                  <div className="workflowHeader">
+                    <label className="field">
+                      <span>Workflow name</span>
+                      <input
+                        value={activeWorkflow.name}
+                        onChange={(event) => handleWorkflowNameChange(event.target.value)}
+                      />
+                    </label>
+                    <label className="field compactField">
+                      <span>Fallback policy</span>
+                      <select
+                        value={activeWorkflow.fallbackRoutingPolicy}
+                        onChange={(event) =>
+                          handleWorkflowPolicyChange(
+                            event.target.value as WorkflowFallbackRoutingPolicy
+                          )
+                        }
+                      >
+                        <option value="stop">stop</option>
+                        <option value="first_available">first_available</option>
+                        <option value="all_available">all_available</option>
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="dangerButton"
+                      onClick={handleRemoveActiveWorkflow}
+                      disabled={project.workflows.length <= 1}
+                    >
+                      Remove workflow
+                    </button>
+                  </div>
+
                   <div className="workflowToolbar">
                     <label className="field compactField">
                       <span>Node type</span>
@@ -459,13 +644,48 @@ export function App() {
                     <span>Policy: {activeWorkflow.fallbackRoutingPolicy}</span>
                   </div>
 
+                  <div className="formStack">
+                    <span className="sectionLabel">Visual preview</span>
+                    <p className="canvasHint">
+                      Click one node to choose a source, click another node to create an edge, or
+                      drag a node to reposition it.
+                    </p>
+                    <WorkflowCanvasPreview
+                      workflow={activeWorkflow}
+                      agents={project.agents}
+                      selectedFromNodeId={connectionFromNodeId}
+                      selectedToNodeId={connectionToNodeId}
+                      onNodePositionChange={handleNodePositionChange}
+                      onNodePositionCommit={handleNodePositionCommit}
+                      onNodeClick={handleCanvasNodeClick}
+                      onCanvasClick={handleCanvasBackgroundClick}
+                    />
+                  </div>
+
                   <div className="listStack">
                     {activeWorkflow.nodes.map((node) => (
                       <div key={node.id} className="listCard">
-                        <strong>{node.title || node.type}</strong>
+                        <div className="listCardHeader">
+                          <strong>{node.title || node.type}</strong>
+                          <button
+                            type="button"
+                            className="ghostDangerButton"
+                            onClick={() => handleRemoveNode(node.id)}
+                          >
+                            Remove
+                          </button>
+                        </div>
                         <span>
                           {node.type} at ({Math.round(node.position.x)}, {Math.round(node.position.y)})
                         </span>
+                        <label className="field compactField">
+                          <span>Node title</span>
+                          <input
+                            value={node.title}
+                            onChange={(event) => handleRenameNode(node.id, event.target.value)}
+                            placeholder={node.type === "start" ? "Start" : "Node title"}
+                          />
+                        </label>
                         <label className="field compactField">
                           <span>Assigned agent</span>
                           <select
@@ -517,12 +737,21 @@ export function App() {
 
                   <div className="listStack">
                     {activeWorkflow.edges.map((edge) => (
-                        <div key={edge.id} className="listCard">
+                      <div key={edge.id} className="listCard">
+                        <div className="listCardHeader">
                           <strong>
                             {edge.fromNodeID.slice(0, 8)} {"->"} {edge.toNodeID.slice(0, 8)}
                           </strong>
-                          <span>{edge.requiresApproval ? "Requires approval" : "Direct route"}</span>
+                          <button
+                            type="button"
+                            className="ghostDangerButton"
+                            onClick={() => handleRemoveEdge(edge.id)}
+                          >
+                            Remove
+                          </button>
                         </div>
+                        <span>{edge.requiresApproval ? "Requires approval" : "Direct route"}</span>
+                      </div>
                     ))}
                     {activeWorkflow.edges.length === 0 ? (
                       <p className="emptyState">No edges yet. Connect two nodes to start shaping a flow.</p>

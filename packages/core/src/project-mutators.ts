@@ -1,4 +1,10 @@
-import type { Agent, MAProject, Workflow, WorkflowNodeType } from "@multi-agent-flow/domain";
+import type {
+  Agent,
+  MAProject,
+  Workflow,
+  WorkflowFallbackRoutingPolicy,
+  WorkflowNodeType
+} from "@multi-agent-flow/domain";
 import { toSwiftDate } from "./swift-date";
 import { createUUID } from "./uuid";
 
@@ -112,6 +118,35 @@ export function addWorkflowToProject(project: MAProject, baseName = "Workflow"):
   });
 }
 
+export function renameWorkflow(project: MAProject, workflowId: string, nextName: string): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    name: nextName
+  }));
+}
+
+export function setWorkflowFallbackRoutingPolicy(
+  project: MAProject,
+  workflowId: string,
+  fallbackRoutingPolicy: WorkflowFallbackRoutingPolicy
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    fallbackRoutingPolicy
+  }));
+}
+
+export function removeWorkflowFromProject(project: MAProject, workflowId: string): MAProject {
+  if (project.workflows.length <= 1) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    workflows: project.workflows.filter((workflow) => workflow.id !== workflowId)
+  });
+}
+
 export function addNodeToWorkflow(
   project: MAProject,
   workflowId: string,
@@ -169,6 +204,63 @@ export function assignAgentToNode(
   }));
 }
 
+export function renameWorkflowNode(
+  project: MAProject,
+  workflowId: string,
+  nodeId: string,
+  title: string
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    nodes: workflow.nodes.map((node) =>
+      node.id === nodeId
+        ? {
+            ...node,
+            title
+          }
+        : node
+    )
+  }));
+}
+
+export function repositionWorkflowNode(
+  project: MAProject,
+  workflowId: string,
+  nodeId: string,
+  x: number,
+  y: number
+): MAProject {
+  const nextX = Math.max(24, Math.round(x));
+  const nextY = Math.max(24, Math.round(y));
+
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    nodes: workflow.nodes.map((node) =>
+      node.id === nodeId
+        ? {
+            ...node,
+            position: {
+              x: nextX,
+              y: nextY
+            }
+          }
+        : node
+    )
+  }));
+}
+
+export function removeNodeFromWorkflow(
+  project: MAProject,
+  workflowId: string,
+  nodeId: string
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    nodes: workflow.nodes.filter((node) => node.id !== nodeId),
+    edges: workflow.edges.filter((edge) => edge.fromNodeID !== nodeId && edge.toNodeID !== nodeId)
+  }));
+}
+
 export function connectWorkflowNodes(
   project: MAProject,
   workflowId: string,
@@ -205,4 +297,15 @@ export function connectWorkflowNodes(
       ]
     };
   });
+}
+
+export function removeEdgeFromWorkflow(
+  project: MAProject,
+  workflowId: string,
+  edgeId: string
+): MAProject {
+  return updateWorkflow(project, workflowId, (workflow) => ({
+    ...workflow,
+    edges: workflow.edges.filter((edge) => edge.id !== edgeId)
+  }));
 }

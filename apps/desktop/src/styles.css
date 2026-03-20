@@ -135,7 +135,8 @@ body {
 
 .inlineForm,
 .workflowToolbar,
-.connectionBuilder {
+.connectionBuilder,
+.workflowHeader {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -145,7 +146,8 @@ body {
 .inlineForm input,
 .inlineForm button,
 .workflowToolbar button,
-.connectionBuilder button {
+.connectionBuilder button,
+.workflowHeader button {
   min-height: 44px;
 }
 
@@ -167,6 +169,21 @@ body {
   text-transform: uppercase;
 }
 
+.sectionLabel {
+  color: #52708a;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.canvasHint {
+  margin: -4px 0 0;
+  color: #52708a;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
 .field input,
 .field select {
   width: 100%;
@@ -184,7 +201,8 @@ body {
 
 .inlineForm button,
 .workflowToolbar button,
-.connectionBuilder button {
+.connectionBuilder button,
+.workflowHeader button {
   border: 0;
   border-radius: 14px;
   padding: 12px 16px;
@@ -197,8 +215,31 @@ body {
 
 .inlineForm button:hover,
 .workflowToolbar button:hover,
-.connectionBuilder button:hover {
+.connectionBuilder button:hover,
+.workflowHeader button:hover {
   opacity: 0.94;
+}
+
+.dangerButton {
+  background: #b42318 !important;
+}
+
+.ghostDangerButton {
+  border: 1px solid rgba(180, 35, 24, 0.16);
+  border-radius: 12px;
+  padding: 8px 12px;
+  background: rgba(180, 35, 24, 0.08);
+  color: #b42318;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.listCardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
 }
 
 .metaStrip {
@@ -219,6 +260,100 @@ body {
 .listStack {
   display: grid;
   gap: 12px;
+}
+
+.canvasPreview {
+  overflow: auto;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 20px;
+  background:
+    linear-gradient(rgba(15, 118, 110, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 118, 110, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 248, 255, 0.86));
+  background-size: 28px 28px, 28px 28px, auto;
+}
+
+.canvasViewport {
+  position: relative;
+}
+
+.canvasEdges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.canvasEdgePath {
+  fill: none;
+  stroke: rgba(15, 118, 110, 0.68);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.canvasEdgeDot {
+  fill: #0f766e;
+}
+
+.canvasNode {
+  position: absolute;
+  display: grid;
+  gap: 8px;
+  padding: 16px 16px 14px;
+  border: 1px solid rgba(16, 33, 50, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 36px rgba(20, 40, 60, 0.12);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transition: box-shadow 120ms ease, transform 120ms ease, outline-color 120ms ease;
+}
+
+.canvasNode:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 40px rgba(20, 40, 60, 0.16);
+}
+
+.canvasNode:active {
+  cursor: grabbing;
+}
+
+.canvasNode strong {
+  color: #102132;
+}
+
+.canvasNode span {
+  color: #52708a;
+  font-size: 0.9rem;
+}
+
+.canvasNodeBadge {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.canvasNodeMeta {
+  font-size: 0.78rem !important;
+}
+
+.canvasNodeStart {
+  background: rgba(240, 253, 250, 0.98);
+  border-color: rgba(15, 118, 110, 0.22);
+}
+
+.canvasNodeFrom {
+  outline: 3px solid rgba(37, 99, 235, 0.24);
+}
+
+.canvasNodeTo {
+  outline: 3px solid rgba(180, 35, 24, 0.18);
 }
 
 .listCard {
