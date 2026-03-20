@@ -333,6 +333,9 @@ final class OpsAnalyticsStore {
         }
 
         for result in executionResults {
+            let traceID = result.id.uuidString.replacingOccurrences(of: "-", with: "")
+            deleteSpans(db: db, traceID: traceID)
+
             let attributes: [String: String] = [
                 "agent_id": result.agentID.uuidString,
                 "agent_name": agentNamesByID[result.agentID] ?? "Unknown Agent",
@@ -350,7 +353,7 @@ final class OpsAnalyticsStore {
                 db: db,
                 spanID: result.id.uuidString,
                 projectID: projectID,
-                traceID: result.id.uuidString.replacingOccurrences(of: "-", with: ""),
+                traceID: traceID,
                 parentSpanID: nil,
                 name: agentNamesByID[result.agentID] ?? "Unknown Agent",
                 service: "multi-agent-flow.execution",
@@ -360,7 +363,68 @@ final class OpsAnalyticsStore {
                 durationMs: result.duration.map { $0 * 1000.0 },
                 attributes: attributes
             )
+
+            if result.routingAction != nil || result.routingReason != nil || !result.routingTargets.isEmpty {
+                let routingAttributes: [String: String] = [
+                    "agent_name": agentNamesByID[result.agentID] ?? "Unknown Agent",
+                    "routing_action": result.routingAction ?? "",
+                    "routing_reason": result.routingReason ?? "",
+                    "routing_targets": result.routingTargets.joined(separator: ", ")
+                ]
+
+                upsertSpan(
+                    db: db,
+                    spanID: "\(result.id.uuidString)-route",
+                    projectID: projectID,
+                    traceID: traceID,
+                    parentSpanID: result.id.uuidString,
+                    name: "Routing Decision",
+                    service: "multi-agent-flow.routing",
+                    status: "ok",
+                    startTime: result.completedAt ?? result.startedAt,
+                    endTime: result.completedAt ?? result.startedAt,
+                    durationMs: 0,
+                    attributes: routingAttributes
+                )
+            }
+
+            if !result.output.isEmpty {
+                let outputAttributes: [String: String] = [
+                    "agent_name": agentNamesByID[result.agentID] ?? "Unknown Agent",
+                    "output_type": result.outputType.rawValue,
+                    "preview_text": result.output.compactSingleLinePreview(limit: 160)
+                ]
+
+                upsertSpan(
+                    db: db,
+                    spanID: "\(result.id.uuidString)-output",
+                    projectID: projectID,
+                    traceID: traceID,
+                    parentSpanID: result.id.uuidString,
+                    name: "Output Emission",
+                    service: "multi-agent-flow.output",
+                    status: result.status == .failed ? "error" : "ok",
+                    startTime: result.completedAt ?? result.startedAt,
+                    endTime: result.completedAt ?? result.startedAt,
+                    durationMs: 0,
+                    attributes: outputAttributes
+                )
+            }
         }
+    }
+
+    private func deleteSpans(
+        db: OpaquePointer,
+        traceID: String
+    ) {
+        let sql = "DELETE FROM spans WHERE trace_id = ?;"
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(traceID, to: 1, in: statement)
+        sqlite3_step(statement)
     }
 
     private func upsertGoalMetric(
@@ -696,6 +760,7 @@ final class OpsAnalyticsStore {
         let routingTargets = emptyToNil(attributes["routing_targets"])?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
+        let relatedSpans = loadTraceRelatedSpans(db: db, traceID: String(cString: traceCString), rootSpanID: id.uuidString)
 
         return OpsTraceDetail(
             id: id,
@@ -717,8 +782,83 @@ final class OpsAnalyticsStore {
             previewText: attributes["preview_text"] ?? "No output",
             outputText: attributes["output_text"] ?? "",
             attributes: attributes,
-            eventsText: emptyToNil(eventsText)
+            eventsText: emptyToNil(eventsText),
+            relatedSpans: relatedSpans
         )
+    }
+
+    private func loadTraceRelatedSpans(
+        db: OpaquePointer,
+        traceID: String,
+        rootSpanID: String
+    ) -> [OpsTraceRelatedSpan] {
+        let sql = """
+        SELECT span_id, parent_span_id, name, service, status, start_time, end_time, duration_ms, attributes
+        FROM spans
+        WHERE trace_id = ? AND span_id != ?
+        ORDER BY start_time ASC, created_at ASC;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(traceID, to: 1, in: statement)
+        bindText(rootSpanID, to: 2, in: statement)
+
+        var rows: [OpsTraceRelatedSpan] = []
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let spanCString = sqlite3_column_text(statement, 0),
+                  let nameCString = sqlite3_column_text(statement, 2),
+                  let serviceCString = sqlite3_column_text(statement, 3),
+                  let statusCString = sqlite3_column_text(statement, 4),
+                  let startCString = sqlite3_column_text(statement, 5),
+                  let startedAt = iso8601.date(from: String(cString: startCString)) else {
+                continue
+            }
+
+            let parentSpanID = sqlite3_column_type(statement, 1) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(statement, 1))
+            let completedAt = sqlite3_column_type(statement, 6) == SQLITE_NULL
+                ? nil
+                : iso8601.date(from: String(cString: sqlite3_column_text(statement, 6)))
+            let durationMs = sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 7)
+            let attributes = sqlite3_column_type(statement, 8) == SQLITE_NULL
+                ? [:]
+                : dictionary(from: String(cString: sqlite3_column_text(statement, 8)))
+
+            rows.append(
+                OpsTraceRelatedSpan(
+                    id: String(cString: spanCString),
+                    parentSpanID: parentSpanID,
+                    name: String(cString: nameCString),
+                    service: String(cString: serviceCString),
+                    statusText: String(cString: statusCString),
+                    startedAt: startedAt,
+                    completedAt: completedAt,
+                    duration: durationMs.map { $0 / 1000.0 },
+                    summaryText: summarizeRelatedSpan(name: String(cString: nameCString), attributes: attributes)
+                )
+            )
+        }
+
+        return rows
+    }
+
+    private func summarizeRelatedSpan(name: String, attributes: [String: String]) -> String {
+        if name == "Routing Decision" {
+            let action = emptyToNil(attributes["routing_action"]) ?? "none"
+            let targets = emptyToNil(attributes["routing_targets"]) ?? "no targets"
+            return "\(action) -> \(targets)"
+        }
+
+        if name == "Output Emission" {
+            let outputType = emptyToNil(attributes["output_type"]) ?? "unknown"
+            let preview = emptyToNil(attributes["preview_text"]) ?? "No output"
+            return "\(outputType): \(preview)"
+        }
+
+        return emptyToNil(attributes["preview_text"]) ?? name
     }
 
     private func bindText(_ text: String?, to index: Int32, in statement: OpaquePointer) {

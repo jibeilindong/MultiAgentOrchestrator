@@ -109,6 +109,10 @@ body {
   gap: 18px;
 }
 
+.cardWide {
+  grid-column: span 2;
+}
+
 .card {
   padding: 24px;
   border: 1px solid rgba(16, 33, 50, 0.08);
@@ -129,9 +133,30 @@ body {
   gap: 16px;
 }
 
+.inlineForm,
+.workflowToolbar,
+.connectionBuilder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.inlineForm input,
+.inlineForm button,
+.workflowToolbar button,
+.connectionBuilder button {
+  min-height: 44px;
+}
+
 .field {
   display: grid;
   gap: 8px;
+}
+
+.compactField {
+  min-width: 180px;
+  flex: 1 1 220px;
 }
 
 .field span {
@@ -142,7 +167,8 @@ body {
   text-transform: uppercase;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   border: 1px solid rgba(16, 33, 50, 0.12);
   border-radius: 14px;
@@ -150,6 +176,67 @@ body {
   background: rgba(255, 255, 255, 0.94);
   color: #13283c;
   font: inherit;
+}
+
+.inlineForm input {
+  flex: 1 1 240px;
+}
+
+.inlineForm button,
+.workflowToolbar button,
+.connectionBuilder button {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 16px;
+  background: #0f766e;
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.inlineForm button:hover,
+.workflowToolbar button:hover,
+.connectionBuilder button:hover {
+  opacity: 0.94;
+}
+
+.metaStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.metaStrip span {
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.listStack {
+  display: grid;
+  gap: 12px;
+}
+
+.listCard {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.listCard strong {
+  color: #13283c;
+}
+
+.listCard span {
+  color: #52708a;
+  overflow-wrap: anywhere;
 }
 
 .recentList {
@@ -190,6 +277,18 @@ body {
   color: #52708a;
 }
 
+.jsonPreview {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 18px;
+  padding: 16px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
 .card ul,
 .card ol {
   margin: 0;
@@ -226,5 +325,9 @@ body {
 
   .card {
     border-radius: 18px;
+  }
+
+  .cardWide {
+    grid-column: span 1;
   }
 }

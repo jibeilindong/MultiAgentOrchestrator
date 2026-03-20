@@ -8,18 +8,7 @@ import type {
   Workflow
 } from "@multi-agent-flow/domain";
 import { toSwiftDate } from "./swift-date";
-
-function createUUID(): string {
-  const cryptoApi = (globalThis as typeof globalThis & {
-    crypto?: { randomUUID?: () => string };
-  }).crypto;
-
-  if (cryptoApi?.randomUUID) {
-    return cryptoApi.randomUUID();
-  }
-
-  throw new Error("randomUUID is not available in the current runtime.");
-}
+import { createUUID } from "./uuid";
 
 function createDefaultWorkflow(now: number): Workflow {
   return {

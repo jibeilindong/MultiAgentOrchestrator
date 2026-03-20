@@ -119,6 +119,18 @@ struct OpsMetricHistorySeries: Identifiable {
     var previousPoint: OpsMetricHistoryPoint? { points.dropLast().last }
 }
 
+struct OpsTraceRelatedSpan: Identifiable {
+    let id: String
+    let parentSpanID: String?
+    let name: String
+    let service: String
+    let statusText: String
+    let startedAt: Date
+    let completedAt: Date?
+    let duration: TimeInterval?
+    let summaryText: String
+}
+
 struct OpsTraceDetail: Identifiable {
     let id: UUID
     let traceID: String
@@ -140,6 +152,7 @@ struct OpsTraceDetail: Identifiable {
     let outputText: String
     let attributes: [String: String]
     let eventsText: String?
+    let relatedSpans: [OpsTraceRelatedSpan]
 }
 
 struct OpsAnalyticsSnapshot {

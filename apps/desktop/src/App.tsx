@@ -1,5 +1,13 @@
-import { fromSwiftDate } from "@multi-agent-flow/core";
-import type { MAProject } from "@multi-agent-flow/domain";
+import {
+  addAgentToProject,
+  addNodeToWorkflow,
+  addWorkflowToProject,
+  assignAgentToNode,
+  connectWorkflowNodes,
+  fromSwiftDate,
+  renameProject
+} from "@multi-agent-flow/core";
+import type { MAProject, WorkflowNodeType } from "@multi-agent-flow/domain";
 import { startTransition, useEffect, useState } from "react";
 
 type BusyAction = "new" | "open" | "save" | "saveAs" | null;
@@ -36,8 +44,16 @@ export function App() {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [status, setStatus] = useState("Bootstrapping cross-platform workspace...");
   const [error, setError] = useState<string | null>(null);
+  const [newAgentName, setNewAgentName] = useState("New Agent");
+  const [newWorkflowName, setNewWorkflowName] = useState("Workflow");
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [newNodeType, setNewNodeType] = useState<WorkflowNodeType>("agent");
+  const [connectionFromNodeId, setConnectionFromNodeId] = useState("");
+  const [connectionToNodeId, setConnectionToNodeId] = useState("");
   const project = projectState?.project ?? null;
   const filePath = projectState?.filePath ?? null;
+  const activeWorkflow =
+    project?.workflows.find((workflow) => workflow.id === activeWorkflowId) ?? project?.workflows[0] ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +72,7 @@ export function App() {
         startTransition(() => {
           setProjectState(created);
           setRecentProjects(recent);
+          setActiveWorkflowId(created.project.workflows[0]?.id ?? null);
           setStatus("Created an in-memory project. Open or save a `.maoproj` file to continue.");
         });
       } catch (bootstrapError) {
@@ -73,6 +90,16 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!project) {
+      return;
+    }
+
+    if (!activeWorkflowId || !project.workflows.some((workflow) => workflow.id === activeWorkflowId)) {
+      setActiveWorkflowId(project.workflows[0]?.id ?? null);
+    }
+  }, [activeWorkflowId, project]);
 
   useEffect(() => {
     if (!project) {
@@ -110,6 +137,23 @@ export function App() {
     }
   }
 
+  function updateProject(mutator: (current: MAProject) => MAProject, nextStatus?: string) {
+    setProjectState((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        project: mutator(current.project)
+      };
+    });
+
+    if (nextStatus) {
+      setStatus(nextStatus);
+    }
+  }
+
   async function refreshRecentProjects() {
     const recent = await requireDesktopApi().listRecentProjects();
     startTransition(() => {
@@ -122,6 +166,7 @@ export function App() {
       const created = await requireDesktopApi().createProject("Untitled Project");
       startTransition(() => {
         setProjectState(created);
+        setActiveWorkflowId(created.project.workflows[0]?.id ?? null);
         setStatus("Created a new unsaved project.");
       });
     });
@@ -137,6 +182,7 @@ export function App() {
 
       startTransition(() => {
         setProjectState(opened);
+        setActiveWorkflowId(opened.project.workflows[0]?.id ?? null);
         setStatus(`Opened ${opened.project.name}.`);
       });
 
@@ -151,8 +197,7 @@ export function App() {
 
     await runProjectAction("save", async () => {
       if (!filePath) {
-        const api = requireDesktopApi();
-        const saved = await api.saveProjectAs(project, null);
+        const saved = await requireDesktopApi().saveProjectAs(project, null);
         if (!saved) {
           setStatus("Save cancelled.");
           return;
@@ -195,11 +240,12 @@ export function App() {
     });
   }
 
-  async function handleOpenRecentProject(filePath: string) {
+  async function handleOpenRecentProject(nextFilePath: string) {
     await runProjectAction("open", async () => {
-      const opened = await requireDesktopApi().openRecentProject(filePath);
+      const opened = await requireDesktopApi().openRecentProject(nextFilePath);
       startTransition(() => {
         setProjectState(opened);
+        setActiveWorkflowId(opened.project.workflows[0]?.id ?? null);
         setStatus(`Opened ${opened.project.name} from recent projects.`);
       });
       await refreshRecentProjects();
@@ -207,19 +253,58 @@ export function App() {
   }
 
   function handleProjectNameChange(nextName: string) {
-    setProjectState((current) => {
-      if (!current) {
-        return current;
-      }
+    updateProject((current) => renameProject(current, nextName));
+  }
 
-      return {
-        ...current,
-        project: {
-          ...current.project,
-          name: nextName
-        }
-      };
+  function handleAddAgent() {
+    updateProject((current) => addAgentToProject(current, newAgentName), "Added a new agent to the project.");
+  }
+
+  function handleAddWorkflow() {
+    if (!project) {
+      return;
+    }
+
+    const nextProject = addWorkflowToProject(project, newWorkflowName);
+    const latestWorkflow = nextProject.workflows[nextProject.workflows.length - 1] ?? null;
+    startTransition(() => {
+      setProjectState((current) => (current ? { ...current, project: nextProject } : current));
+      setActiveWorkflowId(latestWorkflow?.id ?? null);
+      setStatus("Added a new workflow.");
     });
+  }
+
+  function handleAddNode() {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => addNodeToWorkflow(current, activeWorkflow.id, newNodeType),
+      `Added a ${newNodeType} node to ${activeWorkflow.name}.`
+    );
+  }
+
+  function handleConnectNodes() {
+    if (!activeWorkflow || !connectionFromNodeId || !connectionToNodeId) {
+      return;
+    }
+
+    updateProject(
+      (current) => connectWorkflowNodes(current, activeWorkflow.id, connectionFromNodeId, connectionToNodeId),
+      "Connected workflow nodes."
+    );
+  }
+
+  function handleAssignAgent(nodeId: string, agentId: string | null) {
+    if (!activeWorkflow) {
+      return;
+    }
+
+    updateProject(
+      (current) => assignAgentToNode(current, activeWorkflow.id, nodeId, agentId),
+      "Updated workflow node assignment."
+    );
   }
 
   return (
@@ -228,8 +313,8 @@ export function App() {
         <p className="eyebrow">Cross-platform migration</p>
         <h1>Multi-Agent-Flow project shell</h1>
         <p className="lede">
-          The new desktop shell can now create, open, save, and save-as `.maoproj` files while the
-          migration moves persistent project logic into shared TypeScript packages.
+          The new desktop shell can now create, open, save, and save-as `.maoproj` files, and it
+          has started taking over agent and workflow state editing from the legacy macOS app.
         </p>
       </section>
 
@@ -297,28 +382,159 @@ export function App() {
         </article>
 
         <article className="card">
-          <h2>Compatibility snapshot</h2>
+          <h2>Agents</h2>
           {project ? (
-            <dl className="meta">
-              <div>
-                <dt>Default workflow</dt>
-                <dd>{project.workflows[0]?.name ?? "None"}</dd>
+            <div className="formStack">
+              <div className="inlineForm">
+                <input value={newAgentName} onChange={(event) => setNewAgentName(event.target.value)} />
+                <button type="button" onClick={handleAddAgent}>
+                  Add agent
+                </button>
               </div>
-              <div>
-                <dt>Agents</dt>
-                <dd>{project.agents.length}</dd>
-              </div>
-              <div>
-                <dt>Tasks</dt>
-                <dd>{project.tasks.length}</dd>
-              </div>
-              <div>
-                <dt>Platform</dt>
-                <dd>{window.desktopApi?.platform ?? "browser"}</dd>
-              </div>
-            </dl>
+              {project.agents.length > 0 ? (
+                <div className="listStack">
+                  {project.agents.map((agent) => (
+                    <div key={agent.id} className="listCard">
+                      <strong>{agent.name}</strong>
+                      <span>{agent.identity}</span>
+                      <span>{agent.openClawDefinition.modelIdentifier}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="emptyState">No agents yet.</p>
+              )}
+            </div>
           ) : (
-            <p className="emptyState">Waiting for project bootstrap.</p>
+            <p className="emptyState">Project state is still loading.</p>
+          )}
+        </article>
+
+        <article className="card cardWide">
+          <h2>Workflow state shell</h2>
+          {project ? (
+            <div className="formStack">
+              <div className="inlineForm">
+                <input value={newWorkflowName} onChange={(event) => setNewWorkflowName(event.target.value)} />
+                <button type="button" onClick={handleAddWorkflow}>
+                  Add workflow
+                </button>
+              </div>
+
+              <label className="field">
+                <span>Active workflow</span>
+                <select
+                  value={activeWorkflow?.id ?? ""}
+                  onChange={(event) => setActiveWorkflowId(event.target.value || null)}
+                >
+                  {project.workflows.map((workflow) => (
+                    <option key={workflow.id} value={workflow.id}>
+                      {workflow.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {activeWorkflow ? (
+                <>
+                  <div className="workflowToolbar">
+                    <label className="field compactField">
+                      <span>Node type</span>
+                      <select
+                        value={newNodeType}
+                        onChange={(event) => setNewNodeType(event.target.value as WorkflowNodeType)}
+                      >
+                        <option value="agent">Agent</option>
+                        <option value="start">Start</option>
+                      </select>
+                    </label>
+                    <button type="button" onClick={handleAddNode}>
+                      Add node
+                    </button>
+                  </div>
+
+                  <div className="metaStrip">
+                    <span>Nodes: {activeWorkflow.nodes.length}</span>
+                    <span>Edges: {activeWorkflow.edges.length}</span>
+                    <span>Policy: {activeWorkflow.fallbackRoutingPolicy}</span>
+                  </div>
+
+                  <div className="listStack">
+                    {activeWorkflow.nodes.map((node) => (
+                      <div key={node.id} className="listCard">
+                        <strong>{node.title || node.type}</strong>
+                        <span>
+                          {node.type} at ({Math.round(node.position.x)}, {Math.round(node.position.y)})
+                        </span>
+                        <label className="field compactField">
+                          <span>Assigned agent</span>
+                          <select
+                            value={node.agentID ?? ""}
+                            onChange={(event) => handleAssignAgent(node.id, event.target.value || null)}
+                          >
+                            <option value="">Unassigned</option>
+                            {project.agents.map((agent) => (
+                              <option key={agent.id} value={agent.id}>
+                                {agent.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    ))}
+                    {activeWorkflow.nodes.length === 0 ? (
+                      <p className="emptyState">No nodes yet. Add a start or agent node first.</p>
+                    ) : null}
+                  </div>
+
+                  <div className="connectionBuilder">
+                    <label className="field compactField">
+                      <span>From node</span>
+                      <select value={connectionFromNodeId} onChange={(event) => setConnectionFromNodeId(event.target.value)}>
+                        <option value="">Select node</option>
+                        {activeWorkflow.nodes.map((node) => (
+                          <option key={node.id} value={node.id}>
+                            {node.title || node.type}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field compactField">
+                      <span>To node</span>
+                      <select value={connectionToNodeId} onChange={(event) => setConnectionToNodeId(event.target.value)}>
+                        <option value="">Select node</option>
+                        {activeWorkflow.nodes.map((node) => (
+                          <option key={node.id} value={node.id}>
+                            {node.title || node.type}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="button" onClick={handleConnectNodes}>
+                      Add edge
+                    </button>
+                  </div>
+
+                  <div className="listStack">
+                    {activeWorkflow.edges.map((edge) => (
+                        <div key={edge.id} className="listCard">
+                          <strong>
+                            {edge.fromNodeID.slice(0, 8)} {"->"} {edge.toNodeID.slice(0, 8)}
+                          </strong>
+                          <span>{edge.requiresApproval ? "Requires approval" : "Direct route"}</span>
+                        </div>
+                    ))}
+                    {activeWorkflow.edges.length === 0 ? (
+                      <p className="emptyState">No edges yet. Connect two nodes to start shaping a flow.</p>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <p className="emptyState">No workflow selected.</p>
+              )}
+            </div>
+          ) : (
+            <p className="emptyState">Project state is still loading.</p>
           )}
         </article>
 
@@ -346,12 +562,38 @@ export function App() {
         </article>
 
         <article className="card">
-          <h2>Next milestones</h2>
-          <ol>
-            <li>Project open/save bridge is now in place</li>
-            <li>Recent projects and autosave are now wired in</li>
-            <li>Next: move workflow editor state into the new shell</li>
-          </ol>
+          <h2>Compatibility snapshot</h2>
+          {project ? (
+            <dl className="meta">
+              <div>
+                <dt>Default workflow</dt>
+                <dd>{project.workflows[0]?.name ?? "None"}</dd>
+              </div>
+              <div>
+                <dt>Agents</dt>
+                <dd>{project.agents.length}</dd>
+              </div>
+              <div>
+                <dt>Tasks</dt>
+                <dd>{project.tasks.length}</dd>
+              </div>
+              <div>
+                <dt>Platform</dt>
+                <dd>{window.desktopApi?.platform ?? "browser"}</dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="emptyState">Waiting for project bootstrap.</p>
+          )}
+        </article>
+
+        <article className="card cardWide">
+          <h2>Project JSON preview</h2>
+          {project ? (
+            <pre className="jsonPreview">{JSON.stringify(project, null, 2)}</pre>
+          ) : (
+            <p className="emptyState">Waiting for project bootstrap.</p>
+          )}
         </article>
       </section>
     </main>

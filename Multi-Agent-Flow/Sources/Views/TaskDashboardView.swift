@@ -29,7 +29,7 @@ struct MonitoringDashboardView: View {
     @State private var pendingMetricsRefreshWorkItem: DispatchWorkItem?
     @State private var selectedOpsCenterPage: OpsCenterPage = .liveOverview
     @State private var selectedHistoryMetric: OpsHistoryMetric = .workflowReliability
-    @State private var selectedTraceDetail: OpsTraceDetail?
+    @State private var selectedTracePanel: OpsTracePanelModel?
 
     private var project: MAProject? { appState.currentProject }
     private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
@@ -165,8 +165,8 @@ struct MonitoringDashboardView: View {
             pendingMetricsRefreshWorkItem?.cancel()
             pendingMetricsRefreshWorkItem = nil
         }
-        .sheet(item: $selectedTraceDetail) { detail in
-            OpsTraceDetailSheet(detail: detail)
+        .sheet(item: $selectedTracePanel) { panel in
+            OpsTraceDetailSheet(panel: panel)
         }
     }
 
@@ -1026,11 +1026,15 @@ struct MonitoringDashboardView: View {
         guard let projectID = project?.id else { return }
 
         if let detail = appState.opsAnalytics.traceDetail(projectID: projectID, traceID: row.id) {
-            selectedTraceDetail = detail
+            selectedTracePanel = OpsTracePanelModel(
+                detail: detail,
+                relatedLogs: relatedLogs(for: detail),
+                workflowPath: buildWorkflowPath(for: detail)
+            )
             return
         }
 
-        selectedTraceDetail = OpsTraceDetail(
+        let fallbackDetail = OpsTraceDetail(
             id: row.id,
             traceID: row.id.uuidString.replacingOccurrences(of: "-", with: ""),
             parentSpanID: nil,
@@ -1050,8 +1054,134 @@ struct MonitoringDashboardView: View {
             previewText: row.previewText,
             outputText: row.previewText,
             attributes: [:],
-            eventsText: nil
+            eventsText: nil,
+            relatedSpans: []
         )
+        selectedTracePanel = OpsTracePanelModel(
+            detail: fallbackDetail,
+            relatedLogs: relatedLogs(for: fallbackDetail),
+            workflowPath: buildWorkflowPath(for: fallbackDetail)
+        )
+    }
+
+    private func relatedLogs(for detail: OpsTraceDetail) -> [ExecutionLogEntry] {
+        let lowerBound = detail.startedAt.addingTimeInterval(-15)
+        let upperBound = (detail.completedAt ?? detail.startedAt).addingTimeInterval(30)
+
+        return appState.openClawService.executionLogs
+            .filter { entry in
+                if let nodeID = detail.nodeID, entry.nodeID == nodeID {
+                    return true
+                }
+                return entry.timestamp >= lowerBound && entry.timestamp <= upperBound
+            }
+            .sorted { $0.timestamp < $1.timestamp }
+            .suffix(30)
+            .map { $0 }
+    }
+
+    private func buildWorkflowPath(for detail: OpsTraceDetail) -> OpsTraceWorkflowPath? {
+        guard let workflow = project?.workflows.first,
+              let currentNodeID = detail.nodeID else {
+            return nil
+        }
+
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let agentByID = Dictionary(uniqueKeysWithValues: (project?.agents ?? []).map { ($0.id, $0) })
+
+        guard let currentNode = nodeByID[currentNodeID] else { return nil }
+
+        let incomingEdges = workflow.edges.filter { $0.isIncoming(to: currentNodeID) }
+        let outgoingEdges = workflow.edges.filter { $0.isOutgoing(from: currentNodeID) }
+        let requestedTargets = Set(detail.routingTargets.map(normalizedRouteKey))
+
+        let upstreamNodes = incomingEdges.compactMap { edge -> OpsTraceWorkflowPathNode? in
+            let sourceID = edge.toNodeID == currentNodeID ? edge.fromNodeID : edge.toNodeID
+            guard let node = nodeByID[sourceID] else { return nil }
+            return makeWorkflowPathNode(node: node, role: .upstream, state: .normal, agentByID: agentByID)
+        }
+
+        let downstreamNodes = outgoingEdges.compactMap { edge -> OpsTraceWorkflowPathNode? in
+            let targetID = edge.fromNodeID == currentNodeID ? edge.toNodeID : edge.fromNodeID
+            guard let node = nodeByID[targetID] else { return nil }
+            let state: OpsTraceWorkflowPathNode.State = matchesRouteTarget(node: node, requestedTargets: requestedTargets, agentByID: agentByID)
+                ? .selected
+                : .skipped
+            return makeWorkflowPathNode(node: node, role: .downstream, state: state, agentByID: agentByID)
+        }
+
+        guard let currentPathNode = makeWorkflowPathNode(
+            node: currentNode,
+            role: .current,
+            state: .selected,
+            agentByID: agentByID
+        ) else {
+            return nil
+        }
+
+        return OpsTraceWorkflowPath(
+            upstreamNodes: uniqueWorkflowPathNodes(upstreamNodes),
+            currentNode: currentPathNode,
+            downstreamNodes: uniqueWorkflowPathNodes(downstreamNodes)
+        )
+    }
+
+    private func makeWorkflowPathNode(
+        node: WorkflowNode,
+        role: OpsTraceWorkflowPathNode.Role,
+        state: OpsTraceWorkflowPathNode.State,
+        agentByID: [UUID: Agent]
+    ) -> OpsTraceWorkflowPathNode? {
+        let agentName = node.agentID.flatMap { agentByID[$0]?.name }
+        let title = node.title.isEmpty ? (agentName ?? "Untitled Node") : node.title
+        let subtitle: String
+
+        switch node.type {
+        case .start:
+            subtitle = "Start Node"
+        case .agent:
+            subtitle = agentName ?? "Agent Node"
+        }
+
+        return OpsTraceWorkflowPathNode(
+            id: node.id,
+            title: title,
+            subtitle: subtitle,
+            role: role,
+            state: state
+        )
+    }
+
+    private func uniqueWorkflowPathNodes(_ nodes: [OpsTraceWorkflowPathNode]) -> [OpsTraceWorkflowPathNode] {
+        var seen = Set<UUID>()
+        return nodes.filter { node in
+            seen.insert(node.id).inserted
+        }
+    }
+
+    private func matchesRouteTarget(
+        node: WorkflowNode,
+        requestedTargets: Set<String>,
+        agentByID: [UUID: Agent]
+    ) -> Bool {
+        guard !requestedTargets.isEmpty else { return false }
+
+        var candidates: Set<String> = [
+            normalizedRouteKey(node.id.uuidString),
+            normalizedRouteKey(String(node.id.uuidString.prefix(8))),
+            normalizedRouteKey(node.title)
+        ]
+
+        if let agentID = node.agentID, let agent = agentByID[agentID] {
+            candidates.insert(normalizedRouteKey(agent.name))
+        }
+
+        candidates = candidates.filter { !$0.isEmpty }
+        return !candidates.isDisjoint(with: requestedTargets)
+    }
+
+    private func normalizedRouteKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func scheduleMetricsRefresh(immediately: Bool) {
@@ -1119,8 +1249,44 @@ struct MonitoringDashboardView: View {
     }
 }
 
-private struct OpsTraceDetailSheet: View {
+private struct OpsTracePanelModel: Identifiable {
     let detail: OpsTraceDetail
+    let relatedLogs: [ExecutionLogEntry]
+    let workflowPath: OpsTraceWorkflowPath?
+
+    var id: UUID { detail.id }
+}
+
+private struct OpsTraceWorkflowPath {
+    let upstreamNodes: [OpsTraceWorkflowPathNode]
+    let currentNode: OpsTraceWorkflowPathNode
+    let downstreamNodes: [OpsTraceWorkflowPathNode]
+}
+
+private struct OpsTraceWorkflowPathNode: Identifiable {
+    enum Role: Equatable {
+        case upstream
+        case current
+        case downstream
+    }
+
+    enum State: Equatable {
+        case normal
+        case selected
+        case skipped
+    }
+
+    let id: UUID
+    let title: String
+    let subtitle: String
+    let role: Role
+    let state: State
+}
+
+private struct OpsTraceDetailSheet: View {
+    let panel: OpsTracePanelModel
+
+    private var detail: OpsTraceDetail { panel.detail }
 
     private var visibleAttributeKeys: [String] {
         detail.attributes.keys
@@ -1178,6 +1344,86 @@ private struct OpsTraceDetailSheet: View {
                     detailSection(title: "Raw Output", text: detail.outputText, monospaced: true)
                 }
 
+                if let workflowPath = panel.workflowPath {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Workflow Path")
+                            .font(.headline)
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(alignment: .top, spacing: 18) {
+                                workflowPathColumn(
+                                    title: "Upstream",
+                                    nodes: workflowPath.upstreamNodes,
+                                    emptyText: "No upstream nodes"
+                                )
+
+                                Image(systemName: "arrow.right")
+                                    .foregroundColor(.secondary)
+                                    .padding(.top, 34)
+
+                                workflowPathCurrentNode(workflowPath.currentNode)
+
+                                Image(systemName: "arrow.right")
+                                    .foregroundColor(.secondary)
+                                    .padding(.top, 34)
+
+                                workflowPathColumn(
+                                    title: "Downstream",
+                                    nodes: workflowPath.downstreamNodes,
+                                    emptyText: "No downstream nodes"
+                                )
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                if !detail.relatedSpans.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Span Timeline")
+                            .font(.headline)
+
+                        ForEach(detail.relatedSpans) { span in
+                            HStack(alignment: .top, spacing: 12) {
+                                Rectangle()
+                                    .fill(span.statusText == "error" ? Color.red : Color.blue)
+                                    .frame(width: 3)
+                                    .clipShape(Capsule())
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(span.name)
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                        Spacer()
+                                        Text(span.duration.map(formatOpsDuration) ?? "0.0s")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    Text(span.service)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+
+                                    Text(span.summaryText)
+                                        .font(.caption)
+
+                                    Text(span.startedAt.formatted(date: .omitted, time: .standard))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
                 if !visibleAttributeKeys.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Attributes")
@@ -1207,6 +1453,37 @@ private struct OpsTraceDetailSheet: View {
                 if let eventsText = detail.eventsText, !eventsText.isEmpty {
                     detailSection(title: "Events", text: eventsText, monospaced: true)
                 }
+
+                if !panel.relatedLogs.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Related Logs")
+                            .font(.headline)
+
+                        ForEach(panel.relatedLogs) { entry in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(entry.timestamp.formatted(date: .omitted, time: .standard))
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 78, alignment: .leading)
+
+                                Text(entry.level.rawValue)
+                                    .font(.caption2)
+                                    .foregroundColor(logColor(for: entry.level))
+                                    .frame(width: 52, alignment: .leading)
+
+                                Text(entry.message)
+                                    .font(.caption)
+                                    .textSelection(.enabled)
+
+                                Spacer()
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
             }
             .padding()
         }
@@ -1226,6 +1503,74 @@ private struct OpsTraceDetailSheet: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func workflowPathColumn(
+        title: String,
+        nodes: [OpsTraceWorkflowPathNode],
+        emptyText: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if nodes.isEmpty {
+                Text(emptyText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(width: 180, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(nodes) { node in
+                        workflowPathNodeCard(node)
+                    }
+                }
+            }
+        }
+    }
+
+    private func workflowPathCurrentNode(_ node: OpsTraceWorkflowPathNode) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Current")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            workflowPathNodeCard(node)
+                .frame(width: 220)
+        }
+    }
+
+    private func workflowPathNodeCard(_ node: OpsTraceWorkflowPathNode) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(node.title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Spacer()
+                Text(workflowPathBadgeText(node))
+                    .font(.caption2)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(workflowPathBadgeColor(node).opacity(0.14))
+                    .foregroundColor(workflowPathBadgeColor(node))
+                    .clipShape(Capsule())
+            }
+
+            Text(node.subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+        .padding()
+        .frame(width: 180, alignment: .leading)
+        .background(workflowPathCardColor(node))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(workflowPathBadgeColor(node).opacity(node.role == .current ? 0.6 : 0.22), lineWidth: node.role == .current ? 2 : 1)
+        }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -1251,6 +1596,69 @@ private struct OpsTraceDetailSheet: View {
         case .running: return .orange
         case .waiting: return .blue
         case .idle: return .secondary
+        }
+    }
+
+    private func logColor(for level: ExecutionLogEntry.LogLevel) -> Color {
+        switch level {
+        case .info: return .blue
+        case .warning: return .orange
+        case .error: return .red
+        case .success: return .green
+        }
+    }
+
+    private func workflowPathBadgeText(_ node: OpsTraceWorkflowPathNode) -> String {
+        switch node.role {
+        case .current:
+            return "Current"
+        case .upstream:
+            return "Upstream"
+        case .downstream:
+            switch node.state {
+            case .selected:
+                return "Selected"
+            case .skipped:
+                return "Available"
+            case .normal:
+                return "Node"
+            }
+        }
+    }
+
+    private func workflowPathBadgeColor(_ node: OpsTraceWorkflowPathNode) -> Color {
+        switch node.role {
+        case .current:
+            return .blue
+        case .upstream:
+            return .secondary
+        case .downstream:
+            switch node.state {
+            case .selected:
+                return .green
+            case .skipped:
+                return .orange
+            case .normal:
+                return .secondary
+            }
+        }
+    }
+
+    private func workflowPathCardColor(_ node: OpsTraceWorkflowPathNode) -> Color {
+        switch node.role {
+        case .current:
+            return Color.blue.opacity(0.08)
+        case .upstream:
+            return Color(.controlBackgroundColor)
+        case .downstream:
+            switch node.state {
+            case .selected:
+                return Color.green.opacity(0.08)
+            case .skipped:
+                return Color.orange.opacity(0.08)
+            case .normal:
+                return Color(.controlBackgroundColor)
+            }
         }
     }
 
