@@ -7,7 +7,6 @@ import SwiftUI
 import Foundation
 
 struct ConnectionLinesView: View {
-    @EnvironmentObject private var appState: AppState
     @ObservedObject private var localizationManager = LocalizationManager.shared
     let currentWorkflow: Workflow?
     @Binding var scale: CGFloat
@@ -120,15 +119,6 @@ struct ConnectionLinesView: View {
                                 )
                             )
                             .allowsHitTesting(false)
-
-                        SharedSegmentBadgeView(
-                            previewItems: sharedHit.previewItems,
-                            selectedEdgeID: selectedEdgeID,
-                            textScale: textScale
-                        )
-                        .position(sharedHit.badgePosition)
-                        .allowsHitTesting(false)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                     }
 
                     ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16))
@@ -149,15 +139,9 @@ struct ConnectionLinesView: View {
 
     private func buildRenderData(in geometry: GeometryProxy) -> ConnectionRenderData {
         let edgeLayouts = buildEdgeLayouts(in: geometry)
-        let nodesByID = Dictionary(
-            uniqueKeysWithValues: (currentWorkflow?.nodes ?? []).map { ($0.id, $0) }
-        )
         return ConnectionRenderData(
             edgeLayouts: edgeLayouts,
-            sharedHitLayouts: buildSharedHitLayouts(
-                from: edgeLayouts,
-                nodesByID: nodesByID
-            )
+            sharedHitLayouts: buildSharedHitLayouts(from: edgeLayouts)
         )
     }
 
@@ -286,10 +270,7 @@ struct ConnectionLinesView: View {
         )
     }
 
-    private func buildSharedHitLayouts(
-        from layouts: [EdgeLayout],
-        nodesByID: [UUID: WorkflowNode]
-    ) -> [SharedSegmentHitLayout] {
+    private func buildSharedHitLayouts(from layouts: [EdgeLayout]) -> [SharedSegmentHitLayout] {
         let groupedSegments = Dictionary(grouping: layouts.flatMap { layout -> [SharedSegmentCandidate] in
             zip(layout.points, layout.points.dropFirst()).map { from, to in
                 SharedSegmentCandidate(
@@ -308,12 +289,7 @@ struct ConnectionLinesView: View {
             return SharedSegmentHitLayout(
                 id: segmentKey,
                 points: points,
-                edges: uniqueEdges,
-                badgePosition: sharedSegmentBadgePosition(for: points),
-                previewItems: sharedSegmentPreviewItems(
-                    for: uniqueEdges,
-                    nodesByID: nodesByID
-                )
+                edges: uniqueEdges
             )
         }
         .sorted { lhs, rhs in
@@ -612,42 +588,6 @@ struct ConnectionLinesView: View {
         onEdgeSelected?(nextEdge)
     }
 
-    private func sharedSegmentPreviewItems(
-        for edges: [WorkflowEdge],
-        nodesByID: [UUID: WorkflowNode]
-    ) -> [SharedSegmentPreviewItem] {
-        edges.map { edge in
-            let sourceName = nodeDisplayName(for: edge.fromNodeID, nodesByID: nodesByID)
-            let targetName = nodeDisplayName(for: edge.toNodeID, nodesByID: nodesByID)
-            let detail = edgeDisplayText(edge)
-            let summary = detail.isEmpty
-                ? "\(sourceName) -> \(targetName)"
-                : "\(sourceName) -> \(targetName)  \(detail)"
-
-            return SharedSegmentPreviewItem(
-                id: edge.id,
-                text: summary,
-                requiresApproval: edge.requiresApproval
-            )
-        }
-    }
-
-    private func sharedSegmentBadgePosition(for points: [CGPoint]) -> CGPoint {
-        guard let first = points.first,
-              let last = points.last else { return .zero }
-
-        let midpoint = CGPoint(
-            x: (first.x + last.x) * 0.5,
-            y: (first.y + last.y) * 0.5
-        )
-        let isVertical = abs(first.x - last.x) < 0.5
-
-        if isVertical {
-            return CGPoint(x: midpoint.x + 26, y: midpoint.y)
-        }
-        return CGPoint(x: midpoint.x, y: midpoint.y - 24)
-    }
-
     private func resolvedLabelLayouts(_ layouts: [EdgeLayout], blockedRects: [CGRect]) -> [EdgeLayout] {
         var occupiedRects: [CGRect] = []
         let expandedBlockedRects = blockedRects.map { $0.insetBy(dx: -12, dy: -10) }
@@ -830,30 +770,6 @@ struct ConnectionLinesView: View {
 
     private func compactMergeOffset(for gap: CGFloat) -> CGFloat {
         max(18, min(48, gap * 0.28))
-    }
-
-    private func nodeDisplayName(for nodeID: UUID, nodesByID: [UUID: WorkflowNode]) -> String {
-        guard let node = nodesByID[nodeID] else { return "Unknown" }
-
-        if let agentID = node.agentID,
-           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
-            let name = agent.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !name.isEmpty {
-                return name
-            }
-        }
-
-        let title = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty {
-            return title
-        }
-
-        switch node.type {
-        case .start:
-            return "Start"
-        case .agent:
-            return "Agent"
-        }
     }
 
     private func closestTarget(
@@ -1078,14 +994,6 @@ private struct SharedSegmentHitLayout {
     let id: String
     let points: [CGPoint]
     let edges: [WorkflowEdge]
-    let badgePosition: CGPoint
-    let previewItems: [SharedSegmentPreviewItem]
-}
-
-private struct SharedSegmentPreviewItem: Identifiable {
-    let id: UUID
-    let text: String
-    let requiresApproval: Bool
 }
 
 private struct RoutedEdgeCandidate {
@@ -1594,63 +1502,6 @@ struct ConnectionHitShape: Shape {
                     lineJoin: .round
                 )
             )
-    }
-}
-
-private struct SharedSegmentBadgeView: View {
-    let previewItems: [SharedSegmentPreviewItem]
-    let selectedEdgeID: UUID?
-    let textScale: CGFloat
-
-    private var sortedItems: [SharedSegmentPreviewItem] {
-        previewItems.sorted { lhs, rhs in
-            let lhsSelected = lhs.id == selectedEdgeID
-            let rhsSelected = rhs.id == selectedEdgeID
-            if lhsSelected != rhsSelected {
-                return lhsSelected
-            }
-            return lhs.text.localizedCaseInsensitiveCompare(rhs.text) == .orderedAscending
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Merged \(previewItems.count)")
-                .font(.system(size: 10 * textScale, weight: .semibold))
-                .foregroundColor(.white.opacity(0.96))
-
-            ForEach(Array(sortedItems.prefix(3))) { item in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(item.id == selectedEdgeID ? Color.accentColor : (item.requiresApproval ? Color.orange : Color.white.opacity(0.55)))
-                        .frame(width: 5, height: 5)
-
-                    Text(item.text)
-                        .font(.system(size: 10 * textScale, weight: item.id == selectedEdgeID ? .semibold : .regular))
-                        .foregroundColor(.white.opacity(item.id == selectedEdgeID ? 1 : 0.9))
-                        .lineLimit(1)
-                }
-            }
-
-            if previewItems.count > 3 {
-                Text("+\(previewItems.count - 3) more")
-                    .font(.system(size: 9 * textScale, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: 220 * textScale, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.82))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 4)
-        .fixedSize()
     }
 }
 
