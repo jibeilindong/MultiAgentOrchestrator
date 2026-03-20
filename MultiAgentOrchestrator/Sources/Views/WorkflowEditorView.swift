@@ -1962,7 +1962,7 @@ struct NodePropertyPanel: View {
     }
 
     private var outgoingEdges: [WorkflowEdge] {
-        appState.currentProject?.workflows.first?.edges.filter { $0.fromNodeID == node.id } ?? []
+        appState.currentProject?.workflows.first?.edges.filter { $0.isOutgoing(from: node.id) } ?? []
     }
 
     private func binding(for edge: WorkflowEdge) -> Binding<EdgeDraft> {
@@ -2111,13 +2111,29 @@ struct EdgePropertyPanel: View {
                     }
 
                     GroupBox("Communication Direction") {
-                        Picker("Direction", selection: $isBidirectional) {
-                            Text("One-way").tag(false)
-                            Text("Two-way").tag(true)
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: isBidirectional) { _, newValue in
-                            appState.setEdgeCommunicationDirection(edgeID: edge.id, bidirectional: newValue)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Direction", selection: $isBidirectional) {
+                                Text("One-way").tag(false)
+                                Text("Two-way").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                            .onChange(of: isBidirectional) { _, newValue in
+                                appState.setEdgeCommunicationDirection(edgeID: edge.id, bidirectional: newValue)
+                            }
+
+                            HStack(spacing: 8) {
+                                Button {
+                                    appState.flipEdgeDirection(edgeID: edge.id)
+                                } label: {
+                                    Label("Reverse", systemImage: "arrow.left.arrow.right")
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(isBidirectional)
+
+                                Text(isBidirectional ? "Two-way keeps both directions." : "Use Reverse to swap the one-way direction.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                         .padding(8)
                     }
@@ -2208,12 +2224,7 @@ struct EdgePropertyPanel: View {
     }
 
     private func isBidirectionalEdge(_ edge: WorkflowEdge) -> Bool {
-        guard let workflow = appState.currentProject?.workflows.first else { return false }
-        return workflow.edges.contains {
-            $0.fromNodeID == edge.toNodeID &&
-            $0.toNodeID == edge.fromNodeID &&
-            $0.id != edge.id
-        }
+        edge.isBidirectional
     }
 }
 

@@ -52,6 +52,7 @@ struct MultiAgentArchitecture: Codable {
         var label: String?
         var conditionExpression: String?
         var requiresApproval: Bool?
+        var isBidirectional: Bool?
     }
     
     struct PermissionExport: Codable {
@@ -129,7 +130,8 @@ class ImportExportService {
                     toNodeID: edge.toNodeID,
                     label: edge.label,
                     conditionExpression: edge.conditionExpression,
-                    requiresApproval: edge.requiresApproval
+                    requiresApproval: edge.requiresApproval,
+                    isBidirectional: edge.isBidirectional
                 )
             }
             
@@ -244,6 +246,7 @@ class ImportExportService {
                 edge.label = edgeExport.label ?? ""
                 edge.conditionExpression = edgeExport.conditionExpression ?? ""
                 edge.requiresApproval = edgeExport.requiresApproval ?? false
+                edge.isBidirectional = edgeExport.isBidirectional ?? false
                 workflow.edges.append(edge)
             }
             

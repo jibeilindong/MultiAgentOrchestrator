@@ -475,7 +475,7 @@ struct CanvasContentView: View {
             return CGSize(width: 100, height: 68)
         case .agent:
             let outgoing = currentWorkflow?.edges.reduce(into: 0) { partial, edge in
-                if edge.fromNodeID == node.id { partial += 1 }
+                if edge.isOutgoing(from: node.id) { partial += 1 }
             } ?? 0
             return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
         }

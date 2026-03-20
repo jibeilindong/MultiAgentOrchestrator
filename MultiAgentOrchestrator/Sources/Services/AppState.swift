@@ -368,6 +368,12 @@ class AppState: ObservableObject {
                 guard seenPairs.insert(key).inserted else { continue }
 
                 permissions.append(Permission(fromAgentID: fromAgentID, toAgentID: toAgentID, permissionType: .allow))
+
+                if edge.isBidirectional {
+                    let reverseKey = "\(toAgentID.uuidString)->\(fromAgentID.uuidString)"
+                    guard seenPairs.insert(reverseKey).inserted else { continue }
+                    permissions.append(Permission(fromAgentID: toAgentID, toAgentID: fromAgentID, permissionType: .allow))
+                }
             }
         }
 
@@ -412,10 +418,17 @@ class AppState: ObservableObject {
         }
 
         guard !removedNodeIDs.isEmpty || removedSelfEdgeCount > 0 else {
-            return (workflow, [], 0)
+            let normalizedEdges = normalizeWorkflowEdges(in: mutableWorkflow)
+            guard normalizedEdges.removedEdgeCount > 0 else {
+                return (workflow, [], 0)
+            }
+            mutableWorkflow = normalizedEdges.workflow
+            return (mutableWorkflow, [], normalizedEdges.removedEdgeCount)
         }
 
-        return (mutableWorkflow, Array(removedNodeIDs), removedSelfEdgeCount)
+        let normalizedEdges = normalizeWorkflowEdges(in: mutableWorkflow)
+        mutableWorkflow = normalizedEdges.workflow
+        return (mutableWorkflow, Array(removedNodeIDs), removedSelfEdgeCount + normalizedEdges.removedEdgeCount)
     }
 
     private func enforceUniqueAgentNodes(in workflows: [Workflow]) -> (workflows: [Workflow], removedNodeCount: Int, removedSelfEdgeCount: Int) {
@@ -428,6 +441,37 @@ class AppState: ObservableObject {
             return result.workflow
         }
         return (sanitized, totalRemoved, totalSelfEdgeRemoved)
+    }
+
+    private func normalizeWorkflowEdges(in workflow: Workflow) -> (workflow: Workflow, removedEdgeCount: Int) {
+        guard !workflow.edges.isEmpty else { return (workflow, 0) }
+
+        var mutableWorkflow = workflow
+        var grouped: [String: [WorkflowEdge]] = [:]
+        for edge in workflow.edges {
+            let key = undirectedEdgeKey(from: edge.fromNodeID, to: edge.toNodeID)
+            grouped[key, default: []].append(edge)
+        }
+
+        var normalizedEdges: [WorkflowEdge] = []
+        var removedEdgeCount = 0
+
+        for group in grouped.values {
+            guard let first = group.first else { continue }
+            var edge = first
+            edge.isBidirectional = group.contains(where: { $0.isBidirectional }) || Set(group.map { directedEdgeKey(from: $0.fromNodeID, to: $0.toNodeID) }).count > 1
+            normalizedEdges.append(edge)
+            removedEdgeCount += max(0, group.count - 1)
+        }
+
+        normalizedEdges.sort { lhs, rhs in
+            let leftKey = "\(lhs.fromNodeID.uuidString)->\(lhs.toNodeID.uuidString)"
+            let rightKey = "\(rhs.fromNodeID.uuidString)->\(rhs.toNodeID.uuidString)"
+            return leftKey < rightKey
+        }
+
+        mutableWorkflow.edges = normalizedEdges
+        return (mutableWorkflow, removedEdgeCount)
     }
     
     private func performAutoSave() {
@@ -1227,22 +1271,15 @@ class AppState: ObservableObject {
     ) {
         guard fromNodeID != toNodeID else { return }
 
-        var createdPairs: [(UUID, UUID)] = []
-
         updateMainWorkflow { workflow in
-            appendEdgeIfNeeded(from: fromNodeID, to: toNodeID, workflow: &workflow)
-            createdPairs.append((fromNodeID, toNodeID))
-
-            if bidirectional {
-                appendEdgeIfNeeded(from: toNodeID, to: fromNodeID, workflow: &workflow)
-                createdPairs.append((toNodeID, fromNodeID))
-            }
+            upsertEdge(from: fromNodeID, to: toNodeID, bidirectional: bidirectional, workflow: &workflow)
         }
 
-        for (sourceNodeID, targetNodeID) in createdPairs {
-            if let sourceAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == sourceNodeID })?.agentID,
-               let targetAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == targetNodeID })?.agentID {
-                setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
+        if let sourceAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == fromNodeID })?.agentID,
+           let targetAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == toNodeID })?.agentID {
+            setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
+            if bidirectional {
+                setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
             }
         }
     }
@@ -1287,10 +1324,7 @@ class AppState: ObservableObject {
         }
 
         updateMainWorkflow { workflow in
-            appendEdgeIfNeeded(from: sourceNodeID, to: targetNodeID, workflow: &workflow)
-            if bidirectional {
-                appendEdgeIfNeeded(from: targetNodeID, to: sourceNodeID, workflow: &workflow)
-            }
+            upsertEdge(from: sourceNodeID, to: targetNodeID, bidirectional: bidirectional, workflow: &workflow)
         }
 
         if sourceNode.type == .agent,
@@ -1403,30 +1437,7 @@ class AppState: ObservableObject {
 
         updateMainWorkflow { workflow in
             guard let edgeIndex = workflow.edges.firstIndex(where: { $0.id == edgeID }) else { return }
-            let currentEdge = workflow.edges[edgeIndex]
-            let reverseIndex = workflow.edges.firstIndex {
-                $0.fromNodeID == currentEdge.toNodeID && $0.toNodeID == currentEdge.fromNodeID
-            }
-
-            if bidirectional {
-                if let reverseIndex {
-                    if workflow.edges[reverseIndex].id != currentEdge.id {
-                        workflow.edges[reverseIndex].label = currentEdge.label
-                        workflow.edges[reverseIndex].conditionExpression = currentEdge.conditionExpression
-                        workflow.edges[reverseIndex].requiresApproval = currentEdge.requiresApproval
-                        workflow.edges[reverseIndex].dataMapping = currentEdge.dataMapping
-                    }
-                } else {
-                    var reverseEdge = WorkflowEdge(from: currentEdge.toNodeID, to: currentEdge.fromNodeID)
-                    reverseEdge.label = currentEdge.label
-                    reverseEdge.conditionExpression = currentEdge.conditionExpression
-                    reverseEdge.requiresApproval = currentEdge.requiresApproval
-                    reverseEdge.dataMapping = currentEdge.dataMapping
-                    workflow.edges.append(reverseEdge)
-                }
-            } else if let reverseIndex, workflow.edges[reverseIndex].id != currentEdge.id {
-                workflow.edges.remove(at: reverseIndex)
-            }
+            workflow.edges[edgeIndex].isBidirectional = bidirectional
         }
 
         if let sourceAgentID = workflow.nodes.first(where: { $0.id == edge.fromNodeID })?.agentID,
@@ -1435,6 +1446,16 @@ class AppState: ObservableObject {
             if bidirectional {
                 setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
             }
+        }
+    }
+
+    func flipEdgeDirection(edgeID: UUID) {
+        updateMainWorkflow { workflow in
+            guard let index = workflow.edges.firstIndex(where: { $0.id == edgeID }),
+                  !workflow.edges[index].isBidirectional else { return }
+            let fromNodeID = workflow.edges[index].fromNodeID
+            workflow.edges[index].fromNodeID = workflow.edges[index].toNodeID
+            workflow.edges[index].toNodeID = fromNodeID
         }
     }
 
@@ -1688,14 +1709,29 @@ class AppState: ObservableObject {
         }
     }
 
-    private func appendEdgeIfNeeded(from sourceNodeID: UUID, to targetNodeID: UUID, workflow: inout Workflow) {
-        let edgeExists = workflow.edges.contains {
-            $0.fromNodeID == sourceNodeID && $0.toNodeID == targetNodeID
+    private func upsertEdge(from sourceNodeID: UUID, to targetNodeID: UUID, bidirectional: Bool, workflow: inout Workflow) {
+        if let index = workflow.edges.firstIndex(where: {
+            (directedEdgeKey(from: $0.fromNodeID, to: $0.toNodeID) == directedEdgeKey(from: sourceNodeID, to: targetNodeID)) ||
+            (directedEdgeKey(from: $0.fromNodeID, to: $0.toNodeID) == directedEdgeKey(from: targetNodeID, to: sourceNodeID))
+        }) {
+            workflow.edges[index].fromNodeID = sourceNodeID
+            workflow.edges[index].toNodeID = targetNodeID
+            workflow.edges[index].isBidirectional = bidirectional
+        } else {
+            var edge = WorkflowEdge(from: sourceNodeID, to: targetNodeID)
+            edge.isBidirectional = bidirectional
+            workflow.edges.append(edge)
         }
+    }
 
-        if !edgeExists {
-            workflow.edges.append(WorkflowEdge(from: sourceNodeID, to: targetNodeID))
-        }
+    private func directedEdgeKey(from sourceNodeID: UUID, to targetNodeID: UUID) -> String {
+        "\(sourceNodeID.uuidString)->\(targetNodeID.uuidString)"
+    }
+
+    private func undirectedEdgeKey(from sourceNodeID: UUID, to targetNodeID: UUID) -> String {
+        let first = sourceNodeID.uuidString
+        let second = targetNodeID.uuidString
+        return first < second ? "\(first)|\(second)" : "\(second)|\(first)"
     }
     
     // 从工作流生成任务

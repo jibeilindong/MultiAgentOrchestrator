@@ -255,6 +255,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
     var label: String
     var conditionExpression: String
     var requiresApproval: Bool
+    var isBidirectional: Bool
     // 数据传递：边上的数据映射
     var dataMapping: [String: String] = [:]  // fromKey -> toKey
 
@@ -265,6 +266,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         case label
         case conditionExpression
         case requiresApproval
+        case isBidirectional
         case dataMapping
     }
     
@@ -275,6 +277,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         self.label = ""
         self.conditionExpression = ""
         self.requiresApproval = false
+        self.isBidirectional = false
     }
 
     init(from decoder: Decoder) throws {
@@ -285,7 +288,26 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
         conditionExpression = try container.decodeIfPresent(String.self, forKey: .conditionExpression) ?? ""
         requiresApproval = try container.decodeIfPresent(Bool.self, forKey: .requiresApproval) ?? false
+        isBidirectional = try container.decodeIfPresent(Bool.self, forKey: .isBidirectional) ?? false
         dataMapping = try container.decodeIfPresent([String: String].self, forKey: .dataMapping) ?? [:]
+    }
+
+    func connects(_ nodeID: UUID) -> Bool {
+        fromNodeID == nodeID || toNodeID == nodeID
+    }
+
+    func isOutgoing(from nodeID: UUID) -> Bool {
+        fromNodeID == nodeID || (isBidirectional && toNodeID == nodeID)
+    }
+
+    func isIncoming(to nodeID: UUID) -> Bool {
+        toNodeID == nodeID || (isBidirectional && fromNodeID == nodeID)
+    }
+
+    func reversed() -> WorkflowEdge {
+        var edge = self
+        swap(&edge.fromNodeID, &edge.toNodeID)
+        return edge
     }
 }
 

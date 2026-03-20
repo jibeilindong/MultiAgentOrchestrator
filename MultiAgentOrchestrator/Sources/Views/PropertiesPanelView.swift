@@ -99,8 +99,8 @@ struct NodePropertiesView: View {
                     
                     // 连接信息
                     if let workflow = appState.currentProject?.workflows.first {
-                        let incomingEdges = workflow.edges.filter { $0.toNodeID == node.id }
-                        let outgoingEdges = workflow.edges.filter { $0.fromNodeID == node.id }
+                        let incomingEdges = workflow.edges.filter { $0.isIncoming(to: node.id) }
+                        let outgoingEdges = workflow.edges.filter { $0.isOutgoing(from: node.id) }
                         
                         if !incomingEdges.isEmpty {
                             SectionView(title: "Incoming Connections") {

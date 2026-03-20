@@ -121,8 +121,11 @@ struct WorkbenchConversationView: View {
 
         let agentIDs = Set(
             workflow.edges
-                .filter { $0.fromNodeID == startNode.id }
-                .compactMap { nodeByID[$0.toNodeID]?.agentID }
+                .filter { $0.isOutgoing(from: startNode.id) }
+                .compactMap { edge in
+                    let targetNodeID = edge.fromNodeID == startNode.id ? edge.toNodeID : edge.fromNodeID
+                    return nodeByID[targetNodeID]?.agentID
+                }
         )
         return agentIDs.count
     }

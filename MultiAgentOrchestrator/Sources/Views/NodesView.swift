@@ -114,10 +114,10 @@ struct NodesView: View {
     private func connectionCounts(for nodeID: UUID) -> (incoming: Int, outgoing: Int) {
         guard let workflow = currentWorkflow else { return (0, 0) }
         let incoming = workflow.edges.reduce(into: 0) { partial, edge in
-            if edge.toNodeID == nodeID { partial += 1 }
+            if edge.isIncoming(to: nodeID) { partial += 1 }
         }
         let outgoing = workflow.edges.reduce(into: 0) { partial, edge in
-            if edge.fromNodeID == nodeID { partial += 1 }
+            if edge.isOutgoing(from: nodeID) { partial += 1 }
         }
         return (incoming, outgoing)
     }

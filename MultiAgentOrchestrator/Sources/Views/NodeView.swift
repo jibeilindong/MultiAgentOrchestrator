@@ -83,7 +83,7 @@ struct NodeView: View {
             return nodeColor
         }
         if isRelatedToSelection {
-            return nodeColor.opacity(0.92)
+            return Color.yellow.opacity(0.92)
         }
         if appState.boundary(for: node.id) != nil {
             return Color.orange.opacity(0.75)
@@ -216,14 +216,14 @@ struct NodeView: View {
 
     private var relatedHighlightOverlay: some View {
         RoundedRectangle(cornerRadius: 10)
-            .fill(isRelatedToSelection && !isSelected ? Color.white.opacity(0.08) : Color.clear)
+            .fill(Color.clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(
-                        isRelatedToSelection && !isSelected ? nodeColor.opacity(relationPulse ? 0.5 : 0.18) : Color.clear,
-                        lineWidth: 2
+                        isRelatedToSelection && !isSelected ? Color.yellow.opacity(relationPulse ? 0.92 : 0.28) : Color.clear,
+                        lineWidth: 2.5
                     )
-                    .scaleEffect(isRelatedToSelection && !isSelected ? (relationPulse ? 1.03 : 1.0) : 1.0)
+                    .scaleEffect(isRelatedToSelection && !isSelected ? (relationPulse ? 1.035 : 1.0) : 1.0)
                     .opacity(isRelatedToSelection && !isSelected ? (relationPulse ? 1.0 : 0.55) : 0)
                     .animation(
                         isRelatedToSelection && !isSelected
@@ -248,7 +248,7 @@ struct NodeView: View {
     }
 
     private var nodeShadowColor: Color {
-        isSelected ? nodeColor.opacity(0.55) : (isRelatedToSelection ? nodeColor.opacity(0.28) : (isHovered ? Color.black.opacity(0.15) : Color.black.opacity(0.08)))
+        isSelected ? nodeColor.opacity(0.55) : (isRelatedToSelection ? Color.yellow.opacity(0.3) : (isHovered ? Color.black.opacity(0.15) : Color.black.opacity(0.08)))
     }
 
     private var nodeShadowRadius: CGFloat {

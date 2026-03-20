@@ -505,7 +505,13 @@ class OpenClawService: ObservableObject {
             }
             return nodeSort(leftTarget, rightTarget)
         }
-        let outgoingEdges = Dictionary(grouping: orderedEdges, by: \.fromNodeID)
+        var outgoingEdges: [UUID: [WorkflowEdge]] = [:]
+        for edge in orderedEdges {
+            outgoingEdges[edge.fromNodeID, default: []].append(edge)
+            if edge.isBidirectional {
+                outgoingEdges[edge.toNodeID, default: []].append(edge.reversed())
+            }
+        }
 
         let startNodes = workflow.nodes
             .filter { $0.type == .start }
@@ -516,7 +522,7 @@ class OpenClawService: ObservableObject {
         } else {
             entryNodes = workflow.nodes
                 .filter { node in
-                    !workflow.edges.contains(where: { $0.toNodeID == node.id })
+                    !workflow.edges.contains(where: { $0.isIncoming(to: node.id) })
                 }
                 .sorted(by: nodeSort)
         }
@@ -576,9 +582,10 @@ class OpenClawService: ObservableObject {
         }
 
         let connectedNodeIDs = workflow.edges
-            .filter { $0.fromNodeID == startNode.id }
+            .filter { $0.isOutgoing(from: startNode.id) }
             .compactMap { edge -> UUID? in
-                guard let node = nodeByID[edge.toNodeID], node.type == .agent else { return nil }
+                let targetNodeID = edge.fromNodeID == startNode.id ? edge.toNodeID : edge.fromNodeID
+                guard let node = nodeByID[targetNodeID], node.type == .agent else { return nil }
                 return node.id
             }
         return Set(connectedNodeIDs)
@@ -1523,6 +1530,10 @@ class OpenClawService: ObservableObject {
         for edge in relevantEdges {
             adjacency[edge.fromNodeID, default: []].append(edge.toNodeID)
             indegree[edge.toNodeID, default: 0] += 1
+            if edge.isBidirectional {
+                adjacency[edge.toNodeID, default: []].append(edge.fromNodeID)
+                indegree[edge.fromNodeID, default: 0] += 1
+            }
         }
 
         let nodeLookup = Dictionary(uniqueKeysWithValues: executableNodes.map { ($0.id, $0) })

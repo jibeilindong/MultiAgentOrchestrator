@@ -72,6 +72,13 @@ struct ConnectionLinesView: View {
                                 layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.9),
                                 style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                             )
+                        if layout.edge.isBidirectional {
+                            ArrowShape(from: points[1], to: points[0])
+                                .stroke(
+                                    layout.isSelected ? Color.accentColor : layout.baseColor.opacity(0.9),
+                                    style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
+                                )
+                        }
                     }
 
                     let displayText = layout.displayText
@@ -112,7 +119,7 @@ struct ConnectionLinesView: View {
             )
         }
 
-        let fanoutTurnYBySourceID = fanoutTurnYMap(for: candidates)
+        let fanoutInfoBySourceID = fanoutLayoutMap(for: candidates, in: geometry, workflow: workflow)
         let grouped = Dictionary(grouping: candidates, by: \.bundleKey)
         var layouts: [EdgeLayout] = []
 
@@ -133,14 +140,36 @@ struct ConnectionLinesView: View {
                     }
 
                 let path: [CGPoint]
-                if let turnY = fanoutTurnYBySourceID[candidate.edge.fromNodeID],
-                   let fanoutPath = WorkflowEdgeRoutePlanner.fanoutRoute(
-                    from: candidate.fromFrame,
-                    to: candidate.toFrame,
-                    turnY: turnY,
-                    avoiding: obstacles
-                   ) {
-                    path = fanoutPath
+                if let fanoutInfo = fanoutInfoBySourceID[candidate.edge.fromNodeID] {
+                    if candidate.edge.toNodeID == fanoutInfo.centerTargetID,
+                       abs(candidate.toFrame.midX - candidate.fromFrame.midX) <= 28 {
+                        path = WorkflowEdgeRoutePlanner.centerDownRoute(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            avoiding: obstacles
+                        ) ?? WorkflowEdgeRoutePlanner.route(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            avoiding: obstacles,
+                            preferredAxis: .vertical,
+                            laneOffset: 0
+                        )
+                    } else if let fanoutPath = WorkflowEdgeRoutePlanner.fanoutRoute(
+                        from: candidate.fromFrame,
+                        to: candidate.toFrame,
+                        turnY: fanoutInfo.turnY,
+                        avoiding: obstacles
+                    ) {
+                        path = fanoutPath
+                    } else {
+                        path = WorkflowEdgeRoutePlanner.route(
+                            from: candidate.fromFrame,
+                            to: candidate.toFrame,
+                            avoiding: obstacles,
+                            preferredAxis: candidate.preferredAxis,
+                            laneOffset: laneOffsets[index]
+                        )
+                    }
                 } else {
                     path = WorkflowEdgeRoutePlanner.route(
                         from: candidate.fromFrame,
@@ -166,9 +195,13 @@ struct ConnectionLinesView: View {
         return layouts
     }
 
-    private func fanoutTurnYMap(for candidates: [RoutedEdgeCandidate]) -> [UUID: CGFloat] {
+    private func fanoutLayoutMap(
+        for candidates: [RoutedEdgeCandidate],
+        in geometry: GeometryProxy,
+        workflow: Workflow
+    ) -> [UUID: FanoutLayoutInfo] {
         let groupedBySource = Dictionary(grouping: candidates, by: { $0.edge.fromNodeID })
-        var turnYBySource: [UUID: CGFloat] = [:]
+        var layoutBySource: [UUID: FanoutLayoutInfo] = [:]
 
         for (sourceID, group) in groupedBySource {
             guard group.count >= 3,
@@ -179,16 +212,26 @@ struct ConnectionLinesView: View {
             }
             guard downwardTargets.count >= 3 else { continue }
 
-            let targetTop = downwardTargets.map(\.toFrame.minY).min() ?? .greatestFiniteMagnitude
             let sourceBottom = sourceFrame.maxY + 10
-            let availableGap = targetTop - sourceBottom
-            guard availableGap >= 70 else { continue }
+            let targetTop = downwardTargets.map(\.toFrame.minY).min() ?? .greatestFiniteMagnitude
+            let centeredTargets = downwardTargets.filter {
+                abs($0.toFrame.midX - sourceFrame.midX) <= 28
+            }
+            let centeredTarget = centeredTargets.min {
+                abs($0.toFrame.midX - sourceFrame.midX) < abs($1.toFrame.midX - sourceFrame.midX)
+            }
 
-            let turnY = sourceBottom + min(max(availableGap * 0.45, 24), 80)
-            turnYBySource[sourceID] = min(turnY, targetTop - 14)
+            let centeredBottom = centeredTarget?.toFrame.maxY ?? sourceBottom
+            let turnY = max(sourceBottom + 34, centeredBottom + 18)
+            guard turnY < targetTop - 14 else { continue }
+
+            layoutBySource[sourceID] = FanoutLayoutInfo(
+                turnY: min(turnY, targetTop - 14),
+                centerTargetID: centeredTarget?.edge.toNodeID
+            )
         }
 
-        return turnYBySource
+        return layoutBySource
     }
 
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
@@ -209,7 +252,7 @@ struct ConnectionLinesView: View {
             return CGSize(width: 100, height: 68)
         case .agent:
             let outgoing = currentWorkflow?.edges.reduce(into: 0) { partial, edge in
-                if edge.fromNodeID == node.id { partial += 1 }
+                if edge.isOutgoing(from: node.id) { partial += 1 }
             } ?? 0
             return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
         }
@@ -390,6 +433,30 @@ struct WorkflowEdgeRoutePlanner {
         return isClear(path, blockedRects: blockedRects) ? path : nil
     }
 
+    static func centerDownRoute(
+        from sourceFrame: CGRect,
+        to targetFrame: CGRect,
+        avoiding obstacles: [CGRect]
+    ) -> [CGPoint]? {
+        let start = CGPoint(x: sourceFrame.midX, y: sourceFrame.maxY + anchorClearance)
+        let end = CGPoint(x: targetFrame.midX, y: targetFrame.minY - anchorClearance)
+        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
+
+        let direct = simplify([start, end])
+        if isClear(direct, blockedRects: blockedRects) {
+            return direct
+        }
+
+        let midY = (start.y + end.y) / 2
+        let fallback = simplify([
+            start,
+            CGPoint(x: start.x, y: midY),
+            CGPoint(x: end.x, y: midY),
+            end
+        ])
+        return isClear(fallback, blockedRects: blockedRects) ? fallback : nil
+    }
+
     private static func candidatePaths(
         from start: CGPoint,
         to end: CGPoint,
@@ -408,6 +475,16 @@ struct WorkflowEdgeRoutePlanner {
 
         if abs(start.x - end.x) < 0.5 {
             append([start, end], bends: 0)
+        }
+
+        if preferredAxis == .horizontal {
+            let midY = (start.y + end.y) / 2
+            append([
+                start,
+                CGPoint(x: start.x, y: midY),
+                CGPoint(x: end.x, y: midY),
+                end
+            ], bends: 2)
         }
 
         let corridorYs = corridorYs(
@@ -530,7 +607,7 @@ struct WorkflowEdgeRoutePlanner {
         let dx = point.x - center.x
         let dy = point.y - center.y
 
-        if abs(dx) >= abs(dy) {
+        if abs(dx) >= abs(dy) * 0.7 {
             return dx >= 0 ? .right : .left
         }
 
@@ -588,6 +665,11 @@ struct WorkflowEdgeRoutePlanner {
             height: max(abs(to.y - from.y), 1)
         ).insetBy(dx: -1, dy: -1)
     }
+}
+
+private struct FanoutLayoutInfo {
+    let turnY: CGFloat
+    let centerTargetID: UUID?
 }
 
 enum EdgeRouteAxis {
