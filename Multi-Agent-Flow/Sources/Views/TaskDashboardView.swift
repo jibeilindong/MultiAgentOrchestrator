@@ -8,6 +8,230 @@
 import SwiftUI
 import Charts
 
+enum OpsCronAnomalyRunMatcher {
+    static func matchingRun(
+        for anomaly: OpsAnomalyRow,
+        in runs: [OpsCronRunRow]
+    ) -> OpsCronRunRow? {
+        if let relatedRunID = normalizedText(anomaly.relatedRunID),
+           let exactRun = runs.first(where: { normalizedText($0.runID) == relatedRunID }) {
+            return exactRun
+        }
+
+        if let relatedJobID = normalizedText(anomaly.relatedJobID),
+           let exactJob = runs.first(where: { normalizedText($0.jobID) == relatedJobID }) {
+            return exactJob
+        }
+
+        if let relatedSourcePath = normalizedPath(anomaly.relatedSourcePath),
+           let exactSource = runs.first(where: { normalizedPath($0.sourcePath) == relatedSourcePath }) {
+            return exactSource
+        }
+
+        if let exactTime = runs.first(where: { abs($0.runAt.timeIntervalSince(anomaly.occurredAt)) < 1 }) {
+            return exactTime
+        }
+
+        if let minuteMatch = runs.first(where: {
+            Calendar.autoupdatingCurrent.isDate($0.runAt, equalTo: anomaly.occurredAt, toGranularity: .minute)
+        }) {
+            return minuteMatch
+        }
+
+        let detailText = normalizedText(anomaly.detailText)
+        let fullDetailText = normalizedText(anomaly.fullDetailText)
+        return runs.first { run in
+            let summary = normalizedText(run.summaryText)
+            return summary == detailText || summary == fullDetailText
+        }
+    }
+
+    private static func normalizedText(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed.lowercased()
+    }
+
+    private static func normalizedPath(_ value: String?) -> String? {
+        guard let text = normalizedText(value) else { return nil }
+        return URL(fileURLWithPath: text).standardizedFileURL.path.lowercased()
+    }
+}
+
+enum OpsAnomalyClusterBuilder {
+    enum SourceFilter {
+        case all
+        case runtime
+        case tool
+        case cron
+        case openClaw
+
+        fileprivate init(_ filter: OpsAnomalySourceFilter) {
+            switch filter {
+            case .all:
+                self = .all
+            case .runtime:
+                self = .runtime
+            case .tool:
+                self = .tool
+            case .cron:
+                self = .cron
+            case .openClaw:
+                self = .openClaw
+            }
+        }
+
+        nonisolated fileprivate func matches(_ row: OpsAnomalyRow) -> Bool {
+            switch self {
+            case .all:
+                return true
+            case .runtime:
+                return row.sourceLabel == "Runtime"
+            case .tool:
+                return row.sourceLabel == "Tool"
+            case .cron:
+                return row.sourceLabel == "Cron"
+            case .openClaw:
+                return row.sourceLabel == "OpenClaw"
+            }
+        }
+    }
+
+    enum SeverityFilter {
+        case all
+        case critical
+        case warning
+
+        fileprivate init(_ filter: OpsAnomalySeverityFilter) {
+            switch filter {
+            case .all:
+                self = .all
+            case .critical:
+                self = .critical
+            case .warning:
+                self = .warning
+            }
+        }
+
+        nonisolated fileprivate func matches(_ row: OpsAnomalyRow) -> Bool {
+            switch self {
+            case .all:
+                return true
+            case .critical:
+                return row.status == .critical
+            case .warning:
+                return row.status == .warning
+            }
+        }
+    }
+
+    nonisolated static func filteredRows(
+        from rows: [OpsAnomalyRow],
+        sourceFilter: SourceFilter = .all,
+        severityFilter: SeverityFilter = .all,
+        searchText: String = "",
+        windowStart: Date? = nil
+    ) -> [OpsAnomalyRow] {
+        let normalizedSearch = searchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        return rows.filter { row in
+            if let windowStart, row.occurredAt < windowStart {
+                return false
+            }
+            guard sourceFilter.matches(row) else { return false }
+            guard severityFilter.matches(row) else { return false }
+            guard !normalizedSearch.isEmpty else { return true }
+
+            let haystack = [
+                row.title,
+                row.detailText,
+                row.fullDetailText,
+                row.sourceLabel,
+                row.sourceService ?? "",
+                row.statusText
+            ]
+            .joined(separator: " ")
+            .lowercased()
+
+            return haystack.contains(normalizedSearch)
+        }
+    }
+
+    nonisolated static func clusters(
+        from rows: [OpsAnomalyRow],
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [OpsAnomalyCluster] {
+        let recent24HourStart = calendar.date(byAdding: .day, value: -1, to: now) ?? .distantPast
+        let groupedRows = Dictionary(grouping: rows, by: clusterKey(for:))
+        let clusters: [OpsAnomalyCluster] = groupedRows.map { (key: String, rows: [OpsAnomalyRow]) in
+            let latest = rows.max(by: { $0.occurredAt < $1.occurredAt }) ?? rows[0]
+            let firstOccurredAt = rows.map(\.occurredAt).min() ?? latest.occurredAt
+            let lastOccurredAt = rows.map(\.occurredAt).max() ?? latest.occurredAt
+            let criticalCount = rows.filter { $0.status == .critical }.count
+            let linkedTraceCount = rows.filter { $0.linkedSpanID != nil }.count
+            let recent24HourCount = rows.filter { $0.occurredAt >= recent24HourStart }.count
+
+            return OpsAnomalyCluster(
+                id: key,
+                title: latest.title,
+                sourceLabel: latest.sourceLabel,
+                sourceService: latest.sourceService,
+                sampleDetail: latest.detailText,
+                latestOccurredAt: lastOccurredAt,
+                firstOccurredAt: firstOccurredAt,
+                status: criticalCount > 0 ? .critical : .warning,
+                occurrenceCount: rows.count,
+                recent24HourCount: recent24HourCount,
+                linkedTraceCount: linkedTraceCount,
+                latestAnomaly: latest
+            )
+        }
+
+        return clusters.sorted { lhs, rhs in
+            if lhs.occurrenceCount != rhs.occurrenceCount {
+                return lhs.occurrenceCount > rhs.occurrenceCount
+            }
+            if lhs.latestOccurredAt != rhs.latestOccurredAt {
+                return lhs.latestOccurredAt > rhs.latestOccurredAt
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    nonisolated static func clusteredRows(
+        from rows: [OpsAnomalyRow],
+        sourceFilter: SourceFilter = .all,
+        severityFilter: SeverityFilter = .all,
+        searchText: String = "",
+        windowStart: Date? = nil,
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [OpsAnomalyCluster] {
+        clusters(
+            from: filteredRows(
+                from: rows,
+                sourceFilter: sourceFilter,
+                severityFilter: severityFilter,
+                searchText: searchText,
+                windowStart: windowStart
+            ),
+            now: now,
+            calendar: calendar
+        )
+    }
+
+    nonisolated private static func clusterKey(for row: OpsAnomalyRow) -> String {
+        [
+            row.sourceLabel.lowercased(),
+            (row.sourceService ?? row.sourceLabel).lowercased(),
+            row.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        ]
+        .joined(separator: "::")
+    }
+}
+
 private enum OpsCenterPage: String, CaseIterable, Identifiable {
     case liveOverview
     case projectHistory
@@ -317,67 +541,20 @@ struct MonitoringDashboardView: View {
         return historyCalendar.date(byAdding: .day, value: -dayCount, to: Date())
     }
     private var filteredAnomalyRows: [OpsAnomalyRow] {
-        let normalizedSearch = anomalySearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
-        return opsSnapshot.anomalyRows.filter { row in
-            if let anomalyWindowStart, row.occurredAt < anomalyWindowStart {
-                return false
-            }
-            guard selectedAnomalySourceFilter.matches(row) else { return false }
-            guard selectedAnomalySeverityFilter.matches(row) else { return false }
-            guard !normalizedSearch.isEmpty else { return true }
-
-            let haystack = [
-                row.title,
-                row.detailText,
-                row.fullDetailText,
-                row.sourceLabel,
-                row.sourceService ?? "",
-                row.statusText
-            ]
-            .joined(separator: " ")
-            .lowercased()
-
-            return haystack.contains(normalizedSearch)
-        }
+        OpsAnomalyClusterBuilder.filteredRows(
+            from: opsSnapshot.anomalyRows,
+            sourceFilter: .init(selectedAnomalySourceFilter),
+            severityFilter: .init(selectedAnomalySeverityFilter),
+            searchText: anomalySearchText,
+            windowStart: anomalyWindowStart
+        )
     }
     private var anomalyClusters: [OpsAnomalyCluster] {
-        let recent24HourStart = historyCalendar.date(byAdding: .day, value: -1, to: Date()) ?? .distantPast
-
-        let groupedRows = Dictionary(grouping: filteredAnomalyRows, by: anomalyClusterKey(for:))
-        let clusters: [OpsAnomalyCluster] = groupedRows.map { (key: String, rows: [OpsAnomalyRow]) in
-            let latest = rows.max(by: { $0.occurredAt < $1.occurredAt }) ?? rows[0]
-            let firstOccurredAt = rows.map(\.occurredAt).min() ?? latest.occurredAt
-            let lastOccurredAt = rows.map(\.occurredAt).max() ?? latest.occurredAt
-            let criticalCount = rows.filter { $0.status == .critical }.count
-            let linkedTraceCount = rows.filter { $0.linkedSpanID != nil }.count
-            let recent24HourCount = rows.filter { $0.occurredAt >= recent24HourStart }.count
-
-            return OpsAnomalyCluster(
-                id: key,
-                title: latest.title,
-                sourceLabel: latest.sourceLabel,
-                sourceService: latest.sourceService,
-                sampleDetail: latest.detailText,
-                latestOccurredAt: lastOccurredAt,
-                firstOccurredAt: firstOccurredAt,
-                status: criticalCount > 0 ? .critical : .warning,
-                occurrenceCount: rows.count,
-                recent24HourCount: recent24HourCount,
-                linkedTraceCount: linkedTraceCount,
-                latestAnomaly: latest
-            )
-        }
-
-        return clusters.sorted { lhs, rhs in
-                if lhs.occurrenceCount != rhs.occurrenceCount {
-                    return lhs.occurrenceCount > rhs.occurrenceCount
-                }
-                if lhs.latestOccurredAt != rhs.latestOccurredAt {
-                    return lhs.latestOccurredAt > rhs.latestOccurredAt
-                }
-                return lhs.id < rhs.id
-            }
+        OpsAnomalyClusterBuilder.clusters(
+            from: filteredAnomalyRows,
+            now: Date(),
+            calendar: historyCalendar
+        )
     }
     private var hotAnomalyClusters: [OpsAnomalyCluster] {
         Array(anomalyClusters.prefix(6))
@@ -1743,15 +1920,6 @@ struct MonitoringDashboardView: View {
         ]
     }
 
-    private func anomalyClusterKey(for row: OpsAnomalyRow) -> String {
-        [
-            row.sourceLabel.lowercased(),
-            (row.sourceService ?? row.sourceLabel).lowercased(),
-            row.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        ]
-        .joined(separator: "::")
-    }
-
     private func historyFocusOptions(for mode: OpsHistoryFocusMode) -> [OpsHistoryFocusOption] {
         switch mode {
         case .project:
@@ -2895,7 +3063,7 @@ private struct OpsHistorySignalRow: Identifiable {
     let cronRun: OpsCronRunRow?
 }
 
-private struct OpsAnomalyCluster: Identifiable {
+struct OpsAnomalyCluster: Identifiable {
     let id: String
     let title: String
     let sourceLabel: String
@@ -4007,13 +4175,7 @@ private struct OpsCronDetailSheet: View {
     }
 
     private func matchingRun(for anomaly: OpsAnomalyRow) -> OpsCronRunRow? {
-        detail.runs.first { run in
-            abs(run.runAt.timeIntervalSince(anomaly.occurredAt)) < 1
-        } ?? detail.runs.first { run in
-            Calendar.autoupdatingCurrent.isDate(run.runAt, equalTo: anomaly.occurredAt, toGranularity: .minute)
-        } ?? detail.runs.first { run in
-            run.summaryText.caseInsensitiveCompare(anomaly.detailText) == .orderedSame
-        }
+        OpsCronAnomalyRunMatcher.matchingRun(for: anomaly, in: detail.runs)
     }
 
     private func runMetadataSummary(for run: OpsCronRunRow) -> String? {

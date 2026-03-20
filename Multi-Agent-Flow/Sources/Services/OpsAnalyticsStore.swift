@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import CryptoKit
 
 struct OpsAnalyticsPersistenceSummary {
     let dailyActivity: [OpsDailyActivityPoint]
@@ -1671,7 +1672,19 @@ final class OpsAnalyticsStore {
         SELECT span_id, parent_span_id, name, service, status, start_time, end_time, duration_ms, attributes
         FROM spans
         WHERE trace_id = ? AND span_id != ?
-        ORDER BY start_time ASC, created_at ASC;
+        ORDER BY
+          start_time ASC,
+          CASE name
+            WHEN 'User Prompt' THEN 0
+            WHEN 'Assistant Turn' THEN 1
+            WHEN 'Tool Call' THEN 2
+            WHEN 'Tool Result' THEN 3
+            WHEN 'Routing Decision' THEN 4
+            WHEN 'Output Emission' THEN 5
+            ELSE 6
+          END ASC,
+          created_at ASC,
+          span_id ASC;
         """
 
         var statement: OpaquePointer?
@@ -2545,7 +2558,7 @@ final class OpsAnalyticsStore {
             }
 
             let jobID = self.stringValue(object["jobId"]) ?? fileURL.deletingPathExtension().lastPathComponent
-            let runID = self.stringValue(object["sessionId"])
+            let runID = self.stringValue(object["sessionId"]).map { self.canonicalExternalSpanID(for: $0) }
             let externalID = runID ?? "\(jobID)-\(Int(runAt.timeIntervalSince1970 * 1000))"
             let status = self.normalizedCronStatus(self.stringValue(object["status"]) ?? "unknown")
 
@@ -2748,6 +2761,22 @@ final class OpsAnalyticsStore {
 
         guard let startedAt = startDate else { return nil }
 
+        let rootSpanID = canonicalExternalSpanID(for: sessionID)
+        let normalizedChildSpans = childSpans.map { child in
+            ExternalSessionChildSpanArtifact(
+                spanID: canonicalExternalSpanID(for: child.spanID),
+                parentSpanID: child.parentSpanID.map { canonicalExternalSpanID(for: $0) },
+                name: child.name,
+                service: child.service,
+                status: child.status,
+                startedAt: child.startedAt,
+                completedAt: child.completedAt,
+                durationMs: child.durationMs,
+                attributes: child.attributes,
+                eventsText: child.eventsText
+            )
+        }
+
         let outputText = limitedText(lastAssistantText ?? lastToolText ?? "No assistant summary captured", maxLength: 8000)
         let executionStatus: ExecutionStatus = toolErrors > 0 ? .failed : (assistantMessages > 0 ? .completed : .waiting)
         let outputType: ExecutionOutputType = toolErrors > 0 ? .errorSummary : (lastAssistantText == nil ? .runtimeLog : .agentFinalResponse)
@@ -2784,8 +2813,8 @@ final class OpsAnalyticsStore {
         let eventsText = eventsTextLines.joined(separator: "\n")
 
         return ExternalSessionTraceArtifact(
-            spanID: sessionID,
-            traceID: sessionID.replacingOccurrences(of: "-", with: ""),
+            spanID: rootSpanID,
+            traceID: rootSpanID.replacingOccurrences(of: "-", with: ""),
             agentName: agentName,
             status: executionStatus == .failed ? "error" : (executionStatus == .completed ? "ok" : "warning"),
             executionStatus: executionStatus,
@@ -2797,7 +2826,7 @@ final class OpsAnalyticsStore {
             outputText: outputText,
             attributes: attributes,
             eventsText: emptyToNil(eventsText),
-            childSpans: childSpans.sorted { lhs, rhs in
+            childSpans: normalizedChildSpans.sorted { lhs, rhs in
                 if lhs.startedAt == rhs.startedAt {
                     return lhs.spanID < rhs.spanID
                 }
@@ -2822,6 +2851,34 @@ final class OpsAnalyticsStore {
     private func normalizedCronStatus(_ status: String) -> String {
         let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.isEmpty ? "unknown" : normalized
+    }
+
+    private func canonicalExternalSpanID(for rawID: String) -> String {
+        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return stableUUIDString(for: "openclaw.external-span.empty")
+        }
+
+        if let uuid = UUID(uuidString: trimmed) {
+            return uuid.uuidString
+        }
+
+        return stableUUIDString(for: "openclaw.external-span.\(trimmed)")
+    }
+
+    private func stableUUIDString(for seed: String) -> String {
+        let digest = SHA256.hash(data: Data(seed.utf8))
+        var bytes = Array(digest.prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+
+        let uuid = UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+        return uuid.uuidString
     }
 
     private func isSuccessfulCronStatus(_ status: String) -> Bool {

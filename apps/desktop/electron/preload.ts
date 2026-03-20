@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { MAProject } from "@multi-agent-flow/domain";
+import type {
+  MAProject,
+  OpenClawConfig,
+  ProjectOpenClawAgentRecord,
+  ProjectOpenClawDetectedAgentRecord
+} from "@multi-agent-flow/domain";
 
 interface ProjectFileHandle {
   project: MAProject;
@@ -15,6 +20,19 @@ interface RecentProjectRecord {
 interface AutosaveResult {
   autosavePath: string;
   savedAt: string;
+}
+
+interface DirectorySelectionResult {
+  directoryPath: string | null;
+}
+
+interface OpenClawActionResult {
+  success: boolean;
+  message: string;
+  isConnected: boolean;
+  availableAgents: string[];
+  activeAgents: ProjectOpenClawAgentRecord[];
+  detectedAgents: ProjectOpenClawDetectedAgentRecord[];
 }
 
 contextBridge.exposeInMainWorld("desktopApi", {
@@ -44,5 +62,17 @@ contextBridge.exposeInMainWorld("desktopApi", {
   },
   autosaveProject(project: MAProject): Promise<AutosaveResult> {
     return ipcRenderer.invoke("project:autosave", project);
+  },
+  chooseDirectory(defaultPath?: string | null): Promise<DirectorySelectionResult> {
+    return ipcRenderer.invoke("project:chooseDirectory", defaultPath);
+  },
+  connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult> {
+    return ipcRenderer.invoke("openClaw:connect", config);
+  },
+  detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult> {
+    return ipcRenderer.invoke("openClaw:detect", config);
+  },
+  disconnectOpenClaw(): Promise<OpenClawActionResult> {
+    return ipcRenderer.invoke("openClaw:disconnect");
   }
 });

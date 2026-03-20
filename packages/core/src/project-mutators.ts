@@ -1,6 +1,8 @@
 import type {
   Agent,
   MAProject,
+  OpenClawCLILogLevel,
+  OpenClawDeploymentKind,
   Task,
   TaskPriority,
   TaskStatus,
@@ -33,6 +35,10 @@ function uniqueName(existingNames: string[], baseName: string): string {
   }
 
   return candidate;
+}
+
+function normalizeAgentKey(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function createAgent(name: string, index: number): Agent {
@@ -209,10 +215,237 @@ function updateWorkflow(project: MAProject, workflowId: string, mutate: (workflo
   });
 }
 
+function sanitizeProjectPath(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 export function renameProject(project: MAProject, nextName: string): MAProject {
   return withUpdatedAt({
     ...project,
     name: nextName
+  });
+}
+
+export function updateProjectTaskDataSettings(
+  project: MAProject,
+  patch: {
+    workspaceRootPath?: string | null;
+    organizationMode?: string;
+  }
+): MAProject {
+  const nextTaskData = {
+    ...project.taskData,
+    workspaceRootPath:
+      patch.workspaceRootPath === undefined
+        ? project.taskData.workspaceRootPath ?? null
+        : sanitizeProjectPath(patch.workspaceRootPath),
+    organizationMode: patch.organizationMode?.trim() || project.taskData.organizationMode,
+    lastUpdatedAt: toSwiftDate()
+  };
+
+  if (JSON.stringify(nextTaskData) === JSON.stringify(project.taskData)) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    taskData: nextTaskData
+  });
+}
+
+export function updateOpenClawConfig(
+  project: MAProject,
+  patch: {
+    deploymentKind?: OpenClawDeploymentKind;
+    host?: string;
+    port?: number;
+    useSSL?: boolean;
+    apiKey?: string;
+    defaultAgent?: string;
+    timeout?: number;
+    autoConnect?: boolean;
+    localBinaryPath?: string | null;
+    cliQuietMode?: boolean;
+    cliLogLevel?: OpenClawCLILogLevel;
+    container?: Partial<{
+      engine: string;
+      containerName: string;
+      workspaceMountPath: string;
+    }>;
+  }
+): MAProject {
+  const nextConfig = {
+    ...project.openClaw.config,
+    deploymentKind: patch.deploymentKind ?? project.openClaw.config.deploymentKind,
+    host: patch.host === undefined ? project.openClaw.config.host : patch.host.trim(),
+    port:
+      patch.port === undefined || Number.isNaN(patch.port)
+        ? project.openClaw.config.port
+        : Math.max(1, Math.round(patch.port)),
+    useSSL: patch.useSSL ?? project.openClaw.config.useSSL,
+    apiKey: patch.apiKey === undefined ? project.openClaw.config.apiKey : patch.apiKey.trim(),
+    defaultAgent:
+      patch.defaultAgent === undefined ? project.openClaw.config.defaultAgent : patch.defaultAgent.trim(),
+    timeout:
+      patch.timeout === undefined || Number.isNaN(patch.timeout)
+        ? project.openClaw.config.timeout
+        : Math.max(1, Math.round(patch.timeout)),
+    autoConnect: patch.autoConnect ?? project.openClaw.config.autoConnect,
+    localBinaryPath:
+      patch.localBinaryPath === undefined
+        ? project.openClaw.config.localBinaryPath
+        : (patch.localBinaryPath ?? "").trim(),
+    cliQuietMode: patch.cliQuietMode ?? project.openClaw.config.cliQuietMode,
+    cliLogLevel: patch.cliLogLevel ?? project.openClaw.config.cliLogLevel,
+    container: {
+      ...project.openClaw.config.container,
+      engine: patch.container?.engine === undefined ? project.openClaw.config.container.engine : patch.container.engine.trim(),
+      containerName:
+        patch.container?.containerName === undefined
+          ? project.openClaw.config.container.containerName
+          : patch.container.containerName.trim(),
+      workspaceMountPath:
+        patch.container?.workspaceMountPath === undefined
+          ? project.openClaw.config.container.workspaceMountPath
+          : patch.container.workspaceMountPath.trim()
+    }
+  };
+
+  if (JSON.stringify(nextConfig) === JSON.stringify(project.openClaw.config)) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    openClaw: {
+      ...project.openClaw,
+      config: nextConfig,
+      lastSyncedAt: toSwiftDate()
+    }
+  });
+}
+
+export function updateOpenClawSessionPaths(
+  project: MAProject,
+  patch: {
+    sessionBackupPath?: string | null;
+    sessionMirrorPath?: string | null;
+  }
+): MAProject {
+  const nextOpenClaw = {
+    ...project.openClaw,
+    sessionBackupPath:
+      patch.sessionBackupPath === undefined
+        ? project.openClaw.sessionBackupPath ?? null
+        : sanitizeProjectPath(patch.sessionBackupPath),
+    sessionMirrorPath:
+      patch.sessionMirrorPath === undefined
+        ? project.openClaw.sessionMirrorPath ?? null
+        : sanitizeProjectPath(patch.sessionMirrorPath),
+    lastSyncedAt: toSwiftDate()
+  };
+
+  if (
+    nextOpenClaw.sessionBackupPath === (project.openClaw.sessionBackupPath ?? null) &&
+    nextOpenClaw.sessionMirrorPath === (project.openClaw.sessionMirrorPath ?? null)
+  ) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    openClaw: nextOpenClaw
+  });
+}
+
+export function syncOpenClawState(
+  project: MAProject,
+  payload: {
+    isConnected: boolean;
+    availableAgents?: string[];
+    activeAgents?: MAProject["openClaw"]["activeAgents"];
+    detectedAgents?: MAProject["openClaw"]["detectedAgents"];
+  }
+): MAProject {
+  const nextOpenClaw = {
+    ...project.openClaw,
+    isConnected: payload.isConnected,
+    availableAgents: payload.availableAgents ?? project.openClaw.availableAgents,
+    activeAgents: payload.activeAgents ?? project.openClaw.activeAgents,
+    detectedAgents: payload.detectedAgents ?? project.openClaw.detectedAgents,
+    lastSyncedAt: toSwiftDate()
+  };
+
+  return withUpdatedAt({
+    ...project,
+    openClaw: nextOpenClaw
+  });
+}
+
+export function importDetectedOpenClawAgents(
+  project: MAProject,
+  detectedAgentIds?: string[]
+): MAProject {
+  const selectedIds = detectedAgentIds ? new Set(detectedAgentIds) : null;
+  const candidates = project.openClaw.detectedAgents.filter((record) =>
+    selectedIds ? selectedIds.has(record.id) : true
+  );
+
+  if (candidates.length === 0) {
+    return project;
+  }
+
+  const existingKeys = new Set(
+    project.agents.flatMap((agent) => [
+      normalizeAgentKey(agent.name),
+      normalizeAgentKey(agent.openClawDefinition.agentIdentifier)
+    ])
+  );
+
+  const nextAgents = [...project.agents];
+
+  for (const record of candidates) {
+    const recordKey = normalizeAgentKey(record.name);
+    if (existingKeys.has(recordKey)) {
+      continue;
+    }
+
+    const importedAgent = createAgent(
+      uniqueName(nextAgents.map((agent) => agent.name), record.name || "Imported Agent"),
+      nextAgents.length
+    );
+    importedAgent.identity = "openclaw";
+    importedAgent.description = record.issues.length
+      ? `Imported from OpenClaw detection. Notes: ${record.issues.join(" ")}`
+      : "Imported from OpenClaw detection.";
+    importedAgent.capabilities = Array.from(
+      new Set([
+        ...importedAgent.capabilities,
+        record.directoryValidated ? "workspace" : "detected",
+        record.configValidated ? "configured" : "unverified"
+      ])
+    );
+    importedAgent.openClawDefinition = {
+      ...importedAgent.openClawDefinition,
+      agentIdentifier: record.name,
+      soulSourcePath: record.directoryPath
+        ? `${record.directoryPath.replace(/\/+$/, "")}/SOUL.md`
+        : null,
+      memoryBackupPath: record.statePath ?? null
+    };
+
+    nextAgents.push(importedAgent);
+    existingKeys.add(recordKey);
+  }
+
+  if (nextAgents.length === project.agents.length) {
+    return project;
+  }
+
+  return withUpdatedAt({
+    ...project,
+    agents: nextAgents
   });
 }
 

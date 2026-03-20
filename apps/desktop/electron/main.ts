@@ -1,14 +1,23 @@
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import os from "node:os";
+import { execFile } from "node:child_process";
+import { existsSync, promises as fs } from "node:fs";
+import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import {
   createEmptyProject,
   parseProject,
   prepareProjectForSave,
   projectFileName,
-  serializeProject
+  serializeProject,
+  toSwiftDate
 } from "@multi-agent-flow/core";
-import type { MAProject } from "@multi-agent-flow/domain";
+import type {
+  MAProject,
+  OpenClawConfig,
+  ProjectOpenClawAgentRecord,
+  ProjectOpenClawDetectedAgentRecord
+} from "@multi-agent-flow/domain";
 
 const PROJECT_EXTENSION = "maoproj";
 const PROJECT_FILTERS = [{ name: "Multi-Agent-Flow Project", extensions: [PROJECT_EXTENSION] }];
@@ -16,6 +25,21 @@ const APP_DOCUMENTS_DIR = "Multi-Agent-Flow";
 const APP_AUTOSAVE_DIR = "AutoSave";
 const RECENT_PROJECTS_FILE = "recent-projects.json";
 const APP_ID = "com.multiagentflow.desktop";
+const execFileAsync = promisify(execFile);
+const OPENCLAW_LOCAL_PATH_CANDIDATES =
+  process.platform === "win32"
+    ? [
+        path.join(os.homedir(), ".local", "bin", "openclaw.exe"),
+        path.join(os.homedir(), "AppData", "Local", "Programs", "OpenClaw", "openclaw.exe"),
+        "openclaw.exe"
+      ]
+    : [
+        path.join(os.homedir(), ".local", "bin", "openclaw"),
+        "/usr/local/bin/openclaw",
+        "/opt/homebrew/bin/openclaw",
+        "/usr/bin/openclaw",
+        "openclaw"
+      ];
 
 interface ProjectFileHandle {
   project: MAProject;
@@ -31,6 +55,34 @@ interface RecentProjectRecord {
 interface AutosaveResult {
   autosavePath: string;
   savedAt: string;
+}
+
+interface DirectorySelectionResult {
+  directoryPath: string | null;
+}
+
+interface OpenClawActionResult {
+  success: boolean;
+  message: string;
+  isConnected: boolean;
+  availableAgents: string[];
+  activeAgents: ProjectOpenClawAgentRecord[];
+  detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+}
+
+interface DirectoryInspection {
+  name: string;
+  path: string;
+  workspacePath: string | null;
+  statePath: string | null;
+  hasSoulFile: boolean;
+}
+
+interface ConfigInspection {
+  name: string;
+  configPath: string | null;
+  workspacePath: string | null;
+  statePath: string | null;
 }
 
 function getDefaultProjectsDirectory(): string {
@@ -154,6 +206,431 @@ async function promptForSavePath(window: BrowserWindow, project: MAProject, file
   return resolvedPath.endsWith(`.${PROJECT_EXTENSION}`) ? resolvedPath : `${resolvedPath}.${PROJECT_EXTENSION}`;
 }
 
+async function promptForDirectory(window: BrowserWindow, defaultPath?: string | null): Promise<string | null> {
+  const projectsDirectory = await ensureProjectsDirectory();
+  const result = await dialog.showOpenDialog(window, {
+    title: "Choose Folder",
+    defaultPath: defaultPath ?? projectsDirectory,
+    properties: ["openDirectory", "createDirectory", "promptToCreate"]
+  });
+
+  if (result.canceled) {
+    return null;
+  }
+
+  return result.filePaths[0] ?? null;
+}
+
+function normalizeAgentKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function parseAgentNamesFromOutput(output: string): string[] {
+  return Array.from(
+    new Set(
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .flatMap((line) => {
+          if (line.startsWith("- ")) {
+            return [line.slice(2).split(" (")[0]?.trim() ?? ""];
+          }
+          return [];
+        })
+        .filter(Boolean)
+    )
+  );
+}
+
+function buildOpenClawBaseUrl(config: OpenClawConfig): string {
+  const scheme = config.useSSL ? "https" : "http";
+  return `${scheme}://${config.host}:${config.port}`;
+}
+
+function buildActiveAgentRecords(names: string[]): ProjectOpenClawAgentRecord[] {
+  const timestamp = toSwiftDate();
+  return names.map((name) => ({
+    id: `openclaw:${name}`,
+    name,
+    status: "available",
+    lastReloadedAt: timestamp
+  }));
+}
+
+function firstExistingChildPath(directoryPath: string, candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    const resolved = path.join(directoryPath, candidate);
+    if (existsSync(resolved)) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+function openClawRootCandidatesForConfig(config: OpenClawConfig): string[] {
+  switch (config.deploymentKind) {
+    case "local":
+      return [path.join(os.homedir(), ".openclaw")];
+    case "container": {
+      const mountPath = config.container.workspaceMountPath.trim();
+      if (!mountPath) {
+        return [];
+      }
+      return [path.join(mountPath, ".openclaw"), path.join(mountPath, "openclaw"), mountPath];
+    }
+    case "remoteServer":
+      return [];
+  }
+}
+
+async function inspectAgentDirectories(agentsDirectory: string): Promise<DirectoryInspection[]> {
+  try {
+    const entries = await fs.readdir(agentsDirectory, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const directoryPath = path.join(agentsDirectory, entry.name);
+        const hasSoulFile =
+          existsSync(path.join(directoryPath, "SOUL.md")) || existsSync(path.join(directoryPath, "soul.md"));
+
+        return {
+          name: entry.name,
+          path: directoryPath,
+          workspacePath: firstExistingChildPath(directoryPath, ["workspace", "workspaces", "job", "jobs"]),
+          statePath: firstExistingChildPath(directoryPath, ["state", "status", "runtime", "private"]),
+          hasSoulFile
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+function pushConfigCandidates(value: unknown, pathStack: string[], result: ConfigInspection[], configPath: string) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      pushConfigCandidates(item, pathStack, result, configPath);
+    }
+    return;
+  }
+
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  const getString = (keys: string[]) => {
+    for (const key of keys) {
+      const candidate = record[key];
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+    return null;
+  };
+
+  const name = getString(["name", "agentName", "agentIdentifier", "identifier", "id"]);
+  const workspacePath = getString(["workspacePath", "workspace", "workPath", "workdir"]);
+  const statePath = getString(["statePath", "statusPath", "privatePath", "state", "private"]);
+  const filePath = getString(["configPath", "path", "filePath"]);
+
+  if (name && (pathStack.includes("agents") || workspacePath || statePath || filePath)) {
+    result.push({
+      name,
+      configPath: filePath ?? configPath,
+      workspacePath,
+      statePath
+    });
+  }
+
+  for (const [key, child] of Object.entries(record)) {
+    pushConfigCandidates(child, [...pathStack, key], result, configPath);
+  }
+}
+
+async function inspectAgentConfigCandidates(configPath: string): Promise<ConfigInspection[]> {
+  try {
+    const raw = await fs.readFile(configPath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    const candidates: ConfigInspection[] = [];
+    pushConfigCandidates(parsed, [], candidates, configPath);
+    return candidates;
+  } catch {
+    return [];
+  }
+}
+
+async function inspectOpenClawAgentsAtRoot(
+  rootPath: string,
+  fallbackAgentNames: string[] = []
+): Promise<ProjectOpenClawDetectedAgentRecord[]> {
+  const directoryInspections = await inspectAgentDirectories(path.join(rootPath, "agents"));
+  const configInspections = await inspectAgentConfigCandidates(path.join(rootPath, "openclaw.json"));
+  const directoryMap = new Map(directoryInspections.map((item) => [normalizeAgentKey(item.name), item]));
+  const configMap = new Map(configInspections.map((item) => [normalizeAgentKey(item.name), item]));
+  const mergedKeys = Array.from(new Set([...directoryMap.keys(), ...configMap.keys()])).sort();
+
+  const records = mergedKeys.map((key) => {
+    const directory = directoryMap.get(key);
+    const configCandidate = configMap.get(key);
+    const workspacePath = configCandidate?.workspacePath?.trim() || directory?.workspacePath || null;
+    const sourceDirectoryPath =
+      workspacePath && existsSync(workspacePath) ? workspacePath : directory?.path ?? null;
+    const directoryValidated = Boolean((workspacePath && existsSync(workspacePath)) || directory);
+    const configValidated = Boolean(configCandidate);
+    const issues: string[] = [];
+
+    if (!directoryValidated) {
+      issues.push("workspace directory not found");
+    } else if (
+      sourceDirectoryPath &&
+      !existsSync(path.join(sourceDirectoryPath, "SOUL.md")) &&
+      !existsSync(path.join(sourceDirectoryPath, "soul.md"))
+    ) {
+      issues.push("SOUL.md not found");
+    }
+
+    if (!configValidated) {
+      issues.push("No matching OpenClaw config entry found");
+    }
+
+    return {
+      id: [configCandidate?.name ?? directory?.name ?? key, sourceDirectoryPath ?? "", configCandidate?.configPath ?? ""]
+        .join("|"),
+      name: configCandidate?.name ?? directory?.name ?? key,
+      directoryPath: sourceDirectoryPath,
+      configPath: configCandidate?.configPath ?? null,
+      workspacePath,
+      statePath: configCandidate?.statePath ?? directory?.statePath ?? null,
+      directoryValidated,
+      configValidated,
+      copiedToProjectPath: null,
+      copiedFileCount: 0,
+      issues,
+      importedAt: null
+    } satisfies ProjectOpenClawDetectedAgentRecord;
+  });
+
+  if (records.length > 0) {
+    return records.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  return fallbackAgentNames
+    .map((name) => ({
+      id: name,
+      name,
+      directoryPath: null,
+      configPath: null,
+      workspacePath: null,
+      statePath: null,
+      directoryValidated: false,
+      configValidated: false,
+      copiedToProjectPath: null,
+      copiedFileCount: 0,
+      issues: ["Only CLI results were available."],
+      importedAt: null
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function inspectOpenClawAgents(config: OpenClawConfig, fallbackAgentNames: string[] = []) {
+  for (const candidate of openClawRootCandidatesForConfig(config)) {
+    if (candidate && existsSync(candidate)) {
+      return inspectOpenClawAgentsAtRoot(candidate, fallbackAgentNames);
+    }
+  }
+
+  return fallbackAgentNames.length > 0
+    ? fallbackAgentNames.map((name) => ({
+        id: name,
+        name,
+        directoryPath: null,
+        configPath: null,
+        workspacePath: null,
+        statePath: null,
+        directoryValidated: false,
+        configValidated: false,
+        copiedToProjectPath: null,
+        copiedFileCount: 0,
+        issues: ["OpenClaw files were not found on disk."],
+        importedAt: null
+      }))
+    : [];
+}
+
+function resolveLocalBinaryPath(config: OpenClawConfig): string {
+  const configured = config.localBinaryPath.trim();
+  if (configured) {
+    return configured;
+  }
+
+  return OPENCLAW_LOCAL_PATH_CANDIDATES[0] ?? "openclaw";
+}
+
+async function runCommand(command: string, args: string[], options?: { timeoutMs?: number }) {
+  return execFileAsync(command, args, {
+    timeout: options?.timeoutMs ?? 15000,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024
+  });
+}
+
+async function testLocalOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
+  const binaryPath = resolveLocalBinaryPath(config);
+  try {
+    const { stdout, stderr } = await runCommand(binaryPath, ["agents", "list"], {
+      timeoutMs: Math.max(config.timeout, 5) * 1000
+    });
+    const output = `${stdout ?? ""}\n${stderr ?? ""}`;
+    const availableAgents = parseAgentNamesFromOutput(output);
+    const detectedAgents = await inspectOpenClawAgents(config, availableAgents);
+    const names = availableAgents.length > 0 ? availableAgents : detectedAgents.map((item) => item.name);
+
+    return {
+      success: true,
+      message: `Connected to OpenClaw. Found ${names.length} agent(s).`,
+      isConnected: true,
+      availableAgents: names,
+      activeAgents: buildActiveAgentRecords(names),
+      detectedAgents
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+      isConnected: false,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
+  }
+}
+
+async function testContainerOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
+  const engine = config.container.engine.trim() || "docker";
+  const containerName = config.container.containerName.trim();
+  if (!containerName) {
+    return {
+      success: false,
+      message: "Container name is required.",
+      isConnected: false,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
+  }
+
+  try {
+    const { stdout, stderr } = await runCommand(engine, ["exec", containerName, "openclaw", "agents", "list"], {
+      timeoutMs: Math.max(config.timeout, 5) * 1000
+    });
+    const output = `${stdout ?? ""}\n${stderr ?? ""}`;
+    const availableAgents = parseAgentNamesFromOutput(output);
+    const detectedAgents = await inspectOpenClawAgents(config, availableAgents);
+    const names = availableAgents.length > 0 ? availableAgents : detectedAgents.map((item) => item.name);
+
+    return {
+      success: true,
+      message: `Connected to OpenClaw container. Found ${names.length} agent(s).`,
+      isConnected: true,
+      availableAgents: names,
+      activeAgents: buildActiveAgentRecords(names),
+      detectedAgents
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+      isConnected: false,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
+  }
+}
+
+async function testRemoteOpenClawConnection(config: OpenClawConfig): Promise<OpenClawActionResult> {
+  const host = config.host.trim();
+  if (!host) {
+    return {
+      success: false,
+      message: "Remote host is required.",
+      isConnected: false,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(config.timeout, 5) * 1000);
+  try {
+    const response = await fetch(buildOpenClawBaseUrl(config), {
+      headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : undefined,
+      signal: controller.signal
+    });
+
+    return {
+      success: response.ok,
+      message: response.ok
+        ? `Connected to remote OpenClaw at ${buildOpenClawBaseUrl(config)}.`
+        : `Remote OpenClaw responded with HTTP ${response.status}.`,
+      isConnected: response.ok,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+      isConnected: false,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult> {
+  switch (config.deploymentKind) {
+    case "local":
+      return testLocalOpenClawConnection(config);
+    case "container":
+      return testContainerOpenClawConnection(config);
+    case "remoteServer":
+      return testRemoteOpenClawConnection(config);
+  }
+}
+
+async function detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult> {
+  const connectionAttempt = await connectOpenClaw(config);
+  if (connectionAttempt.success) {
+    return {
+      ...connectionAttempt,
+      isConnected: false,
+      message: `Detected ${connectionAttempt.detectedAgents.length} OpenClaw agent(s).`
+    };
+  }
+
+  const detectedAgents = await inspectOpenClawAgents(config, []);
+  if (detectedAgents.length > 0) {
+    return {
+      success: true,
+      message: `Detected ${detectedAgents.length} OpenClaw agent(s) from disk.`,
+      isConnected: false,
+      availableAgents: detectedAgents.map((item) => item.name),
+      activeAgents: [],
+      detectedAgents
+    };
+  }
+
+  return connectionAttempt;
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1360,
@@ -254,6 +731,39 @@ function registerProjectIpcHandlers() {
 
   ipcMain.handle("project:autosave", async (_event, project: MAProject): Promise<AutosaveResult> => {
     return writeProjectAutosave(project);
+  });
+
+  ipcMain.handle(
+    "project:chooseDirectory",
+    async (event, defaultPath?: string | null): Promise<DirectorySelectionResult> => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window) {
+        throw new Error("Unable to resolve window for directory dialog.");
+      }
+
+      return {
+        directoryPath: await promptForDirectory(window, defaultPath)
+      };
+    }
+  );
+
+  ipcMain.handle("openClaw:connect", async (_event, config: OpenClawConfig): Promise<OpenClawActionResult> => {
+    return connectOpenClaw(config);
+  });
+
+  ipcMain.handle("openClaw:detect", async (_event, config: OpenClawConfig): Promise<OpenClawActionResult> => {
+    return detectOpenClawAgents(config);
+  });
+
+  ipcMain.handle("openClaw:disconnect", async (): Promise<OpenClawActionResult> => {
+    return {
+      success: true,
+      message: "Disconnected from OpenClaw.",
+      isConnected: false,
+      availableAgents: [],
+      activeAgents: [],
+      detectedAgents: []
+    };
   });
 }
 

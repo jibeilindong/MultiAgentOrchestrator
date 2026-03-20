@@ -19,20 +19,35 @@ import {
   renameProject,
   renameWorkflow,
   renameWorkflowNode,
+  reviewWorkbenchApproval,
+  publishWorkbenchPrompt,
   setWorkflowEdgeApprovalRequired,
   setWorkflowEdgeBidirectional,
   setWorkflowFallbackRoutingPolicy,
+  syncOpenClawState,
+  importDetectedOpenClawAgents,
+  updateOpenClawConfig,
+  updateOpenClawSessionPaths,
+  updateProjectTaskDataSettings,
   updateTaskInProject,
   updateWorkflowEdgeLabel
 } from "@multi-agent-flow/core";
 import type {
   MAProject,
+  Message,
+  OpenClawCLILogLevel,
+  OpenClawDeploymentKind,
   TaskPriority,
   TaskStatus,
   WorkflowFallbackRoutingPolicy,
   WorkflowNodeType
 } from "@multi-agent-flow/domain";
-import { TASK_PRIORITIES, TASK_STATUSES } from "@multi-agent-flow/domain";
+import {
+  OPENCLAW_CLI_LOG_LEVELS,
+  OPENCLAW_DEPLOYMENT_KINDS,
+  TASK_PRIORITIES,
+  TASK_STATUSES
+} from "@multi-agent-flow/domain";
 import { startTransition, useEffect, useState } from "react";
 import { WorkflowCanvasPreview } from "./components/WorkflowCanvasPreview";
 
@@ -87,6 +102,47 @@ function parseTagInput(value: string): string[] {
   );
 }
 
+function resolveWorkbenchMessageTone(message: Message): "user" | "assistant" | "system" | "approval" {
+  if (message.status === "Waiting for Approval" || message.metadata.kind === "approval") {
+    return "approval";
+  }
+
+  const role = message.metadata.role;
+  if (role === "user") {
+    return "user";
+  }
+  if (role === "assistant") {
+    return "assistant";
+  }
+  return "system";
+}
+
+function resolveEntryAgentNodeIds(project: MAProject, workflowId: string): string[] {
+  const workflow = project.workflows.find((item) => item.id === workflowId);
+  if (!workflow) {
+    return [];
+  }
+
+  const startNodeIds = new Set(workflow.nodes.filter((node) => node.type === "start").map((node) => node.id));
+  const nodeMap = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+  const candidateIds = workflow.edges
+    .filter((edge) => startNodeIds.has(edge.fromNodeID))
+    .map((edge) => nodeMap.get(edge.toNodeID))
+    .filter((node): node is NonNullable<typeof node> => Boolean(node && node.type === "agent" && node.agentID))
+    .sort((left, right) => {
+      if (left.position.y !== right.position.y) {
+        return left.position.y - right.position.y;
+      }
+      if (left.position.x !== right.position.x) {
+        return left.position.x - right.position.x;
+      }
+      return left.title.localeCompare(right.title);
+    })
+    .map((node) => node.id);
+
+  return Array.from(new Set(candidateIds));
+}
+
 function formatDate(value?: number | null): string {
   if (value == null) {
     return "Not recorded";
@@ -118,6 +174,86 @@ function formatDuration(value?: number | null): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function formatRelativeDate(value?: number | null): string {
+  if (value == null) {
+    return "No recent activity";
+  }
+
+  const date = fromSwiftDate(value);
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.max(0, Math.round(diffMs / 60000));
+
+  if (diffMinutes < 1) {
+    return "just now";
+  }
+
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  }
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
+
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+function computeOpenClawReadiness(project: MAProject) {
+  const checks: boolean[] = [];
+  const issues: string[] = [];
+  const config = project.openClaw.config;
+
+  checks.push(config.defaultAgent.trim().length > 0);
+  if (config.defaultAgent.trim().length === 0) {
+    issues.push("Set a default OpenClaw agent.");
+  }
+
+  checks.push(config.timeout > 0);
+  if (config.timeout <= 0) {
+    issues.push("Timeout should be greater than 0.");
+  }
+
+  switch (config.deploymentKind) {
+    case "local":
+      checks.push(config.localBinaryPath.trim().length > 0);
+      if (config.localBinaryPath.trim().length === 0) {
+        issues.push("Choose a local OpenClaw binary path.");
+      }
+      break;
+    case "remoteServer":
+      checks.push(config.host.trim().length > 0);
+      checks.push(config.port > 0);
+      if (config.host.trim().length === 0) {
+        issues.push("Set the OpenClaw host.");
+      }
+      if (config.port <= 0) {
+        issues.push("Set a valid OpenClaw port.");
+      }
+      break;
+    case "container":
+      checks.push(config.container.containerName.trim().length > 0);
+      checks.push(config.container.workspaceMountPath.trim().length > 0);
+      if (config.container.containerName.trim().length === 0) {
+        issues.push("Set the container name.");
+      }
+      if (config.container.workspaceMountPath.trim().length === 0) {
+        issues.push("Set the container workspace mount path.");
+      }
+      break;
+  }
+
+  const passedChecks = checks.filter(Boolean).length;
+  const score = checks.length > 0 ? passedChecks / checks.length : 0;
+
+  return {
+    score,
+    label: score >= 1 ? "Ready" : score >= 0.66 ? "Needs attention" : "Not ready",
+    issues
+  };
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -152,6 +288,10 @@ export function App() {
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("Medium");
   const [newTaskAgentId, setNewTaskAgentId] = useState("");
   const [newTaskTags, setNewTaskTags] = useState("");
+  const [workbenchPrompt, setWorkbenchPrompt] = useState("");
+  const [workbenchError, setWorkbenchError] = useState<string | null>(null);
+  const [workbenchAction, setWorkbenchAction] = useState<"publish" | `approval:${string}` | null>(null);
+  const [openClawAction, setOpenClawAction] = useState<"detect" | "connect" | "disconnect" | "import" | null>(null);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -1091,6 +1231,221 @@ export function App() {
     }
   }
 
+  async function handleChooseDirectory(
+    currentPath: string | null | undefined,
+    onSelected: (directoryPath: string) => void
+  ) {
+    const result = await requireDesktopApi().chooseDirectory(currentPath ?? null);
+    if (!result.directoryPath) {
+      setStatus("Folder selection cancelled.");
+      return;
+    }
+
+    onSelected(result.directoryPath);
+  }
+
+  async function handleChooseTaskWorkspaceRoot() {
+    if (!project) {
+      return;
+    }
+
+    await handleChooseDirectory(project.taskData.workspaceRootPath, (directoryPath) => {
+      updateProject(
+        (current) => updateProjectTaskDataSettings(current, { workspaceRootPath: directoryPath }),
+        "Updated task workspace root."
+      );
+    });
+  }
+
+  async function handleChooseOpenClawSessionPath(target: "backup" | "mirror") {
+    if (!project) {
+      return;
+    }
+
+    const currentPath =
+      target === "backup" ? project.openClaw.sessionBackupPath : project.openClaw.sessionMirrorPath;
+
+    await handleChooseDirectory(currentPath, (directoryPath) => {
+      updateProject(
+        (current) =>
+          updateOpenClawSessionPaths(
+            current,
+            target === "backup"
+              ? { sessionBackupPath: directoryPath }
+              : { sessionMirrorPath: directoryPath }
+          ),
+        target === "backup" ? "Updated OpenClaw backup path." : "Updated OpenClaw mirror path."
+      );
+    });
+  }
+
+  function handleTaskDataSettingChange(patch: Parameters<typeof updateProjectTaskDataSettings>[1], nextStatus: string) {
+    updateProject((current) => updateProjectTaskDataSettings(current, patch), nextStatus);
+  }
+
+  function handleOpenClawConfigChange(patch: Parameters<typeof updateOpenClawConfig>[1], nextStatus: string) {
+    updateProject((current) => updateOpenClawConfig(current, patch), nextStatus);
+  }
+
+  function handleOpenClawPathChange(
+    patch: Parameters<typeof updateOpenClawSessionPaths>[1],
+    nextStatus: string
+  ) {
+    updateProject((current) => updateOpenClawSessionPaths(current, patch), nextStatus);
+  }
+
+  async function handleDetectOpenClawAgents() {
+    if (!project) {
+      return;
+    }
+
+    setOpenClawAction("detect");
+    try {
+      const result = await requireDesktopApi().detectOpenClawAgents(project.openClaw.config);
+      updateProject(
+        (current) =>
+          syncOpenClawState(current, {
+            isConnected: false,
+            availableAgents: result.availableAgents,
+            activeAgents: result.activeAgents,
+            detectedAgents: result.detectedAgents
+          }),
+        result.message
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setOpenClawAction(null);
+    }
+  }
+
+  async function handleConnectOpenClaw() {
+    if (!project) {
+      return;
+    }
+
+    setOpenClawAction("connect");
+    try {
+      const result = await requireDesktopApi().connectOpenClaw(project.openClaw.config);
+      updateProject(
+        (current) =>
+          syncOpenClawState(current, {
+            isConnected: result.isConnected,
+            availableAgents: result.availableAgents,
+            activeAgents: result.activeAgents,
+            detectedAgents: result.detectedAgents
+          }),
+        result.message
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setOpenClawAction(null);
+    }
+  }
+
+  async function handleDisconnectOpenClaw() {
+    setOpenClawAction("disconnect");
+    try {
+      const result = await requireDesktopApi().disconnectOpenClaw();
+      updateProject(
+        (current) =>
+          syncOpenClawState(current, {
+            isConnected: result.isConnected,
+            availableAgents: result.availableAgents,
+            activeAgents: result.activeAgents
+          }),
+        result.message
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setOpenClawAction(null);
+    }
+  }
+
+  function handleImportDetectedAgents(detectedAgentIds?: string[]) {
+    setOpenClawAction("import");
+    try {
+      updateProject(
+        (current) => importDetectedOpenClawAgents(current, detectedAgentIds),
+        detectedAgentIds && detectedAgentIds.length === 1
+          ? "Imported detected OpenClaw agent into the project."
+          : "Imported detected OpenClaw agents into the project."
+      );
+    } finally {
+      setOpenClawAction(null);
+    }
+  }
+
+  function handlePublishWorkbenchPrompt() {
+    if (!project || !activeWorkflow) {
+      return;
+    }
+
+    const trimmedPrompt = workbenchPrompt.trim();
+    if (!trimmedPrompt) {
+      setWorkbenchError("Enter a task prompt for the active workflow.");
+      return;
+    }
+
+    if (!project.openClaw.isConnected) {
+      setWorkbenchError("Connect OpenClaw before publishing workbench tasks.");
+      return;
+    }
+
+    if (!hasExecutableWorkflow) {
+      setWorkbenchError("Connect the Start node to at least one assigned agent before publishing.");
+      return;
+    }
+
+    setWorkbenchAction("publish");
+    setWorkbenchError(null);
+    try {
+      const result = publishWorkbenchPrompt(project, activeWorkflow.id, trimmedPrompt);
+      if (!result.taskId) {
+        setWorkbenchError("Workbench publish could not resolve an executable entry agent.");
+        return;
+      }
+
+      commitProject(
+        result.project,
+        result.pendingApprovalCount > 0
+          ? `Published workbench task with ${result.pendingApprovalCount} approval checkpoint(s).`
+          : `Published workbench task and recorded ${result.completedNodeCount} execution receipt(s).`
+      );
+      setWorkbenchPrompt("");
+      setSelectedTaskId(result.taskId);
+    } finally {
+      setWorkbenchAction(null);
+    }
+  }
+
+  function handleWorkbenchApproval(messageId: string, decision: "approve" | "reject") {
+    if (!project) {
+      return;
+    }
+
+    setWorkbenchAction(`approval:${messageId}`);
+    setWorkbenchError(null);
+    try {
+      const result = reviewWorkbenchApproval(project, messageId, decision);
+      commitProject(
+        result.project,
+        decision === "approve"
+          ? result.pendingApprovalCount > 0
+            ? `Approval granted. ${result.pendingApprovalCount} checkpoint(s) remain.`
+            : `Approval granted and workflow execution receipts were updated.`
+          : "Approval request rejected and the workbench task remains blocked."
+      );
+      if (result.taskId) {
+        setSelectedTaskId(result.taskId);
+      }
+    } finally {
+      setWorkbenchAction(null);
+    }
+  }
+
   const taskCompletionRate =
     project && project.tasks.length > 0
       ? project.tasks.filter((task) => task.status === "Done").length / project.tasks.length
@@ -1109,6 +1464,99 @@ export function App() {
           return totalDuration / completedTasks.length;
         })()
       : null;
+  const blockedTaskCount = project?.tasks.filter((task) => task.status === "Blocked").length ?? 0;
+  const inProgressTaskCount = project?.tasks.filter((task) => task.status === "In Progress").length ?? 0;
+  const taskLinkedToWorkflowCount = project?.tasks.filter((task) => task.workflowNodeID).length ?? 0;
+  const pendingApprovalCount =
+    project?.messages.filter((message) => message.status === "Waiting for Approval").length ?? 0;
+  const failedMessageCount = project?.messages.filter((message) => message.status === "Failed").length ?? 0;
+  const failedExecutionCount =
+    project?.executionResults.filter((result) => result.status === "Failed").length ?? 0;
+  const completedExecutionCount =
+    project?.executionResults.filter((result) => result.status === "Completed").length ?? 0;
+  const executionSuccessRate =
+    completedExecutionCount + failedExecutionCount > 0
+      ? completedExecutionCount / (completedExecutionCount + failedExecutionCount)
+      : null;
+  const errorLogCount = project?.executionLogs.filter((entry) => entry.level === "ERROR").length ?? 0;
+  const warnLogCount = project?.executionLogs.filter((entry) => entry.level === "WARN").length ?? 0;
+  const openClawReadiness = project ? computeOpenClawReadiness(project) : null;
+  const recentExecutionResults =
+    project?.executionResults
+      .slice()
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .slice(0, 5) ?? [];
+  const recentExecutionLogs =
+    project?.executionLogs
+      .slice()
+      .sort((left, right) => right.timestamp - left.timestamp)
+      .slice(0, 6) ?? [];
+  const agentLoadRows =
+    project?.agents.map((agent) => {
+      const tasks = project.tasks.filter((task) => task.assignedAgentID === agent.id);
+      const activeTasks = tasks.filter((task) => task.status === "In Progress").length;
+      const blockedTasks = tasks.filter((task) => task.status === "Blocked").length;
+      const completedTasks = tasks.filter((task) => task.status === "Done").length;
+      return {
+        agent,
+        totalTasks: tasks.length,
+        activeTasks,
+        blockedTasks,
+        completedTasks,
+        workflowTasks: tasks.filter((task) => task.workflowNodeID).length
+      };
+    }) ?? [];
+  const workflowCoverageRows =
+    project?.workflows.map((workflow) => {
+      const agentNodes = workflow.nodes.filter((node) => node.type === "agent");
+      const assignedNodes = agentNodes.filter((node) => node.agentID).length;
+      const linkedTasks = project.tasks.filter((task) =>
+        task.workflowNodeID ? agentNodes.some((node) => node.id === task.workflowNodeID) : false
+      ).length;
+      const coverage = agentNodes.length > 0 ? assignedNodes / agentNodes.length : 1;
+
+      return {
+        workflow,
+        agentNodeCount: agentNodes.length,
+        assignedNodeCount: assignedNodes,
+        linkedTasks,
+        coverage
+      };
+    }) ?? [];
+  const importedOpenClawAgentKeys = new Set(
+    project?.agents.flatMap((agent) => [agent.name.trim().toLowerCase(), agent.openClawDefinition.agentIdentifier.trim().toLowerCase()]) ??
+      []
+  );
+  const workbenchMessages =
+    project && activeWorkflow
+      ? project.messages
+          .filter(
+            (message) =>
+              message.metadata.channel === "workbench" && message.metadata.workflowID === activeWorkflow.id
+          )
+          .slice()
+          .sort((left, right) => left.timestamp - right.timestamp)
+      : [];
+  const pendingApprovalMessages = workbenchMessages.filter(
+    (message) => message.status === "Waiting for Approval" && message.requiresApproval
+  );
+  const workbenchTaskIds = new Set(
+    workbenchMessages.map((message) => message.metadata.taskID).filter((value): value is string => Boolean(value))
+  );
+  const workbenchTasks =
+    project?.tasks
+      .filter((task) => workbenchTaskIds.has(task.id))
+      .slice()
+      .sort((left, right) => right.createdAt - left.createdAt) ?? [];
+  const workbenchNodeIds = new Set(activeWorkflow?.nodes.map((node) => node.id) ?? []);
+  const workbenchExecutionResults =
+    project?.executionResults
+      .filter((result) => workbenchNodeIds.has(result.nodeID))
+      .slice()
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .slice(0, 10) ?? [];
+  const executableEntryNodeIds = project && activeWorkflow ? resolveEntryAgentNodeIds(project, activeWorkflow.id) : [];
+  const hasExecutableWorkflow = executableEntryNodeIds.length > 0;
 
   function updateCanvasZoom(nextZoom: number) {
     const clampedZoom = Math.min(MAX_CANVAS_ZOOM, Math.max(MIN_CANVAS_ZOOM, Number(nextZoom.toFixed(2))));
@@ -2049,6 +2497,225 @@ export function App() {
           )}
         </article>
 
+        <article className="card cardWide">
+          <h2>Workbench conversation</h2>
+          {project && activeWorkflow ? (
+            <div className="formStack">
+              <div className="metaStrip">
+                <span>Workflow: {activeWorkflow.name}</span>
+                <span>{project.openClaw.isConnected ? "OpenClaw connected" : "OpenClaw disconnected"}</span>
+                <span>Entry agents: {executableEntryNodeIds.length}</span>
+                <span>Pending approvals: {pendingApprovalMessages.length}</span>
+                <span>Conversation messages: {workbenchMessages.length}</span>
+              </div>
+
+              <div className="workbenchLayout">
+                <section className="workbenchConversationPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Conversation</h3>
+                    <span>{workbenchMessages.length} message(s)</span>
+                  </div>
+                  <div className="workbenchConversationList">
+                    {workbenchMessages.length > 0 ? (
+                      workbenchMessages.map((message) => {
+                        const tone = resolveWorkbenchMessageTone(message);
+                        const linkedTask =
+                          project.tasks.find((task) => task.id === message.metadata.taskID) ?? null;
+                        const fromAgent =
+                          project.agents.find((agent) => agent.id === message.fromAgentID) ?? null;
+                        const toAgent =
+                          project.agents.find((agent) => agent.id === message.toAgentID) ?? null;
+                        const approvalActionKey = `approval:${message.id}`;
+
+                        return (
+                          <article key={message.id} className={`workbenchBubble workbenchBubble-${tone}`}>
+                            <div className="workbenchBubbleHeader">
+                              <strong>
+                                {tone === "user"
+                                  ? "You"
+                                  : message.metadata.sourceAgentName ??
+                                    fromAgent?.name ??
+                                    message.metadata.agentName ??
+                                    "Workbench"}
+                              </strong>
+                              <span>{formatRelativeDate(message.timestamp)}</span>
+                            </div>
+                            <p>{message.content}</p>
+                            <div className="taskMeta">
+                              <span>Status {message.status}</span>
+                              <span>
+                                Route {(fromAgent?.name ?? "Workbench")} to {(toAgent?.name ?? "Workbench")}
+                              </span>
+                              <span>Task {linkedTask?.title ?? "Detached"}</span>
+                            </div>
+                            {message.status === "Waiting for Approval" ? (
+                              <div className="taskQuickActions">
+                                <button
+                                  type="button"
+                                  onClick={() => handleWorkbenchApproval(message.id, "approve")}
+                                  disabled={workbenchAction === approvalActionKey}
+                                >
+                                  {workbenchAction === approvalActionKey ? "Working..." : "Approve"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dangerButton"
+                                  onClick={() => handleWorkbenchApproval(message.id, "reject")}
+                                  disabled={workbenchAction === approvalActionKey}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      })
+                    ) : (
+                      <p className="emptyState">
+                        Publish the first workbench task to capture a reusable cross-platform execution trail.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="workbenchComposer">
+                    {workbenchError ? <p className="errorText">{workbenchError}</p> : null}
+                    <label className="field">
+                      <span>Prompt</span>
+                      <textarea
+                        value={workbenchPrompt}
+                        onChange={(event) => setWorkbenchPrompt(event.target.value)}
+                        rows={4}
+                        placeholder="Describe the task for the active workflow, for example: investigate, break down, and propose an execution plan."
+                      />
+                    </label>
+                    <div className="taskMeta">
+                      <span>{hasExecutableWorkflow ? "Workflow entry is executable" : "Start node is not executable yet"}</span>
+                      <span>{project.openClaw.isConnected ? "Ready to publish" : "Connect OpenClaw first"}</span>
+                    </div>
+                    <div className="inspectorActions">
+                      <button
+                        type="button"
+                        onClick={handlePublishWorkbenchPrompt}
+                        disabled={workbenchAction !== null}
+                      >
+                        {workbenchAction === "publish" ? "Publishing..." : "Publish to workflow"}
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="workbenchSidebar">
+                  <div className="dashboardPanel">
+                    <div className="dashboardPanelHeader">
+                      <h3>Pending approvals</h3>
+                      <span>{pendingApprovalMessages.length}</span>
+                    </div>
+                    {pendingApprovalMessages.length > 0 ? (
+                      <div className="dashboardList">
+                        {pendingApprovalMessages.map((message) => {
+                          const approvalActionKey = `approval:${message.id}`;
+                          return (
+                            <article key={message.id} className="dashboardListItem">
+                              <div className="dashboardListItemHeader">
+                                <strong>{message.metadata.sourceAgentName ?? "Source agent"}</strong>
+                                <span>{message.metadata.targetAgentName ?? "Target agent"}</span>
+                              </div>
+                              <p className="dashboardEventBody">{message.content}</p>
+                              <p className="dashboardEventMeta">
+                                Task {message.metadata.taskID?.slice(0, 8) ?? "unknown"} • Edge{" "}
+                                {message.metadata.edgeID?.slice(0, 8) ?? "n/a"}
+                              </p>
+                              <div className="taskQuickActions">
+                                <button
+                                  type="button"
+                                  onClick={() => handleWorkbenchApproval(message.id, "approve")}
+                                  disabled={workbenchAction === approvalActionKey}
+                                >
+                                  {workbenchAction === approvalActionKey ? "Working..." : "Approve"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="dangerButton"
+                                  onClick={() => handleWorkbenchApproval(message.id, "reject")}
+                                  disabled={workbenchAction === approvalActionKey}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="emptyState">Approval-required routing will surface here for operator review.</p>
+                    )}
+                  </div>
+
+                  <div className="dashboardPanel">
+                    <div className="dashboardPanelHeader">
+                      <h3>Execution receipts</h3>
+                      <span>{workbenchExecutionResults.length}</span>
+                    </div>
+                    {workbenchExecutionResults.length > 0 ? (
+                      <div className="dashboardList">
+                        {workbenchExecutionResults.map((result) => {
+                          const agent =
+                            project.agents.find((candidate) => candidate.id === result.agentID) ?? null;
+                          return (
+                            <article key={result.id} className="dashboardListItem">
+                              <div className="dashboardListItemHeader">
+                                <strong>{agent?.name ?? result.agentID.slice(0, 8)}</strong>
+                                <span>{result.status}</span>
+                              </div>
+                              <p className="dashboardEventMeta">
+                                {formatRelativeDate(result.startedAt)} • Targets {result.routingTargets.length}
+                              </p>
+                              <p className="dashboardEventBody">{result.output || "No output captured."}</p>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="emptyState">Execution receipts will appear here after workbench publishing.</p>
+                    )}
+                  </div>
+
+                  <div className="dashboardPanel">
+                    <div className="dashboardPanelHeader">
+                      <h3>Workbench tasks</h3>
+                      <span>{workbenchTasks.length}</span>
+                    </div>
+                    {workbenchTasks.length > 0 ? (
+                      <div className="dashboardList">
+                        {workbenchTasks.map((task) => (
+                          <article key={task.id} className="dashboardListItem">
+                            <div className="dashboardListItemHeader">
+                              <strong>{task.title}</strong>
+                              <span>{task.status}</span>
+                            </div>
+                            <div className="taskMeta">
+                              <span>{task.priority}</span>
+                              <span>{task.assignedAgentID ? "Assigned" : "Unassigned"}</span>
+                              <span>{formatRelativeDate(task.createdAt)}</span>
+                            </div>
+                            <p className="dashboardEventMeta">
+                              Workspace {task.metadata.workspaceRelativePath ?? "not indexed"}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="emptyState">Published workbench tasks will collect here.</p>
+                    )}
+                  </div>
+                </section>
+              </div>
+            </div>
+          ) : (
+            <p className="emptyState">Open or create a project to use the workbench conversation flow.</p>
+          )}
+        </article>
+
         <article className="card">
           <h2>Recent projects</h2>
           {recentProjects.length > 0 ? (
@@ -2095,6 +2762,582 @@ export function App() {
             </dl>
           ) : (
             <p className="emptyState">Waiting for project bootstrap.</p>
+          )}
+        </article>
+
+        <article className="card cardWide">
+          <h2>Project configuration</h2>
+          {project ? (
+            <div className="formStack">
+              <div className="inspectorCard">
+                <span className="sectionLabel">Task data settings</span>
+                <div className="inspectorGrid">
+                  <label className="field">
+                    <span>Workspace root path</span>
+                    <input
+                      value={project.taskData.workspaceRootPath ?? ""}
+                      onChange={(event) =>
+                        handleTaskDataSettingChange(
+                          { workspaceRootPath: event.target.value },
+                          "Updated task workspace root."
+                        )
+                      }
+                      placeholder="Choose or paste a workspace root directory"
+                    />
+                  </label>
+                  <label className="field compactField">
+                    <span>Organization mode</span>
+                    <select
+                      value={project.taskData.organizationMode}
+                      onChange={(event) =>
+                        handleTaskDataSettingChange(
+                          { organizationMode: event.target.value },
+                          "Updated task organization mode."
+                        )
+                      }
+                    >
+                      <option value="project/task">project/task</option>
+                      <option value="project/agent/task">project/agent/task</option>
+                      <option value="flat">flat</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="inspectorActions">
+                  <button type="button" onClick={() => void handleChooseTaskWorkspaceRoot()}>
+                    Choose folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleTaskDataSettingChange(
+                        { workspaceRootPath: null },
+                        "Reset task workspace root to project default."
+                      )
+                    }
+                  >
+                    Reset default
+                  </button>
+                </div>
+                <div className="taskTimeline">
+                  <div>
+                    <dt>Last updated</dt>
+                    <dd>{formatDate(project.taskData.lastUpdatedAt)}</dd>
+                  </div>
+                </div>
+              </div>
+
+              <div className="inspectorCard">
+                <span className="sectionLabel">OpenClaw configuration</span>
+                <div className="metaStrip">
+                  <span>{project.openClaw.isConnected ? "Connected" : "Disconnected"}</span>
+                  <span>Available agents: {project.openClaw.availableAgents.length}</span>
+                  <span>Active agents: {project.openClaw.activeAgents.length}</span>
+                  <span>Detected agents: {project.openClaw.detectedAgents.length}</span>
+                </div>
+                <div className="inspectorGrid">
+                  <label className="field compactField">
+                    <span>Deployment kind</span>
+                    <select
+                      value={project.openClaw.config.deploymentKind}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { deploymentKind: event.target.value as OpenClawDeploymentKind },
+                          "Updated OpenClaw deployment kind."
+                        )
+                      }
+                    >
+                      {OPENCLAW_DEPLOYMENT_KINDS.map((deploymentKind) => (
+                        <option key={deploymentKind} value={deploymentKind}>
+                          {deploymentKind}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field compactField">
+                    <span>Host</span>
+                    <input
+                      value={project.openClaw.config.host}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange({ host: event.target.value }, "Updated OpenClaw host.")
+                      }
+                    />
+                  </label>
+                  <label className="field compactField">
+                    <span>Port</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={project.openClaw.config.port}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { port: Number(event.target.value) },
+                          "Updated OpenClaw port."
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="field compactField">
+                    <span>Default agent</span>
+                    <input
+                      value={project.openClaw.config.defaultAgent}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { defaultAgent: event.target.value },
+                          "Updated OpenClaw default agent."
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="field compactField">
+                    <span>Timeout (seconds)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={project.openClaw.config.timeout}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { timeout: Number(event.target.value) },
+                          "Updated OpenClaw timeout."
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="field compactField">
+                    <span>CLI log level</span>
+                    <select
+                      value={project.openClaw.config.cliLogLevel}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { cliLogLevel: event.target.value as OpenClawCLILogLevel },
+                          "Updated OpenClaw CLI log level."
+                        )
+                      }
+                    >
+                      {OPENCLAW_CLI_LOG_LEVELS.map((level) => (
+                        <option key={level} value={level}>
+                          {level}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>API key</span>
+                    <input
+                      value={project.openClaw.config.apiKey}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange({ apiKey: event.target.value }, "Updated OpenClaw API key.")
+                      }
+                      placeholder="Optional for remote deployment"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Local binary path</span>
+                    <input
+                      value={project.openClaw.config.localBinaryPath}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { localBinaryPath: event.target.value },
+                          "Updated OpenClaw binary path."
+                        )
+                      }
+                      placeholder="/usr/local/bin/openclaw"
+                    />
+                  </label>
+                  <label className="checkboxField">
+                    <input
+                      type="checkbox"
+                      checked={project.openClaw.config.useSSL}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange({ useSSL: event.target.checked }, "Updated SSL setting.")
+                      }
+                    />
+                    <span>Use SSL</span>
+                  </label>
+                  <label className="checkboxField">
+                    <input
+                      type="checkbox"
+                      checked={project.openClaw.config.autoConnect}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { autoConnect: event.target.checked },
+                          "Updated auto-connect setting."
+                        )
+                      }
+                    />
+                    <span>Auto-connect on launch</span>
+                  </label>
+                  <label className="checkboxField">
+                    <input
+                      type="checkbox"
+                      checked={project.openClaw.config.cliQuietMode}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { cliQuietMode: event.target.checked },
+                          "Updated CLI quiet mode."
+                        )
+                      }
+                    />
+                    <span>CLI quiet mode</span>
+                  </label>
+                </div>
+
+                <div className="inspectorGrid">
+                  <label className="field compactField">
+                    <span>Container engine</span>
+                    <input
+                      value={project.openClaw.config.container.engine}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { container: { engine: event.target.value } },
+                          "Updated container engine."
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="field compactField">
+                    <span>Container name</span>
+                    <input
+                      value={project.openClaw.config.container.containerName}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { container: { containerName: event.target.value } },
+                          "Updated container name."
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Workspace mount path</span>
+                    <input
+                      value={project.openClaw.config.container.workspaceMountPath}
+                      onChange={(event) =>
+                        handleOpenClawConfigChange(
+                          { container: { workspaceMountPath: event.target.value } },
+                          "Updated container workspace mount path."
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div className="inspectorGrid">
+                  <label className="field">
+                    <span>Session backup path</span>
+                    <input
+                      value={project.openClaw.sessionBackupPath ?? ""}
+                      onChange={(event) =>
+                        handleOpenClawPathChange(
+                          { sessionBackupPath: event.target.value },
+                          "Updated OpenClaw backup path."
+                        )
+                      }
+                      placeholder="Folder containing backup artifacts"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Session mirror path</span>
+                    <input
+                      value={project.openClaw.sessionMirrorPath ?? ""}
+                      onChange={(event) =>
+                        handleOpenClawPathChange(
+                          { sessionMirrorPath: event.target.value },
+                          "Updated OpenClaw mirror path."
+                        )
+                      }
+                      placeholder="Folder mirroring external sessions"
+                    />
+                  </label>
+                </div>
+
+                <div className="inspectorActions">
+                  <button
+                    type="button"
+                    onClick={() => void handleDetectOpenClawAgents()}
+                    disabled={openClawAction !== null}
+                  >
+                    {openClawAction === "detect" ? "Detecting..." : "Detect agents"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleConnectOpenClaw()}
+                    disabled={openClawAction !== null}
+                  >
+                    {openClawAction === "connect" ? "Connecting..." : "Connect"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDisconnectOpenClaw()}
+                    disabled={openClawAction !== null || !project.openClaw.isConnected}
+                  >
+                    {openClawAction === "disconnect" ? "Disconnecting..." : "Disconnect"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleImportDetectedAgents()}
+                    disabled={openClawAction !== null || project.openClaw.detectedAgents.length === 0}
+                  >
+                    {openClawAction === "import" ? "Importing..." : "Import all detected"}
+                  </button>
+                  <button type="button" onClick={() => void handleChooseOpenClawSessionPath("backup")}>
+                    Choose backup folder
+                  </button>
+                  <button type="button" onClick={() => void handleChooseOpenClawSessionPath("mirror")}>
+                    Choose mirror folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleOpenClawPathChange(
+                        { sessionBackupPath: null, sessionMirrorPath: null },
+                        "Cleared OpenClaw session paths."
+                      )
+                    }
+                  >
+                    Clear session paths
+                  </button>
+                </div>
+
+                <div className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Detected OpenClaw agents</h3>
+                    <span>{project.openClaw.detectedAgents.length} detected</span>
+                  </div>
+                  {project.openClaw.detectedAgents.length > 0 ? (
+                    <div className="dashboardList">
+                      {project.openClaw.detectedAgents.map((record) => {
+                        const alreadyImported = importedOpenClawAgentKeys.has(record.name.trim().toLowerCase());
+                        return (
+                          <article key={record.id} className="dashboardListItem">
+                            <div className="dashboardListItemHeader">
+                              <strong>{record.name}</strong>
+                              <span>{alreadyImported ? "Imported" : "Not imported"}</span>
+                            </div>
+                            <div className="taskMeta">
+                              <span>{record.directoryValidated ? "Workspace verified" : "Workspace missing"}</span>
+                              <span>{record.configValidated ? "Config matched" : "Config missing"}</span>
+                              <span>{record.workspacePath ? "Workspace path found" : "No workspace path"}</span>
+                            </div>
+                            <p className="dashboardEventMeta">
+                              {record.directoryPath ?? record.workspacePath ?? "No local directory resolved"}
+                            </p>
+                            {record.issues.length > 0 ? (
+                              <p className="dashboardEventBody">{record.issues.join(" ")}</p>
+                            ) : (
+                              <p className="dashboardEventBody">
+                                Detection looks healthy. This agent is ready to be imported into the project.
+                              </p>
+                            )}
+                            <div className="taskQuickActions">
+                              <button
+                                type="button"
+                                onClick={() => handleImportDetectedAgents([record.id])}
+                                disabled={openClawAction !== null || alreadyImported}
+                              >
+                                {alreadyImported ? "Already imported" : "Import"}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="emptyState">
+                      Run Detect agents to scan the configured OpenClaw environment and surface import candidates.
+                    </p>
+                  )}
+                </div>
+
+                <div className="taskTimeline">
+                  <div>
+                    <dt>Last synced</dt>
+                    <dd>{formatDate(project.openClaw.lastSyncedAt)}</dd>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="emptyState">Project state is still loading.</p>
+          )}
+        </article>
+
+        <article className="card cardWide">
+          <h2>Operations dashboard</h2>
+          {project ? (
+            <div className="formStack">
+              <div className="dashboardGrid">
+                <article className="dashboardMetricCard">
+                  <span className="dashboardMetricLabel">Task health</span>
+                  <strong>{formatPercent(taskCompletionRate)}</strong>
+                  <p>
+                    {project.tasks.length} total tasks, {inProgressTaskCount} in progress, {blockedTaskCount} blocked.
+                  </p>
+                </article>
+                <article className="dashboardMetricCard">
+                  <span className="dashboardMetricLabel">Execution reliability</span>
+                  <strong>{executionSuccessRate == null ? "No runs" : formatPercent(executionSuccessRate)}</strong>
+                  <p>
+                    {completedExecutionCount} completed, {failedExecutionCount} failed, {errorLogCount} error logs.
+                  </p>
+                </article>
+                <article className="dashboardMetricCard">
+                  <span className="dashboardMetricLabel">OpenClaw readiness</span>
+                  <strong>{openClawReadiness?.label ?? "Unavailable"}</strong>
+                  <p>
+                    Score {openClawReadiness ? formatPercent(openClawReadiness.score) : "0%"}.
+                    {openClawReadiness?.issues[0] ? ` ${openClawReadiness.issues[0]}` : " Configuration looks complete."}
+                  </p>
+                </article>
+                <article className="dashboardMetricCard">
+                  <span className="dashboardMetricLabel">Runtime posture</span>
+                  <strong>{formatRelativeDate(project.runtimeState.lastUpdated)}</strong>
+                  <p>
+                    Queue {project.runtimeState.messageQueue.length}, approvals {pendingApprovalCount}, workspaces{" "}
+                    {project.workspaceIndex.length}.
+                  </p>
+                </article>
+              </div>
+
+              <div className="dashboardColumns">
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Agent load</h3>
+                    <span>{agentLoadRows.length} agent(s)</span>
+                  </div>
+                  {agentLoadRows.length > 0 ? (
+                    <div className="dashboardList">
+                      {agentLoadRows.map((row) => (
+                        <article key={row.agent.id} className="dashboardListItem">
+                          <div className="dashboardListItemHeader">
+                            <strong>{row.agent.name}</strong>
+                            <span>{row.totalTasks} task(s)</span>
+                          </div>
+                          <div className="taskMeta">
+                            <span>Active {row.activeTasks}</span>
+                            <span>Blocked {row.blockedTasks}</span>
+                            <span>Done {row.completedTasks}</span>
+                            <span>Workflow-linked {row.workflowTasks}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="emptyState">Add agents to start tracking task ownership and load.</p>
+                  )}
+                </section>
+
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Workflow coverage</h3>
+                    <span>{workflowCoverageRows.length} workflow(s)</span>
+                  </div>
+                  {workflowCoverageRows.length > 0 ? (
+                    <div className="dashboardList">
+                      {workflowCoverageRows.map((row) => (
+                        <article key={row.workflow.id} className="dashboardListItem">
+                          <div className="dashboardListItemHeader">
+                            <strong>{row.workflow.name}</strong>
+                            <span>{formatPercent(row.coverage)}</span>
+                          </div>
+                          <div className="taskMeta">
+                            <span>Agent nodes {row.agentNodeCount}</span>
+                            <span>Assigned {row.assignedNodeCount}</span>
+                            <span>Linked tasks {row.linkedTasks}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="emptyState">No workflows yet. Add one to start monitoring routing coverage.</p>
+                  )}
+                </section>
+              </div>
+
+              <div className="dashboardColumns">
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Recent execution</h3>
+                    <span>{recentExecutionResults.length} recent result(s)</span>
+                  </div>
+                  {recentExecutionResults.length > 0 ? (
+                    <div className="dashboardList">
+                      {recentExecutionResults.map((result) => {
+                        const agent =
+                          project.agents.find((candidate) => candidate.id === result.agentID) ?? null;
+                        return (
+                          <article key={result.id} className="dashboardListItem">
+                            <div className="dashboardListItemHeader">
+                              <strong>{agent?.name ?? result.agentID.slice(0, 8)}</strong>
+                              <span>{result.status}</span>
+                            </div>
+                            <p className="dashboardEventMeta">
+                              {formatRelativeDate(result.startedAt)} • Duration {formatDuration(result.duration)} •
+                              Targets {result.routingTargets.length}
+                            </p>
+                            <p className="dashboardEventBody">{result.output || "No output captured."}</p>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="emptyState">Execution results will show up after runtime activity is saved.</p>
+                  )}
+                </section>
+
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Recent events</h3>
+                    <span>
+                      {project.executionLogs.length} logs, {project.messages.length} messages
+                    </span>
+                  </div>
+                  <div className="dashboardSignalStrip">
+                    <span>Error logs {errorLogCount}</span>
+                    <span>Warnings {warnLogCount}</span>
+                    <span>Failed messages {failedMessageCount}</span>
+                    <span>Linked tasks {taskLinkedToWorkflowCount}</span>
+                    <span>Backups {project.memoryData.taskExecutionMemories.length}</span>
+                  </div>
+                  {recentExecutionLogs.length > 0 ? (
+                    <div className="dashboardList">
+                      {recentExecutionLogs.map((entry) => (
+                        <article key={entry.id} className="dashboardListItem">
+                          <div className="dashboardListItemHeader">
+                            <strong>{entry.level}</strong>
+                            <span>{formatRelativeDate(entry.timestamp)}</span>
+                          </div>
+                          <p className="dashboardEventBody">{entry.message}</p>
+                          <p className="dashboardEventMeta">
+                            Node {entry.nodeID ? entry.nodeID.slice(0, 8) : "global"} • Session{" "}
+                            {project.runtimeState.sessionID.slice(0, 8)}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="emptyState">Execution logs and runtime alerts will appear here.</p>
+                  )}
+                </section>
+              </div>
+
+              {openClawReadiness && openClawReadiness.issues.length > 0 ? (
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>OpenClaw readiness checklist</h3>
+                    <span>{openClawReadiness.issues.length} item(s)</span>
+                  </div>
+                  <div className="dashboardChecklist">
+                    {openClawReadiness.issues.map((issue) => (
+                      <div key={issue} className="dashboardChecklistItem">
+                        <strong>Attention</strong>
+                        <span>{issue}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          ) : (
+            <p className="emptyState">Project state is still loading.</p>
           )}
         </article>
 

@@ -772,6 +772,252 @@ body {
   color: #13283c;
 }
 
+.dashboardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.dashboardMetricCard {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(242, 248, 252, 0.88)),
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.08), transparent 48%);
+}
+
+.dashboardMetricCard strong {
+  color: #102132;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.dashboardMetricCard p {
+  margin: 0;
+  color: #35506a;
+  line-height: 1.55;
+}
+
+.dashboardMetricLabel {
+  color: #52708a;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dashboardColumns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.dashboardPanel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.dashboardPanelHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboardPanelHeader h3 {
+  margin: 0;
+  color: #13283c;
+  font-size: 1rem;
+}
+
+.dashboardPanelHeader span {
+  color: #52708a;
+  font-size: 0.85rem;
+}
+
+.dashboardList {
+  display: grid;
+  gap: 12px;
+}
+
+.dashboardListItem {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.dashboardListItemHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: start;
+}
+
+.dashboardListItemHeader strong {
+  color: #13283c;
+}
+
+.dashboardListItemHeader span {
+  color: #52708a;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.dashboardEventBody {
+  margin: 0;
+  color: #28445b;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.dashboardEventMeta {
+  margin: 0;
+  color: #52708a;
+  font-size: 0.86rem;
+}
+
+.dashboardSignalStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dashboardSignalStrip span {
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: rgba(16, 33, 50, 0.06);
+  color: #35506a;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.dashboardChecklist {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboardChecklistItem {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(180, 35, 24, 0.12);
+  border-radius: 16px;
+  background: rgba(180, 35, 24, 0.05);
+}
+
+.dashboardChecklistItem strong {
+  color: #b42318;
+  font-size: 0.88rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.dashboardChecklistItem span {
+  color: #7a271a;
+}
+
+.workbenchLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.9fr);
+  gap: 18px;
+}
+
+.workbenchConversationPanel,
+.workbenchSidebar {
+  display: grid;
+  gap: 16px;
+}
+
+.workbenchConversationPanel {
+  min-width: 0;
+}
+
+.workbenchConversationList {
+  display: grid;
+  gap: 12px;
+  max-height: 720px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.workbenchBubble {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.workbenchBubble-user {
+  background:
+    linear-gradient(180deg, rgba(15, 118, 110, 0.12), rgba(15, 118, 110, 0.06)),
+    rgba(255, 255, 255, 0.92);
+}
+
+.workbenchBubble-assistant {
+  background:
+    linear-gradient(180deg, rgba(59, 130, 246, 0.1), rgba(59, 130, 246, 0.04)),
+    rgba(255, 255, 255, 0.92);
+}
+
+.workbenchBubble-system {
+  background:
+    linear-gradient(180deg, rgba(16, 33, 50, 0.08), rgba(16, 33, 50, 0.03)),
+    rgba(255, 255, 255, 0.92);
+}
+
+.workbenchBubble-approval {
+  border-color: rgba(180, 35, 24, 0.16);
+  background:
+    linear-gradient(180deg, rgba(180, 35, 24, 0.1), rgba(180, 35, 24, 0.04)),
+    rgba(255, 255, 255, 0.92);
+}
+
+.workbenchBubbleHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workbenchBubbleHeader strong {
+  color: #13283c;
+}
+
+.workbenchBubbleHeader span {
+  color: #52708a;
+  font-size: 0.84rem;
+}
+
+.workbenchBubble p {
+  margin: 0;
+  color: #28445b;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.workbenchComposer {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgba(16, 33, 50, 0.08);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(242, 248, 252, 0.86)),
+    radial-gradient(circle at bottom right, rgba(15, 118, 110, 0.1), transparent 52%);
+}
+
 .card ul,
 .card ol {
   margin: 0;
@@ -812,5 +1058,11 @@ body {
 
   .cardWide {
     grid-column: span 1;
+  }
+}
+
+@media (max-width: 960px) {
+  .workbenchLayout {
+    grid-template-columns: 1fr;
   }
 }

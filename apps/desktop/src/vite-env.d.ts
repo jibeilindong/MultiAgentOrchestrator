@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 
-import type { MAProject } from "@multi-agent-flow/domain";
+import type {
+  MAProject,
+  OpenClawConfig,
+  ProjectOpenClawAgentRecord,
+  ProjectOpenClawDetectedAgentRecord
+} from "@multi-agent-flow/domain";
 
 declare global {
   interface ProjectFileHandle {
@@ -19,6 +24,19 @@ declare global {
     savedAt: string;
   }
 
+  interface DirectorySelectionResult {
+    directoryPath: string | null;
+  }
+
+  interface OpenClawActionResult {
+    success: boolean;
+    message: string;
+    isConnected: boolean;
+    availableAgents: string[];
+    activeAgents: ProjectOpenClawAgentRecord[];
+    detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+  }
+
   interface Window {
     desktopApi?: {
       platform: string;
@@ -34,6 +52,10 @@ declare global {
       saveProject(project: MAProject, filePath: string | null): Promise<ProjectFileHandle>;
       saveProjectAs(project: MAProject, filePath: string | null): Promise<ProjectFileHandle | null>;
       autosaveProject(project: MAProject): Promise<AutosaveResult>;
+      chooseDirectory(defaultPath?: string | null): Promise<DirectorySelectionResult>;
+      connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult>;
+      detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult>;
+      disconnectOpenClaw(): Promise<OpenClawActionResult>;
     };
   }
 }
