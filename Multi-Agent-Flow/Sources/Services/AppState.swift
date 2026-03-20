@@ -422,6 +422,9 @@ class AppState: ObservableObject {
     @Published var isAutoSaving: Bool = false
     private var workflowUndoStack: [MAProject] = []
     private var workflowRedoStack: [MAProject] = []
+    private let persistenceQueue = DispatchQueue(label: "MultiAgentFlow.AppState.persistence", qos: .utility)
+    private var latestSilentPersistToken = UUID()
+    private var taskGenerationWorkItem: DispatchWorkItem?
     
     init() {
         loadToolbarPreferences()
@@ -783,14 +786,7 @@ class AppState: ObservableObject {
 
     private func persistCurrentProjectSilently() {
         guard let project = snapshotCurrentProject() else { return }
-
-        do {
-            let destinationURL = currentProjectFileURL ?? projectManager.projectURL(for: project.name)
-            currentProjectFileURL = try projectManager.saveProject(project, to: destinationURL)
-            currentProject = project
-        } catch {
-            print("静默保存项目失败: \(error)")
-        }
+        persistProjectSilently(project)
     }
 
     private func teardownCurrentProjectSession(
@@ -1050,6 +1046,33 @@ class AppState: ObservableObject {
         project.runtimeState.lastUpdated = Date()
         project.updatedAt = Date()
         return project
+    }
+
+    private func persistProjectSilently(_ project: MAProject) {
+        let destinationURL = currentProjectFileURL ?? projectManager.projectURL(for: project.name)
+        let token = UUID()
+        latestSilentPersistToken = token
+
+        persistenceQueue.async { [weak self] in
+            guard let self else { return }
+
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(project)
+                try data.write(to: destinationURL, options: .atomic)
+
+                DispatchQueue.main.async {
+                    guard self.latestSilentPersistToken == token else { return }
+                    self.currentProjectFileURL = destinationURL
+                    self.projectManager.loadProjectList()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    print("静默保存项目失败: \(error)")
+                }
+            }
+        }
     }
 
     private func ensureWorkspaceIndex(
@@ -1321,8 +1344,8 @@ class AppState: ObservableObject {
         currentProject?.updatedAt = Date()
         objectWillChange.send()
         
-        // 当工作流更新时，重新生成任务
-        generateTasksFromWorkflow()
+        // 避免频繁拖拽/编辑时反复同步任务列表。
+        scheduleTaskGeneration()
 
         if !deduplication.removedNodeIDs.isEmpty {
             openClawService.addLog(
@@ -1352,7 +1375,7 @@ class AppState: ObservableObject {
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-        generateTasksFromWorkflow()
+        scheduleTaskGeneration()
 
         if !deduplication.removedNodeIDs.isEmpty {
             openClawService.addLog(
@@ -1376,7 +1399,7 @@ class AppState: ObservableObject {
         currentProject = previous
         canUndoWorkflowChange = !workflowUndoStack.isEmpty
         canRedoWorkflowChange = true
-        generateTasksFromWorkflow()
+        scheduleTaskGeneration()
     }
 
     func redoWorkflowChange() {
@@ -1387,7 +1410,7 @@ class AppState: ObservableObject {
         currentProject = next
         canUndoWorkflowChange = !workflowUndoStack.isEmpty
         canRedoWorkflowChange = !workflowRedoStack.isEmpty
-        generateTasksFromWorkflow()
+        scheduleTaskGeneration()
     }
 
     @discardableResult
@@ -1625,7 +1648,7 @@ class AppState: ObservableObject {
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-        generateTasksFromWorkflow()
+        scheduleTaskGeneration()
     }
 
     func updateNode(_ nodeID: UUID, updates: (inout WorkflowNode) -> Void) {
@@ -2165,6 +2188,16 @@ class AppState: ObservableObject {
         taskManager.generateTasks(from: workflow, projectAgents: agents)
     }
 
+    private func scheduleTaskGeneration(delay: TimeInterval = 0.12) {
+        taskGenerationWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.generateTasksFromWorkflow()
+        }
+        taskGenerationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
     func workflow(for workflowID: UUID?) -> Workflow? {
         guard let project = currentProject else { return nil }
         if let workflowID {
@@ -2655,7 +2688,7 @@ class AppState: ObservableObject {
         }
         objectWillChange.send()
         
-        generateTasksFromWorkflow()
+        scheduleTaskGeneration()
     }
     
     // 显示帮助

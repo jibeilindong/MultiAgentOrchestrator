@@ -1050,15 +1050,19 @@ class OpenClawManager: ObservableObject {
             return
         }
 
-        let stageResult = stageProjectAgentsIntoMirror(project)
-
-        guard let sessionContext, sessionContext.projectID == project.id, isConnected else {
-            let note = mirrorStageMessage(from: stageResult) ?? "项目镜像已更新，待下次连接时应用。"
-            completion(true, note)
-            return
-        }
-
         DispatchQueue.global(qos: .userInitiated).async {
+            let stageResult = self.stageProjectAgentsIntoMirror(project)
+
+            guard let sessionContext = self.sessionContext,
+                  sessionContext.projectID == project.id,
+                  self.isConnected else {
+                let note = self.mirrorStageMessage(from: stageResult) ?? "项目镜像已更新，待下次连接时应用。"
+                DispatchQueue.main.async {
+                    completion(true, note)
+                }
+                return
+            }
+
             do {
                 try self.applySessionMirrorToDeployment()
                 let message = self.mirrorStageMessage(from: stageResult)

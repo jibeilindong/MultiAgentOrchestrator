@@ -696,7 +696,7 @@ struct EditorToolbar: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             WorkflowToolbarGroup(title: "View") {
                 HStack(spacing: 8) {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
@@ -846,24 +846,6 @@ struct EditorToolbar: View {
                         tooltip: "保存"
                     )
                 }
-
-                if appState.isAutoSaving {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                        Text(LocalizedString.saving)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                } else if let lastSave = appState.lastAutoSaveTime {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                        Text("Auto-saved \(lastSave.formatted(date: .omitted, time: .shortened))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
             }
 
             if hasNodeSelection || selectedEdgeID != nil {
@@ -911,6 +893,11 @@ struct EditorToolbar: View {
             }
 
             Spacer(minLength: 0)
+
+            if appState.isAutoSaving || appState.lastAutoSaveTime != nil {
+                toolbarSaveStatusView
+                    .padding(.top, 8)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -954,6 +941,7 @@ struct EditorToolbar: View {
                 .font(.system(size: 13, weight: .semibold))
             Text(title)
                 .font(.system(size: 12.5, weight: .semibold))
+                .lineLimit(1)
             Image(systemName: "chevron.down")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.secondary)
@@ -961,6 +949,7 @@ struct EditorToolbar: View {
         .foregroundColor(Color.primary.opacity(0.82))
         .padding(.horizontal, 12)
         .frame(height: 38)
+        .fixedSize(horizontal: true, vertical: false)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.black.opacity(0.045))
@@ -1086,11 +1075,13 @@ struct EditorToolbar: View {
             if let title {
                 Text(title)
                     .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1)
             }
         }
         .foregroundColor(useAccent ? .white : Color.primary.opacity(0.82))
         .padding(.horizontal, title == nil ? 0 : 14)
         .frame(width: title == nil ? 40 : nil, height: 38)
+        .fixedSize(horizontal: true, vertical: false)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(useAccent ? Color.accentColor : Color.black.opacity(0.045))
@@ -1100,6 +1091,49 @@ struct EditorToolbar: View {
                 .stroke(useAccent ? Color.accentColor.opacity(0.12) : Color.black.opacity(0.06), lineWidth: 1)
         )
         .shadow(color: useAccent ? Color.accentColor.opacity(0.16) : .clear, radius: 6, x: 0, y: 2)
+    }
+
+    @ViewBuilder
+    private var toolbarSaveStatusView: some View {
+        if appState.isAutoSaving {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .scaleEffect(0.65)
+                Text(LocalizedString.saving)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.82))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+            )
+        } else if let lastSave = appState.lastAutoSaveTime {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                Text("Saved \(lastSave.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.82))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+            )
+        }
     }
 
     private func zoomIn() {
@@ -1330,19 +1364,18 @@ private struct WorkflowToolbarGroup<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundColor(Color.primary.opacity(0.38))
                 .tracking(0.8)
-            ScrollView(.horizontal, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 6) {
-                    content
-                }
-            }
+
+            content
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+        .frame(minHeight: 96, alignment: .topLeading)
+        .fixedSize(horizontal: true, vertical: false)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.white.opacity(0.86))
