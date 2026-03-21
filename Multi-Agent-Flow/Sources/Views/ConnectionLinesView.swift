@@ -51,20 +51,51 @@ struct ConnectionLinesView: View {
         let renderData = buildRenderData()
         ZStack {
             ForEach(renderData.edgeLayouts, id: \.edge.id) { layout in
-                let points = layout.points
-
                 if !layout.strokePolylines.isEmpty {
                     OrthogonalConnectionGroupShape(polylines: layout.strokePolylines)
                         .stroke(
-                            layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.92) : layout.baseColor.opacity(0.78)),
-                            style: StrokeStyle(
-                                lineWidth: max(1, lineWidth + (layout.isSelected ? 1 : 0) + (layout.isRecentlyCreated ? 1.5 : 0)),
-                                lineCap: .round,
-                                lineJoin: .round,
-                                dash: layout.edge.requiresApproval ? [8, 4] : []
-                            )
+                            strokeColor(for: layout),
+                            style: strokeStyle(for: layout)
                         )
                 }
+            }
+
+            ForEach(renderData.edgeLayouts, id: \.edge.id) { layout in
+                ForEach(layout.bridgeOverlays) { bridge in
+                    BridgeMaskShape(from: bridge.eraseFrom, to: bridge.eraseTo)
+                        .stroke(
+                            Color(NSColor.windowBackgroundColor).opacity(0.98),
+                            style: StrokeStyle(
+                                lineWidth: max(strokeWidth(for: layout) + 2.5, lineWidth + 4),
+                                lineCap: .round
+                            )
+                        )
+
+                    BridgeArcShape(
+                        from: bridge.arcFrom,
+                        control: bridge.control,
+                        to: bridge.arcTo
+                    )
+                    .stroke(
+                        strokeColor(for: layout),
+                        style: strokeStyle(for: layout)
+                    )
+                }
+            }
+
+            ForEach(previewLineLayouts, id: \.id) { previewLine in
+                Path { path in
+                    path.move(to: previewLine.from)
+                    path.addLine(to: previewLine.to)
+                }
+                .stroke(
+                    Color.accentColor.opacity(0.85),
+                    style: StrokeStyle(lineWidth: max(2, lineWidth + 0.5), lineCap: .round, dash: [10, 6])
+                )
+            }
+
+            ForEach(renderData.edgeLayouts, id: \.edge.id) { layout in
+                let points = layout.points
 
                 ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14))
                     .fill(Color.clear)
@@ -78,14 +109,14 @@ struct ConnectionLinesView: View {
                     if layout.showsForwardArrow {
                         ArrowShape(from: points[points.count - 2], to: points[points.count - 1])
                             .stroke(
-                                layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
+                                arrowColor(for: layout),
                                 style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                             )
                     }
                     if layout.edge.isBidirectional {
                         ArrowShape(from: points[1], to: points[0])
                             .stroke(
-                                layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
+                                arrowColor(for: layout),
                                 style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                             )
                     }
@@ -102,17 +133,6 @@ struct ConnectionLinesView: View {
                     )
                     .position(layout.labelPosition ?? labelPosition(for: layout))
                 }
-            }
-
-            ForEach(previewLineLayouts, id: \.id) { previewLine in
-                Path { path in
-                    path.move(to: previewLine.from)
-                    path.addLine(to: previewLine.to)
-                }
-                .stroke(
-                    Color.accentColor.opacity(0.85),
-                    style: StrokeStyle(lineWidth: max(2, lineWidth + 0.5), lineCap: .round, dash: [10, 6])
-                )
             }
 
             ForEach(renderData.sharedHitLayouts, id: \.id) { sharedHit in
@@ -165,16 +185,44 @@ struct ConnectionLinesView: View {
                 baseColor: edgeBaseColor(layout.edge),
                 displayText: edgeDisplayText(layout.edge),
                 showsForwardArrow: true,
-                labelPosition: nil
+                labelPosition: nil,
+                bridgeOverlays: []
             )
         }
 
         return ConnectionRenderData(
             edgeLayouts: resolvedLabelLayouts(
-                resolvedSharedStrokeLayouts(deduplicatedArrowLayouts(renderEdgeLayouts)),
+                resolvedBridgeLayouts(
+                    resolvedSharedStrokeLayouts(deduplicatedArrowLayouts(renderEdgeLayouts))
+                ),
                 blockedRects: blockedRects
             ),
             sharedHitLayouts: sharedHitLayouts
+        )
+    }
+
+    private func strokeWidth(for layout: EdgeLayout) -> CGFloat {
+        max(1, lineWidth + (layout.isSelected ? 1 : 0) + (layout.isRecentlyCreated ? 1.5 : 0))
+    }
+
+    private func strokeColor(for layout: EdgeLayout) -> Color {
+        layout.isSelected
+            ? Color.accentColor
+            : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.92) : layout.baseColor.opacity(0.78))
+    }
+
+    private func arrowColor(for layout: EdgeLayout) -> Color {
+        layout.isSelected
+            ? Color.accentColor
+            : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9))
+    }
+
+    private func strokeStyle(for layout: EdgeLayout) -> StrokeStyle {
+        StrokeStyle(
+            lineWidth: strokeWidth(for: layout),
+            lineCap: .round,
+            lineJoin: .round,
+            dash: layout.edge.requiresApproval ? [8, 4] : []
         )
     }
 
@@ -215,7 +263,8 @@ struct ConnectionLinesView: View {
                 baseColor: layout.baseColor,
                 displayText: layout.displayText,
                 showsForwardArrow: shouldShowArrow,
-                labelPosition: layout.labelPosition
+                labelPosition: layout.labelPosition,
+                bridgeOverlays: layout.bridgeOverlays
             )
         }
     }
@@ -245,7 +294,83 @@ struct ConnectionLinesView: View {
                 baseColor: layout.baseColor,
                 displayText: layout.displayText,
                 showsForwardArrow: layout.showsForwardArrow,
-                labelPosition: layout.labelPosition
+                labelPosition: layout.labelPosition,
+                bridgeOverlays: layout.bridgeOverlays
+            )
+        }
+    }
+
+    private func resolvedBridgeLayouts(_ layouts: [EdgeLayout]) -> [EdgeLayout] {
+        let segmentRefs = layouts.flatMap { layout in
+            layout.strokePolylines.enumerated().flatMap { _, polyline in
+                strokeSegments(
+                    in: polyline,
+                    edgeID: layout.edge.id
+                )
+            }
+        }
+
+        let verticalSegments = segmentRefs.filter(\.isVertical)
+        let baseBridgeRadius = max(7, lineWidth * 3.6)
+        var overlaysByEdgeID: [UUID: [EdgeBridgeOverlay]] = [:]
+
+        for horizontalSegment in segmentRefs where horizontalSegment.isHorizontal {
+            let crossingCenters = verticalSegments.compactMap { verticalSegment -> CGPoint? in
+                guard verticalSegment.edgeID != horizontalSegment.edgeID else { return nil }
+                return segmentIntersection(horizontal: horizontalSegment, vertical: verticalSegment)
+            }
+            .sorted { lhs, rhs in
+                if abs(lhs.x - rhs.x) > 0.5 {
+                    return lhs.x < rhs.x
+                }
+                return lhs.y < rhs.y
+            }
+
+            guard !crossingCenters.isEmpty else { continue }
+
+            let mergedCenters = mergedBridgeCenters(crossingCenters, minimumSpacing: baseBridgeRadius * 2.4)
+            let directionIsForward = horizontalSegment.start.x <= horizontalSegment.end.x
+            let segmentMinX = min(horizontalSegment.start.x, horizontalSegment.end.x)
+            let segmentMaxX = max(horizontalSegment.start.x, horizontalSegment.end.x)
+
+            for center in mergedCenters {
+                let availableRadius = min(
+                    baseBridgeRadius,
+                    center.x - segmentMinX - 4,
+                    segmentMaxX - center.x - 4
+                )
+                guard availableRadius >= 5 else { continue }
+
+                let leftPoint = CGPoint(x: center.x - availableRadius, y: center.y)
+                let rightPoint = CGPoint(x: center.x + availableRadius, y: center.y)
+                let arcFrom = directionIsForward ? leftPoint : rightPoint
+                let arcTo = directionIsForward ? rightPoint : leftPoint
+
+                overlaysByEdgeID[horizontalSegment.edgeID, default: []].append(
+                    EdgeBridgeOverlay(
+                        id: "\(horizontalSegment.edgeID.uuidString)-\(Int((center.x * 10).rounded()))-\(Int((center.y * 10).rounded()))",
+                        eraseFrom: leftPoint,
+                        eraseTo: rightPoint,
+                        arcFrom: arcFrom,
+                        control: CGPoint(x: center.x, y: center.y - availableRadius * 1.7),
+                        arcTo: arcTo
+                    )
+                )
+            }
+        }
+
+        return layouts.map { layout in
+            EdgeLayout(
+                edge: layout.edge,
+                points: layout.points,
+                strokePolylines: layout.strokePolylines,
+                isSelected: layout.isSelected,
+                isRecentlyCreated: layout.isRecentlyCreated,
+                baseColor: layout.baseColor,
+                displayText: layout.displayText,
+                showsForwardArrow: layout.showsForwardArrow,
+                labelPosition: layout.labelPosition,
+                bridgeOverlays: overlaysByEdgeID[layout.edge.id] ?? []
             )
         }
     }
@@ -286,6 +411,59 @@ struct ConnectionLinesView: View {
         }
 
         return polylines
+    }
+
+    private func strokeSegments(
+        in polyline: [CGPoint],
+        edgeID: UUID
+    ) -> [StrokeSegmentReference] {
+        zip(polyline, polyline.dropFirst()).compactMap { segment in
+            let start = segment.0
+            let end = segment.1
+            let isHorizontal = abs(start.y - end.y) < 0.5
+            let isVertical = abs(start.x - end.x) < 0.5
+            guard isHorizontal || isVertical else { return nil }
+
+            return StrokeSegmentReference(
+                edgeID: edgeID,
+                start: start,
+                end: end
+            )
+        }
+    }
+
+    private func segmentIntersection(
+        horizontal: StrokeSegmentReference,
+        vertical: StrokeSegmentReference
+    ) -> CGPoint? {
+        let x = vertical.start.x
+        let y = horizontal.start.y
+        let horizontalMinX = min(horizontal.start.x, horizontal.end.x) + 0.5
+        let horizontalMaxX = max(horizontal.start.x, horizontal.end.x) - 0.5
+        let verticalMinY = min(vertical.start.y, vertical.end.y) + 0.5
+        let verticalMaxY = max(vertical.start.y, vertical.end.y) - 0.5
+
+        guard x > horizontalMinX,
+              x < horizontalMaxX,
+              y > verticalMinY,
+              y < verticalMaxY else {
+            return nil
+        }
+
+        return CGPoint(x: x, y: y)
+    }
+
+    private func mergedBridgeCenters(_ points: [CGPoint], minimumSpacing: CGFloat) -> [CGPoint] {
+        var result: [CGPoint] = []
+
+        for point in points {
+            if let last = result.last, abs(last.x - point.x) < minimumSpacing {
+                continue
+            }
+            result.append(point)
+        }
+
+        return result
     }
 
     private func cycleSharedSegmentSelection(_ edges: [WorkflowEdge]) {
@@ -391,7 +569,8 @@ struct ConnectionLinesView: View {
                 baseColor: layout.baseColor,
                 displayText: layout.displayText,
                 showsForwardArrow: layout.showsForwardArrow,
-                labelPosition: resolvedPositionsByEdgeID[layout.edge.id]
+                labelPosition: resolvedPositionsByEdgeID[layout.edge.id],
+                bridgeOverlays: layout.bridgeOverlays
             )
         }
     }
@@ -648,11 +827,35 @@ private struct EdgeLayout {
     let displayText: String
     let showsForwardArrow: Bool
     let labelPosition: CGPoint?
+    let bridgeOverlays: [EdgeBridgeOverlay]
 }
 
 private struct ConnectionRenderData {
     let edgeLayouts: [EdgeLayout]
     let sharedHitLayouts: [WorkflowCanvasSharedSegmentHitLayout]
+}
+
+private struct StrokeSegmentReference {
+    let edgeID: UUID
+    let start: CGPoint
+    let end: CGPoint
+
+    var isHorizontal: Bool {
+        abs(start.y - end.y) < 0.5
+    }
+
+    var isVertical: Bool {
+        abs(start.x - end.x) < 0.5
+    }
+}
+
+private struct EdgeBridgeOverlay: Identifiable {
+    let id: String
+    let eraseFrom: CGPoint
+    let eraseTo: CGPoint
+    let arcFrom: CGPoint
+    let control: CGPoint
+    let arcTo: CGPoint
 }
 
 struct OrthogonalConnectionShape: Shape {
@@ -699,6 +902,31 @@ struct ConnectionHitShape: Shape {
                     lineJoin: .round
                 )
             )
+    }
+}
+
+struct BridgeMaskShape: Shape {
+    let from: CGPoint
+    let to: CGPoint
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: from)
+        path.addLine(to: to)
+        return path
+    }
+}
+
+struct BridgeArcShape: Shape {
+    let from: CGPoint
+    let control: CGPoint
+    let to: CGPoint
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: from)
+        path.addQuadCurve(to: to, control: control)
+        return path
     }
 }
 

@@ -104,6 +104,10 @@ struct CanvasContentView: View {
             let canvasEdgeLayouts = edgeGeometry.edgeLayouts
             let sharedEdgeHitLayouts = edgeGeometry.sharedHitLayouts
             let previewLineLayouts = buildPreviewLineLayouts(nodeFramesByID: canvasNodeFramesByID)
+            let visibleCanvasRect = canvasViewportRect(in: geometry)
+            let visibleEdgeLayouts = canvasEdgeLayouts.filter { $0.bounds.intersects(visibleCanvasRect) }
+            let visibleSharedEdgeHitLayouts = sharedEdgeHitLayouts.filter { $0.bounds.intersects(visibleCanvasRect) }
+            let visiblePreviewLineLayouts = previewLineLayouts.filter { previewLineBounds(for: $0).intersects(visibleCanvasRect) }
             let canvasLayer = ZStack {
                 GridBackground()
                     .frame(width: geometry.size.width * 10, height: geometry.size.height * 10)
@@ -117,9 +121,9 @@ struct CanvasContentView: View {
                 }
 
                 ConnectionLinesView(
-                    edgeLayouts: canvasEdgeLayouts,
-                    sharedHitLayouts: sharedEdgeHitLayouts,
-                    previewLineLayouts: previewLineLayouts,
+                    edgeLayouts: visibleEdgeLayouts,
+                    sharedHitLayouts: visibleSharedEdgeHitLayouts,
+                    previewLineLayouts: visiblePreviewLineLayouts,
                     blockedRects: Array(canvasNodeFramesByID.values),
                     lineColor: appState.canvasDisplaySettings.lineColor.color,
                     lineWidth: appState.canvasDisplaySettings.lineWidth,
@@ -254,7 +258,7 @@ struct CanvasContentView: View {
                         legendInteractionFrame.contains(location)
                     },
                     onEdgeHit: { location in
-                        guard let edge = edge(at: location, in: canvasEdgeLayouts) else { return false }
+                        guard let edge = edge(at: location, in: visibleEdgeLayouts) else { return false }
                         suppressCanvasTapClear = true
                         selectedNodeID = nil
                         selectedNodeIDs.removeAll()
@@ -264,7 +268,7 @@ struct CanvasContentView: View {
                         return true
                     },
                     isBlankLocation: { location in
-                        isBlankCanvasLocation(location, geometry: geometry, edgeLayouts: canvasEdgeLayouts)
+                        isBlankCanvasLocation(location, geometry: geometry, edgeLayouts: visibleEdgeLayouts)
                     },
                     currentOffset: { offset },
                     onBlankClick: {
@@ -320,7 +324,7 @@ struct CanvasContentView: View {
                         let distance = hypot(dx, dy)
 
                         if distance < 4 {
-                            if let edge = edge(at: location, in: canvasEdgeLayouts) {
+                            if let edge = edge(at: location, in: visibleEdgeLayouts) {
                                 suppressCanvasTapClear = true
                                 selectedNodeID = nil
                                 selectedNodeIDs.removeAll()
@@ -396,6 +400,10 @@ struct CanvasContentView: View {
             }
         }
         return true
+    }
+
+    private func canvasViewportRect(in geometry: GeometryProxy) -> CGRect {
+        CGRect(origin: .zero, size: geometry.size).insetBy(dx: -240, dy: -240)
     }
 
     private func addWorkflowNodeToCanvas(type: WorkflowNode.NodeType, at location: CGPoint, geometry: GeometryProxy) {
@@ -690,6 +698,15 @@ struct CanvasContentView: View {
                 to: toFrame.center
             )
         }
+    }
+
+    private func previewLineBounds(for layout: WorkflowCanvasPreviewLineLayout) -> CGRect {
+        CGRect(
+            x: min(layout.from.x, layout.to.x),
+            y: min(layout.from.y, layout.to.y),
+            width: max(abs(layout.to.x - layout.from.x), 1),
+            height: max(abs(layout.to.y - layout.from.y), 1)
+        ).insetBy(dx: -24, dy: -24)
     }
 }
 

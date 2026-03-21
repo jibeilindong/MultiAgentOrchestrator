@@ -55,6 +55,7 @@ struct AgentTemplate: Identifiable, Hashable, Codable {
     var applicableScenarios: [String] { meta.applicableScenarios }
     var identity: String { meta.identity }
     var capabilities: [String] { meta.capabilities }
+    var tags: [String] { meta.tags }
     var colorHex: String { meta.colorHex }
     var soulMD: String { AgentTemplateSoulRenderer.render(template: self) }
     var validationIssues: [AgentTemplateValidationIssue] { AgentTemplateValidator.validate(self) }
@@ -74,6 +75,7 @@ struct AgentTemplateMeta: Hashable, Codable {
     var applicableScenarios: [String]
     var identity: String
     var capabilities: [String]
+    var tags: [String]
     var colorHex: String
     var sortOrder: Int
     var isRecommended: Bool
@@ -1381,6 +1383,7 @@ enum AgentTemplateCatalog {
         applicableScenarios: [String],
         identity: String,
         capabilities: [String],
+        tags: [String]? = nil,
         colorHex: String,
         role: String,
         mission: String,
@@ -1402,6 +1405,7 @@ enum AgentTemplateCatalog {
                 applicableScenarios: applicableScenarios,
                 identity: identity,
                 capabilities: capabilities,
+                tags: normalizedItems(tags ?? defaultTags(for: category)),
                 colorHex: colorHex,
                 sortOrder: 0,
                 isRecommended: id == defaultTemplateID
@@ -1493,6 +1497,29 @@ enum AgentTemplateCatalog {
             "结构化执行与交付",
             "边界判断与质量自检"
         ]
+    }
+
+    private static func defaultTags(for category: AgentTemplateCategory) -> [String] {
+        switch category {
+        case .functionalLearningTrainingTesting:
+            return ["能力成长", "训练测试"]
+        case .functionalSupervisionAssessment:
+            return ["监督推进", "质量评估"]
+        case .functionalLogAnalysis:
+            return ["日志诊断", "异常分析"]
+        case .functionalMemoryOptimization:
+            return ["上下文", "记忆整理"]
+        case .functionalHRWorkflow:
+            return ["招聘配置", "流程设计"]
+        case .productionDocument:
+            return ["文档交付", "结构化表达"]
+        case .productionVideo:
+            return ["视频交付", "脚本剪辑"]
+        case .productionCode:
+            return ["代码交付", "工程实现"]
+        case .productionImage:
+            return ["图片交付", "视觉表达"]
+        }
     }
 
     private static func normalizedItems(_ items: [String]) -> [String] {
@@ -1594,6 +1621,9 @@ extension AgentTemplate {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         copy.meta.capabilities = copy.capabilities
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.meta.tags = copy.tags
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         copy.soulSpec.role = copy.soulSpec.role.trimmingCharacters(in: .whitespacesAndNewlines)

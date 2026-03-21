@@ -81,6 +81,7 @@ npm run validate:openclaw-runtime
 详细设计与规则见：
 
 - [OpenClaw SOUL 同步与安全对账](docs/openclaw-soul-sync.md)
+- [Agent 模板库与 SOUL 纯净原则](docs/agent-template-library.md)
 
 ## 阶段验证：高速通信热路径
 
@@ -254,6 +255,7 @@ NOTARY_KEYCHAIN_PROFILE=multi-agent-flow-notary ./scripts/release-macos.sh
 
 - [工作流编辑器指南](Multi-Agent-Flow/Documentation/Workflow-Editor-Guide.md)
 - [OpenClaw SOUL 同步与安全对账](docs/openclaw-soul-sync.md)
+- [Agent 模板库与 SOUL 纯净原则](docs/agent-template-library.md)
 - [导入导出指南](Multi-Agent-Flow/Documentation/Import-Export-Guide.md)
 - [OpenClaw 远程执行指南](Multi-Agent-Flow/Documentation/OpenClaw-Remote-Execution.md)
 - [高速通信热路径阶段报告](Multi-Agent-Flow/Documentation/high-speed-transport-stage-report-2026-03-21.md)

@@ -13,6 +13,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
     var customTemplates: [AgentTemplate]
     var favoriteTemplateIDs: [String]
     var recentTemplateIDs: [String]
+    var orderedTemplateIDs: [String]
     var updatedAt: Date
 
     init(
@@ -20,12 +21,14 @@ struct AgentTemplateLibrarySnapshot: Codable {
         customTemplates: [AgentTemplate] = [],
         favoriteTemplateIDs: [String] = [],
         recentTemplateIDs: [String] = [],
+        orderedTemplateIDs: [String] = [],
         updatedAt: Date = Date()
     ) {
         self.builtInOverrides = builtInOverrides
         self.customTemplates = customTemplates
         self.favoriteTemplateIDs = favoriteTemplateIDs
         self.recentTemplateIDs = recentTemplateIDs
+        self.orderedTemplateIDs = orderedTemplateIDs
         self.updatedAt = updatedAt
     }
 
@@ -34,6 +37,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
         case customTemplates
         case favoriteTemplateIDs
         case recentTemplateIDs
+        case orderedTemplateIDs
         case updatedAt
     }
 
@@ -43,6 +47,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
         customTemplates = try container.decodeIfPresent([AgentTemplate].self, forKey: .customTemplates) ?? []
         favoriteTemplateIDs = try container.decodeIfPresent([String].self, forKey: .favoriteTemplateIDs) ?? []
         recentTemplateIDs = try container.decodeIfPresent([String].self, forKey: .recentTemplateIDs) ?? []
+        orderedTemplateIDs = try container.decodeIfPresent([String].self, forKey: .orderedTemplateIDs) ?? []
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 
@@ -52,6 +57,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
         try container.encode(customTemplates, forKey: .customTemplates)
         try container.encode(favoriteTemplateIDs, forKey: .favoriteTemplateIDs)
         try container.encode(recentTemplateIDs, forKey: .recentTemplateIDs)
+        try container.encode(orderedTemplateIDs, forKey: .orderedTemplateIDs)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
@@ -124,6 +130,10 @@ final class AgentTemplateLibraryStore: ObservableObject {
         snapshot.recentTemplateIDs.compactMap(template(withID:))
     }
 
+    var orderedTemplateIDs: [String] {
+        snapshot.orderedTemplateIDs
+    }
+
     func isBuiltInTemplate(_ templateID: String) -> Bool {
         builtInTemplateIDs.contains(templateID)
     }
@@ -155,6 +165,26 @@ final class AgentTemplateLibraryStore: ObservableObject {
         snapshot.recentTemplateIDs.removeAll { $0 == templateID }
         snapshot.recentTemplateIDs.insert(templateID, at: 0)
         snapshot.recentTemplateIDs = Array(deduplicatedTemplateIDs(snapshot.recentTemplateIDs).prefix(12))
+        persist()
+    }
+
+    func moveTemplate(_ templateID: String, direction: TemplateMoveDirection) {
+        let currentOrder = effectiveOrderedTemplateIDs()
+        guard let index = currentOrder.firstIndex(of: templateID) else { return }
+
+        let targetIndex: Int
+        switch direction {
+        case .up:
+            guard index > 0 else { return }
+            targetIndex = index - 1
+        case .down:
+            guard index < currentOrder.count - 1 else { return }
+            targetIndex = index + 1
+        }
+
+        var updatedOrder = currentOrder
+        updatedOrder.swapAt(index, targetIndex)
+        snapshot.orderedTemplateIDs = updatedOrder
         persist()
     }
 
@@ -288,21 +318,23 @@ final class AgentTemplateLibraryStore: ObservableObject {
     private func mergedTemplates() -> [AgentTemplate] {
         let overridesByID = Dictionary(uniqueKeysWithValues: snapshot.builtInOverrides.map { ($0.id, $0.sanitizedForPersistence()) })
 
-        let builtIns = AgentTemplateCatalog.builtInTemplates.enumerated().map { index, template in
+        let builtIns = AgentTemplateCatalog.builtInTemplates.map { template in
             (overridesByID[template.id] ?? template)
-                .withSortOrder(index)
                 .withRecommended(template.id == AgentTemplateCatalog.defaultTemplateID)
         }
 
-        let customStart = builtIns.count
-        let customs = snapshot.customTemplates.enumerated().map { index, template in
+        let customs = snapshot.customTemplates.map { template in
             template
                 .sanitizedForPersistence()
-                .withSortOrder(customStart + index)
                 .withRecommended(false)
         }
 
-        return builtIns + customs
+        let templatesByID = Dictionary(uniqueKeysWithValues: (builtIns + customs).map { ($0.id, $0) })
+        return effectiveOrderedTemplateIDs()
+            .enumerated()
+            .compactMap { index, id in
+                templatesByID[id]?.withSortOrder(index)
+            }
     }
 
     private var storageURL: URL {
@@ -326,6 +358,12 @@ final class AgentTemplateLibraryStore: ObservableObject {
                 snapshot.recentTemplateIDs.filter { validTemplateIDs.contains($0) }
             ).prefix(12)
         )
+        snapshot.orderedTemplateIDs = deduplicatedTemplateIDs(
+            snapshot.orderedTemplateIDs.filter { validTemplateIDs.contains($0) }
+        )
+
+        let missingTemplateIDs = defaultTemplateIDs().filter { !snapshot.orderedTemplateIDs.contains($0) }
+        snapshot.orderedTemplateIDs.append(contentsOf: missingTemplateIDs)
     }
 
     private func deduplicatedTemplateIDs(_ ids: [String]) -> [String] {
@@ -392,4 +430,17 @@ final class AgentTemplateLibraryStore: ObservableObject {
     private func nextCustomSortOrder() -> Int {
         (snapshot.customTemplates.map { $0.meta.sortOrder }.max() ?? AgentTemplateCatalog.builtInTemplates.count) + 1
     }
+
+    private func defaultTemplateIDs() -> [String] {
+        AgentTemplateCatalog.builtInTemplates.map(\.id) + snapshot.customTemplates.map(\.id)
+    }
+
+    private func effectiveOrderedTemplateIDs() -> [String] {
+        deduplicatedTemplateIDs(snapshot.orderedTemplateIDs + defaultTemplateIDs())
+    }
+}
+
+enum TemplateMoveDirection {
+    case up
+    case down
 }

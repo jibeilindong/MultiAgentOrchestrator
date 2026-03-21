@@ -39,6 +39,50 @@ interface GuideLine {
   position: number;
 }
 
+interface CanvasPoint {
+  x: number;
+  y: number;
+}
+
+interface NodeRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  centerX: number;
+  centerY: number;
+}
+
+interface OrthogonalSegment {
+  start: CanvasPoint;
+  end: CanvasPoint;
+  isHorizontal: boolean;
+  isVertical: boolean;
+}
+
+interface BridgeOverlay {
+  id: string;
+  eraseFrom: CanvasPoint;
+  eraseTo: CanvasPoint;
+  arcFrom: CanvasPoint;
+  control: CanvasPoint;
+  arcTo: CanvasPoint;
+}
+
+interface RoutedEdgeLayout {
+  edgeId: string;
+  points: CanvasPoint[];
+  path: string;
+  bridges: BridgeOverlay[];
+  label: string;
+  labelPosition: CanvasPoint;
+  targetPoint: CanvasPoint;
+}
+
+const EDGE_CLEARANCE = 16;
+const EDGE_BRIDGE_RADIUS = 10;
+const OBSTACLE_PADDING = 16;
+
 function getCanvasBounds(workflow: Workflow) {
   if (workflow.nodes.length === 0) {
     return {
@@ -63,9 +107,356 @@ function centerPoint(node: Workflow["nodes"][number]) {
   };
 }
 
-function edgePath(from: { x: number; y: number }, to: { x: number; y: number }) {
-  const curveOffset = Math.max(60, Math.abs(to.x - from.x) * 0.35);
-  return `M ${from.x} ${from.y} C ${from.x + curveOffset} ${from.y}, ${to.x - curveOffset} ${to.y}, ${to.x} ${to.y}`;
+function nodeRect(node: Workflow["nodes"][number]): NodeRect {
+  return {
+    left: node.position.x,
+    right: node.position.x + NODE_WIDTH,
+    top: node.position.y,
+    bottom: node.position.y + NODE_HEIGHT,
+    centerX: node.position.x + NODE_WIDTH / 2,
+    centerY: node.position.y + NODE_HEIGHT / 2
+  };
+}
+
+function pointKey(point: CanvasPoint) {
+  return `${Math.round(point.x * 10)}:${Math.round(point.y * 10)}`;
+}
+
+function pointsPath(points: CanvasPoint[]) {
+  if (points.length === 0) {
+    return "";
+  }
+  const [first, ...rest] = points;
+  return `M ${first.x} ${first.y}${rest.map((point) => ` L ${point.x} ${point.y}`).join("")}`;
+}
+
+function simplifyPoints(points: CanvasPoint[]) {
+  if (points.length <= 2) {
+    return points;
+  }
+
+  const simplified: CanvasPoint[] = [points[0]];
+  for (const point of points.slice(1)) {
+    while (simplified.length >= 2) {
+      const a = simplified[simplified.length - 2];
+      const b = simplified[simplified.length - 1];
+      const sameX = Math.abs(a.x - b.x) < 0.5 && Math.abs(b.x - point.x) < 0.5;
+      const sameY = Math.abs(a.y - b.y) < 0.5 && Math.abs(b.y - point.y) < 0.5;
+      if (!sameX && !sameY) {
+        break;
+      }
+      simplified.pop();
+    }
+    simplified.push(point);
+  }
+
+  return simplified;
+}
+
+function pathLength(points: CanvasPoint[]) {
+  return points.slice(1).reduce((total, point, index) => {
+    const previous = points[index];
+    return total + Math.hypot(point.x - previous.x, point.y - previous.y);
+  }, 0);
+}
+
+function segmentRect(start: CanvasPoint, end: CanvasPoint) {
+  return {
+    left: Math.min(start.x, end.x) - 1,
+    right: Math.max(start.x, end.x) + 1,
+    top: Math.min(start.y, end.y) - 1,
+    bottom: Math.max(start.y, end.y) + 1
+  };
+}
+
+function intersectsRect(segment: OrthogonalSegment, rect: NodeRect) {
+  const segmentBounds = segmentRect(segment.start, segment.end);
+  return !(
+    segmentBounds.right < rect.left - OBSTACLE_PADDING ||
+    segmentBounds.left > rect.right + OBSTACLE_PADDING ||
+    segmentBounds.bottom < rect.top - OBSTACLE_PADDING ||
+    segmentBounds.top > rect.bottom + OBSTACLE_PADDING
+  );
+}
+
+function orthogonalSegments(points: CanvasPoint[]): OrthogonalSegment[] {
+  return points.slice(1).flatMap((point, index) => {
+    const start = points[index];
+    const isHorizontal = Math.abs(start.y - point.y) < 0.5;
+    const isVertical = Math.abs(start.x - point.x) < 0.5;
+    if (!isHorizontal && !isVertical) {
+      return [];
+    }
+    return [{ start, end: point, isHorizontal, isVertical }];
+  });
+}
+
+function segmentCrosses(a: OrthogonalSegment, b: OrthogonalSegment) {
+  if (a.isHorizontal === b.isHorizontal) {
+    return false;
+  }
+
+  const horizontal = a.isHorizontal ? a : b;
+  const vertical = a.isHorizontal ? b : a;
+  const x = vertical.start.x;
+  const y = horizontal.start.y;
+  const horizontalMinX = Math.min(horizontal.start.x, horizontal.end.x) + 0.5;
+  const horizontalMaxX = Math.max(horizontal.start.x, horizontal.end.x) - 0.5;
+  const verticalMinY = Math.min(vertical.start.y, vertical.end.y) + 0.5;
+  const verticalMaxY = Math.max(vertical.start.y, vertical.end.y) - 0.5;
+
+  return x > horizontalMinX && x < horizontalMaxX && y > verticalMinY && y < verticalMaxY;
+}
+
+function routePath(start: CanvasPoint, end: CanvasPoint, obstacles: NodeRect[], existingPaths: CanvasPoint[][]) {
+  const candidates: CanvasPoint[][] = [];
+  const seen = new Set<string>();
+  const xs = [
+    (start.x + end.x) / 2,
+    start.x - EDGE_CLEARANCE * 2,
+    start.x + EDGE_CLEARANCE * 2,
+    end.x - EDGE_CLEARANCE * 2,
+    end.x + EDGE_CLEARANCE * 2,
+    ...obstacles.flatMap((rect) => [rect.left - OBSTACLE_PADDING - EDGE_CLEARANCE, rect.right + OBSTACLE_PADDING + EDGE_CLEARANCE])
+  ];
+  const ys = [
+    (start.y + end.y) / 2,
+    start.y - EDGE_CLEARANCE * 2,
+    start.y + EDGE_CLEARANCE * 2,
+    end.y - EDGE_CLEARANCE * 2,
+    end.y + EDGE_CLEARANCE * 2,
+    ...obstacles.flatMap((rect) => [rect.top - OBSTACLE_PADDING - EDGE_CLEARANCE, rect.bottom + OBSTACLE_PADDING + EDGE_CLEARANCE])
+  ];
+
+  const append = (rawPoints: CanvasPoint[]) => {
+    const path = simplifyPoints(rawPoints);
+    const key = path.map(pointKey).join("|");
+    if (!seen.has(key)) {
+      seen.add(key);
+      candidates.push(path);
+    }
+  };
+
+  if (Math.abs(start.x - end.x) < 0.5 || Math.abs(start.y - end.y) < 0.5) {
+    append([start, end]);
+  }
+
+  append([start, { x: end.x, y: start.y }, end]);
+  append([start, { x: start.x, y: end.y }, end]);
+
+  for (const x of xs) {
+    append([start, { x, y: start.y }, { x, y: end.y }, end]);
+  }
+  for (const y of ys) {
+    append([start, { x: start.x, y }, { x: end.x, y }, end]);
+  }
+  for (const x of xs) {
+    for (const y of ys) {
+      append([start, { x: start.x, y }, { x, y }, { x, y: end.y }, end]);
+      append([start, { x, y: start.y }, { x, y }, { x: end.x, y }, end]);
+    }
+  }
+
+  const isClear = (points: CanvasPoint[]) => {
+    const segments = orthogonalSegments(points);
+    return segments.every((segment) => obstacles.every((rect) => !intersectsRect(segment, rect)));
+  };
+
+  const candidateScores = candidates.map((points, index) => {
+    const segments = orthogonalSegments(points);
+    const crossings = existingPaths.reduce((total, existingPath) => {
+      const existingSegments = orthogonalSegments(existingPath);
+      return total + existingSegments.reduce((count, existingSegment) => (
+        count + (segments.some((segment) => segmentCrosses(segment, existingSegment)) ? 1 : 0)
+      ), 0);
+    }, 0);
+
+    return {
+      points,
+      index,
+      clear: isClear(points),
+      crossings,
+      bends: Math.max(0, points.length - 2),
+      length: pathLength(points)
+    };
+  });
+
+  candidateScores.sort((a, b) => {
+    if (a.clear !== b.clear) {
+      return a.clear ? -1 : 1;
+    }
+    if (a.crossings !== b.crossings) {
+      return a.crossings - b.crossings;
+    }
+    if (a.bends !== b.bends) {
+      return a.bends - b.bends;
+    }
+    if (Math.abs(a.length - b.length) > 0.5) {
+      return a.length - b.length;
+    }
+    return a.index - b.index;
+  });
+
+  return candidateScores[0]?.points ?? [start, end];
+}
+
+function labelForEdge(edge: Workflow["edges"][number]) {
+  if (edge.label.trim()) {
+    return edge.label.trim();
+  }
+  if (edge.requiresApproval) {
+    return "approval";
+  }
+  if (edge.isBidirectional) {
+    return "two-way";
+  }
+  return "";
+}
+
+function labelPosition(points: CanvasPoint[]) {
+  if (points.length === 0) {
+    return { x: 0, y: 0 };
+  }
+
+  const total = pathLength(points);
+  const halfway = total / 2;
+  let walked = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1];
+    const to = points[index];
+    const segmentLength = Math.hypot(to.x - from.x, to.y - from.y);
+    if (walked + segmentLength >= halfway && segmentLength > 0) {
+      const ratio = (halfway - walked) / segmentLength;
+      return {
+        x: from.x + (to.x - from.x) * ratio,
+        y: from.y + (to.y - from.y) * ratio - 10
+      };
+    }
+    walked += segmentLength;
+  }
+
+  return { x: points[0].x, y: points[0].y - 10 };
+}
+
+function buildBridgeOverlays(layouts: RoutedEdgeLayout[]) {
+  const segmentRefs = layouts.flatMap((layout) =>
+    orthogonalSegments(layout.points).map((segment, segmentIndex) => ({
+      edgeId: layout.edgeId,
+      segmentIndex,
+      ...segment
+    }))
+  );
+
+  const verticalSegments = segmentRefs.filter((segment) => segment.isVertical);
+  const overlaysByEdgeId = new Map<string, BridgeOverlay[]>();
+
+  for (const horizontalSegment of segmentRefs.filter((segment) => segment.isHorizontal)) {
+    const intersections = verticalSegments
+      .filter((verticalSegment) => verticalSegment.edgeId !== horizontalSegment.edgeId)
+      .map((verticalSegment) => {
+        const x = verticalSegment.start.x;
+        const y = horizontalSegment.start.y;
+        return segmentCrosses(horizontalSegment, verticalSegment) ? { x, y } : null;
+      })
+      .filter((point): point is CanvasPoint => point !== null)
+      .sort((a, b) => a.x - b.x);
+
+    const kept: CanvasPoint[] = [];
+    for (const point of intersections) {
+      const last = kept[kept.length - 1];
+      if (last && Math.abs(last.x - point.x) < EDGE_BRIDGE_RADIUS * 2.4) {
+        continue;
+      }
+      kept.push(point);
+    }
+
+    const minX = Math.min(horizontalSegment.start.x, horizontalSegment.end.x);
+    const maxX = Math.max(horizontalSegment.start.x, horizontalSegment.end.x);
+    const forward = horizontalSegment.end.x >= horizontalSegment.start.x;
+
+    for (const point of kept) {
+      const radius = Math.min(EDGE_BRIDGE_RADIUS, point.x - minX - 4, maxX - point.x - 4);
+      if (radius < 5) {
+        continue;
+      }
+
+      const left = { x: point.x - radius, y: point.y };
+      const right = { x: point.x + radius, y: point.y };
+      const bridge: BridgeOverlay = {
+        id: `${horizontalSegment.edgeId}-${horizontalSegment.segmentIndex}-${Math.round(point.x * 10)}-${Math.round(point.y * 10)}`,
+        eraseFrom: left,
+        eraseTo: right,
+        arcFrom: forward ? left : right,
+        control: { x: point.x, y: point.y - radius * 1.8 },
+        arcTo: forward ? right : left
+      };
+
+      overlaysByEdgeId.set(horizontalSegment.edgeId, [...(overlaysByEdgeId.get(horizontalSegment.edgeId) ?? []), bridge]);
+    }
+  }
+
+  return layouts.map((layout) => ({
+    ...layout,
+    bridges: overlaysByEdgeId.get(layout.edgeId) ?? []
+  }));
+}
+
+function buildEdgeLayouts(workflow: Workflow) {
+  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const routed: RoutedEdgeLayout[] = [];
+  const existingPaths: CanvasPoint[][] = [];
+
+  for (const edge of workflow.edges) {
+    const fromNode = nodesById.get(edge.fromNodeID);
+    const toNode = nodesById.get(edge.toNodeID);
+    if (!fromNode || !toNode) {
+      continue;
+    }
+
+    const fromRect = nodeRect(fromNode);
+    const toRect = nodeRect(toNode);
+    const dx = toRect.centerX - fromRect.centerX;
+    const dy = toRect.centerY - fromRect.centerY;
+    const start = Math.abs(dx) >= Math.abs(dy)
+      ? { x: dx >= 0 ? fromRect.right + EDGE_CLEARANCE : fromRect.left - EDGE_CLEARANCE, y: fromRect.centerY }
+      : { x: fromRect.centerX, y: dy >= 0 ? fromRect.bottom + EDGE_CLEARANCE : fromRect.top - EDGE_CLEARANCE };
+    const end = Math.abs(dx) >= Math.abs(dy)
+      ? { x: dx >= 0 ? toRect.left - EDGE_CLEARANCE : toRect.right + EDGE_CLEARANCE, y: toRect.centerY }
+      : { x: toRect.centerX, y: dy >= 0 ? toRect.top - EDGE_CLEARANCE : toRect.bottom + EDGE_CLEARANCE };
+    const obstacles = workflow.nodes
+      .filter((node) => node.id !== fromNode.id && node.id !== toNode.id)
+      .map(nodeRect);
+    const points = routePath(start, end, obstacles, existingPaths);
+    existingPaths.push(points);
+
+    routed.push({
+      edgeId: edge.id,
+      points,
+      path: pointsPath(points),
+      bridges: [],
+      label: labelForEdge(edge),
+      labelPosition: labelPosition(points),
+      targetPoint: end
+    });
+  }
+
+  return buildBridgeOverlays(routed);
+}
+
+function draftEdgePath(node: Workflow["nodes"][number] | undefined, current: CanvasPoint) {
+  if (!node) {
+    return pointsPath([current]);
+  }
+
+  const origin = centerPoint(node);
+  const dx = current.x - origin.x;
+  const dy = current.y - origin.y;
+  const start = Math.abs(dx) >= Math.abs(dy)
+    ? { x: dx >= 0 ? node.position.x + NODE_WIDTH + EDGE_CLEARANCE : node.position.x - EDGE_CLEARANCE, y: origin.y }
+    : { x: origin.x, y: dy >= 0 ? node.position.y + NODE_HEIGHT + EDGE_CLEARANCE : node.position.y - EDGE_CLEARANCE };
+
+  return pointsPath(routePath(start, current, [], []));
 }
 
 function resolveNodeTitle(node: Workflow["nodes"][number], agents: Agent[]) {

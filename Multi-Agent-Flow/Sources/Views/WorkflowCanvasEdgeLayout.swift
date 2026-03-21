@@ -10,6 +10,10 @@ struct WorkflowCanvasEdgeLayout {
     let edge: WorkflowEdge
     let points: [CGPoint]
 
+    var bounds: CGRect {
+        pointsBounds(for: points).insetBy(dx: -24, dy: -24)
+    }
+
     func distance(to location: CGPoint, tolerance: CGFloat) -> CGFloat? {
         guard points.count >= 2 else { return nil }
         var bestDistance: CGFloat?
@@ -42,6 +46,10 @@ struct WorkflowCanvasSharedSegmentHitLayout {
     let id: String
     let points: [CGPoint]
     let edges: [WorkflowEdge]
+
+    var bounds: CGRect {
+        pointsBounds(for: points).insetBy(dx: -24, dy: -24)
+    }
 }
 
 struct WorkflowCanvasPreviewLineLayout: Identifiable {
@@ -63,6 +71,7 @@ struct WorkflowCanvasResolvedEdgeData {
 final class WorkflowCanvasEdgeGeometryCache {
     private var lastTopologySignature: Int?
     private var lastLayoutSignature: Int?
+    private var lastNodeFramesByID: [UUID: CGRect] = [:]
     private var cachedData: WorkflowCanvasResolvedEdgeData = .empty
 
     func resolve(
@@ -73,6 +82,7 @@ final class WorkflowCanvasEdgeGeometryCache {
         guard let workflow else {
             lastTopologySignature = nil
             lastLayoutSignature = nil
+            lastNodeFramesByID = [:]
             cachedData = .empty
             return .empty
         }
@@ -85,6 +95,20 @@ final class WorkflowCanvasEdgeGeometryCache {
 
         if lastLayoutSignature == layoutSignature {
             return cachedData
+        }
+
+        if lastTopologySignature == topologySignature,
+           transientNodeIDs.isEmpty,
+           let translation = WorkflowCanvasEdgeLayoutBuilder.translationDelta(
+                for: workflow,
+                from: lastNodeFramesByID,
+                to: nodeFramesByID
+           ) {
+            let translatedData = cachedData.translated(by: translation)
+            lastLayoutSignature = layoutSignature
+            lastNodeFramesByID = nodeFramesByID
+            cachedData = translatedData
+            return translatedData
         }
 
         let reusableLayoutsByEdgeID: [UUID: WorkflowCanvasEdgeLayout]
@@ -110,6 +134,7 @@ final class WorkflowCanvasEdgeGeometryCache {
 
         lastTopologySignature = topologySignature
         lastLayoutSignature = layoutSignature
+        lastNodeFramesByID = nodeFramesByID
         cachedData = resolvedData
         return resolvedData
     }
@@ -455,6 +480,43 @@ enum WorkflowCanvasEdgeLayoutBuilder {
             }
     }
 
+    static func translationDelta(
+        for workflow: Workflow,
+        from previousNodeFramesByID: [UUID: CGRect],
+        to nodeFramesByID: [UUID: CGRect]
+    ) -> CGSize? {
+        guard !workflow.nodes.isEmpty else { return .zero }
+
+        var translation: CGSize?
+        for node in workflow.nodes {
+            guard let previousFrame = previousNodeFramesByID[node.id],
+                  let currentFrame = nodeFramesByID[node.id] else {
+                return nil
+            }
+
+            guard abs(previousFrame.width - currentFrame.width) < 0.5,
+                  abs(previousFrame.height - currentFrame.height) < 0.5 else {
+                return nil
+            }
+
+            let currentTranslation = CGSize(
+                width: currentFrame.minX - previousFrame.minX,
+                height: currentFrame.minY - previousFrame.minY
+            )
+
+            if let translation {
+                guard abs(translation.width - currentTranslation.width) < 0.5,
+                      abs(translation.height - currentTranslation.height) < 0.5 else {
+                    return nil
+                }
+            } else {
+                translation = currentTranslation
+            }
+        }
+
+        return translation
+    }
+
     private static func sharedAxisSegments(
         for layout: WorkflowCanvasEdgeLayout
     ) -> [SharedAxisSegmentCandidate] {
@@ -794,6 +856,63 @@ enum WorkflowCanvasEdgeLayoutBuilder {
     }
 }
 
+private extension WorkflowCanvasResolvedEdgeData {
+    func translated(by translation: CGSize) -> WorkflowCanvasResolvedEdgeData {
+        guard abs(translation.width) > 0.001 || abs(translation.height) > 0.001 else {
+            return self
+        }
+
+        return WorkflowCanvasResolvedEdgeData(
+            edgeLayouts: edgeLayouts.map { $0.translated(by: translation) },
+            sharedHitLayouts: sharedHitLayouts.map { $0.translated(by: translation) }
+        )
+    }
+}
+
+private extension WorkflowCanvasEdgeLayout {
+    func translated(by translation: CGSize) -> WorkflowCanvasEdgeLayout {
+        WorkflowCanvasEdgeLayout(
+            edge: edge,
+            points: points.map { $0.translated(by: translation) }
+        )
+    }
+}
+
+private extension WorkflowCanvasSharedSegmentHitLayout {
+    func translated(by translation: CGSize) -> WorkflowCanvasSharedSegmentHitLayout {
+        WorkflowCanvasSharedSegmentHitLayout(
+            id: id,
+            points: points.map { $0.translated(by: translation) },
+            edges: edges
+        )
+    }
+}
+
+private struct OrthogonalSegment {
+    let start: CGPoint
+    let end: CGPoint
+
+    var isHorizontal: Bool {
+        abs(start.y - end.y) < 0.5
+    }
+
+    var fixedValue: CGFloat {
+        isHorizontal ? start.y : start.x
+    }
+
+    func strictlyContains(x value: CGFloat) -> Bool {
+        let minimum = min(start.x, end.x) + 0.5
+        let maximum = max(start.x, end.x) - 0.5
+        return value > minimum && value < maximum
+    }
+
+    func strictlyContains(y value: CGFloat) -> Bool {
+        let minimum = min(start.y, end.y) + 0.5
+        let maximum = max(start.y, end.y) - 0.5
+        return value > minimum && value < maximum
+    }
+}
+
 private struct SharedAxisSegmentCandidate {
     let axisKey: String
     let orientation: SharedSegmentOrientation
@@ -919,6 +1038,22 @@ struct WorkflowEdgeRoutePlanner {
         preferredAxis: EdgeRouteAxis,
         laneOffset: CGFloat
     ) -> [CGPoint] {
+        routeCandidates(
+            from: sourceFrame,
+            to: targetFrame,
+            avoiding: obstacles,
+            preferredAxis: preferredAxis,
+            laneOffset: laneOffset
+        ).first ?? []
+    }
+
+    static func routeCandidates(
+        from sourceFrame: CGRect,
+        to targetFrame: CGRect,
+        avoiding obstacles: [CGRect],
+        preferredAxis: EdgeRouteAxis,
+        laneOffset: CGFloat
+    ) -> [[CGPoint]] {
         let sourceCenter = sourceFrame.center
         let targetCenter = targetFrame.center
         let sourceSide = preferredOutgoingSide(for: sourceFrame, toward: targetCenter)
@@ -936,11 +1071,14 @@ struct WorkflowEdgeRoutePlanner {
             preferredAxis: preferredAxis
         )
 
-        for path in candidates where isClear(path, blockedRects: blockedRects) {
-            return simplify(path)
+        let clearCandidates = candidates
+            .filter { isClear($0, blockedRects: blockedRects) }
+            .map { simplify($0) }
+        if !clearCandidates.isEmpty {
+            return clearCandidates
         }
 
-        return simplify(candidates.first ?? [start, end])
+        return [simplify(candidates.first ?? [start, end])]
     }
 
     static func fanoutRoute(
@@ -1088,6 +1226,9 @@ struct WorkflowEdgeRoutePlanner {
         if abs(start.x - end.x) < 0.5 {
             append([start, end], bends: 0)
         }
+        if abs(start.y - end.y) < 0.5 {
+            append([start, end], bends: 0)
+        }
 
         if preferredAxis == .horizontal {
             let midY = (start.y + end.y) / 2
@@ -1095,6 +1236,15 @@ struct WorkflowEdgeRoutePlanner {
                 start,
                 CGPoint(x: start.x, y: midY),
                 CGPoint(x: end.x, y: midY),
+                end
+            ], bends: 2)
+        }
+        if preferredAxis == .vertical {
+            let midX = (start.x + end.x) / 2
+            append([
+                start,
+                CGPoint(x: midX, y: start.y),
+                CGPoint(x: midX, y: end.y),
                 end
             ], bends: 2)
         }
@@ -1115,6 +1265,22 @@ struct WorkflowEdgeRoutePlanner {
             ], bends: 2)
         }
 
+        let corridorXs = corridorXs(
+            from: start,
+            to: end,
+            blockedRects: blockedRects,
+            laneOffset: laneOffset,
+            preferredAxis: preferredAxis
+        )
+        for x in corridorXs {
+            append([
+                start,
+                CGPoint(x: x, y: start.y),
+                CGPoint(x: x, y: end.y),
+                end
+            ], bends: 2)
+        }
+
         let outerXs = outerCorridorXs(for: blockedRects, laneOffset: laneOffset)
         let yPairs = orderedYPairs(from: corridorYs)
         for outerX in outerXs {
@@ -1125,6 +1291,21 @@ struct WorkflowEdgeRoutePlanner {
                     CGPoint(x: outerX, y: pair.0),
                     CGPoint(x: outerX, y: pair.1),
                     CGPoint(x: end.x, y: pair.1),
+                    end
+                ], bends: 4)
+            }
+        }
+
+        let outerYs = outerCorridorYs(for: blockedRects, laneOffset: laneOffset)
+        let xPairs = orderedXPairs(from: corridorXs)
+        for outerY in outerYs {
+            for pair in xPairs {
+                append([
+                    start,
+                    CGPoint(x: pair.0, y: start.y),
+                    CGPoint(x: pair.0, y: outerY),
+                    CGPoint(x: pair.1, y: outerY),
+                    CGPoint(x: pair.1, y: end.y),
                     end
                 ], bends: 4)
             }
@@ -1161,6 +1342,29 @@ struct WorkflowEdgeRoutePlanner {
         return uniqueSorted(values)
     }
 
+    private static func corridorXs(
+        from start: CGPoint,
+        to end: CGPoint,
+        blockedRects: [CGRect],
+        laneOffset: CGFloat,
+        preferredAxis: EdgeRouteAxis
+    ) -> [CGFloat] {
+        var values: [CGFloat] = [
+            (start.x + end.x) / 2 + laneOffset
+        ]
+
+        for rect in blockedRects {
+            values.append(rect.minX - candidateSpacing)
+            values.append(rect.maxX + candidateSpacing)
+        }
+
+        let anchorBias = preferredAxis == .vertical ? candidateSpacing : candidateSpacing * 0.5
+        values.append(min(start.x, end.x) - candidateSpacing - anchorBias)
+        values.append(max(start.x, end.x) + candidateSpacing + anchorBias)
+
+        return uniqueSorted(values)
+    }
+
     private static func outerCorridorXs(for blockedRects: [CGRect], laneOffset: CGFloat) -> [CGFloat] {
         guard !blockedRects.isEmpty else { return [laneOffset == 0 ? 0 : laneOffset] }
 
@@ -1172,7 +1376,36 @@ struct WorkflowEdgeRoutePlanner {
         ])
     }
 
+    private static func outerCorridorYs(for blockedRects: [CGRect], laneOffset: CGFloat) -> [CGFloat] {
+        guard !blockedRects.isEmpty else { return [laneOffset == 0 ? 0 : laneOffset] }
+
+        let minY = blockedRects.map(\.minY).min() ?? 0
+        let maxY = blockedRects.map(\.maxY).max() ?? 0
+        return uniqueSorted([
+            minY - candidateSpacing * 2 - abs(laneOffset),
+            maxY + candidateSpacing * 2 + abs(laneOffset)
+        ])
+    }
+
     private static func orderedYPairs(from values: [CGFloat]) -> [(CGFloat, CGFloat)] {
+        guard values.count > 1 else { return [] }
+        var pairs: [(CGFloat, CGFloat)] = []
+        for lhs in values {
+            for rhs in values where abs(lhs - rhs) > 0.5 {
+                pairs.append((lhs, rhs))
+            }
+        }
+        return pairs.sorted { lhs, rhs in
+            let lhsMid = (lhs.0 + lhs.1) / 2
+            let rhsMid = (rhs.0 + rhs.1) / 2
+            let lhsSpan = abs(lhs.0 - lhs.1)
+            let rhsSpan = abs(rhs.0 - rhs.1)
+            if lhsSpan != rhsSpan { return lhsSpan < rhsSpan }
+            return abs(lhsMid) < abs(rhsMid)
+        }
+    }
+
+    private static func orderedXPairs(from values: [CGFloat]) -> [(CGFloat, CGFloat)] {
         guard values.count > 1 else { return [] }
         var pairs: [(CGFloat, CGFloat)] = []
         for lhs in values {
@@ -1310,4 +1543,34 @@ extension CGPoint {
     func distance(to other: CGPoint) -> CGFloat {
         hypot(x - other.x, y - other.y)
     }
+
+    func translated(by translation: CGSize) -> CGPoint {
+        CGPoint(
+            x: x + translation.width,
+            y: y + translation.height
+        )
+    }
+}
+
+private func pointsBounds(for points: [CGPoint]) -> CGRect {
+    guard let firstPoint = points.first else { return .null }
+
+    var minX = firstPoint.x
+    var maxX = firstPoint.x
+    var minY = firstPoint.y
+    var maxY = firstPoint.y
+
+    for point in points.dropFirst() {
+        minX = min(minX, point.x)
+        maxX = max(maxX, point.x)
+        minY = min(minY, point.y)
+        maxY = max(maxY, point.y)
+    }
+
+    return CGRect(
+        x: minX,
+        y: minY,
+        width: max(maxX - minX, 1),
+        height: max(maxY - minY, 1)
+    )
 }

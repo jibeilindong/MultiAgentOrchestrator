@@ -814,6 +814,7 @@ struct TemplatePickerPopover: View {
         || template.summary.localizedCaseInsensitiveContains(trimmedSearchText)
         || template.identity.localizedCaseInsensitiveContains(trimmedSearchText)
         || template.taxonomyPath.localizedCaseInsensitiveContains(trimmedSearchText)
+        || template.tags.joined(separator: " ").localizedCaseInsensitiveContains(trimmedSearchText)
     }
 
     @ViewBuilder
@@ -863,6 +864,12 @@ struct TemplatePickerPopover: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
+                if !template.tags.isEmpty {
+                    Text("标签：\(template.tags.joined(separator: " · "))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -981,6 +988,7 @@ private struct TemplateEditorDraft {
     var applicableScenariosText: String
     var identity: String
     var capabilitiesText: String
+    var tagsText: String
     var colorHex: String
     var role: String
     var mission: String
@@ -1001,6 +1009,7 @@ private struct TemplateEditorDraft {
         applicableScenariosText = template.applicableScenarios.joined(separator: "\n")
         identity = template.identity
         capabilitiesText = template.capabilities.joined(separator: "\n")
+        tagsText = template.tags.joined(separator: "\n")
         colorHex = template.colorHex
         role = template.soulSpec.role
         mission = template.soulSpec.mission
@@ -1022,6 +1031,7 @@ private struct TemplateEditorDraft {
         updated.meta.applicableScenarios = splitLines(applicableScenariosText)
         updated.meta.identity = identity.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.meta.capabilities = splitLines(capabilitiesText)
+        updated.meta.tags = splitLines(tagsText)
         updated.meta.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.soulSpec.role = role.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.soulSpec.mission = mission.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1057,6 +1067,7 @@ struct TemplateLibraryManagerSheet: View {
     @State private var searchText: String = ""
     @State private var sourceFilter: TemplateLibrarySourceFilter = .all
     @State private var familyFilter: AgentTemplateFamily?
+    @State private var tagFilter: String?
 
     init(selectedTemplateID: Binding<String>) {
         self._selectedTemplateID = selectedTemplateID
@@ -1065,6 +1076,10 @@ struct TemplateLibraryManagerSheet: View {
     private var selectedTemplate: AgentTemplate? {
         guard let selectedTemplateManagerID else { return nil }
         return templateLibrary.template(withID: selectedTemplateManagerID)
+    }
+
+    private var markdownContentType: UTType {
+        UTType(filenameExtension: "md") ?? .plainText
     }
 
     private var sortedTemplates: [AgentTemplate] {
@@ -1088,6 +1103,7 @@ struct TemplateLibraryManagerSheet: View {
                 || template.identity.localizedCaseInsensitiveContains(trimmedSearchText)
                 || template.taxonomyPath.localizedCaseInsensitiveContains(trimmedSearchText)
                 || template.capabilities.joined(separator: " ").localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.tags.joined(separator: " ").localizedCaseInsensitiveContains(trimmedSearchText)
 
             let matchesSource: Bool
             switch sourceFilter {
@@ -1102,8 +1118,18 @@ struct TemplateLibraryManagerSheet: View {
             }
 
             let matchesFamily = familyFilter == nil || template.family == familyFilter
-            return matchesSearch && matchesSource && matchesFamily
+            let matchesTag = tagFilter == nil || template.tags.contains(tagFilter ?? "")
+            return matchesSearch && matchesSource && matchesFamily && matchesTag
         }
+    }
+
+    private var availableTags: [String] {
+        Array(Set(sortedTemplates.flatMap(\.tags))).sorted()
+    }
+
+    private var selectedTemplateSortIndex: Int? {
+        guard let selectedTemplateManagerID else { return nil }
+        return sortedTemplates.firstIndex(where: { $0.id == selectedTemplateManagerID })
     }
 
     private var groupedTemplates: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
@@ -1128,15 +1154,38 @@ struct TemplateLibraryManagerSheet: View {
                 Text("模板库管理")
                     .font(.headline)
                 Spacer()
-                Button("导出筛选结果") {
-                    exportFilteredTemplates()
+                Menu("导出 JSON") {
+                    Button("导出筛选结果") {
+                        exportFilteredTemplates()
+                    }
+                    .disabled(filteredTemplates.isEmpty || filteredTemplates.count == sortedTemplates.count)
+
+                    Button("导出全部") {
+                        exportAllTemplates()
+                    }
+                    .disabled(sortedTemplates.isEmpty)
                 }
-                .buttonStyle(.bordered)
-                .disabled(filteredTemplates.isEmpty || filteredTemplates.count == sortedTemplates.count)
-                Button("导出全部") {
-                    exportAllTemplates()
+                .menuStyle(.borderlessButton)
+
+                Menu("导出 SOUL") {
+                    Button("导出当前模板") {
+                        guard let selectedTemplate else { return }
+                        exportSoulDocument(for: selectedTemplate)
+                    }
+                    .disabled(selectedTemplate == nil)
+
+                    Button("导出筛选结果") {
+                        exportFilteredSoulDocuments()
+                    }
+                    .disabled(filteredTemplates.isEmpty)
+
+                    Button("导出全部") {
+                        exportAllSoulDocuments()
+                    }
+                    .disabled(sortedTemplates.isEmpty)
                 }
-                .buttonStyle(.bordered)
+                .menuStyle(.borderlessButton)
+
                 Picker("", selection: $mode) {
                     ForEach(TemplateManagerMode.allCases) { item in
                         Text(item.rawValue).tag(item)
@@ -1230,6 +1279,20 @@ struct TemplateLibraryManagerSheet: View {
                 .pickerStyle(.menu)
 
                 Picker(
+                    "标签",
+                    selection: Binding(
+                        get: { tagFilter },
+                        set: { tagFilter = $0 }
+                    )
+                ) {
+                    Text("全部标签").tag(Optional<String>.none)
+                    ForEach(availableTags, id: \.self) { tag in
+                        Text(tag).tag(Optional(tag))
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker(
                     "家族",
                     selection: Binding(
                         get: { familyFilter },
@@ -1255,11 +1318,12 @@ struct TemplateLibraryManagerSheet: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Spacer()
-                if !trimmedSearchText.isEmpty || sourceFilter != .all || familyFilter != nil {
+                if !trimmedSearchText.isEmpty || sourceFilter != .all || familyFilter != nil || tagFilter != nil {
                     Button("清除筛选") {
                         searchText = ""
                         sourceFilter = .all
                         familyFilter = nil
+                        tagFilter = nil
                     }
                     .buttonStyle(.borderless)
                     .font(.caption)
@@ -1327,11 +1391,28 @@ struct TemplateLibraryManagerSheet: View {
                         }
                         .buttonStyle(.bordered)
 
+                        Button("导出 SOUL.md") {
+                            exportSoulDocument(for: template)
+                        }
+                        .buttonStyle(.bordered)
+
                         Button(templateLibrary.isFavorite(template.id) ? "取消收藏" : "加入收藏") {
                             templateLibrary.toggleFavorite(template.id)
                             feedbackMessage = templateLibrary.isFavorite(template.id) ? "已加入收藏模板。" : "已取消收藏模板。"
                         }
                         .buttonStyle(.bordered)
+
+                        Button("上移") {
+                            templateLibrary.moveTemplate(template.id, direction: .up)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled((selectedTemplateSortIndex ?? 0) == 0)
+
+                        Button("下移") {
+                            templateLibrary.moveTemplate(template.id, direction: .down)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled((selectedTemplateSortIndex ?? (sortedTemplates.count - 1)) >= sortedTemplates.count - 1)
 
                         if templateLibrary.isBuiltInTemplate(template.id) {
                             Button("重置内置覆盖") {
@@ -1447,6 +1528,21 @@ struct TemplateLibraryManagerSheet: View {
         }
     }
 
+    private func exportSoulDocument(for template: AgentTemplate) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [markdownContentType]
+        panel.nameFieldStringValue = "\(exportFileBaseName(for: template))-SOUL.md"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try template.soulMD.write(to: url, atomically: true, encoding: .utf8)
+                feedbackMessage = "SOUL.md 已导出到 \(url.lastPathComponent)。"
+            } catch {
+                feedbackMessage = "导出 SOUL.md 失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     @ViewBuilder
     private func templateListRow(_ template: AgentTemplate) -> some View {
         let issues = template.validationIssues
@@ -1498,6 +1594,13 @@ struct TemplateLibraryManagerSheet: View {
                         .foregroundColor(.green)
                 }
             }
+
+            if !template.tags.isEmpty {
+                Text("标签：\(template.tags.joined(separator: " · "))")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
         }
         .tag(template.id)
     }
@@ -1535,6 +1638,59 @@ struct TemplateLibraryManagerSheet: View {
             }
         }
     }
+
+    private func exportFilteredSoulDocuments() {
+        exportSoulDocuments(filteredTemplates, directoryName: "filtered-soul-documents")
+    }
+
+    private func exportAllSoulDocuments() {
+        exportSoulDocuments(sortedTemplates, directoryName: "all-soul-documents")
+    }
+
+    private func exportSoulDocuments(_ templates: [AgentTemplate], directoryName: String) {
+        guard !templates.isEmpty else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择导出目录"
+        panel.message = "为纯净的 SOUL.md 文件选择一个导出目录。"
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        panel.begin { response in
+            guard response == .OK, let directoryURL = panel.url else { return }
+
+            let exportDirectory = directoryURL.appendingPathComponent(directoryName, isDirectory: true)
+
+            do {
+                try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+                for template in templates {
+                    let fileURL = exportDirectory
+                        .appendingPathComponent("\(exportFileBaseName(for: template))-SOUL")
+                        .appendingPathExtension("md")
+                    try template.soulMD.write(to: fileURL, atomically: true, encoding: .utf8)
+                }
+                feedbackMessage = "已导出 \(templates.count) 份 SOUL.md 到 \(exportDirectory.lastPathComponent)。"
+            } catch {
+                feedbackMessage = "批量导出 SOUL.md 失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportFileBaseName(for template: AgentTemplate) -> String {
+        let preferredName = template.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = preferredName.isEmpty ? template.id : preferredName
+        let invalidCharacters = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let cleaned = base
+            .components(separatedBy: invalidCharacters)
+            .joined(separator: "-")
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "--", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-. "))
+
+        return cleaned.isEmpty ? template.id.replacingOccurrences(of: ".", with: "-") : cleaned
+    }
 }
 
 private struct TemplateDraftEditor: View {
@@ -1560,6 +1716,7 @@ private struct TemplateDraftEditor: View {
                     multilineField("摘要", text: $draft.summary, height: 70)
                     multilineField("适用场景", text: $draft.applicableScenariosText, height: 80)
                     multilineField("能力标签", text: $draft.capabilitiesText, height: 80)
+                    multilineField("模板标签", text: $draft.tagsText, height: 80)
                 }
             }
 
