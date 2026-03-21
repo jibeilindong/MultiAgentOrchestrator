@@ -42,6 +42,343 @@ private enum AgentTemplateLibraryStoreError: LocalizedError {
     }
 }
 
+enum TemplateAssetImportIssueLevel: String, Hashable {
+    case info
+    case warning
+}
+
+struct TemplateAssetImportIssue: Identifiable, Hashable {
+    let level: TemplateAssetImportIssueLevel
+    let title: String
+    let detail: String
+
+    var id: String {
+        "\(level.rawValue)|\(title)|\(detail)"
+    }
+}
+
+struct TemplateAssetImportPreviewEntry: Identifiable, Hashable {
+    let sourceDirectoryURL: URL
+    let sourceDocument: TemplateAssetDocument
+    let importedTemplate: AgentTemplate
+    let importedLineage: TemplateLineage
+    let issues: [TemplateAssetImportIssue]
+
+    var id: String {
+        sourceDirectoryURL.path
+    }
+
+    var sourceTemplateID: String {
+        sourceDocument.id.isEmpty ? sourceDirectoryURL.lastPathComponent : sourceDocument.id
+    }
+
+    var sourceName: String {
+        sourceDocument.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? importedTemplate.name
+            : sourceDocument.displayName
+    }
+
+    var sourceIdentity: String {
+        sourceDocument.meta.identity
+    }
+
+    var warningCount: Int {
+        issues.filter { $0.level == .warning }.count
+    }
+}
+
+struct TemplateAssetImportPreviewReport: Identifiable, Hashable {
+    let resolvedDirectoryURLs: [URL]
+    let entries: [TemplateAssetImportPreviewEntry]
+
+    var id: String {
+        resolvedDirectoryURLs.map(\.path).joined(separator: "|")
+    }
+
+    var warningCount: Int {
+        entries.reduce(0) { $0 + $1.warningCount }
+    }
+}
+
+enum TemplateAssetImportConflictOrigin {
+    case existingLibrary
+    case selectedAssets
+}
+
+struct TemplateAssetReservationResult {
+    let originalValue: String
+    let resolvedValue: String
+    let conflictOrigin: TemplateAssetImportConflictOrigin?
+
+    var changed: Bool {
+        originalValue != resolvedValue
+    }
+}
+
+struct TemplateAssetImportPlanner {
+    let existingTemplateIDs: Set<String>
+    let existingTemplateNames: Set<String>
+    let existingIdentities: Set<String>
+    let existingSourceTemplateIDs: Set<String>
+
+    private var reservedTemplateIDs: Set<String>
+    private var reservedTemplateNames: Set<String>
+    private var reservedIdentities: Set<String>
+    private var importedSourceTemplateIDs: Set<String> = []
+
+    init(
+        existingTemplateIDs: Set<String>,
+        existingTemplateNames: Set<String>,
+        existingIdentities: Set<String>,
+        existingSourceTemplateIDs: Set<String>
+    ) {
+        self.existingTemplateIDs = existingTemplateIDs
+        self.existingTemplateNames = existingTemplateNames
+        self.existingIdentities = existingIdentities
+        self.existingSourceTemplateIDs = existingSourceTemplateIDs
+        self.reservedTemplateIDs = existingTemplateIDs
+        self.reservedTemplateNames = existingTemplateNames
+        self.reservedIdentities = existingIdentities
+    }
+
+    mutating func buildPreviewEntry(
+        sourceDirectoryURL: URL,
+        sourceDocument: TemplateAssetDocument,
+        sortOrder: Int,
+        importHash: String?
+    ) -> TemplateAssetImportPreviewEntry {
+        let sourceTemplate = sourceDocument.asTemplate().sanitizedForPersistence()
+        let sourceTemplateID = sourceDocument.id.isEmpty ? sourceDirectoryURL.lastPathComponent : sourceDocument.id
+
+        var issues: [TemplateAssetImportIssue] = [
+            TemplateAssetImportIssue(
+                level: .info,
+                title: "独立导入",
+                detail: "导入后会生成新的独立模板资产，与源目录和原模板都不再关联。"
+            )
+        ]
+
+        if existingSourceTemplateIDs.contains(sourceTemplateID) || importedSourceTemplateIDs.contains(sourceTemplateID) {
+            issues.append(
+                TemplateAssetImportIssue(
+                    level: .warning,
+                    title: "检测到同源模板",
+                    detail: "库中或本次导入中已出现源模板 ID“\(sourceTemplateID)”，本次导入将保留为新的独立模板资产，不会覆盖已有模板。"
+                )
+            )
+        }
+        importedSourceTemplateIDs.insert(sourceTemplateID)
+
+        let preferredTemplateID = "custom.\(Self.normalizedTemplateIDBase(from: sourceTemplateID))"
+        let templateIDReservation = reserveTemplateID(
+            preferredValue: preferredTemplateID,
+            existingValues: existingTemplateIDs,
+            reservedValues: &reservedTemplateIDs
+        )
+        if templateIDReservation.changed {
+            issues.append(
+                TemplateAssetImportIssue(
+                    level: .warning,
+                    title: "模板 ID 已调整",
+                    detail: conflictDetail(
+                        fieldName: "模板 ID",
+                        original: templateIDReservation.originalValue,
+                        resolved: templateIDReservation.resolvedValue,
+                        origin: templateIDReservation.conflictOrigin
+                    )
+                )
+            )
+        }
+
+        let preferredName = sourceTemplate.name.isEmpty ? sourceDirectoryURL.lastPathComponent : sourceTemplate.name
+        let nameReservation = reserveTemplateName(
+            preferredValue: preferredName,
+            existingValues: existingTemplateNames,
+            reservedValues: &reservedTemplateNames
+        )
+        if nameReservation.changed {
+            issues.append(
+                TemplateAssetImportIssue(
+                    level: .warning,
+                    title: "模板名称已调整",
+                    detail: conflictDetail(
+                        fieldName: "模板名称",
+                        original: nameReservation.originalValue,
+                        resolved: nameReservation.resolvedValue,
+                        origin: nameReservation.conflictOrigin
+                    )
+                )
+            )
+        }
+
+        let preferredIdentity = sourceTemplate.identity.isEmpty ? nameReservation.resolvedValue : sourceTemplate.identity
+        let identityReservation = reserveTemplateIdentity(
+            preferredValue: preferredIdentity,
+            existingValues: existingIdentities,
+            reservedValues: &reservedIdentities
+        )
+        if identityReservation.changed {
+            issues.append(
+                TemplateAssetImportIssue(
+                    level: .warning,
+                    title: "身份标识已调整",
+                    detail: conflictDetail(
+                        fieldName: "identity",
+                        original: identityReservation.originalValue,
+                        resolved: identityReservation.resolvedValue,
+                        origin: identityReservation.conflictOrigin
+                    )
+                )
+            )
+        }
+
+        var importedTemplate = sourceTemplate
+        importedTemplate.meta.id = templateIDReservation.resolvedValue
+        importedTemplate.meta.name = nameReservation.resolvedValue
+        importedTemplate.meta.identity = identityReservation.resolvedValue
+        importedTemplate.meta.isRecommended = false
+        importedTemplate.meta.sortOrder = sortOrder
+
+        let importedLineage = TemplateLineage(
+            sourceScope: .importedAssetDirectory,
+            sourceTemplateID: sourceTemplateID.isEmpty ? nil : sourceTemplateID,
+            sourceRevision: sourceDocument.revision,
+            importedFromPath: sourceDirectoryURL.path,
+            importHash: importHash,
+            createdReason: "Imported from a standardized template asset directory."
+        )
+
+        return TemplateAssetImportPreviewEntry(
+            sourceDirectoryURL: sourceDirectoryURL,
+            sourceDocument: sourceDocument,
+            importedTemplate: importedTemplate,
+            importedLineage: importedLineage,
+            issues: issues
+        )
+    }
+
+    private static func normalizedTemplateIDBase(from value: String) -> String {
+        let lowered = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+
+        let normalized = lowered.unicodeScalars.map { scalar -> String in
+            if CharacterSet.alphanumerics.contains(scalar) || scalar == "." || scalar == "-" {
+                return String(scalar)
+            }
+            return "-"
+        }
+        .joined()
+            .replacingOccurrences(of: "--", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+
+        return normalized.isEmpty ? "template" : normalized
+    }
+
+    private func reserveTemplateID(
+        preferredValue: String,
+        existingValues: Set<String>,
+        reservedValues: inout Set<String>
+    ) -> TemplateAssetReservationResult {
+        let originalValue = preferredValue
+        var candidate = preferredValue
+        var counter = 2
+        var conflictOrigin: TemplateAssetImportConflictOrigin?
+
+        while reservedValues.contains(candidate) {
+            if conflictOrigin == nil {
+                conflictOrigin = existingValues.contains(candidate) ? .existingLibrary : .selectedAssets
+            }
+            candidate = "\(preferredValue)-\(counter)"
+            counter += 1
+        }
+
+        reservedValues.insert(candidate)
+        return TemplateAssetReservationResult(
+            originalValue: originalValue,
+            resolvedValue: candidate,
+            conflictOrigin: conflictOrigin
+        )
+    }
+
+    private func reserveTemplateName(
+        preferredValue: String,
+        existingValues: Set<String>,
+        reservedValues: inout Set<String>
+    ) -> TemplateAssetReservationResult {
+        let trimmed = preferredValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let originalValue = trimmed.isEmpty ? "Imported Template" : trimmed
+        var candidate = originalValue
+        var counter = 2
+        var conflictOrigin: TemplateAssetImportConflictOrigin?
+
+        while reservedValues.contains(candidate) {
+            if conflictOrigin == nil {
+                conflictOrigin = existingValues.contains(candidate) ? .existingLibrary : .selectedAssets
+            }
+            candidate = "\(originalValue) \(counter)"
+            counter += 1
+        }
+
+        reservedValues.insert(candidate)
+        return TemplateAssetReservationResult(
+            originalValue: originalValue,
+            resolvedValue: candidate,
+            conflictOrigin: conflictOrigin
+        )
+    }
+
+    private func reserveTemplateIdentity(
+        preferredValue: String,
+        existingValues: Set<String>,
+        reservedValues: inout Set<String>
+    ) -> TemplateAssetReservationResult {
+        let cleaned = preferredValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "-")
+        let originalValue = cleaned.isEmpty ? "custom-agent" : cleaned
+        var candidate = originalValue
+        var counter = 2
+        var conflictOrigin: TemplateAssetImportConflictOrigin?
+
+        while reservedValues.contains(candidate) {
+            if conflictOrigin == nil {
+                conflictOrigin = existingValues.contains(candidate) ? .existingLibrary : .selectedAssets
+            }
+            candidate = "\(originalValue)-\(counter)"
+            counter += 1
+        }
+
+        reservedValues.insert(candidate)
+        return TemplateAssetReservationResult(
+            originalValue: originalValue,
+            resolvedValue: candidate,
+            conflictOrigin: conflictOrigin
+        )
+    }
+
+    private func conflictDetail(
+        fieldName: String,
+        original: String,
+        resolved: String,
+        origin: TemplateAssetImportConflictOrigin?
+    ) -> String {
+        let originText: String
+        switch origin {
+        case .existingLibrary:
+            originText = "与现有模板冲突"
+        case .selectedAssets:
+            originText = "与本次导入中的其他模板冲突"
+        case .none:
+            originText = "为保持唯一性"
+        }
+
+        return "\(originText)，\(fieldName) 将从“\(original)”调整为“\(resolved)”。"
+    }
+}
+
 final class AgentTemplateLibraryStore: ObservableObject {
     static let shared = AgentTemplateLibraryStore()
 
@@ -277,60 +614,49 @@ final class AgentTemplateLibraryStore: ObservableObject {
     }
 
     func templateAssetDirectoryURL(for templateID: String) -> URL? {
-        guard customTemplateDocuments[templateID] != nil else { return nil }
-        let assetURL = templateFileSystem.templateRootDirectory(for: templateID, under: appSupportRootDirectory)
-        guard FileManager.default.fileExists(atPath: assetURL.path) else { return nil }
-        return assetURL
+        if customTemplateDocuments[templateID] != nil {
+            let assetURL = templateFileSystem.templateRootDirectory(for: templateID, under: appSupportRootDirectory)
+            guard FileManager.default.fileExists(atPath: assetURL.path) else { return nil }
+            return assetURL
+        }
+
+        if isBuiltInTemplate(templateID) {
+            return BuiltInTemplateAssetCatalog.shared.templateAssetDirectoryURL(for: templateID)
+        }
+
+        return nil
     }
 
-    func importTemplateAssets(from urls: [URL]) throws -> [AgentTemplate] {
+    func preflightImportTemplateAssets(from urls: [URL]) throws -> TemplateAssetImportPreviewReport {
         let assetDirectories = templateFileSystem.resolvedTemplateAssetDirectories(from: urls)
         guard !assetDirectories.isEmpty else {
             throw AgentTemplateLibraryStoreError.noTemplateAssetDirectoriesFound
         }
 
-        return try assetDirectories.map { directoryURL in
-            guard let importedDocument = templateFileSystem.loadTemplateDocument(at: directoryURL) else {
-                throw AgentTemplateLibraryStoreError.unreadableTemplateAsset(directoryURL)
-            }
+        return TemplateAssetImportPreviewReport(
+            resolvedDirectoryURLs: assetDirectories,
+            entries: try buildTemplateAssetImportPreviewEntries(for: assetDirectories)
+        )
+    }
 
-            let importedTemplate = importedDocument.asTemplate().sanitizedForPersistence()
-            let originalTemplateID = importedDocument.id.isEmpty ? directoryURL.lastPathComponent : importedDocument.id
-            let importHash = (
-                try? Data(
-                    contentsOf: directoryURL.appendingPathComponent("template.json", isDirectory: false)
-                )
-            ).map { sha256(data: $0) }
+    func importTemplateAssets(from urls: [URL]) throws -> [AgentTemplate] {
+        let preview = try preflightImportTemplateAssets(from: urls)
+        return try importTemplateAssets(using: preview)
+    }
 
-            var copy = importedTemplate
-            copy.meta.id = uniqueCustomTemplateID(
-                base: "custom.\(normalizedTemplateIDBase(from: originalTemplateID))"
-            )
-            copy.meta.name = uniqueTemplateName(
-                base: copy.name.isEmpty ? directoryURL.lastPathComponent : copy.name
-            )
-            copy.meta.identity = uniqueIdentity(
-                base: copy.identity.isEmpty ? copy.name : copy.identity
-            )
-            copy.meta.isRecommended = false
-            copy.meta.sortOrder = nextCustomSortOrder()
-
+    func importTemplateAssets(using preview: TemplateAssetImportPreviewReport) throws -> [AgentTemplate] {
+        try preview.entries.map { entry in
             _ = try templateFileSystem.copyTemplateAssetDirectory(
-                from: directoryURL,
-                toTemplateID: copy.id,
+                from: entry.sourceDirectoryURL,
+                toTemplateID: entry.importedTemplate.id,
                 under: appSupportRootDirectory
             )
 
-            let lineage = TemplateLineage(
-                sourceScope: .importedAssetDirectory,
-                sourceTemplateID: originalTemplateID.isEmpty ? nil : originalTemplateID,
-                sourceRevision: importedDocument.revision,
-                importedFromPath: directoryURL.path,
-                importHash: importHash,
-                createdReason: "Imported from a standardized template asset directory."
+            return persistCustomTemplate(
+                entry.importedTemplate,
+                existingDocument: nil,
+                lineage: entry.importedLineage
             )
-
-            return persistCustomTemplate(copy, existingDocument: nil, lineage: lineage)
         }
     }
 
@@ -437,6 +763,7 @@ final class AgentTemplateLibraryStore: ObservableObject {
     }
 
     private func load() {
+        BuiltInTemplateAssetCatalog.shared.synchronize(seedTemplates: AgentTemplateCatalog.bundledSeedTemplates)
         try? templateFileSystem.ensureBaseDirectories(under: appSupportRootDirectory)
         preferences = templateFileSystem.loadPreferences(under: appSupportRootDirectory) ?? TemplateLibraryPreferences()
         manifest = templateFileSystem.loadManifest(under: appSupportRootDirectory) ?? TemplateLibraryManifest()
@@ -711,6 +1038,43 @@ final class AgentTemplateLibraryStore: ObservableObject {
         template.validationIssues.contains(where: { $0.severity == .error }) ? .draft : .published
     }
 
+    private func buildTemplateAssetImportPreviewEntries(
+        for assetDirectories: [URL]
+    ) throws -> [TemplateAssetImportPreviewEntry] {
+        let existingTemplateIDs = Set(defaultTemplateIDs())
+        let existingTemplateNames = Set(templates.map(\.name))
+        let existingIdentities = Set(templates.map(\.identity))
+            .union(customTemplateDocuments.values.map(\.meta.identity))
+        let existingSourceTemplateIDs = Set(customTemplateLineages.values.compactMap(\.sourceTemplateID))
+            .union(existingTemplateIDs)
+
+        let baseSortOrder = nextCustomSortOrder()
+        var planner = TemplateAssetImportPlanner(
+            existingTemplateIDs: existingTemplateIDs,
+            existingTemplateNames: existingTemplateNames,
+            existingIdentities: existingIdentities,
+            existingSourceTemplateIDs: existingSourceTemplateIDs
+        )
+
+        return try assetDirectories.enumerated().map { index, directoryURL in
+            guard let importedDocument = templateFileSystem.loadTemplateDocument(at: directoryURL) else {
+                throw AgentTemplateLibraryStoreError.unreadableTemplateAsset(directoryURL)
+            }
+
+            let importHash = (
+                try? Data(
+                    contentsOf: directoryURL.appendingPathComponent("template.json", isDirectory: false)
+                )
+            ).map { sha256(data: $0) }
+            return planner.buildPreviewEntry(
+                sourceDirectoryURL: directoryURL,
+                sourceDocument: importedDocument,
+                sortOrder: baseSortOrder + index,
+                importHash: importHash
+            )
+        }
+    }
+
     private func updatedLineage(
         _ lineage: TemplateLineage,
         sourceTemplateID: String?,
@@ -925,6 +1289,9 @@ final class AgentTemplateLibraryStore: ObservableObject {
 
         if let customAssetURL = templateAssetDirectoryURL(for: templateID),
            FileManager.default.fileExists(atPath: customAssetURL.path) {
+            if isBuiltInTemplate(templateID) {
+                return (BuiltInTemplateAssetCatalog.shared.cacheRootDirectory, nil)
+            }
             return (appSupportRootDirectory, nil)
         }
 

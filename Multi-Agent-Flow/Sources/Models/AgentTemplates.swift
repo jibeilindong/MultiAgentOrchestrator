@@ -702,7 +702,7 @@ enum AgentTemplateAutoFixer {
 enum AgentTemplateCatalog {
     static let defaultTemplateID = "ops.hr-workflow-architect"
 
-    static let builtInTemplates: [AgentTemplate] = [
+    static let bundledSeedTemplates: [AgentTemplate] = [
         template(
             id: "work.document-writing",
             category: .productionDocument,
@@ -1804,6 +1804,11 @@ enum AgentTemplateCatalog {
             ]
         )
     ]
+
+    static var builtInTemplates: [AgentTemplate] {
+        let loadedTemplates = BuiltInTemplateAssetCatalog.shared.loadTemplates()
+        return loadedTemplates.isEmpty ? bundledSeedTemplates : loadedTemplates
+    }
 
     static var templates: [AgentTemplate] {
         AgentTemplateLibraryStore.shared.templates

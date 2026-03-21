@@ -238,9 +238,24 @@ struct OpsCenterNodeInvestigation: Identifiable {
     let tasks: [OpsCenterTaskDigest]
 }
 
+struct OpsCenterRouteInvestigation: Identifiable {
+    var id: UUID { edge.id }
+    let workflowName: String
+    let edge: OpsCenterEdgeSummary
+    let upstreamNode: OpsCenterNodeSummary?
+    let downstreamNode: OpsCenterNodeSummary?
+    let relatedSessions: [OpsCenterSessionSummary]
+    let events: [OpsCenterEventDigest]
+    let dispatches: [OpsCenterDispatchDigest]
+    let receipts: [OpsCenterReceiptDigest]
+    let messages: [OpsCenterMessageDigest]
+    let tasks: [OpsCenterTaskDigest]
+}
+
 enum OpsCenterInvestigationTarget: Identifiable {
     case session(OpsCenterSessionInvestigation)
     case node(OpsCenterNodeInvestigation)
+    case route(OpsCenterRouteInvestigation)
 
     var id: String {
         switch self {
@@ -248,6 +263,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "session-\(investigation.id)"
         case let .node(investigation):
             return "node-\(investigation.id.uuidString)"
+        case let .route(investigation):
+            return "route-\(investigation.id.uuidString)"
         }
     }
 
@@ -257,6 +274,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return investigation.session.sessionID
         case let .node(investigation):
             return investigation.node.title
+        case let .route(investigation):
+            return "\(investigation.edge.fromTitle) -> \(investigation.edge.toTitle)"
         }
     }
 
@@ -266,6 +285,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "Session Investigation"
         case let .node(investigation):
             return "\(investigation.workflowName) • Node Investigation"
+        case let .route(investigation):
+            return "\(investigation.workflowName) • Route Investigation"
         }
     }
 }
@@ -628,6 +649,104 @@ enum OpsCenterSnapshotBuilder {
         )
     }
 
+    static func buildRouteInvestigation(
+        project: MAProject?,
+        workflow: Workflow?,
+        edgeID: UUID,
+        tasks: [Task],
+        messages: [Message],
+        executionResults: [ExecutionResult]
+    ) -> OpsCenterRouteInvestigation? {
+        guard let project,
+              let workflow,
+              let edge = workflow.edges.first(where: { $0.id == edgeID }),
+              let upstreamWorkflowNode = workflow.nodes.first(where: { $0.id == edge.fromNodeID }),
+              let downstreamWorkflowNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) else {
+            return nil
+        }
+
+        let snapshot = buildLiveRunSnapshot(
+            project: project,
+            workflow: workflow,
+            tasks: tasks,
+            messages: messages,
+            executionResults: executionResults
+        )
+        let edgeSummary = snapshot.edgeSummaries.first(where: { $0.id == edgeID }) ?? OpsCenterEdgeSummary(
+            id: edge.id,
+            title: edge.label.isEmpty ? "Path" : edge.label,
+            fromTitle: upstreamWorkflowNode.title,
+            toTitle: downstreamWorkflowNode.title,
+            activityCount: 0,
+            requiresApproval: edge.requiresApproval
+        )
+
+        let allDispatches = allDispatches(from: project.runtimeState)
+        let directRouteDispatches = routeDispatches(
+            for: edge,
+            workflow: workflow,
+            in: allDispatches
+        )
+        let routeSessionIDs = Set(
+            directRouteDispatches.compactMap { normalizedSessionID($0.sessionKey) }
+        )
+
+        let endpointNodeIDs: Set<UUID> = [upstreamWorkflowNode.id, downstreamWorkflowNode.id]
+        let relatedReceipts = executionResults.filter { receipt in
+            guard endpointNodeIDs.contains(receipt.nodeID) else { return false }
+            guard let sessionID = normalizedSessionID(receipt.sessionID) else {
+                return routeSessionIDs.isEmpty
+            }
+            return routeSessionIDs.isEmpty || routeSessionIDs.contains(sessionID)
+        }
+
+        let relatedEvents = project.runtimeState.runtimeEvents.filter { event in
+            let eventNodeID = uuid(from: event.nodeId)
+            let sessionID = normalizedSessionID(event.sessionKey)
+            return endpointNodeIDs.contains(eventNodeID ?? UUID())
+                || (sessionID != nil && routeSessionIDs.contains(sessionID!))
+        }
+
+        let relatedMessages = messages
+            .filter { matchesWorkflow($0.metadata, workflowID: workflow.id) }
+            .filter { message in
+                guard let sessionID = normalizedSessionID(message.metadata["workbenchSessionID"]) else {
+                    return false
+                }
+                return routeSessionIDs.contains(sessionID)
+            }
+
+        let relatedTasks = tasks
+            .filter { task in
+                if let sessionID = normalizedSessionID(task.metadata["workbenchSessionID"]),
+                   routeSessionIDs.contains(sessionID) {
+                    return matchesWorkflow(task.metadata, workflowID: workflow.id)
+                }
+                return false
+            }
+
+        let relatedSessions = snapshot.sessionSummaries.filter { routeSessionIDs.contains($0.sessionID) }
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0.name) })
+        let nodeTitlesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0.title) })
+
+        return OpsCenterRouteInvestigation(
+            workflowName: workflow.name,
+            edge: edgeSummary,
+            upstreamNode: snapshot.nodeSummaries.first(where: { $0.id == upstreamWorkflowNode.id }),
+            downstreamNode: snapshot.nodeSummaries.first(where: { $0.id == downstreamWorkflowNode.id }),
+            relatedSessions: relatedSessions,
+            events: buildEventDigests(relatedEvents),
+            dispatches: buildDispatchDigests(directRouteDispatches, agentNamesByID: agentNamesByID),
+            receipts: buildReceiptDigests(
+                relatedReceipts,
+                nodeTitlesByID: nodeTitlesByID,
+                agentNamesByID: agentNamesByID
+            ),
+            messages: buildMessageDigests(relatedMessages, agentNamesByID: agentNamesByID),
+            tasks: buildTaskDigests(relatedTasks, agentNamesByID: agentNamesByID)
+        )
+    }
+
     private static func resolveStatus(
         node: WorkflowNode,
         relatedDispatches: [RuntimeDispatchRecord],
@@ -670,6 +789,42 @@ enum OpsCenterSnapshotBuilder {
             normalizedUUIDString(record.nodeID) == node.id.uuidString.lowercased()
                 || (node.agentID != nil && normalizedUUIDString(record.targetAgentID) == node.agentID?.uuidString.lowercased())
                 || (node.agentID != nil && normalizedUUIDString(record.sourceAgentID) == node.agentID?.uuidString.lowercased())
+        }
+    }
+
+    private static func routeDispatches(
+        for edge: WorkflowEdge,
+        workflow: Workflow,
+        in dispatches: [RuntimeDispatchRecord]
+    ) -> [RuntimeDispatchRecord] {
+        guard let upstreamNode = workflow.nodes.first(where: { $0.id == edge.fromNodeID }),
+              let downstreamNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) else {
+            return []
+        }
+
+        let upstreamAgentID = upstreamNode.agentID?.uuidString.lowercased()
+        let downstreamAgentID = downstreamNode.agentID?.uuidString.lowercased()
+        let upstreamNodeID = upstreamNode.id.uuidString.lowercased()
+        let downstreamNodeID = downstreamNode.id.uuidString.lowercased()
+
+        return dispatches.filter { record in
+            let sourceMatches = upstreamAgentID != nil && normalizedUUIDString(record.sourceAgentID) == upstreamAgentID
+            let targetMatches = downstreamAgentID != nil && normalizedUUIDString(record.targetAgentID) == downstreamAgentID
+            let nodeMatches = normalizedUUIDString(record.nodeID) == downstreamNodeID
+
+            if sourceMatches && targetMatches {
+                return true
+            }
+
+            if sourceMatches && nodeMatches {
+                return true
+            }
+
+            if normalizedUUIDString(record.nodeID) == upstreamNodeID && targetMatches {
+                return true
+            }
+
+            return false
         }
     }
 

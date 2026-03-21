@@ -1546,6 +1546,7 @@ class OpenClawService: ObservableObject {
         callOpenClawAgent(
             instruction: instruction,
             agentIdentifier: targetAgentID,
+            runtimeAgent: agent,
             sessionID: sessionID,
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: trackActiveRemoteRun,
@@ -2455,6 +2456,7 @@ class OpenClawService: ObservableObject {
     private func callOpenClawAgent(
         instruction: String,
         agentIdentifier: String,
+        runtimeAgent: Agent? = nil,
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel? = nil,
         trackActiveRemoteRun: Bool = false,
@@ -2520,8 +2522,24 @@ class OpenClawService: ObservableObject {
                 self.addLog(.info, pluginCleanup.message)
             }
 
+            var preferredRuntimeIdentifier = agentIdentifier
+            if connectionConfig.deploymentKind == .local, let runtimeAgent {
+                let registration = manager.ensureLocalRuntimeAgentRegistration(
+                    for: runtimeAgent,
+                    using: connectionConfig
+                )
+                if !registration.identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    preferredRuntimeIdentifier = registration.identifier
+                }
+                if !registration.success {
+                    self.addLog(.warning, registration.message)
+                } else if !registration.message.isEmpty {
+                    self.addLog(.info, registration.message)
+                }
+            }
+
             let resolvedAgent = self.resolveRuntimeAgentIdentifier(
-                preferred: agentIdentifier,
+                preferred: preferredRuntimeIdentifier,
                 manager: manager,
                 config: connectionConfig
             )
@@ -2562,13 +2580,22 @@ class OpenClawService: ObservableObject {
                     )
                 }
 
+                // In local deployment, CLI fallback must stay on the local runtime even if
+                // the gateway layer is currently marked as connected. Otherwise `openclaw agent`
+                // falls back to the remote gateway path and surfaces misleading token errors.
                 let shouldUseLocal = serviceConfig.useLocal
-                    && !manager.isConnected
                     && connectionConfig.deploymentKind == .local
                 let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let effectiveSessionID = (normalizedSessionID?.isEmpty == false) ? normalizedSessionID : nil
                 if shouldUseLocal {
+                    let authFallback = manager.ensureLocalDefaultAgentAuthFallback(using: connectionConfig)
+                    if !authFallback.success {
+                        self.addLog(.warning, authFallback.message)
+                    } else if !authFallback.message.isEmpty {
+                        self.addLog(.info, authFallback.message)
+                    }
                     args.append("--local")
+                    self.addLog(.info, "CLI fallback is using local mode for agent \(resolvedAgent.identifier).")
                 }
 
                 args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])

@@ -136,12 +136,15 @@ struct OpsCenterDashboardView: View {
             OpsCenterWorkflowMapDashboardView(
                 workflow: selectedWorkflow,
                 projections: projections,
-                onSelectNode: openNodeInvestigation
+                onSelectNode: openNodeInvestigation,
+                onSelectRoute: openRouteInvestigation
             )
         case .history:
             OpsCenterHistoryDashboardView(
                 workflow: selectedWorkflow,
-                projections: projections
+                projections: projections,
+                onSelectSession: openSessionInvestigation,
+                onSelectNode: openNodeInvestigation
             )
         }
     }
@@ -301,6 +304,36 @@ struct OpsCenterDashboardView: View {
         }
     }
 
+    private func openRouteInvestigation(_ edgeID: UUID) {
+        let liveInvestigation = OpsCenterSnapshotBuilder.buildRouteInvestigation(
+            project: appState.currentProject,
+            workflow: selectedWorkflow,
+            edgeID: edgeID,
+            tasks: appState.taskManager.tasks,
+            messages: appState.messageManager.messages,
+            executionResults: appState.openClawService.executionResults
+        )
+
+        let archiveInvestigation: OpsCenterRouteInvestigation?
+        if let projectID = appState.currentProject?.id {
+            archiveInvestigation = OpsCenterArchiveStore.loadRouteInvestigation(
+                projectID: projectID,
+                workflowID: selectedWorkflow?.id,
+                edgeID: edgeID,
+                projections: projections
+            )
+        } else {
+            archiveInvestigation = nil
+        }
+
+        if let investigation = mergedRouteInvestigation(
+            live: liveInvestigation,
+            archive: archiveInvestigation
+        ) {
+            selectedInvestigation = .route(investigation)
+        }
+    }
+
     private func refreshProjectionsIfNeeded(force: Bool = false) {
         guard let projectID = appState.currentProject?.id else {
             projections = nil
@@ -391,6 +424,33 @@ struct OpsCenterDashboardView: View {
         }
     }
 
+    private func mergedRouteInvestigation(
+        live: OpsCenterRouteInvestigation?,
+        archive: OpsCenterRouteInvestigation?
+    ) -> OpsCenterRouteInvestigation? {
+        switch (live, archive) {
+        case let (live?, archive?):
+            return OpsCenterRouteInvestigation(
+                workflowName: preferredText(live.workflowName, archive.workflowName) ?? live.workflowName,
+                edge: mergedEdgeSummaries([live.edge], [archive.edge]).first ?? live.edge,
+                upstreamNode: mergedOptionalNodeSummary(live.upstreamNode, archive.upstreamNode),
+                downstreamNode: mergedOptionalNodeSummary(live.downstreamNode, archive.downstreamNode),
+                relatedSessions: mergedSessionSummaries(live.relatedSessions, archive.relatedSessions),
+                events: mergedEventDigests(live.events, archive.events),
+                dispatches: mergedDispatchDigests(live.dispatches, archive.dispatches),
+                receipts: mergedReceiptDigests(live.receipts, archive.receipts),
+                messages: mergedMessageDigests(live.messages, archive.messages),
+                tasks: mergedTaskDigests(live.tasks, archive.tasks)
+            )
+        case let (live?, nil):
+            return live
+        case let (nil, archive?):
+            return archive
+        case (nil, nil):
+            return nil
+        }
+    }
+
     private func mergedSessionSummary(
         _ lhs: OpsCenterSessionSummary,
         _ rhs: OpsCenterSessionSummary
@@ -426,6 +486,22 @@ struct OpsCenterDashboardView: View {
             latestDetail: preferredText(lhs.latestDetail, rhs.latestDetail),
             averageDuration: lhs.averageDuration ?? rhs.averageDuration
         )
+    }
+
+    private func mergedOptionalNodeSummary(
+        _ lhs: OpsCenterNodeSummary?,
+        _ rhs: OpsCenterNodeSummary?
+    ) -> OpsCenterNodeSummary? {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?):
+            return mergedNodeSummary(lhs, rhs)
+        case let (lhs?, nil):
+            return lhs
+        case let (nil, rhs?):
+            return rhs
+        case (nil, nil):
+            return nil
+        }
     }
 
     private func mergedEdgeSummaries(
@@ -954,6 +1030,7 @@ private struct OpsCenterWorkflowMapDashboardView: View {
     let workflow: Workflow?
     let projections: OpsCenterProjectionBundle?
     let onSelectNode: (UUID) -> Void
+    let onSelectRoute: (UUID) -> Void
 
     @State private var selectedLayer: OpsCenterMapLayer = .state
 
@@ -969,6 +1046,98 @@ private struct OpsCenterWorkflowMapDashboardView: View {
 
     private var effectiveNodeSummaries: [OpsCenterNodeSummary] {
         snapshot.nodeSummaries.isEmpty ? (projections?.nodeSummaries(for: workflow?.id) ?? []) : snapshot.nodeSummaries
+    }
+
+    private var effectiveEdgeSummaries: [OpsCenterEdgeSummary] {
+        if !snapshot.edgeSummaries.isEmpty {
+            return snapshot.edgeSummaries
+        }
+
+        guard let workflow else { return [] }
+        let projectionNodesByID = Dictionary(
+            uniqueKeysWithValues: (projections?.nodesRuntime?.nodes ?? [])
+                .filter { $0.workflowID == workflow.id }
+                .map { ($0.nodeID, $0) }
+        )
+
+        return workflow.edges.map { edge in
+            let fromEntry = projectionNodesByID[edge.fromNodeID]
+            let toEntry = projectionNodesByID[edge.toNodeID]
+            let activityCount = Set(fromEntry?.relatedSessionIDs ?? [])
+                .intersection(Set(toEntry?.relatedSessionIDs ?? []))
+                .count
+
+            return OpsCenterEdgeSummary(
+                id: edge.id,
+                title: edge.label.isEmpty ? "Path" : edge.label,
+                fromTitle: workflow.nodes.first(where: { $0.id == edge.fromNodeID })?.title ?? "Unknown",
+                toTitle: workflow.nodes.first(where: { $0.id == edge.toNodeID })?.title ?? "Unknown",
+                activityCount: activityCount,
+                requiresApproval: edge.requiresApproval
+            )
+        }
+    }
+
+    private var scopedNodeIDs: Set<UUID> {
+        if let workflow {
+            return Set(workflow.nodes.map(\.id))
+        }
+        return Set(appState.currentProject?.workflows.flatMap(\.nodes).map(\.id) ?? [])
+    }
+
+    private var nodeSummaryByID: [UUID: OpsCenterNodeSummary] {
+        Dictionary(uniqueKeysWithValues: effectiveNodeSummaries.map { ($0.id, $0) })
+    }
+
+    private var historyAnomaliesByNodeID: [UUID: [OpsCenterProjectionAnomalyEntry]] {
+        let items = (projections?.anomalies?.anomalies ?? []).filter { entry in
+            guard let nodeID = entry.nodeID else { return false }
+            return scopedNodeIDs.contains(nodeID)
+        }
+        var grouped: [UUID: [OpsCenterProjectionAnomalyEntry]] = [:]
+        for item in items {
+            guard let nodeID = item.nodeID else { continue }
+            grouped[nodeID, default: []].append(item)
+        }
+        return grouped
+    }
+
+    private var latestProjectionTraceByNodeID: [UUID: OpsCenterProjectionTraceEntry] {
+        let traces = (projections?.traces?.traces ?? [])
+            .filter { scopedNodeIDs.contains($0.nodeID) }
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.completedAt ?? lhs.startedAt
+                let rhsDate = rhs.completedAt ?? rhs.startedAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.executionID.uuidString > rhs.executionID.uuidString
+            }
+
+        var latestByNodeID: [UUID: OpsCenterProjectionTraceEntry] = [:]
+        for trace in traces where latestByNodeID[trace.nodeID] == nil {
+            latestByNodeID[trace.nodeID] = trace
+        }
+        return latestByNodeID
+    }
+
+    private var latestLiveResultByNodeID: [UUID: ExecutionResult] {
+        let results = appState.openClawService.executionResults
+            .filter { scopedNodeIDs.contains($0.nodeID) }
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.completedAt ?? lhs.startedAt
+                let rhsDate = rhs.completedAt ?? rhs.startedAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+
+        var latestByNodeID: [UUID: ExecutionResult] = [:]
+        for result in results where latestByNodeID[result.nodeID] == nil {
+            latestByNodeID[result.nodeID] = result
+        }
+        return latestByNodeID
     }
 
     var body: some View {
@@ -1028,12 +1197,26 @@ private struct OpsCenterWorkflowMapDashboardView: View {
                                         if let averageDuration = node.averageDuration {
                                             opsStatusPill(title: opsDurationText(averageDuration), color: .secondary)
                                         }
+                                        let anomalyCount = historyAnomalyCount(for: node)
+                                        if anomalyCount > 0 {
+                                            opsStatusPill(
+                                                title: "\(anomalyCount) anomalies",
+                                                color: anomalyCount > 2 ? .red : .orange
+                                            )
+                                        }
                                     }
 
                                     Text(layerDetail(for: node))
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                         .lineLimit(3)
+
+                                    if let historyTraceSummary = historyTraceSummary(for: node), !historyTraceSummary.isEmpty {
+                                        Text(historyTraceSummary)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(2)
+                                    }
 
                                     HStack {
                                         Text("In \(node.incomingEdgeCount)")
@@ -1056,26 +1239,72 @@ private struct OpsCenterWorkflowMapDashboardView: View {
 
                     sectionTitle("Edge Activity")
                     VStack(spacing: 8) {
-                        ForEach(snapshot.edgeSummaries) { edge in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(edge.fromTitle) -> \(edge.toTitle)")
-                                        .font(.caption.weight(.medium))
-                                    Text(edge.title)
-                                        .font(.caption2)
+                        ForEach(effectiveEdgeSummaries) { edge in
+                            let routeAnomalyCount = historyAnomalyCount(forEdge: edge)
+                            let routeSharedSessionCount = sharedSessionCount(forEdge: edge)
+                            let downstreamStatus = downstreamNodeStatus(forEdge: edge)
+
+                            Button {
+                                onSelectRoute(edge.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("\(edge.fromTitle) -> \(edge.toTitle)")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundColor(.primary)
+                                            Text(edge.title)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        if let downstreamStatus {
+                                            opsStatusPill(title: downstreamStatus.title, color: downstreamStatus.color)
+                                        }
+                                    }
+
+                                    HStack(spacing: 8) {
+                                        opsStatusPill(
+                                            title: "Flow \(edge.activityCount)",
+                                            color: edge.activityCount > 0 ? .blue : .secondary
+                                        )
+
+                                        if routeSharedSessionCount > 0 {
+                                            opsStatusPill(
+                                                title: "Shared \(routeSharedSessionCount)",
+                                                color: routeSharedSessionCount > 1 ? .orange : .secondary
+                                            )
+                                        }
+
+                                        if routeAnomalyCount > 0 {
+                                            opsStatusPill(
+                                                title: "\(routeAnomalyCount) anomalies",
+                                                color: routeAnomalyCount > 2 ? .red : .orange
+                                            )
+                                        }
+
+                                        if edge.requiresApproval {
+                                            opsStatusPill(title: "Approval", color: .yellow)
+                                        }
+                                    }
+
+                                    Text(routeDetailText(for: edge))
+                                        .font(.caption)
                                         .foregroundColor(.secondary)
+                                        .lineLimit(3)
+
+                                    if let routeTraceSummary = routeTraceSummary(for: edge), !routeTraceSummary.isEmpty {
+                                        Text(routeTraceSummary)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(2)
+                                    }
                                 }
-                                Spacer()
-                                Text("Flow \(edge.activityCount)")
-                                    .font(.caption)
-                                    .foregroundColor(edge.activityCount > 0 ? .blue : .secondary)
-                                if edge.requiresApproval {
-                                    opsStatusPill(title: "Approval", color: .yellow)
-                                }
+                                .padding(10)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
-                            .padding(10)
-                            .background(Color(.controlBackgroundColor))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -1104,6 +1333,101 @@ private struct OpsCenterWorkflowMapDashboardView: View {
             return "File scope overlays will be projected here as workflow-derived file access data is migrated into the new Ops Center surfaces."
         }
     }
+
+    private func historyAnomalyCount(for node: OpsCenterNodeSummary) -> Int {
+        historyAnomaliesByNodeID[node.id]?.count ?? 0
+    }
+
+    private func historyTraceSummary(for node: OpsCenterNodeSummary) -> String? {
+        if let trace = latestProjectionTraceByNodeID[node.id] {
+            let statusText = trace.status.rawValue
+            let summary = compactWorkflowMapPreview(trace.previewText, limit: 110)
+            return "Recent trace: \(statusText) • \(summary)"
+        }
+
+        if let result = latestLiveResultByNodeID[node.id] {
+            let summary = compactWorkflowMapPreview(result.summaryText, limit: 110)
+            return "Live trace: \(result.status.rawValue) • \(summary)"
+        }
+
+        return nil
+    }
+
+    private func compactWorkflowMapPreview(_ text: String, limit: Int) -> String {
+        let singleLine = text
+            .components(separatedBy: .newlines)
+            .joined(separator: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !singleLine.isEmpty else { return "No retained trace summary." }
+        guard singleLine.count > limit else { return singleLine }
+        return "\(singleLine.prefix(limit))..."
+    }
+
+    private func historyAnomalyCount(forEdge edge: OpsCenterEdgeSummary) -> Int {
+        guard let workflow else { return 0 }
+        guard let workflowEdge = workflow.edges.first(where: { $0.id == edge.id }) else { return 0 }
+        let fromCount = historyAnomaliesByNodeID[workflowEdge.fromNodeID]?.count ?? 0
+        let toCount = historyAnomaliesByNodeID[workflowEdge.toNodeID]?.count ?? 0
+        return fromCount + toCount
+    }
+
+    private func sharedSessionCount(forEdge edge: OpsCenterEdgeSummary) -> Int {
+        guard let workflow else { return 0 }
+        guard let workflowEdge = workflow.edges.first(where: { $0.id == edge.id }) else { return 0 }
+
+        let projectionNodesByID = Dictionary(
+            uniqueKeysWithValues: (projections?.nodesRuntime?.nodes ?? [])
+                .filter { $0.workflowID == workflow.id }
+                .map { ($0.nodeID, $0) }
+        )
+
+        let fromSessions = Set(projectionNodesByID[workflowEdge.fromNodeID]?.relatedSessionIDs ?? [])
+        let toSessions = Set(projectionNodesByID[workflowEdge.toNodeID]?.relatedSessionIDs ?? [])
+        return fromSessions.intersection(toSessions).count
+    }
+
+    private func downstreamNodeStatus(forEdge edge: OpsCenterEdgeSummary) -> OpsCenterRuntimeStatus? {
+        guard let workflow else { return nil }
+        guard let workflowEdge = workflow.edges.first(where: { $0.id == edge.id }) else { return nil }
+        return nodeSummaryByID[workflowEdge.toNodeID]?.status
+    }
+
+    private func routeDetailText(for edge: OpsCenterEdgeSummary) -> String {
+        let anomalyCount = historyAnomalyCount(forEdge: edge)
+        let sessionCount = sharedSessionCount(forEdge: edge)
+
+        if anomalyCount > 0 {
+            return "Route carries \(anomalyCount) retained anomaly signal(s) across its connected nodes."
+        }
+        if sessionCount > 0 {
+            return "Route is shared by \(sessionCount) retained session(s) in the persisted runtime projection."
+        }
+        if edge.activityCount > 0 {
+            return "Route is currently active in live or projected runtime flow."
+        }
+        if edge.requiresApproval {
+            return "Route includes an approval gate and should be watched for operator latency."
+        }
+        return "No recent retained congestion or failure signal on this route."
+    }
+
+    private func routeTraceSummary(for edge: OpsCenterEdgeSummary) -> String? {
+        guard let workflow else { return nil }
+        guard let workflowEdge = workflow.edges.first(where: { $0.id == edge.id }) else { return nil }
+
+        if let downstreamNode = nodeSummaryByID[workflowEdge.toNodeID],
+           let summary = historyTraceSummary(for: downstreamNode) {
+            return summary
+        }
+
+        if let upstreamNode = nodeSummaryByID[workflowEdge.fromNodeID],
+           let summary = historyTraceSummary(for: upstreamNode) {
+            return summary
+        }
+
+        return nil
+    }
 }
 
 private struct OpsCenterHistoryGoalDigest: Identifiable {
@@ -1121,6 +1445,8 @@ private struct OpsCenterHistoryAnomalyDigest: Identifiable {
     let detailText: String
     let timestamp: Date
     let status: OpsHealthStatus
+    let sessionID: String?
+    let nodeID: UUID?
 }
 
 private struct OpsCenterHistoryTraceDigest: Identifiable {
@@ -1134,15 +1460,23 @@ private struct OpsCenterHistoryTraceDigest: Identifiable {
     let timestamp: Date
     let duration: TimeInterval?
     let protocolRepairCount: Int
+    let sessionID: String?
+    let nodeID: UUID?
 }
 
 private struct OpsCenterHistoryDashboardView: View {
     @EnvironmentObject var appState: AppState
     let workflow: Workflow?
     let projections: OpsCenterProjectionBundle?
+    let onSelectSession: (String) -> Void
+    let onSelectNode: (UUID) -> Void
 
     private var snapshot: OpsAnalyticsSnapshot {
         appState.opsAnalytics.snapshot
+    }
+
+    private var executionResultsByID: [UUID: ExecutionResult] {
+        Dictionary(uniqueKeysWithValues: appState.openClawService.executionResults.map { ($0.id, $0) })
     }
 
     private var scopedNodeIDs: Set<UUID> {
@@ -1250,13 +1584,16 @@ private struct OpsCenterHistoryDashboardView: View {
 
     private var effectiveAnomalies: [OpsCenterHistoryAnomalyDigest] {
         let liveItems = snapshot.anomalyRows.map {
-            OpsCenterHistoryAnomalyDigest(
+            let linkedResult = $0.linkedSessionSpanID.flatMap { executionResultsByID[$0] }
+            return OpsCenterHistoryAnomalyDigest(
                 id: "live-\($0.id)",
                 title: $0.title,
                 sourceLabel: $0.sourceLabel,
                 detailText: $0.detailText,
                 timestamp: $0.occurredAt,
-                status: $0.status
+                status: $0.status,
+                sessionID: linkedResult?.sessionID,
+                nodeID: linkedResult?.nodeID
             )
         }
 
@@ -1284,7 +1621,9 @@ private struct OpsCenterHistoryDashboardView: View {
                     sourceLabel: entry.source.capitalized,
                     detailText: entry.message,
                     timestamp: entry.timestamp,
-                    status: status
+                    status: status,
+                    sessionID: entry.sessionID,
+                    nodeID: entry.nodeID
                 )
             }
 
@@ -1306,7 +1645,8 @@ private struct OpsCenterHistoryDashboardView: View {
 
     private var effectiveTraces: [OpsCenterHistoryTraceDigest] {
         let liveItems = snapshot.traceRows.map {
-            OpsCenterHistoryTraceDigest(
+            let linkedResult = executionResultsByID[$0.id]
+            return OpsCenterHistoryTraceDigest(
                 id: "live-\($0.id.uuidString)",
                 title: $0.sourceLabel,
                 agentName: $0.agentName,
@@ -1316,7 +1656,9 @@ private struct OpsCenterHistoryDashboardView: View {
                 outputTypeText: $0.outputType.rawValue,
                 timestamp: $0.startedAt,
                 duration: $0.duration,
-                protocolRepairCount: $0.protocolRepairCount
+                protocolRepairCount: $0.protocolRepairCount,
+                sessionID: linkedResult?.sessionID,
+                nodeID: linkedResult?.nodeID
             )
         }
 
@@ -1336,7 +1678,9 @@ private struct OpsCenterHistoryDashboardView: View {
                     outputTypeText: entry.outputType.rawValue,
                     timestamp: entry.completedAt ?? entry.startedAt,
                     duration: entry.duration,
-                    protocolRepairCount: entry.protocolRepairCount
+                    protocolRepairCount: entry.protocolRepairCount,
+                    sessionID: entry.sessionID,
+                    nodeID: entry.nodeID
                 )
             }
 
@@ -1513,9 +1857,12 @@ private struct OpsCenterHistoryDashboardView: View {
 
                                 Spacer()
 
-                                Text(anomaly.timestamp.formatted(date: .abbreviated, time: .shortened))
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                VStack(alignment: .trailing, spacing: 6) {
+                                    historyActionButtons(sessionID: anomaly.sessionID, nodeID: anomaly.nodeID)
+                                    Text(anomaly.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
                             }
                             .padding(10)
                             .background(Color(.controlBackgroundColor))
@@ -1548,7 +1895,8 @@ private struct OpsCenterHistoryDashboardView: View {
 
                                 Spacer()
 
-                                VStack(alignment: .trailing, spacing: 4) {
+                                VStack(alignment: .trailing, spacing: 6) {
+                                    historyActionButtons(sessionID: trace.sessionID, nodeID: trace.nodeID)
                                     if let duration = trace.duration {
                                         Text(opsDurationText(duration))
                                             .font(.caption2)
@@ -1602,6 +1950,45 @@ private struct OpsCenterHistoryDashboardView: View {
             return .secondary
         }
     }
+
+    @ViewBuilder
+    private func historyActionButtons(sessionID: String?, nodeID: UUID?) -> some View {
+        let normalizedSessionID = normalizedHistorySessionID(sessionID)
+
+        if normalizedSessionID != nil || nodeID != nil {
+            HStack(spacing: 6) {
+                if let normalizedSessionID {
+                    historyActionButton(title: "Session") {
+                        onSelectSession(normalizedSessionID)
+                    }
+                }
+
+                if let nodeID {
+                    historyActionButton(title: "Node") {
+                        onSelectNode(nodeID)
+                    }
+                }
+            }
+        }
+    }
+
+    private func historyActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundColor(.blue)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.blue.opacity(0.10))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func normalizedHistorySessionID(_ sessionID: String?) -> String? {
+        let trimmed = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 private struct OpsCenterInvestigationPanel: View {
@@ -1623,6 +2010,8 @@ private struct OpsCenterInvestigationPanel: View {
                     sessionInvestigationBody(investigation)
                 case let .node(investigation):
                     nodeInvestigationBody(investigation)
+                case let .route(investigation):
+                    routeInvestigationBody(investigation)
                 }
             }
             .padding(20)
@@ -1842,6 +2231,149 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
     }
+
+    @ViewBuilder
+    private func routeInvestigationBody(_ investigation: OpsCenterRouteInvestigation) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
+            opsMetricCard(title: "Route Flow", value: "\(investigation.edge.activityCount)", detail: investigation.edge.title, color: .blue)
+            opsMetricCard(title: "Sessions", value: "\(investigation.relatedSessions.count)", detail: "Sessions correlated to this route", color: .green)
+            opsMetricCard(title: "Dispatches", value: "\(investigation.dispatches.count)", detail: "Direct dispatches across this route", color: .orange)
+            opsMetricCard(title: "Receipts", value: "\(investigation.receipts.count)", detail: "Endpoint receipts linked to route sessions", color: .teal)
+            opsMetricCard(title: "Messages", value: "\(investigation.messages.count)", detail: "Workbench messages under route sessions", color: .purple)
+            opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Tasks retained under route sessions", color: .indigo)
+        }
+
+        opsInvestigationSection("Route Posture", detail: "Upstream, downstream, and gate posture for the selected workflow route.") {
+            VStack(alignment: .leading, spacing: 8) {
+                routeEndpointCard(
+                    title: "Upstream",
+                    node: investigation.upstreamNode,
+                    fallbackTitle: investigation.edge.fromTitle
+                )
+                routeEndpointCard(
+                    title: "Downstream",
+                    node: investigation.downstreamNode,
+                    fallbackTitle: investigation.edge.toTitle
+                )
+                HStack {
+                    Text("Label")
+                        .font(.caption.weight(.medium))
+                    Spacer()
+                    Text(investigation.edge.title)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if investigation.edge.requiresApproval {
+                        opsStatusPill(title: "Approval", color: .yellow)
+                    }
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+
+        opsInvestigationSection("Related Sessions", detail: "Sessions that retained evidence of traffic across this route.") {
+            if investigation.relatedSessions.isEmpty {
+                opsInlineEmptyState("No route-correlated sessions resolved.")
+            } else {
+                ForEach(investigation.relatedSessions) { session in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(session.sessionID)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            Text("Events \(session.eventCount) • Dispatches \(session.dispatchCount) • Receipts \(session.receiptCount)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        opsStatusPill(
+                            title: session.failedDispatchCount > 0 ? "Failure Signal" : "Observed",
+                            color: session.failedDispatchCount > 0 ? .red : .blue
+                        )
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+
+        opsInvestigationSection("Dispatches", detail: "Direct dispatches observed between the route endpoints.") {
+            if investigation.dispatches.isEmpty {
+                opsInlineEmptyState("No direct route dispatches captured.")
+            } else {
+                ForEach(investigation.dispatches.prefix(12)) { dispatch in
+                    OpsCenterDispatchDigestCard(dispatch: dispatch)
+                }
+            }
+        }
+
+        opsInvestigationSection("Endpoint Receipts", detail: "Execution receipts emitted by the route endpoints inside correlated sessions.") {
+            if investigation.receipts.isEmpty {
+                opsInlineEmptyState("No endpoint receipts captured.")
+            } else {
+                ForEach(investigation.receipts.prefix(12)) { receipt in
+                    OpsCenterReceiptDigestCard(receipt: receipt)
+                }
+            }
+        }
+
+        opsInvestigationSection("Runtime Events", detail: "Recent runtime events retained under route-correlated sessions.") {
+            if investigation.events.isEmpty {
+                opsInlineEmptyState("No route events captured.")
+            } else {
+                ForEach(investigation.events.prefix(10)) { event in
+                    OpsCenterEventDigestCard(event: event)
+                }
+            }
+        }
+
+        opsInvestigationSection("Workbench Messages", detail: "Messages linked to sessions moving across this route.") {
+            if investigation.messages.isEmpty {
+                opsInlineEmptyState("No route-linked workbench messages.")
+            } else {
+                ForEach(investigation.messages.prefix(10)) { message in
+                    OpsCenterMessageDigestCard(message: message)
+                }
+            }
+        }
+
+        opsInvestigationSection("Workbench Tasks", detail: "Tasks retained inside sessions that flowed through this route.") {
+            if investigation.tasks.isEmpty {
+                opsInlineEmptyState("No route-linked tasks.")
+            } else {
+                ForEach(investigation.tasks.prefix(10)) { task in
+                    OpsCenterTaskDigestCard(task: task)
+                }
+            }
+        }
+    }
+}
+
+private func routeEndpointCard(
+    title: String,
+    node: OpsCenterNodeSummary?,
+    fallbackTitle: String
+) -> some View {
+    HStack {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(node?.title ?? fallbackTitle)
+                .font(.subheadline.weight(.medium))
+            Text(node?.agentName ?? "No bound agent")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        Spacer()
+        if let node {
+            opsStatusPill(title: node.status.title, color: node.status.color)
+        }
+    }
+    .padding(10)
+    .background(Color(.controlBackgroundColor))
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 }
 
 private struct OpsCenterDispatchDigestCard: View {

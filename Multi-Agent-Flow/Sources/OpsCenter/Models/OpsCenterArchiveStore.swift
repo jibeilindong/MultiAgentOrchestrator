@@ -201,6 +201,102 @@ enum OpsCenterArchiveStore {
         )
     }
 
+    static func loadRouteInvestigation(
+        projectID: UUID,
+        workflowID: UUID?,
+        edgeID: UUID,
+        projections: OpsCenterProjectionBundle? = nil
+    ) -> OpsCenterRouteInvestigation? {
+        guard let snapshot = loadSnapshot(projectID: projectID) else { return nil }
+        guard let routeContext = resolveRouteContext(snapshot: snapshot, workflowID: workflowID, edgeID: edgeID) else {
+            return nil
+        }
+
+        let relatedSessionIDs = resolveRouteSessionIDs(
+            projectID: projectID,
+            workflow: routeContext.workflow,
+            edge: routeContext.edge,
+            projections: projections
+        )
+        let sessionPayloads = relatedSessionIDs.compactMap {
+            loadSessionPayload(
+                projectID: projectID,
+                workflowID: routeContext.workflow.id,
+                sessionID: $0,
+                snapshot: snapshot,
+                projections: projections
+            )
+        }
+
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: snapshot.agents.map { ($0.id, $0.name) })
+        let upstreamAgentName = routeContext.upstreamNode.agentID.flatMap { agentNamesByID[$0] }
+        let downstreamAgentName = routeContext.downstreamNode.agentID.flatMap { agentNamesByID[$0] }
+        let relatedSessions = sessionPayloads.map(\.summary).sorted {
+            if $0.isPrimaryRuntimeSession != $1.isPrimaryRuntimeSession {
+                return $0.isPrimaryRuntimeSession
+            }
+            return ($0.lastUpdatedAt ?? .distantPast) > ($1.lastUpdatedAt ?? .distantPast)
+        }
+
+        let dispatches = mergeDispatchDigests(sessionPayloads.flatMap(\.dispatches)).filter { dispatch in
+            let sourceMatches = upstreamAgentName.map { dispatch.sourceName == $0 } ?? false
+            let targetMatches = downstreamAgentName.map { dispatch.targetName == $0 } ?? false
+            return sourceMatches && targetMatches
+        }
+        let events = mergeEventDigests(sessionPayloads.flatMap(\.events)).filter { event in
+            guard let sessionID = event.sessionID else { return false }
+            return relatedSessionIDs.contains(sessionID)
+        }
+        let receipts = mergeReceiptDigests(sessionPayloads.flatMap(\.receipts)).filter { receipt in
+            receipt.nodeTitle == routeContext.upstreamNode.title || receipt.nodeTitle == routeContext.downstreamNode.title
+        }
+        let messages = mergeMessageDigests(sessionPayloads.flatMap(\.messages))
+        let tasks = mergeTaskDigests(sessionPayloads.flatMap(\.tasks))
+
+        let upstreamNodeSummary = projections?.nodeSummaries(for: routeContext.workflow.id).first(where: {
+            $0.id == routeContext.upstreamNode.id
+        }) ?? buildNodeSummary(
+            snapshot: snapshot,
+            workflow: routeContext.workflow,
+            node: routeContext.upstreamNode,
+            relatedSessionIDs: relatedSessionIDs,
+            dispatches: dispatches,
+            receipts: receipts.filter { $0.nodeTitle == routeContext.upstreamNode.title },
+            projections: projections
+        )
+        let downstreamNodeSummary = projections?.nodeSummaries(for: routeContext.workflow.id).first(where: {
+            $0.id == routeContext.downstreamNode.id
+        }) ?? buildNodeSummary(
+            snapshot: snapshot,
+            workflow: routeContext.workflow,
+            node: routeContext.downstreamNode,
+            relatedSessionIDs: relatedSessionIDs,
+            dispatches: dispatches,
+            receipts: receipts.filter { $0.nodeTitle == routeContext.downstreamNode.title },
+            projections: projections
+        )
+
+        return OpsCenterRouteInvestigation(
+            workflowName: routeContext.workflow.name,
+            edge: OpsCenterEdgeSummary(
+                id: routeContext.edge.id,
+                title: routeContext.edge.label.isEmpty ? "Path" : routeContext.edge.label,
+                fromTitle: routeContext.upstreamNode.title,
+                toTitle: routeContext.downstreamNode.title,
+                activityCount: max(dispatches.count, relatedSessions.count),
+                requiresApproval: routeContext.edge.requiresApproval
+            ),
+            upstreamNode: upstreamNodeSummary,
+            downstreamNode: downstreamNodeSummary,
+            relatedSessions: relatedSessions,
+            events: events,
+            dispatches: dispatches,
+            receipts: receipts,
+            messages: messages,
+            tasks: tasks
+        )
+    }
+
     private static func loadSessionPayload(
         projectID: UUID,
         workflowID: UUID?,
@@ -619,6 +715,30 @@ enum OpsCenterArchiveStore {
         return nil
     }
 
+    private static func resolveRouteContext(
+        snapshot: MAProject,
+        workflowID: UUID?,
+        edgeID: UUID
+    ) -> (workflow: Workflow, edge: WorkflowEdge, upstreamNode: WorkflowNode, downstreamNode: WorkflowNode)? {
+        let candidateWorkflows: [Workflow]
+        if let workflowID, let workflow = snapshot.workflows.first(where: { $0.id == workflowID }) {
+            candidateWorkflows = [workflow]
+        } else {
+            candidateWorkflows = snapshot.workflows
+        }
+
+        for workflow in candidateWorkflows {
+            guard let edge = workflow.edges.first(where: { $0.id == edgeID }),
+                  let upstreamNode = workflow.nodes.first(where: { $0.id == edge.fromNodeID }),
+                  let downstreamNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) else {
+                continue
+            }
+            return (workflow, edge, upstreamNode, downstreamNode)
+        }
+
+        return nil
+    }
+
     private static func resolveRelatedSessionIDs(
         projectID: UUID,
         snapshot: MAProject,
@@ -677,6 +797,65 @@ enum OpsCenterArchiveStore {
                 if touchesNode, let sessionID = sessionDocument?.sessionID {
                     sessionIDs.insert(sessionID)
                 }
+            }
+        }
+
+        return sessionIDs.sorted()
+    }
+
+    private static func resolveRouteSessionIDs(
+        projectID: UUID,
+        workflow: Workflow,
+        edge: WorkflowEdge,
+        projections: OpsCenterProjectionBundle?
+    ) -> [String] {
+        let projectionNodesByID = Dictionary(
+            uniqueKeysWithValues: (projections?.nodesRuntime?.nodes ?? [])
+                .filter { $0.workflowID == workflow.id }
+                .map { ($0.nodeID, $0) }
+        )
+        var sessionIDs = Set(
+            Set(projectionNodesByID[edge.fromNodeID]?.relatedSessionIDs ?? [])
+                .intersection(Set(projectionNodesByID[edge.toNodeID]?.relatedSessionIDs ?? []))
+        )
+
+        let sessionsRootURL = ProjectManager.shared.managedProjectRootDirectory(for: projectID)
+            .appendingPathComponent("runtime", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+
+        let fileManager = FileManager.default
+        let sessionDirectories = (try? fileManager.contentsOfDirectory(
+            at: sessionsRootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        let upstreamNode = workflow.nodes.first(where: { $0.id == edge.fromNodeID })
+        let downstreamNode = workflow.nodes.first(where: { $0.id == edge.toNodeID })
+        let upstreamAgentID = upstreamNode?.agentID?.uuidString.lowercased()
+        let downstreamAgentID = downstreamNode?.agentID?.uuidString.lowercased()
+
+        for sessionDirectory in sessionDirectories where sessionDirectory.hasDirectoryPath {
+            let sessionDocument = decode(
+                OpsCenterArchiveRuntimeSessionDocument.self,
+                from: sessionDirectory.appendingPathComponent("session.json", isDirectory: false)
+            )
+            guard sessionDocument?.workflowIDs.contains(workflow.id.uuidString) == true else { continue }
+
+            let dispatches = decodeNDJSON(
+                OpsCenterArchiveRuntimeDispatchEnvelopeDocument.self,
+                from: sessionDirectory.appendingPathComponent("dispatches.ndjson", isDirectory: false)
+            )
+
+            let matchesRoute = dispatches.contains { envelope in
+                let sourceMatches = upstreamAgentID != nil && normalizedUUIDValue(envelope.record.sourceAgentID) == upstreamAgentID
+                let targetMatches = downstreamAgentID != nil && normalizedUUIDValue(envelope.record.targetAgentID) == downstreamAgentID
+                let nodeMatches = uuid(from: envelope.record.nodeID) == edge.toNodeID
+                return (sourceMatches && targetMatches) || (sourceMatches && nodeMatches)
+            }
+
+            if matchesRoute, let sessionID = sessionDocument?.sessionID {
+                sessionIDs.insert(sessionID.lowercased())
             }
         }
 

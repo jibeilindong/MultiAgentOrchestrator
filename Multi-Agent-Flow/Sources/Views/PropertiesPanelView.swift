@@ -1327,6 +1327,7 @@ struct TemplateLibraryManagerSheet: View {
     @State private var sourceFilter: TemplateLibrarySourceFilter = .all
     @State private var familyFilter: AgentTemplateFamily?
     @State private var tagFilter: String?
+    @State private var importPreviewReport: TemplateAssetImportPreviewReport?
 
     init(selectedTemplateID: Binding<String>) {
         self._selectedTemplateID = selectedTemplateID
@@ -1447,6 +1448,14 @@ struct TemplateLibraryManagerSheet: View {
                 return
             }
             selectedTemplateManagerID = ids.first
+        }
+        .sheet(item: $importPreviewReport) { report in
+            TemplateAssetImportPreviewSheet(
+                report: report,
+                onConfirm: {
+                    performTemplateAssetImport(report)
+                }
+            )
         }
     }
 
@@ -2006,16 +2015,26 @@ struct TemplateLibraryManagerSheet: View {
         panel.begin { response in
             guard response == .OK else { return }
             do {
-                let imported = try templateLibrary.importTemplateAssets(from: panel.urls)
-                if let first = imported.first {
-                    selectedTemplateManagerID = first.id
-                    selectedTemplateID = first.id
-                    draft = TemplateEditorDraft(template: first)
-                }
-                feedbackMessage = "已导入 \(imported.count) 个模板资产。"
+                importPreviewReport = try templateLibrary.preflightImportTemplateAssets(from: panel.urls)
             } catch {
                 feedbackMessage = "模板资产导入失败：\(error.localizedDescription)"
             }
+        }
+    }
+
+    private func performTemplateAssetImport(_ report: TemplateAssetImportPreviewReport) {
+        do {
+            let imported = try templateLibrary.importTemplateAssets(using: report)
+            importPreviewReport = nil
+            if let first = imported.first {
+                selectedTemplateManagerID = first.id
+                selectedTemplateID = first.id
+                draft = TemplateEditorDraft(template: first)
+            }
+            let warningSuffix = report.warningCount > 0 ? "，已根据预检结果自动避让冲突" : ""
+            feedbackMessage = "已导入 \(imported.count) 个模板资产\(warningSuffix)。"
+        } catch {
+            feedbackMessage = "模板资产导入失败：\(error.localizedDescription)"
         }
     }
 
@@ -2698,6 +2717,163 @@ private struct TemplateCleanupPreviewSheetData: Identifiable {
 
     var id: String {
         templateIDs.joined(separator: "|")
+    }
+}
+
+private struct TemplateAssetImportPreviewSheet: View {
+    let report: TemplateAssetImportPreviewReport
+    let onConfirm: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("模板资产导入预检")
+                        .font(.headline)
+                    Text(summaryText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("关闭") {
+                    dismiss()
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("导入后所有条目都会变成新的独立模板资产，不会覆盖现有模板，也不会继续与源目录保持关联。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    ForEach(report.entries) { entry in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(entry.sourceName)
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(entry.sourceDirectoryURL.lastPathComponent)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    Text(entry.sourceDirectoryURL.path)
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                if entry.warningCount > 0 {
+                                    Text("冲突 \(entry.warningCount)")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundColor(.orange)
+                                } else {
+                                    Text("可直接导入")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundColor(.green)
+                                }
+                            }
+
+                            HStack(alignment: .top, spacing: 12) {
+                                importInfoColumn(
+                                    title: "源模板信息",
+                                    rows: [
+                                        ("模板 ID", entry.sourceTemplateID),
+                                        ("名称", entry.sourceName),
+                                        ("identity", entry.sourceIdentity.isEmpty ? "(空)" : entry.sourceIdentity)
+                                    ]
+                                )
+                                importInfoColumn(
+                                    title: "导入后",
+                                    rows: [
+                                        ("模板 ID", entry.importedTemplate.id),
+                                        ("名称", entry.importedTemplate.name),
+                                        ("identity", entry.importedTemplate.identity)
+                                    ]
+                                )
+                            }
+
+                            ForEach(entry.issues) { issue in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(issue.title)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(issue.level == .warning ? .orange : .secondary)
+                                    Text(issue.detail)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    (issue.level == .warning ? Color.orange.opacity(0.08) : Color.primary.opacity(0.04))
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                }
+                .padding()
+            }
+
+            Divider()
+
+            HStack {
+                Button("取消") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+                Button("确认导入 \(report.entries.count) 个模板资产") {
+                    onConfirm()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+        .frame(minWidth: 940, minHeight: 620)
+    }
+
+    private var summaryText: String {
+        if report.warningCount > 0 {
+            return "已扫描 \(report.entries.count) 个模板资产，发现 \(report.warningCount) 项需要提示的冲突或避让。"
+        }
+        return "已扫描 \(report.entries.count) 个模板资产，未发现需要避让的命名冲突。"
+    }
+
+    @ViewBuilder
+    private func importInfoColumn(title: String, rows: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+            ForEach(Array(rows.enumerated()), id: \.offset) { item in
+                let row = item.element
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.0)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(row.1)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

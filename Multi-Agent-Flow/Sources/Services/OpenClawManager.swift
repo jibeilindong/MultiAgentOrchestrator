@@ -1733,6 +1733,230 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    private func resolvedRegisteredAgentIdentifier(
+        from data: Data,
+        fallbackName: String,
+        using config: OpenClawConfig
+    ) -> String {
+        guard
+            let jsonData = extractJSONPayload(from: data),
+            let jsonObject = try? JSONSerialization.jsonObject(with: jsonData),
+            let dictionary = jsonObject as? [String: Any],
+            let agentID = stringValue(dictionary, keys: ["agentId", "agentID", "id", "name"])
+        else {
+            return fallbackName
+        }
+
+        let trimmed = agentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallbackName }
+
+        let runtimeRecords = parseManagedAgents(from: data, using: config)
+        if let matched = runtimeRecords.first(where: {
+            normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(trimmed)
+                || normalizeAgentKey($0.name) == normalizeAgentKey(trimmed)
+        }) {
+            return matched.targetIdentifier
+        }
+        return trimmed
+    }
+
+    private func qualifiedLocalRuntimeModelIdentifier(
+        _ modelIdentifier: String,
+        preferredAgentDirectory: URL? = nil
+    ) -> String {
+        let trimmed = modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("/") else {
+            return trimmed
+        }
+
+        let authProviders = localRuntimeAuthProviders(preferredAgentDirectory: preferredAgentDirectory)
+        let providerModels = localRuntimeModelCatalog(preferredAgentDirectory: preferredAgentDirectory)
+
+        if let matchedProvider = providerModels.first(where: { entry in
+            entry.modelIDs.contains(trimmed) && authProviders.contains(entry.provider)
+        })?.provider {
+            return "\(matchedProvider)/\(trimmed)"
+        }
+
+        if let matchedProvider = providerModels.first(where: { $0.modelIDs.contains(trimmed) })?.provider {
+            return "\(matchedProvider)/\(trimmed)"
+        }
+
+        if trimmed.localizedCaseInsensitiveContains("minimax") {
+            if authProviders.contains("minimax") {
+                return "minimax/\(trimmed)"
+            }
+            if authProviders.contains("minimax-portal") {
+                return "minimax-portal/\(trimmed)"
+            }
+        }
+
+        return trimmed
+    }
+
+    private func localRuntimeAuthProviders(preferredAgentDirectory: URL? = nil) -> Set<String> {
+        let authFiles = candidateLocalRuntimeAgentDirectories(preferredAgentDirectory: preferredAgentDirectory)
+            .map { $0.appendingPathComponent("auth-profiles.json", isDirectory: false) }
+
+        var providers = Set<String>()
+        for authURL in authFiles {
+            guard
+                let data = try? Data(contentsOf: authURL),
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                let profiles = object["profiles"] as? [String: Any]
+            else {
+                continue
+            }
+
+            for value in profiles.values {
+                guard let profile = value as? [String: Any],
+                      let provider = stringValue(profile, keys: ["provider"]) else {
+                    continue
+                }
+                providers.insert(provider)
+            }
+        }
+        return providers
+    }
+
+    private func localRuntimeModelCatalog(preferredAgentDirectory: URL? = nil) -> [(provider: String, modelIDs: Set<String>)] {
+        let modelFiles = candidateLocalRuntimeAgentDirectories(preferredAgentDirectory: preferredAgentDirectory)
+            .map { $0.appendingPathComponent("models.json", isDirectory: false) }
+
+        var orderedProviders: [(provider: String, modelIDs: Set<String>)] = []
+        var providerIndexByName: [String: Int] = [:]
+
+        for modelURL in modelFiles {
+            guard
+                let data = try? Data(contentsOf: modelURL),
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                let providers = object["providers"] as? [String: Any]
+            else {
+                continue
+            }
+
+            for (provider, value) in providers {
+                guard let dictionary = value as? [String: Any],
+                      let models = dictionary["models"] as? [[String: Any]] else {
+                    continue
+                }
+
+                let modelIDs = Set(models.compactMap { stringValue($0, keys: ["id", "name"]) })
+                guard !modelIDs.isEmpty else { continue }
+
+                if let existingIndex = providerIndexByName[provider] {
+                    var existingEntry = orderedProviders[existingIndex]
+                    existingEntry.modelIDs.formUnion(modelIDs)
+                    orderedProviders[existingIndex] = existingEntry
+                } else {
+                    providerIndexByName[provider] = orderedProviders.count
+                    orderedProviders.append((provider: provider, modelIDs: modelIDs))
+                }
+            }
+        }
+
+        return orderedProviders
+    }
+
+    private func candidateLocalRuntimeAgentDirectories(preferredAgentDirectory: URL? = nil) -> [URL] {
+        let agentsDirectory = localOpenClawRootURL().appendingPathComponent("agents", isDirectory: true)
+        let discoveredDirectories = (try? fileManager.contentsOfDirectory(
+            at: agentsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        var directories: [URL] = []
+        if let preferredAgentDirectory {
+            directories.append(preferredAgentDirectory)
+        }
+        directories.append(contentsOf: discoveredDirectories.map {
+            $0.appendingPathComponent("agent", isDirectory: true)
+        })
+
+        var seen = Set<String>()
+        return directories.filter { directory in
+            seen.insert(directory.path).inserted && fileManager.fileExists(atPath: directory.path)
+        }
+    }
+
+    private func synchronizeLocalRuntimeAgentConfigEntry(
+        identifier: String,
+        name: String,
+        workspacePath: String?,
+        agentDirPath: String?,
+        modelIdentifier: String?
+    ) -> (success: Bool, message: String) {
+        let configURL = localOpenClawRootURL().appendingPathComponent("openclaw.json", isDirectory: false)
+        guard fileManager.fileExists(atPath: configURL.path) else {
+            return (true, "")
+        }
+
+        do {
+            let data = try Data(contentsOf: configURL)
+            guard
+                var root = (try JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                var agents = root["agents"] as? [String: Any],
+                var list = agents["list"] as? [[String: Any]]
+            else {
+                return (false, "本地 OpenClaw 配置存在，但 agents.list 无法解析，未能自动同步 runtime agent 配置。")
+            }
+
+            let normalizedIdentifier = normalizeAgentKey(identifier)
+            let normalizedName = normalizeAgentKey(name)
+            guard let index = list.firstIndex(where: { item in
+                normalizeAgentKey(stringValue(item, keys: ["id"]) ?? "") == normalizedIdentifier
+                    || normalizeAgentKey(stringValue(item, keys: ["name"]) ?? "") == normalizedName
+            }) else {
+                return (true, "")
+            }
+
+            var entry = list[index]
+            var updatedFields: [String] = []
+
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedName.isEmpty, (stringValue(entry, keys: ["name"]) ?? "") != trimmedName {
+                entry["name"] = trimmedName
+                updatedFields.append("name")
+            }
+
+            if let workspacePath = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !workspacePath.isEmpty,
+               (stringValue(entry, keys: ["workspace"]) ?? "") != workspacePath {
+                entry["workspace"] = workspacePath
+                updatedFields.append("workspace")
+            }
+
+            if let agentDirPath = agentDirPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !agentDirPath.isEmpty,
+               (stringValue(entry, keys: ["agentDir"]) ?? "") != agentDirPath {
+                entry["agentDir"] = agentDirPath
+                updatedFields.append("agentDir")
+            }
+
+            if let modelIdentifier = modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !modelIdentifier.isEmpty,
+               (stringValue(entry, keys: ["model"]) ?? "") != modelIdentifier {
+                entry["model"] = modelIdentifier
+                updatedFields.append("model")
+            }
+
+            guard !updatedFields.isEmpty else {
+                return (true, "")
+            }
+
+            list[index] = entry
+            agents["list"] = list
+            root["agents"] = agents
+
+            let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+            try updatedData.write(to: configURL, options: .atomic)
+            return (true, "已同步本地 runtime agent \(identifier) 的 \(updatedFields.joined(separator: "、")) 配置。")
+        } catch {
+            return (false, "同步本地 runtime agent \(identifier) 配置失败：\(error.localizedDescription)")
+        }
+    }
+
     private func loadInstalledSkills(
         forWorkspacePath workspacePath: String?,
         using config: OpenClawConfig
@@ -2148,6 +2372,197 @@ class OpenClawManager: ObservableObject {
     private func localOpenClawRootURL() -> URL {
         URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appendingPathComponent(".openclaw", isDirectory: true)
+    }
+
+    func ensureLocalDefaultAgentAuthFallback(
+        using config: OpenClawConfig? = nil
+    ) -> (success: Bool, message: String) {
+        let resolvedConfig = config ?? self.config
+        guard resolvedConfig.deploymentKind == .local else {
+            return (true, "")
+        }
+
+        let mainAgentDirectory = localOpenClawRootURL()
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent("main", isDirectory: true)
+            .appendingPathComponent("agent", isDirectory: true)
+        let mainAuthProfilesURL = mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false)
+        let mainModelsURL = mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false)
+        let needsAuthProfiles = !fileManager.fileExists(atPath: mainAuthProfilesURL.path)
+        let needsModels = !fileManager.fileExists(atPath: mainModelsURL.path)
+
+        guard needsAuthProfiles || needsModels else {
+            return (true, "")
+        }
+
+        guard let bootstrapCandidate = preferredLocalAgentBootstrapCandidate(excluding: ["main"]) else {
+            if needsAuthProfiles {
+                return (false, "本地默认 agent main 缺少 auth-profiles.json，且当前未找到可复用的本地 agent 鉴权配置。")
+            }
+            return (true, "")
+        }
+
+        do {
+            try fileManager.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
+
+            var copiedItems: [String] = []
+
+            if needsAuthProfiles, let sourceAuthProfilesURL = bootstrapCandidate.authProfilesURL {
+                if fileManager.fileExists(atPath: mainAuthProfilesURL.path) {
+                    try fileManager.removeItem(at: mainAuthProfilesURL)
+                }
+                try fileManager.copyItem(at: sourceAuthProfilesURL, to: mainAuthProfilesURL)
+                copiedItems.append("auth-profiles.json")
+            }
+
+            if needsModels, let sourceModelsURL = bootstrapCandidate.modelsURL {
+                if fileManager.fileExists(atPath: mainModelsURL.path) {
+                    try fileManager.removeItem(at: mainModelsURL)
+                }
+                try fileManager.copyItem(at: sourceModelsURL, to: mainModelsURL)
+                copiedItems.append("models.json")
+            }
+
+            if needsAuthProfiles && !fileManager.fileExists(atPath: mainAuthProfilesURL.path) {
+                return (false, "本地默认 agent main 缺少 auth-profiles.json，且未能从其他本地 agent 自动补齐。")
+            }
+
+            guard !copiedItems.isEmpty else {
+                return (true, "")
+            }
+
+            return (
+                true,
+                "已为本地默认 agent main 自动补齐 \(copiedItems.joined(separator: "、"))，来源于本地 agent \(bootstrapCandidate.identifier)。"
+            )
+        } catch {
+            return (false, "为本地默认 agent main 自动补齐鉴权配置失败：\(error.localizedDescription)")
+        }
+    }
+
+    func ensureLocalRuntimeAgentRegistration(
+        for agent: Agent,
+        using config: OpenClawConfig? = nil
+    ) -> (success: Bool, identifier: String, message: String) {
+        let resolvedConfig = config ?? self.config
+        guard resolvedConfig.deploymentKind == .local else {
+            let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (true, identifier, "")
+        }
+
+        let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !identifier.isEmpty else {
+            return (false, "", "当前节点缺少可用的本地 runtime agent 标识。")
+        }
+
+        let runtimeRecords: [ManagedAgentRecord]
+        do {
+            let result = try runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
+            runtimeRecords = parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
+        } catch {
+            return (false, identifier, "读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)")
+        }
+
+        if runtimeRecords.contains(where: {
+            normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
+                || normalizeAgentKey($0.name) == normalizeAgentKey(identifier)
+        }), let matchedRecord = runtimeRecords.first(where: {
+            normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
+                || normalizeAgentKey($0.name) == normalizeAgentKey(identifier)
+        }) {
+            let runtimeAgentDirectory = firstNonEmptyPath(matchedRecord.agentDirPath)
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? localOpenClawRootURL()
+                    .appendingPathComponent("agents", isDirectory: true)
+                    .appendingPathComponent(identifier, isDirectory: true)
+                    .appendingPathComponent("agent", isDirectory: true)
+            let workspacePath = resolvedWorkspacePath(for: agent)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? matchedRecord.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let desiredModelIdentifier = qualifiedLocalRuntimeModelIdentifier(
+                agent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? matchedRecord.modelIdentifier
+                    : agent.openClawDefinition.modelIdentifier,
+                preferredAgentDirectory: runtimeAgentDirectory
+            )
+            let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
+                at: runtimeAgentDirectory,
+                displayIdentifier: matchedRecord.targetIdentifier
+            )
+            let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
+                identifier: matchedRecord.targetIdentifier,
+                name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? matchedRecord.name
+                    : agent.openClawDefinition.agentIdentifier,
+                workspacePath: workspacePath,
+                agentDirPath: runtimeAgentDirectory.path,
+                modelIdentifier: desiredModelIdentifier
+            )
+            let combinedMessages = [bootstrap.message, syncResult.message].filter { !$0.isEmpty }.joined(separator: " ")
+            return (
+                bootstrap.success && syncResult.success,
+                matchedRecord.targetIdentifier,
+                combinedMessages
+            )
+        }
+
+        guard let workspacePath = resolvedWorkspacePath(for: agent)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workspacePath.isEmpty else {
+            return (false, identifier, "本地 workflow agent \(identifier) 尚未解析到可用 workspace，因此无法自动注册到 OpenClaw CLI。")
+        }
+
+        let agentDirectory = localOpenClawRootURL()
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
+            .appendingPathComponent("agent", isDirectory: true)
+        let modelIdentifier = qualifiedLocalRuntimeModelIdentifier(
+            agent.openClawDefinition.modelIdentifier,
+            preferredAgentDirectory: agentDirectory
+        )
+
+        var arguments = [
+            "agents", "add", identifier,
+            "--workspace", workspacePath,
+            "--agent-dir", agentDirectory.path,
+            "--non-interactive",
+            "--json"
+        ]
+        if !modelIdentifier.isEmpty {
+            arguments.append(contentsOf: ["--model", modelIdentifier])
+        }
+
+        do {
+            let result = try runOpenClawCommand(using: resolvedConfig, arguments: arguments)
+            guard result.terminationStatus == 0 else {
+                let stderr = String(data: result.standardError, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let stdout = String(data: result.standardOutput, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let detail = !stderr.isEmpty ? stderr : stdout
+                return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(detail)")
+            }
+
+            let registeredIdentifier = resolvedRegisteredAgentIdentifier(
+                from: result.standardOutput,
+                fallbackName: identifier,
+                using: resolvedConfig
+            )
+            let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
+                at: agentDirectory,
+                displayIdentifier: registeredIdentifier
+            )
+            let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
+                identifier: registeredIdentifier,
+                name: agent.openClawDefinition.agentIdentifier,
+                workspacePath: workspacePath,
+                agentDirPath: agentDirectory.path,
+                modelIdentifier: modelIdentifier
+            )
+            let registrationMessage = "已将本地 workflow agent \(identifier) 自动注册到 OpenClaw CLI（runtime id: \(registeredIdentifier)）。"
+            let messageParts = [registrationMessage, bootstrap.message, syncResult.message].filter { !$0.isEmpty }
+            return (bootstrap.success && syncResult.success, registeredIdentifier, messageParts.joined(separator: " "))
+        } catch {
+            return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(error.localizedDescription)")
+        }
     }
 
     func localAgentSoulURL(matching candidateNames: [String]) -> URL? {
@@ -3282,6 +3697,20 @@ class OpenClawManager: ObservableObject {
         let statePath: String?
     }
 
+    private struct LocalAgentBootstrapCandidate {
+        let identifier: String
+        let authProfilesURL: URL?
+        let modelsURL: URL?
+
+        var hasAuthProfiles: Bool {
+            authProfilesURL != nil
+        }
+
+        var hasModels: Bool {
+            modelsURL != nil
+        }
+    }
+
     private func inspectOpenClawAgents(using config: OpenClawConfig, fallbackAgentNames: [String] = []) -> [ProjectOpenClawDetectedAgentRecord] {
         switch config.deploymentKind {
         case .local:
@@ -3541,6 +3970,112 @@ class OpenClawManager: ObservableObject {
         let cleaned = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
         let result = String(cleaned)
         return result.isEmpty ? UUID().uuidString : result
+    }
+
+    private func ensureLocalRuntimeAgentBootstrapFiles(
+        at targetAgentDirectory: URL,
+        displayIdentifier identifier: String
+    ) -> (success: Bool, message: String) {
+        let targetAuthProfilesURL = targetAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false)
+        let targetModelsURL = targetAgentDirectory.appendingPathComponent("models.json", isDirectory: false)
+        let needsAuthProfiles = !fileManager.fileExists(atPath: targetAuthProfilesURL.path)
+        let needsModels = !fileManager.fileExists(atPath: targetModelsURL.path)
+
+        guard needsAuthProfiles || needsModels else {
+            return (true, "")
+        }
+
+        guard let bootstrapCandidate = preferredLocalAgentBootstrapCandidate(excluding: [identifier]) else {
+            if needsAuthProfiles {
+                return (false, "本地 workflow agent \(identifier) 缺少 auth-profiles.json，且当前未找到可复用的本地 agent 鉴权配置。")
+            }
+            return (true, "")
+        }
+
+        do {
+            try fileManager.createDirectory(at: targetAgentDirectory, withIntermediateDirectories: true)
+            var copiedItems: [String] = []
+
+            if needsAuthProfiles, let sourceAuthProfilesURL = bootstrapCandidate.authProfilesURL {
+                if fileManager.fileExists(atPath: targetAuthProfilesURL.path) {
+                    try fileManager.removeItem(at: targetAuthProfilesURL)
+                }
+                try fileManager.copyItem(at: sourceAuthProfilesURL, to: targetAuthProfilesURL)
+                copiedItems.append("auth-profiles.json")
+            }
+
+            if needsModels, let sourceModelsURL = bootstrapCandidate.modelsURL {
+                if fileManager.fileExists(atPath: targetModelsURL.path) {
+                    try fileManager.removeItem(at: targetModelsURL)
+                }
+                try fileManager.copyItem(at: sourceModelsURL, to: targetModelsURL)
+                copiedItems.append("models.json")
+            }
+
+            if needsAuthProfiles && !fileManager.fileExists(atPath: targetAuthProfilesURL.path) {
+                return (false, "本地 workflow agent \(identifier) 缺少 auth-profiles.json，且未能从其他本地 agent 自动补齐。")
+            }
+
+            guard !copiedItems.isEmpty else {
+                return (true, "")
+            }
+
+            return (
+                true,
+                "已为本地 workflow agent \(identifier) 自动补齐 \(copiedItems.joined(separator: "、"))，来源于本地 agent \(bootstrapCandidate.identifier)。"
+            )
+        } catch {
+            return (false, "为本地 workflow agent \(identifier) 自动补齐鉴权配置失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func preferredLocalAgentBootstrapCandidate(excluding identifiers: Set<String>) -> LocalAgentBootstrapCandidate? {
+        let agentsDirectory = localOpenClawRootURL().appendingPathComponent("agents", isDirectory: true)
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: agentsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        let candidates = contents.compactMap { directoryURL -> LocalAgentBootstrapCandidate? in
+            guard (try? directoryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return nil
+            }
+
+            let identifier = directoryURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedIdentifier = normalizeAgentKey(identifier)
+            let normalizedExcludedIdentifiers = Set(identifiers.map(normalizeAgentKey))
+            guard !identifier.isEmpty, !normalizedExcludedIdentifiers.contains(normalizedIdentifier) else {
+                return nil
+            }
+
+            let agentDirectory = directoryURL.appendingPathComponent("agent", isDirectory: true)
+            let authProfilesURL = agentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false)
+            let modelsURL = agentDirectory.appendingPathComponent("models.json", isDirectory: false)
+            let resolvedAuthProfilesURL = fileManager.fileExists(atPath: authProfilesURL.path) ? authProfilesURL : nil
+            let resolvedModelsURL = fileManager.fileExists(atPath: modelsURL.path) ? modelsURL : nil
+
+            guard resolvedAuthProfilesURL != nil || resolvedModelsURL != nil else {
+                return nil
+            }
+
+            return LocalAgentBootstrapCandidate(
+                identifier: identifier,
+                authProfilesURL: resolvedAuthProfilesURL,
+                modelsURL: resolvedModelsURL
+            )
+        }
+
+        return candidates.sorted { lhs, rhs in
+            let lhsScore = (lhs.hasAuthProfiles ? 2 : 0) + (lhs.hasModels ? 1 : 0)
+            let rhsScore = (rhs.hasAuthProfiles ? 2 : 0) + (rhs.hasModels ? 1 : 0)
+            if lhsScore != rhsScore {
+                return lhsScore > rhsScore
+            }
+            return lhs.identifier.localizedCaseInsensitiveCompare(rhs.identifier) == .orderedAscending
+        }.first
     }
 
     private func directoryHasContent(_ url: URL) -> Bool {

@@ -130,14 +130,44 @@ struct TemplateFileSystem {
             .appendingPathComponent("examples", isDirectory: true)
     }
 
+    func templateExamplesReadmeURL(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateExamplesRootDirectory(for: templateID, under: appSupportRootDirectory)
+            .appendingPathComponent("README.md", isDirectory: false)
+    }
+
+    func templateExamplePromptURL(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateExamplesRootDirectory(for: templateID, under: appSupportRootDirectory)
+            .appendingPathComponent("default-prompt.md", isDirectory: false)
+    }
+
     func templateTestsRootDirectory(for templateID: String, under appSupportRootDirectory: URL) -> URL {
         templateExtensionsRootDirectory(for: templateID, under: appSupportRootDirectory)
             .appendingPathComponent("tests", isDirectory: true)
     }
 
+    func templateTestsReadmeURL(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateTestsRootDirectory(for: templateID, under: appSupportRootDirectory)
+            .appendingPathComponent("README.md", isDirectory: false)
+    }
+
+    func templateAcceptanceChecklistURL(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateTestsRootDirectory(for: templateID, under: appSupportRootDirectory)
+            .appendingPathComponent("acceptance-checklist.md", isDirectory: false)
+    }
+
     func templateAssetsRootDirectory(for templateID: String, under appSupportRootDirectory: URL) -> URL {
         templateExtensionsRootDirectory(for: templateID, under: appSupportRootDirectory)
             .appendingPathComponent("assets", isDirectory: true)
+    }
+
+    func templateAssetsReadmeURL(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateAssetsRootDirectory(for: templateID, under: appSupportRootDirectory)
+            .appendingPathComponent("README.md", isDirectory: false)
+    }
+
+    func templateAssetsManifestURL(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateAssetsRootDirectory(for: templateID, under: appSupportRootDirectory)
+            .appendingPathComponent("asset-manifest.md", isDirectory: false)
     }
 
     func ensureBaseDirectories(under appSupportRootDirectory: URL) throws {
@@ -179,7 +209,7 @@ struct TemplateFileSystem {
                 """
                 # Template Extensions
 
-                This directory is reserved for secondary development assets for the template package.
+                This directory stores the secondary development materials for the template package.
 
                 - `examples/`: sample prompts or usage examples
                 - `tests/`: validation fixtures or test cases
@@ -336,6 +366,30 @@ struct TemplateFileSystem {
             renderMemoryMarkdown(),
             to: templateMemoryURL(for: document.id, under: appSupportRootDirectory)
         )
+        try writeTextDocument(
+            renderExamplesReadmeMarkdown(template: template),
+            to: templateExamplesReadmeURL(for: document.id, under: appSupportRootDirectory)
+        )
+        try writeTextDocument(
+            renderExamplePromptMarkdown(template: template),
+            to: templateExamplePromptURL(for: document.id, under: appSupportRootDirectory)
+        )
+        try writeTextDocument(
+            renderTestsReadmeMarkdown(template: template),
+            to: templateTestsReadmeURL(for: document.id, under: appSupportRootDirectory)
+        )
+        try writeTextDocument(
+            renderAcceptanceChecklistMarkdown(template: template),
+            to: templateAcceptanceChecklistURL(for: document.id, under: appSupportRootDirectory)
+        )
+        try writeTextDocument(
+            renderAssetsReadmeMarkdown(template: template),
+            to: templateAssetsReadmeURL(for: document.id, under: appSupportRootDirectory)
+        )
+        try writeTextDocument(
+            renderAssetManifestMarkdown(template: template, document: document),
+            to: templateAssetsManifestURL(for: document.id, under: appSupportRootDirectory)
+        )
     }
 
     func removeTemplateAsset(for templateID: String, under appSupportRootDirectory: URL) throws {
@@ -406,7 +460,44 @@ struct TemplateFileSystem {
     }
 
     private func renderAgentsMarkdown(template: AgentTemplate, document: TemplateAssetDocument) -> String {
-        """
+        let scenarios = markdownBulletList(
+            template.applicableScenarios,
+            fallback: "This template can be applied wherever the declared role and mission are a fit."
+        )
+        let capabilities = markdownBulletList(
+            template.soulSpec.coreCapabilities,
+            fallback: "No capability description recorded."
+        )
+        let responsibilities = markdownBulletList(
+            template.soulSpec.responsibilities,
+            fallback: "No responsibility list recorded."
+        )
+        let workflow = markdownNumberedList(
+            template.soulSpec.workflow,
+            fallback: "1. Clarify the task.\n2. Execute the work.\n3. Review the result."
+        )
+        let inputs = markdownBulletList(
+            template.soulSpec.inputs,
+            fallback: "No input contract recorded."
+        )
+        let outputs = markdownBulletList(
+            template.soulSpec.outputs,
+            fallback: "No output contract recorded."
+        )
+        let collaboration = markdownBulletList(
+            template.soulSpec.collaboration,
+            fallback: "No collaboration contract recorded."
+        )
+        let guardrails = markdownBulletList(
+            template.soulSpec.guardrails,
+            fallback: "No guardrail list recorded."
+        )
+        let successCriteria = markdownBulletList(
+            template.soulSpec.successCriteria,
+            fallback: "No success criteria recorded."
+        )
+
+        return """
         # AGENTS
 
         - package_type: agent-template
@@ -421,6 +512,33 @@ struct TemplateFileSystem {
         ## Package Summary
         \(normalizedOrPlaceholder(template.summary, fallback: "No summary recorded."))
 
+        ## Recommended Scenarios
+        \(scenarios)
+
+        ## Core Capabilities
+        \(capabilities)
+
+        ## Responsibilities
+        \(responsibilities)
+
+        ## Workflow
+        \(workflow)
+
+        ## Input Contract
+        \(inputs)
+
+        ## Output Contract
+        \(outputs)
+
+        ## Collaboration Contract
+        \(collaboration)
+
+        ## Guardrails
+        \(guardrails)
+
+        ## Success Criteria
+        \(successCriteria)
+
         ## Included Files
         - template.json
         - SOUL.md
@@ -432,17 +550,42 @@ struct TemplateFileSystem {
         - HEARTBEAT.md
         - MEMORY.md
         - lineage.json
+        - extensions/examples/default-prompt.md
+        - extensions/tests/acceptance-checklist.md
+        - extensions/assets/asset-manifest.md
         """
     }
 
     private func renderIdentityMarkdown(template: AgentTemplate) -> String {
-        """
+        let capabilitySummary = markdownBulletList(
+            template.soulSpec.coreCapabilities,
+            fallback: normalizedOrPlaceholder(template.summary)
+        )
+        let posture = markdownBulletList(
+            Array(template.soulSpec.guardrails.prefix(3)),
+            fallback: "Operate with the declared role discipline and stay within the assigned scope."
+        )
+
+        return """
         # IDENTITY
 
         Identity: \(normalizedOrPlaceholder(template.identity))
+        Display Name: \(template.name)
+        Family: \(template.family.rawValue)
+        Category: \(template.category.rawValue)
+        Template ID: \(template.id)
 
         ## Role Summary
         \(normalizedOrPlaceholder(template.soulSpec.role))
+
+        ## Mission
+        \(normalizedOrPlaceholder(template.soulSpec.mission))
+
+        ## Capability Signature
+        \(capabilitySummary)
+
+        ## Operating Posture
+        \(posture)
         """
     }
 
@@ -450,6 +593,18 @@ struct TemplateFileSystem {
         let scenarios = template.applicableScenarios.isEmpty
             ? "- No specific scenarios recorded."
             : template.applicableScenarios.map { "- \($0)" }.joined(separator: "\n")
+        let briefingChecklist = markdownBulletList(
+            template.soulSpec.inputs,
+            fallback: "Clarify goal, scope, constraints, and acceptance criteria before invocation."
+        )
+        let deliverables = markdownBulletList(
+            template.soulSpec.outputs,
+            fallback: "Produce a directly usable result and the supporting notes required for handoff."
+        )
+        let boundaries = markdownBulletList(
+            template.soulSpec.guardrails,
+            fallback: "Do not exceed the role boundary declared by the template."
+        )
 
         return """
         # USER
@@ -458,6 +613,15 @@ struct TemplateFileSystem {
 
         ## Applicable Scenarios
         \(scenarios)
+
+        ## Briefing Checklist
+        \(briefingChecklist)
+
+        ## Expected Deliverables
+        \(deliverables)
+
+        ## Usage Boundaries
+        \(boundaries)
         """
     }
 
@@ -465,6 +629,14 @@ struct TemplateFileSystem {
         let capabilities = template.capabilities.isEmpty
             ? "- none"
             : template.capabilities.sorted().map { "- \($0)" }.joined(separator: "\n")
+        let operatingNotes = markdownBulletList(
+            toolingNotes(for: template.category),
+            fallback: "Use only the tools necessary for the assigned task."
+        )
+        let reviewChecklist = markdownBulletList(
+            Array(template.soulSpec.successCriteria.prefix(3)),
+            fallback: "Check correctness, completeness, and handoff readiness before finishing."
+        )
 
         return """
         # TOOLS
@@ -475,8 +647,11 @@ struct TemplateFileSystem {
         ## Capabilities
         \(capabilities)
 
-        ## Environment
-        - none
+        ## Operating Notes
+        \(operatingNotes)
+
+        ## Review Checklist
+        \(reviewChecklist)
         """
     }
 
@@ -484,6 +659,16 @@ struct TemplateFileSystem {
         let identifier = template.identity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? template.name
             : template.identity
+        let startupChecklist = markdownNumberedList(
+            [
+                "Read `SOUL.md` and align on role, mission, workflow, and boundaries.",
+                "Check `USER.md` to confirm the invocation contract and the expected deliverables.",
+                "Check `TOOLS.md` and determine whether the available tools match the task.",
+                "Check `MEMORY.md` and `HEARTBEAT.md` to align on continuity and self-review rules.",
+                "Before execution, restate the goal, assumptions, risks, and completion criteria."
+            ],
+            fallback: "1. Read the package files.\n2. Confirm the task.\n3. Start execution."
+        )
 
         return """
         # BOOTSTRAP
@@ -492,11 +677,22 @@ struct TemplateFileSystem {
         Model Identifier: MiniMax-M2.5
         Runtime Profile: default
         Soul Source Path: workspace/SOUL.md
+
+        ## Startup Checklist
+        \(startupChecklist)
         """
     }
 
     private func renderHeartbeatMarkdown() -> String {
         let memory = OpenClawAgentProtocolMemory()
+        let cadence = markdownBulletList(
+            [
+                "After every meaningful step, compare the current result against the task goal and declared output contract.",
+                "When new constraints appear, update the working assumptions before continuing.",
+                "Before handoff, review correctness, completeness, risk disclosure, and next-step clarity."
+            ],
+            fallback: "Maintain a steady self-review loop."
+        )
 
         return """
         # HEARTBEAT
@@ -505,6 +701,9 @@ struct TemplateFileSystem {
         Last Updated: \(iso8601String(from: memory.lastUpdatedAt))
         Recent Corrections: \(memory.recentCorrections.count)
         Repeat Offenses: \(memory.repeatOffenses.count)
+
+        ## Review Cadence
+        \(cadence)
         """
     }
 
@@ -523,6 +722,204 @@ struct TemplateFileSystem {
         ## Stable Rules
         \(stableRules)
         """
+    }
+
+    private func renderExamplesReadmeMarkdown(template: AgentTemplate) -> String {
+        """
+        # Examples
+
+        This directory stores example prompts and invocation materials for `\(template.name)`.
+
+        - `default-prompt.md`: a standard invocation example aligned with the template contract
+        - add more files here when extending the template for a specialized domain
+        """
+    }
+
+    private func renderExamplePromptMarkdown(template: AgentTemplate) -> String {
+        let scenarios = template.applicableScenarios.prefix(3).map { "- \($0)" }.joined(separator: "\n")
+        let scenarioBlock = scenarios.isEmpty ? "- Use any task that matches the role and mission." : scenarios
+        let inputs = markdownBulletList(
+            template.soulSpec.inputs,
+            fallback: "State the objective, context, constraints, and expected output."
+        )
+        let outputs = markdownBulletList(
+            template.soulSpec.outputs,
+            fallback: "Produce a directly usable result plus assumptions and next steps."
+        )
+
+        return """
+        # Default Prompt Example
+
+        ## Suitable Scenarios
+        \(scenarioBlock)
+
+        ## Suggested User Brief
+        - 请你以 `\(template.name)` 模板执行当前任务。
+        - 目标：补充本次任务的明确业务目标、交付边界和验收标准。
+        - 背景：补充已知事实、上游上下文、输入材料与限制。
+        - 输出要求：输出结构化结果，并显式标注假设、风险和下一步动作。
+
+        ## Expected Inputs
+        \(inputs)
+
+        ## Expected Outputs
+        \(outputs)
+        """
+    }
+
+    private func renderTestsReadmeMarkdown(template: AgentTemplate) -> String {
+        """
+        # Tests
+
+        This directory stores acceptance and regression materials for `\(template.name)`.
+
+        - `acceptance-checklist.md`: baseline review checklist for the template output
+        - add scenario-specific fixtures here when the template is extended
+        """
+    }
+
+    private func renderAcceptanceChecklistMarkdown(template: AgentTemplate) -> String {
+        let criteria = markdownBulletList(
+            template.soulSpec.successCriteria,
+            fallback: "Check that the result is correct, complete, and easy to continue."
+        )
+        let guardrails = markdownBulletList(
+            template.soulSpec.guardrails,
+            fallback: "Check that the result stays inside the declared role boundary."
+        )
+
+        return """
+        # Acceptance Checklist
+
+        ## Success Criteria
+        \(criteria)
+
+        ## Guardrail Verification
+        \(guardrails)
+
+        ## Reviewer Prompts
+        - Is the output aligned with the declared role, mission, and scenario?
+        - Are the critical inputs, assumptions, and constraints explicitly reflected?
+        - Is the result directly usable without guessing hidden context?
+        - Are risks, limitations, and next steps clearly called out?
+        """
+    }
+
+    private func renderAssetsReadmeMarkdown(template: AgentTemplate) -> String {
+        """
+        # Assets
+
+        This directory stores bundled support assets for `\(template.name)`.
+
+        By default it contains a manifest file describing the current package state.
+        Add static references, fixtures, or domain-specific materials here during secondary development.
+        """
+    }
+
+    private func renderAssetManifestMarkdown(template: AgentTemplate, document: TemplateAssetDocument) -> String {
+        let tags = markdownBulletList(
+            template.tags,
+            fallback: "No tags recorded."
+        )
+
+        return """
+        # Asset Manifest
+
+        - template_id: \(template.id)
+        - display_name: \(template.name)
+        - revision: r\(document.revision)
+        - status: \(document.status.rawValue)
+        - category: \(template.category.rawValue)
+
+        ## Tags
+        \(tags)
+
+        ## Current Bundled Assets
+        - README.md
+        - asset-manifest.md
+
+        ## Secondary Development Notes
+        - Add any binary or static reference files here.
+        - Keep filenames stable so downstream sharing and export remain predictable.
+        - Do not place workflow runtime state in this directory.
+        """
+    }
+
+    private func toolingNotes(for category: AgentTemplateCategory) -> [String] {
+        switch category {
+        case .productionCode:
+            return [
+                "Read the existing codebase and conventions before editing.",
+                "Prefer minimal, verifiable changes with explicit validation steps.",
+                "Call out any unrun tests, uncertain dependencies, or migration impact."
+            ]
+        case .productionDocument:
+            return [
+                "Keep the structure readable and audience-aware.",
+                "Separate facts, assumptions, and recommendations.",
+                "Preserve terminology consistency across the final deliverable."
+            ]
+        case .productionVideo:
+            return [
+                "Respect platform constraints such as duration, ratio, and subtitle format.",
+                "Keep script, shot list, and edit instructions aligned.",
+                "Record asset or licensing assumptions when source material is incomplete."
+            ]
+        case .productionImage:
+            return [
+                "Prioritize information clarity over decoration.",
+                "Keep labels, legends, and hierarchy explicit.",
+                "Check that visual proposals stay consistent with data or factual inputs."
+            ]
+        case .functionalLogAnalysis:
+            return [
+                "Base conclusions on evidence that can be traced back to logs or artifacts.",
+                "Separate anomaly description, suspected cause, and confirmed cause.",
+                "Avoid over-generalizing from one-off failures."
+            ]
+        case .functionalLearningTrainingTesting:
+            return [
+                "Make capability growth measurable and repeatable.",
+                "Prefer exercises, rubrics, and checkpoints over vague advice.",
+                "Distinguish baseline, target level, and evaluation result."
+            ]
+        case .functionalMemoryOptimization:
+            return [
+                "Preserve critical context while reducing redundancy.",
+                "Record the reason for deletion, compression, or merge decisions.",
+                "Keep summaries traceable to the original memory source."
+            ]
+        case .functionalHRWorkflow, .functionalSupervisionAssessment:
+            return [
+                "Make ownership, pacing, and review points explicit.",
+                "Escalate uncertainty or blocking dependencies instead of hiding them.",
+                "Keep handoff artifacts structured so other agents can continue cleanly."
+            ]
+        }
+    }
+
+    private func markdownBulletList(_ items: [String], fallback: String) -> String {
+        let normalized = items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if normalized.isEmpty {
+            return "- \(fallback)"
+        }
+
+        return normalized.map { "- \($0)" }.joined(separator: "\n")
+    }
+
+    private func markdownNumberedList(_ items: [String], fallback: String) -> String {
+        let normalized = items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if normalized.isEmpty {
+            return fallback
+        }
+
+        return normalized.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
     }
 
     private func normalizedOrPlaceholder(_ value: String?, fallback: String = "Not recorded.") -> String {

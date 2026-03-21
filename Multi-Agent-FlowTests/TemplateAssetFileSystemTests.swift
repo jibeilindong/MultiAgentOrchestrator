@@ -38,8 +38,14 @@ final class TemplateAssetFileSystemTests: XCTestCase {
             fileSystem.templateLineageURL(for: template.id, under: rootURL),
             fileSystem.templateRevisionDirectory(for: template.id, under: rootURL),
             fileSystem.templateExtensionsReadmeURL(for: template.id, under: rootURL),
+            fileSystem.templateExamplesReadmeURL(for: template.id, under: rootURL),
+            fileSystem.templateExamplePromptURL(for: template.id, under: rootURL),
             fileSystem.templateExamplesRootDirectory(for: template.id, under: rootURL),
+            fileSystem.templateTestsReadmeURL(for: template.id, under: rootURL),
+            fileSystem.templateAcceptanceChecklistURL(for: template.id, under: rootURL),
             fileSystem.templateTestsRootDirectory(for: template.id, under: rootURL),
+            fileSystem.templateAssetsReadmeURL(for: template.id, under: rootURL),
+            fileSystem.templateAssetsManifestURL(for: template.id, under: rootURL),
             fileSystem.templateAssetsRootDirectory(for: template.id, under: rootURL)
         ]
 
@@ -49,6 +55,49 @@ final class TemplateAssetFileSystemTests: XCTestCase {
                 "Expected template asset path to exist: \(path.path)"
             )
         }
+    }
+
+    func testWriteTemplateAssetPopulatesDetailedStandardMarkdownFiles() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.bundledSeedTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 2,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .builtInCatalog,
+            sourceTemplateID: template.id,
+            createdReason: "Test detailed scaffold rendering."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let agentsMarkdown = try String(
+            contentsOf: fileSystem.templateAgentsURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
+        let examplePrompt = try String(
+            contentsOf: fileSystem.templateExamplePromptURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
+        let acceptanceChecklist = try String(
+            contentsOf: fileSystem.templateAcceptanceChecklistURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(agentsMarkdown.contains("## Recommended Scenarios"))
+        XCTAssertTrue(agentsMarkdown.contains(template.name))
+        XCTAssertTrue(examplePrompt.contains("## Suggested User Brief"))
+        XCTAssertTrue(examplePrompt.contains(template.name))
+        XCTAssertTrue(acceptanceChecklist.contains("## Success Criteria"))
     }
 
     func testTemplateAssetDocumentRoundTripsTemplateContent() throws {
@@ -170,6 +219,37 @@ final class TemplateAssetFileSystemTests: XCTestCase {
             )
         )
         XCTAssertEqual(secondExportURL.lastPathComponent, "\(template.id)-2")
+    }
+
+    func testBuiltInTemplateAssetCatalogMaterializesStandardAssets() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let catalog = BuiltInTemplateAssetCatalog(
+            templateFileSystem: TemplateFileSystem(),
+            fileManager: .default,
+            appSupportRootDirectory: rootURL
+        )
+
+        let seedTemplates = Array(AgentTemplateCatalog.bundledSeedTemplates.prefix(2))
+        catalog.synchronize(seedTemplates: seedTemplates)
+
+        let loadedTemplates = catalog.loadTemplates()
+        XCTAssertEqual(loadedTemplates.map(\.id), seedTemplates.map(\.id))
+
+        for template in seedTemplates {
+            let assetURL = try XCTUnwrap(catalog.templateAssetDirectoryURL(for: template.id))
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: assetURL.appendingPathComponent("template.json", isDirectory: false).path
+                )
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: assetURL.appendingPathComponent("extensions/examples/default-prompt.md", isDirectory: false).path
+                )
+            )
+        }
     }
 
     private func makeTemporaryDirectory() throws -> URL {

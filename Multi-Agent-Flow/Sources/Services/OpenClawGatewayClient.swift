@@ -2,6 +2,10 @@ import Foundation
 import CryptoKit
 
 actor OpenClawGatewayClient {
+    private enum GatewayErrorUserInfoKey {
+        static let connectDetailCode = "OpenClawGatewayClient.ConnectDetailCode"
+    }
+
     private static let gatewayClientID = "gateway-client"
     private static let gatewayClientMode = "backend"
     private static let gatewayRole = "operator"
@@ -470,8 +474,7 @@ actor OpenClawGatewayClient {
         timeoutSeconds: Int,
         using config: OpenClawConfig
     ) async throws -> GatewayResponseFrame {
-        let runtimeConfig = try runtimeConfiguration(for: config)
-        try await ensureConnected(using: runtimeConfig)
+        _ = try await connectWithRecovery(using: config)
 
         let requestID = UUID().uuidString
         let frame: [String: Any] = [
@@ -493,6 +496,24 @@ actor OpenClawGatewayClient {
         } catch {
             failPendingResponse(withID: requestID, error: error)
             throw error
+        }
+    }
+
+    private func connectWithRecovery(using config: OpenClawConfig) async throws -> RuntimeConfiguration {
+        var runtimeConfig = try runtimeConfiguration(for: config)
+
+        do {
+            try await ensureConnected(using: runtimeConfig)
+            return runtimeConfig
+        } catch {
+            guard shouldRegenerateDeviceIdentity(after: error) else {
+                throw error
+            }
+
+            try archiveCurrentDeviceIdentity(reason: "gateway-recovery")
+            runtimeConfig = try runtimeConfiguration(for: config)
+            try await ensureConnected(using: runtimeConfig)
+            return runtimeConfig
         }
     }
 
@@ -527,7 +548,7 @@ actor OpenClawGatewayClient {
         }
 
         let requestID = UUID().uuidString
-        let connectPayload = buildConnectPayload(
+        let connectPayload = try buildConnectPayload(
             runtimeConfig: runtimeConfig,
             challengePayload: payload
         )
@@ -555,8 +576,9 @@ actor OpenClawGatewayClient {
         if !ok {
             let errorShape = responseObject["error"] as? [String: Any]
             let message = (errorShape?["message"] as? String) ?? "Gateway authentication failed."
+            let detailCode = connectErrorDetailCode(from: errorShape)
             task.cancel(with: .policyViolation, reason: nil)
-            throw gatewayError(message)
+            throw gatewayError(message, connectDetailCode: detailCode)
         }
 
         if let payload = responseObject["payload"] as? [String: Any] {
@@ -576,7 +598,7 @@ actor OpenClawGatewayClient {
     private func buildConnectPayload(
         runtimeConfig: RuntimeConfiguration,
         challengePayload: [String: Any]
-    ) -> [String: Any] {
+    ) throws -> [String: Any] {
         let signedAtMilliseconds = Int(Date().timeIntervalSince1970 * 1000)
         let platform = runtimePlatformIdentifier()
         let clientVersion = runtimeClientVersion()
@@ -619,8 +641,8 @@ actor OpenClawGatewayClient {
             )
             payload["device"] = [
                 "id": runtimeConfig.deviceIdentity.deviceID,
-                "publicKey": publicKeyRawBase64URL(for: runtimeConfig.deviceIdentity),
-                "signature": signDevicePayload(
+                "publicKey": try publicKeyRawBase64URL(for: runtimeConfig.deviceIdentity),
+                "signature": try signDevicePayload(
                     signaturePayload,
                     with: runtimeConfig.deviceIdentity
                 ),
@@ -1103,8 +1125,12 @@ actor OpenClawGatewayClient {
     private func loadOrCreateDeviceIdentity() throws -> GatewayDeviceIdentity {
         let fileURL = try gatewayDeviceIdentityFileURL()
 
-        if let existing = try loadStoredDeviceIdentity(from: fileURL) {
-            return existing
+        do {
+            if let existing = try loadStoredDeviceIdentity(from: fileURL) {
+                return existing
+            }
+        } catch {
+            try archiveDeviceIdentityIfPresent(at: fileURL, reason: "corrupt")
         }
 
         let privateKey = Curve25519.Signing.PrivateKey()
@@ -1158,6 +1184,29 @@ actor OpenClawGatewayClient {
         return repairedIdentity
     }
 
+    private func archiveCurrentDeviceIdentity(reason: String) throws {
+        let fileURL = try gatewayDeviceIdentityFileURL()
+        try archiveDeviceIdentityIfPresent(at: fileURL, reason: reason)
+    }
+
+    private func archiveDeviceIdentityIfPresent(at fileURL: URL, reason: String) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+
+        let baseName = fileURL.deletingPathExtension().lastPathComponent
+        let fileExtension = fileURL.pathExtension
+        let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let archivedURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("\(baseName).\(reason).\(timestamp)", isDirectory: false)
+            .appendingPathExtension(fileExtension)
+
+        if fileManager.fileExists(atPath: archivedURL.path) {
+            try fileManager.removeItem(at: archivedURL)
+        }
+
+        try fileManager.moveItem(at: fileURL, to: archivedURL)
+    }
+
     private func persistDeviceIdentity(_ identity: GatewayDeviceIdentity, to fileURL: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(
@@ -1177,11 +1226,11 @@ actor OpenClawGatewayClient {
         )
     }
 
-    private func publicKeyRawBase64URL(for identity: GatewayDeviceIdentity) -> String {
+    private func publicKeyRawBase64URL(for identity: GatewayDeviceIdentity) throws -> String {
         guard let privateKey = try? Curve25519.Signing.PrivateKey(
             rawRepresentation: identity.privateKeyRawRepresentation
         ) else {
-            return ""
+            throw gatewayError("本地设备身份无效，正在尝试重新生成。", connectDetailCode: "DEVICE_IDENTITY_CORRUPT")
         }
         return Data(privateKey.publicKey.rawRepresentation).base64URLEncodedString()
     }
@@ -1189,13 +1238,13 @@ actor OpenClawGatewayClient {
     private func signDevicePayload(
         _ payload: String,
         with identity: GatewayDeviceIdentity
-    ) -> String {
+    ) throws -> String {
         guard let privateKey = try? Curve25519.Signing.PrivateKey(
             rawRepresentation: identity.privateKeyRawRepresentation
         ),
         let signature = try? privateKey.signature(for: Data(payload.utf8))
         else {
-            return ""
+            throw gatewayError("本地设备身份签名失败，正在尝试重新生成。", connectDetailCode: "DEVICE_IDENTITY_CORRUPT")
         }
 
         return signature.base64URLEncodedString()
@@ -1212,11 +1261,48 @@ actor OpenClawGatewayClient {
         return try JSONSerialization.data(withJSONObject: object, options: [])
     }
 
-    private func gatewayError(_ message: String) -> NSError {
-        NSError(
+    private func shouldRegenerateDeviceIdentity(after error: Error) -> Bool {
+        let nsError = error as NSError
+        let detailCode = nsError.userInfo[GatewayErrorUserInfoKey.connectDetailCode] as? String
+        let recoverableCodes: Set<String> = [
+            "DEVICE_IDENTITY_CORRUPT",
+            "DEVICE_AUTH_INVALID",
+            "DEVICE_AUTH_DEVICE_ID_MISMATCH",
+            "DEVICE_AUTH_SIGNATURE_INVALID",
+            "DEVICE_AUTH_PUBLIC_KEY_INVALID"
+        ]
+
+        if let detailCode, recoverableCodes.contains(detailCode) {
+            return true
+        }
+
+        let message = nsError.localizedDescription.lowercased()
+        return message.contains("invalid connect params")
+            && (message.contains("publickey") || message.contains("signature") || message.contains("signedat"))
+    }
+
+    private func connectErrorDetailCode(from errorShape: [String: Any]?) -> String? {
+        guard
+            let errorShape,
+            let details = errorShape["details"] as? [String: Any],
+            let code = details["code"] as? String
+        else {
+            return nil
+        }
+
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func gatewayError(_ message: String, connectDetailCode: String? = nil) -> NSError {
+        var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
+        if let connectDetailCode, !connectDetailCode.isEmpty {
+            userInfo[GatewayErrorUserInfoKey.connectDetailCode] = connectDetailCode
+        }
+        return NSError(
             domain: "OpenClawGatewayClient",
             code: 1,
-            userInfo: [NSLocalizedDescriptionKey: message]
+            userInfo: userInfo
         )
     }
 }
