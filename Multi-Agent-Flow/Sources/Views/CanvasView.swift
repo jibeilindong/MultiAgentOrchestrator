@@ -141,6 +141,16 @@ struct CanvasView: View {
                     onAssignBatchSources: onAssignBatchSources,
                     onAssignBatchTargets: onAssignBatchTargets
                 )
+                .overlay(alignment: .topTrailing) {
+                    CanvasZoomControls(
+                        scale: scale,
+                        onZoomOut: zoomOut,
+                        onReset: resetView,
+                        onZoomIn: zoomIn
+                    )
+                    .padding(.top, 16)
+                    .padding(.trailing, 16)
+                }
             } else {
                 Color.clear
             }
@@ -204,5 +214,72 @@ struct CanvasView: View {
 
     private func setupDefaultNodes() {
         _ = appState.ensureMainWorkflow()
+    }
+
+    private func zoomIn() {
+        let nextScale = min(scale + 0.2, 20.0)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scale = nextScale
+        }
+        zoomScale = nextScale
+    }
+
+    private func zoomOut() {
+        let nextScale = max(scale - 0.2, 0.05)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scale = nextScale
+        }
+        zoomScale = nextScale
+    }
+
+    private func resetView() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            scale = 1.0
+            offset = .zero
+            lastOffset = .zero
+        }
+        zoomScale = 1.0
+    }
+}
+
+private struct CanvasZoomControls: View {
+    let scale: CGFloat
+    let onZoomOut: () -> Void
+    let onReset: () -> Void
+    let onZoomIn: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            zoomButton(systemName: "minus.magnifyingglass", tooltip: LocalizedString.zoomOut, action: onZoomOut)
+            zoomButton(systemName: "arrow.counterclockwise", tooltip: LocalizedString.resetZoom, action: onReset)
+            zoomButton(systemName: "plus.magnifyingglass", tooltip: LocalizedString.zoomIn, action: onZoomIn)
+        }
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.12), radius: 14, y: 8)
+        .help("\(LocalizedString.zoom): \(Int((scale * 100).rounded()))%")
+    }
+
+    private func zoomButton(systemName: String, tooltip: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundColor(Color.primary.opacity(0.84))
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.88))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
     }
 }

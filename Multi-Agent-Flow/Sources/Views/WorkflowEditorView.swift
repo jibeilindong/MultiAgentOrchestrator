@@ -90,9 +90,6 @@ struct WorkflowEditorView: View {
         VStack(spacing: 0) {
             EditorToolbar(
                 viewMode: $viewMode,
-                scale: $zoomScale,
-                offset: $canvasOffset,
-                lastOffset: $canvasLastOffset,
                 selectedNodeID: $selectedNodeID,
                 selectedNodeIDs: $selectedNodeIDs,
                 selectedEdgeID: $selectedEdgeID,
@@ -935,9 +932,6 @@ private struct EditorPaneVisibility: ViewModifier {
 struct EditorToolbar: View {
     @EnvironmentObject var appState: AppState
     @Binding var viewMode: WorkflowEditorView.EditorViewMode
-    @Binding var scale: CGFloat
-    @Binding var offset: CGSize
-    @Binding var lastOffset: CGSize
     @Binding var selectedNodeID: UUID?
     @Binding var selectedNodeIDs: Set<UUID>
     @Binding var selectedEdgeID: UUID?
@@ -994,19 +988,6 @@ struct EditorToolbar: View {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
                         toolbarModeButton(mode)
                     }
-
-                    Divider()
-                        .frame(height: 24)
-                        .padding(.horizontal, 2)
-
-                    Menu {
-                        Button(LocalizedString.zoomOut) { zoomOut() }
-                        Button(LocalizedString.resetZoom) { resetView() }
-                        Button(LocalizedString.zoomIn) { zoomIn() }
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.text("zoom_label"), systemName: "eye")
-                    }
-                    .menuStyle(.borderlessButton)
 
                     toolbarIconToggleButton(
                         systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
@@ -1562,26 +1543,6 @@ struct EditorToolbar: View {
                 Capsule(style: .continuous)
                     .stroke(Color.black.opacity(0.06), lineWidth: 1)
             )
-        }
-    }
-
-    private func zoomIn() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            scale = min(scale + 0.2, 20.0)
-        }
-    }
-
-    private func zoomOut() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            scale = max(scale - 0.2, 0.05)
-        }
-    }
-
-    private func resetView() {
-        withAnimation(.easeInOut(duration: 0.3)) {
-            scale = 1.0
-            offset = .zero
-            lastOffset = .zero
         }
     }
 
