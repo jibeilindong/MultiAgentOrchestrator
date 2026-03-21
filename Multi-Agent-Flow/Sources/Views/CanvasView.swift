@@ -112,6 +112,9 @@ struct CanvasView: View {
                     isLassoMode: $isLassoMode,
                     isTransientLassoMode: $isTransientLassoMode,
                     lassoRect: $lassoRect,
+                    onZoomOut: zoomOut,
+                    onResetView: resetView,
+                    onZoomIn: zoomIn,
                     connectingFromNode: $connectingFromNode,
                     tempConnectionEnd: $tempConnectionEnd,
                     isConnectMode: isConnectMode,
@@ -141,16 +144,6 @@ struct CanvasView: View {
                     onAssignBatchSources: onAssignBatchSources,
                     onAssignBatchTargets: onAssignBatchTargets
                 )
-                .overlay(alignment: .topTrailing) {
-                    CanvasZoomControls(
-                        scale: scale,
-                        onZoomOut: zoomOut,
-                        onReset: resetView,
-                        onZoomIn: zoomIn
-                    )
-                    .padding(.top, 16)
-                    .padding(.trailing, 16)
-                }
             } else {
                 Color.clear
             }
@@ -242,7 +235,7 @@ struct CanvasView: View {
     }
 }
 
-private struct CanvasZoomControls: View {
+struct CanvasZoomControls: View {
     let scale: CGFloat
     let onZoomOut: () -> Void
     let onReset: () -> Void

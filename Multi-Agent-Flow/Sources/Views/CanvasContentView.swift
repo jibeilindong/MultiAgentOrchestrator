@@ -19,6 +19,9 @@ struct CanvasContentView: View {
     @Binding var isLassoMode: Bool
     @Binding var isTransientLassoMode: Bool
     @Binding var lassoRect: CGRect?
+    var onZoomOut: () -> Void = {}
+    var onResetView: () -> Void = {}
+    var onZoomIn: () -> Void = {}
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     var isConnectMode: Bool = false
@@ -103,8 +106,35 @@ struct CanvasContentView: View {
         }
     }
 
+    private func zoomControlsInteractionFrame(in geometry: GeometryProxy) -> CGRect {
+        let controlButtonSize: CGFloat = 30
+        let controlSpacing: CGFloat = 6
+        let controlInnerPadding: CGFloat = 8
+        let controlsWidth = (controlButtonSize * 3) + (controlSpacing * 2) + (controlInnerPadding * 2)
+        let controlsHeight = controlButtonSize + (controlInnerPadding * 2)
+        let fallbackFrame = CGRect(
+            x: max(0, geometry.size.width - controlsWidth - 16),
+            y: 16,
+            width: controlsWidth,
+            height: controlsHeight
+        )
+        return fallbackFrame.insetBy(dx: -16, dy: -16)
+    }
+
+    private func overlayInteractionFrame(in geometry: GeometryProxy) -> CGRect {
+        let candidates = [
+            legendInteractionFrame,
+            zoomControlsInteractionFrame(in: geometry)
+        ].filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+
+        return candidates.reduce(CGRect.null) { partial, rect in
+            partial.isNull ? rect : partial.union(rect)
+        }
+    }
+
     var body: some View {
         GeometryReader { geometry in
+            let overlayInteractionFrame = overlayInteractionFrame(in: geometry)
             let canvasConnectionCounts = currentConnectionCounts
             let canvasNodeFramesByID = nodeFrameCache.resolve(
                 workflow: currentWorkflow,
@@ -264,7 +294,7 @@ struct CanvasContentView: View {
                 }
             }
             interactiveCanvas
-            .coordinateSpace(name: CanvasOverlayFramePreferenceKey.coordinateSpaceName)
+            .coordinateSpace(name: CanvasInteractionCoordinateSpace.name)
             .overlay(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: 10) {
                     CanvasGroupLegendView(
@@ -291,17 +321,27 @@ struct CanvasContentView: View {
                         Color.clear
                             .preference(
                                 key: CanvasOverlayFramePreferenceKey.self,
-                                value: proxy.frame(in: .named(CanvasOverlayFramePreferenceKey.coordinateSpaceName))
+                                value: proxy.frame(in: .named(CanvasInteractionCoordinateSpace.name))
                             )
                     }
                 )
             }
             .onPreferenceChange(CanvasOverlayFramePreferenceKey.self) { legendFrame = $0 }
+            .overlay(alignment: .topTrailing) {
+                CanvasZoomControls(
+                    scale: scale,
+                    onZoomOut: onZoomOut,
+                    onReset: onResetView,
+                    onZoomIn: onZoomIn
+                )
+                .padding(.top, 16)
+                .padding(.trailing, 16)
+            }
             .background(
                 BlankCanvasDragMonitor(
                     isEnabled: { !(isLassoMode || isTransientLassoMode) },
                     shouldIgnoreLocation: { location in
-                        legendInteractionFrame.contains(location)
+                        overlayInteractionFrame.contains(location)
                     },
                     onEdgeHit: { location in
                         guard let edge = edge(at: location, in: visibleEdgeLayouts) else { return false }
@@ -350,7 +390,7 @@ struct CanvasContentView: View {
             .background(
                 RightMouseDragMonitor(
                     shouldIgnoreLocation: { location in
-                        legendInteractionFrame.contains(location)
+                        overlayInteractionFrame.contains(location)
                     },
                     onStart: { start in
                         isTransientLassoMode = true
@@ -1816,12 +1856,14 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
                 guard let self, let view = self.view, view.window != nil else { return event }
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
+                let alternateLocation = CGPoint(x: converted.x, y: converted.y)
                 let inside = view.bounds.contains(location)
 
                 switch event.type {
                 case .rightMouseDown:
                     guard inside else { return event }
-                    guard !self.shouldIgnoreLocation(location) else { return event }
+                    guard !self.shouldIgnoreLocation(location),
+                          !self.shouldIgnoreLocation(alternateLocation) else { return event }
                     tracking = true
                     onStart(location)
                     return nil
@@ -1934,8 +1976,11 @@ private struct BatchCanvasQuickBar: View {
     }
 }
 
+enum CanvasInteractionCoordinateSpace {
+    static let name = "CanvasContentViewCoordinateSpace"
+}
+
 private struct CanvasOverlayFramePreferenceKey: PreferenceKey {
-    static let coordinateSpaceName = "CanvasContentViewCoordinateSpace"
     static var defaultValue: CGRect = .null
 
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {

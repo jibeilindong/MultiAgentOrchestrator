@@ -988,10 +988,6 @@ struct EditorToolbar: View {
         !selectedBoundaryIDs.isEmpty
     }
 
-    private var activeBoundaryCount: Int {
-        selectedBoundaryIDs.count
-    }
-
     private var hasDeleteTarget: Bool {
         hasNodeSelection || hasBoundarySelection || selectedEdgeID != nil
     }
@@ -1003,14 +999,6 @@ struct EditorToolbar: View {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
                         toolbarModeButton(mode)
                     }
-
-                    toolbarIconToggleButton(
-                        systemName: isLassoMode ? "rectangle.dashed.badge.checkmark" : "rectangle.dashed",
-                        title: LocalizedString.text("lasso"),
-                        action: toggleLassoMode,
-                        isActive: isLassoMode,
-                        tooltip: LocalizedString.text("lasso_tooltip")
-                    )
                 }
             }
 
@@ -1034,39 +1022,61 @@ struct EditorToolbar: View {
                             },
                             variant: .toolbar
                         )
+                        toolbarIconButton(
+                            systemName: "align.horizontal.left",
+                            action: { onAlignSelected(.left) },
+                            tooltip: LocalizedString.text("align_left")
+                        )
+                        .disabled(!hasNodeSelection)
 
-                        Menu {
-                            Button(LocalizedString.copy) { onCopySelection() }.disabled(!hasNodeSelection)
-                            Button(LocalizedString.cut) { onCutSelection() }.disabled(!hasNodeSelection)
-                            Button(LocalizedString.paste) { onPasteSelection() }
-                        } label: {
-                            toolbarMenuLabel(title: LocalizedString.node, systemName: "square.on.square")
-                        }
-                        .menuStyle(.borderlessButton)
+                        toolbarIconButton(
+                            systemName: "align.horizontal.center",
+                            action: { onAlignSelected(.center) },
+                            tooltip: LocalizedString.text("align_center")
+                        )
+                        .disabled(!hasNodeSelection)
 
-                        Menu {
-                            Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
-                                .disabled(!hasNodeSelection)
-                            Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
-                                .disabled(!hasNodeSelection)
-                            Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
-                                .disabled(!hasNodeSelection)
-                            Divider()
-                            Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
-                                .disabled(!hasNodeSelection)
-                            Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
-                                .disabled(!hasNodeSelection)
-                            Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
-                                .disabled(!hasNodeSelection)
-                            Divider()
-                            Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
-                                .disabled(activeNodeCount < 3)
-                            Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
-                                .disabled(activeNodeCount < 3)
-                        } label: {
-                            toolbarMenuLabel(title: LocalizedString.text("layout_menu"), systemName: "square.grid.3x3")
-                        }
-                        .menuStyle(.borderlessButton)
+                        toolbarIconButton(
+                            systemName: "align.horizontal.right",
+                            action: { onAlignSelected(.right) },
+                            tooltip: LocalizedString.text("align_right")
+                        )
+                        .disabled(!hasNodeSelection)
+
+                        toolbarIconButton(
+                            systemName: "align.vertical.top",
+                            action: { onAlignSelected(.top) },
+                            tooltip: LocalizedString.text("align_top")
+                        )
+                        .disabled(!hasNodeSelection)
+
+                        toolbarIconButton(
+                            systemName: "align.vertical.center",
+                            action: { onAlignSelected(.middle) },
+                            tooltip: LocalizedString.text("align_middle")
+                        )
+                        .disabled(!hasNodeSelection)
+
+                        toolbarIconButton(
+                            systemName: "align.vertical.bottom",
+                            action: { onAlignSelected(.bottom) },
+                            tooltip: LocalizedString.text("align_bottom")
+                        )
+                        .disabled(!hasNodeSelection)
+
+                        toolbarIconButton(
+                            systemName: "arrow.left.and.right",
+                            action: { onDistributeSelected(.horizontal) },
+                            tooltip: LocalizedString.text("distribute_horizontally")
+                        )
+                        .disabled(activeNodeCount < 3)
+
+                        toolbarIconButton(
+                            systemName: "arrow.up.and.down",
+                            action: { onDistributeSelected(.vertical) },
+                            tooltip: LocalizedString.text("distribute_vertically")
+                        )
+                        .disabled(activeNodeCount < 3)
                     }
 
                     toolbarSectionDivider()
@@ -1138,14 +1148,12 @@ struct EditorToolbar: View {
                         )
                     }
 
-                    Menu {
-                        Button(LocalizedString.text("organize_connections")) { onOrganizeConnections() }
-                        Button(LocalizedString.text("delete_selected_edge")) { onDeleteSelectedEdge() }
-                            .disabled(selectedEdgeID == nil)
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.text("connect_toolbar"), systemName: "arrow.triangle.branch")
-                    }
-                    .menuStyle(.borderlessButton)
+                    toolbarIconButton(
+                        systemName: "arrow.triangle.branch",
+                        title: LocalizedString.text("organize_connections"),
+                        action: onOrganizeConnections,
+                        tooltip: LocalizedString.text("organize_connections")
+                    )
 
                     toolbarSectionDivider()
 
@@ -1159,45 +1167,31 @@ struct EditorToolbar: View {
                     }
                     .menuStyle(.borderlessButton)
 
-                    Menu {
-                        Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
-                            .disabled(!hasBoundarySelection)
-                        Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
-                            .disabled(!hasBoundarySelection)
-                        Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
-                            .disabled(!hasBoundarySelection)
-                        Divider()
-                        Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
-                            .disabled(!hasBoundarySelection)
-                        Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
-                            .disabled(!hasBoundarySelection)
-                        Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
-                            .disabled(!hasBoundarySelection)
-                        Divider()
-                        Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
-                            .disabled(activeBoundaryCount < 3)
-                        Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
-                            .disabled(activeBoundaryCount < 3)
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.text("layout_menu"), systemName: "rectangle.dashed")
-                    }
-                    .menuStyle(.borderlessButton)
-
                     toolbarSectionDivider()
 
-                    Menu {
-                        Button(LocalizedString.undo) { appState.undoWorkflowChange() }
-                            .disabled(!appState.canUndoWorkflowChange)
-                        Button(LocalizedString.redo) { appState.redoWorkflowChange() }
-                            .disabled(!appState.canRedoWorkflowChange)
-                        Divider()
-                        Button(LocalizedString.selectAll) { selectAllItems() }
-                        Button(LocalizedString.delete) { handleDeleteAction() }
-                            .disabled(!hasDeleteTarget)
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.workflow, systemName: "point.3.connected.trianglepath.dotted")
-                    }
-                    .menuStyle(.borderlessButton)
+                    toolbarIconButton(
+                        systemName: "arrow.uturn.backward",
+                        title: LocalizedString.undo,
+                        action: { appState.undoWorkflowChange() },
+                        tooltip: LocalizedString.undo
+                    )
+                    .disabled(!appState.canUndoWorkflowChange)
+
+                    toolbarIconButton(
+                        systemName: "arrow.uturn.forward",
+                        title: LocalizedString.redo,
+                        action: { appState.redoWorkflowChange() },
+                        tooltip: LocalizedString.redo
+                    )
+                    .disabled(!appState.canRedoWorkflowChange)
+
+                    toolbarIconButton(
+                        systemName: "trash",
+                        title: LocalizedString.delete,
+                        action: handleDeleteAction,
+                        tooltip: LocalizedString.delete
+                    )
+                    .disabled(!hasDeleteTarget)
 
                     toolbarIconButton(
                         systemName: "list.bullet.clipboard",

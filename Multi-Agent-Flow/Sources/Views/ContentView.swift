@@ -172,6 +172,14 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                         .tint(appState.localizationManager.currentLanguage == language ? .accentColor : nil)
                     }
+
+                    Button(action: {
+                        NotificationCenter.default.post(name: .openSettings, object: nil)
+                    }) {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.bordered)
+                    .help(LocalizedString.settings)
                 }
             }
         }
