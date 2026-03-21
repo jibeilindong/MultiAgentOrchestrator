@@ -26,6 +26,7 @@ class ProjectManager: ObservableObject {
     @Published var projects: [ProjectFileReference] = []
 
     private let fileManager = FileManager.default
+    private let projectFileSystem = ProjectFileSystem.shared
     
     var projectsDirectory: URL {
         let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -70,6 +71,10 @@ class ProjectManager: ObservableObject {
     var analyticsRootDirectory: URL {
         appSupportRootDirectory.appendingPathComponent("Analytics", isDirectory: true)
     }
+
+    var managedProjectsRootDirectory: URL {
+        projectFileSystem.managedProjectsRootDirectory(under: appSupportRootDirectory)
+    }
     
     private init() {
         migrateLegacyStorageIfNeeded()
@@ -85,6 +90,7 @@ class ProjectManager: ObservableObject {
         try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: analyticsRootDirectory, withIntermediateDirectories: true)
+        try? projectFileSystem.ensureBaseDirectories(under: appSupportRootDirectory)
     }
     
     func loadProjectList() {
@@ -112,13 +118,24 @@ class ProjectManager: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(project)
         try data.write(to: destinationURL, options: .atomic)
+        try projectFileSystem.synchronizeProject(
+            project,
+            sourceProjectFileURL: destinationURL,
+            under: appSupportRootDirectory
+        )
         loadProjectList()
         return destinationURL
     }
     
     func loadProject(from url: URL) throws -> MAProject {
         let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(MAProject.self, from: data)
+        let project = try JSONDecoder().decode(MAProject.self, from: data)
+        _ = try? projectFileSystem.synchronizeProject(
+            project,
+            sourceProjectFileURL: url,
+            under: appSupportRootDirectory
+        )
+        return project
     }
 
     func saveDraft(_ project: MAProject) throws -> URL {
@@ -127,6 +144,11 @@ class ProjectManager: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(project)
         try data.write(to: destinationURL, options: .atomic)
+        _ = try? projectFileSystem.synchronizeProject(
+            project,
+            sourceProjectFileURL: currentProjectFileURLFallback(for: project),
+            under: appSupportRootDirectory
+        )
         return destinationURL
     }
 
@@ -191,6 +213,7 @@ class ProjectManager: ObservableObject {
         try? FileManager.default.removeItem(at: url)
         if let projectID {
             removeDraft(for: projectID)
+            projectFileSystem.removeManagedProjectRoot(for: projectID, under: appSupportRootDirectory)
             try? FileManager.default.removeItem(
                 at: defaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
@@ -219,6 +242,18 @@ class ProjectManager: ObservableObject {
 
     func analyticsDatabaseURL(for projectID: UUID) -> URL {
         analyticsRootDirectory.appendingPathComponent("\(projectID.uuidString).sqlite", isDirectory: false)
+    }
+
+    func managedProjectRootDirectory(for projectID: UUID) -> URL {
+        projectFileSystem.managedProjectRootDirectory(for: projectID, under: appSupportRootDirectory)
+    }
+
+    func projectStorageManifest(for projectID: UUID) -> ProjectStorageManifest? {
+        try? projectFileSystem.loadManifest(for: projectID, under: appSupportRootDirectory)
+    }
+
+    private func currentProjectFileURLFallback(for project: MAProject) -> URL {
+        projectURL(for: project.name)
     }
 
     private func migrateLegacyStorageIfNeeded() {
