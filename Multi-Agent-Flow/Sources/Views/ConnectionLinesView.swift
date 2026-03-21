@@ -18,6 +18,7 @@ struct ConnectionLinesView: View {
     let textColor: Color
     @Binding var selectedEdgeID: UUID?
     let recentlyCreatedEdgeIDs: Set<UUID>
+    @State private var renderCache = ConnectionEdgeRenderCache()
     @State private var hoveredSharedSegmentID: String?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
 
@@ -175,30 +176,73 @@ struct ConnectionLinesView: View {
     }
 
     private func buildRenderData() -> ConnectionRenderData {
-        let renderEdgeLayouts = edgeLayouts.map { layout in
-            EdgeLayout(
-                edge: layout.edge,
-                points: layout.points,
-                strokePolylines: [layout.points],
-                isSelected: selectedEdgeID == layout.edge.id,
-                isRecentlyCreated: recentlyCreatedEdgeIDs.contains(layout.edge.id),
-                baseColor: edgeBaseColor(layout.edge),
-                displayText: edgeDisplayText(layout.edge),
-                showsForwardArrow: true,
-                labelPosition: nil,
-                bridgeOverlays: []
-            )
-        }
+        let resolvedEdgeLayouts = renderCache.resolve(signature: renderSignature()) {
+            let renderEdgeLayouts = edgeLayouts.map { layout in
+                EdgeLayout(
+                    edge: layout.edge,
+                    points: layout.points,
+                    strokePolylines: [layout.points],
+                    isSelected: selectedEdgeID == layout.edge.id,
+                    isRecentlyCreated: recentlyCreatedEdgeIDs.contains(layout.edge.id),
+                    baseColor: edgeBaseColor(layout.edge),
+                    displayText: edgeDisplayText(layout.edge),
+                    showsForwardArrow: true,
+                    labelPosition: nil,
+                    bridgeOverlays: []
+                )
+            }
 
-        return ConnectionRenderData(
-            edgeLayouts: resolvedLabelLayouts(
+            return resolvedLabelLayouts(
                 resolvedBridgeLayouts(
                     resolvedSharedStrokeLayouts(deduplicatedArrowLayouts(renderEdgeLayouts))
                 ),
                 blockedRects: blockedRects
-            ),
+            )
+        }
+
+        return ConnectionRenderData(
+            edgeLayouts: resolvedEdgeLayouts,
             sharedHitLayouts: sharedHitLayouts
         )
+    }
+
+    private func renderSignature() -> Int {
+        var hasher = Hasher()
+        hasher.combine(selectedEdgeID)
+        hasher.combine(recentlyCreatedEdgeIDs.count)
+        for edgeID in recentlyCreatedEdgeIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            hasher.combine(edgeID)
+        }
+
+        hasher.combine(Double(lineWidth))
+        hasher.combine(Double(textScale))
+        hasher.combine(approvalText)
+        hasher.combine(String(describing: lineColor))
+
+        hasher.combine(edgeLayouts.count)
+        for layout in edgeLayouts {
+            hasher.combine(layout.edge.id)
+            hasher.combine(layout.edge.fromNodeID)
+            hasher.combine(layout.edge.toNodeID)
+            hasher.combine(layout.edge.label)
+            hasher.combine(layout.edge.conditionExpression)
+            hasher.combine(layout.edge.requiresApproval)
+            hasher.combine(layout.edge.isBidirectional)
+            hasher.combine(layout.edge.displayColorHex ?? "")
+            hasher.combine(layout.points.count)
+            for point in layout.points {
+                hasher.combine(normalizedCoordinate(point.x))
+                hasher.combine(normalizedCoordinate(point.y))
+            }
+        }
+
+        let blockedRectSignatures = blockedRects.map(rectSignature).sorted()
+        hasher.combine(blockedRectSignatures.count)
+        for signature in blockedRectSignatures {
+            hasher.combine(signature)
+        }
+
+        return hasher.finalize()
     }
 
     private func strokeWidth(for layout: EdgeLayout) -> CGFloat {
@@ -815,6 +859,21 @@ struct ConnectionLinesView: View {
 
         return points[points.count / 2]
     }
+
+    private func normalizedCoordinate(_ value: CGFloat) -> Int {
+        Int((Double(value) * 10).rounded())
+    }
+
+    private func rectSignature(_ rect: CGRect) -> String {
+        [
+            normalizedCoordinate(rect.origin.x),
+            normalizedCoordinate(rect.origin.y),
+            normalizedCoordinate(rect.size.width),
+            normalizedCoordinate(rect.size.height)
+        ]
+        .map(String.init)
+        .joined(separator: ":")
+    }
 }
 
 private struct EdgeLayout {
@@ -833,6 +892,22 @@ private struct EdgeLayout {
 private struct ConnectionRenderData {
     let edgeLayouts: [EdgeLayout]
     let sharedHitLayouts: [WorkflowCanvasSharedSegmentHitLayout]
+}
+
+private final class ConnectionEdgeRenderCache {
+    private var lastSignature: Int?
+    private var cachedEdgeLayouts: [EdgeLayout] = []
+
+    func resolve(signature: Int, producer: () -> [EdgeLayout]) -> [EdgeLayout] {
+        if lastSignature == signature {
+            return cachedEdgeLayouts
+        }
+
+        let edgeLayouts = producer()
+        lastSignature = signature
+        cachedEdgeLayouts = edgeLayouts
+        return edgeLayouts
+    }
 }
 
 private struct StrokeSegmentReference {

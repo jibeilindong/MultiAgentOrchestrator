@@ -840,12 +840,20 @@ class OpenClawManager: ObservableObject {
     }
 
     @discardableResult
-    func importDetectedAgents(into project: inout MAProject, selectedRecordIDs: Set<String>? = nil) -> [ProjectOpenClawDetectedAgentRecord] {
+    func importDetectedAgents(
+        into project: inout MAProject,
+        selections: [AgentImportSelection]? = nil,
+        selectedRecordIDs: Set<String>? = nil
+    ) -> [ProjectOpenClawDetectedAgentRecord] {
         let importRoot = ProjectManager.shared.openClawImportedAgentsDirectory(for: project.id)
         try? FileManager.default.createDirectory(at: importRoot, withIntermediateDirectories: true)
 
         var importedRecords: [ProjectOpenClawDetectedAgentRecord] = []
+        let selectionMap = Dictionary(uniqueKeysWithValues: (selections ?? []).map { ($0.recordID, $0) })
         let selectedRecords = discoveryResults.filter { record in
+            if selections != nil {
+                return selectionMap[record.id] != nil
+            }
             guard let selectedRecordIDs else { return true }
             return selectedRecordIDs.contains(record.id)
         }
@@ -858,10 +866,6 @@ class OpenClawManager: ObservableObject {
 
             let sourceDirectory = URL(fileURLWithPath: sourceDirectoryPath, isDirectory: true)
             guard FileManager.default.fileExists(atPath: sourceDirectory.path) else { continue }
-
-            if project.agents.contains(where: { $0.name == record.name }) {
-                continue
-            }
 
             let agentRoot = importRoot.appendingPathComponent(safePathComponent(record.id), isDirectory: true)
             let privateRoot = agentRoot.appendingPathComponent("private", isDirectory: true)
@@ -909,8 +913,46 @@ class OpenClawManager: ObservableObject {
                 }
             }
 
-            var agent = Agent(name: record.name)
-            agent.description = "Imported from OpenClaw"
+            let resolution = AgentImportNamingService.resolveImportedAgent(
+                rawName: record.name,
+                soulMD: soulText,
+                capabilities: capabilities
+            )
+            let selection = selectionMap[record.id]
+            let resolvedFunctionDescription = selection?.functionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            let functionDescription = {
+                if let resolvedFunctionDescription, !resolvedFunctionDescription.isEmpty {
+                    return resolvedFunctionDescription
+                }
+
+                if let recommended = resolution.recommendedFunctionDescription,
+                   !recommended.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return recommended
+                }
+
+                return AgentImportNamingService.fallbackFunctionDescription(from: record.name)
+            }()
+            let normalizedName = Agent.normalizedName(
+                requestedName: functionDescription,
+                existingAgents: project.agents
+            )
+
+            if project.agents.contains(where: {
+                $0.name == normalizedName
+                || $0.openClawDefinition.agentIdentifier == record.name
+            }) {
+                continue
+            }
+
+            var agent = Agent(name: normalizedName)
+            if let selectedTemplateID = selection?.selectedTemplateID ?? resolution.recommendedTemplateID,
+               let template = AgentTemplateLibraryStore.shared.template(withID: selectedTemplateID) {
+                agent.identity = template.identity
+                agent.description = template.summary
+                agent.colorHex = template.colorHex
+            } else {
+                agent.description = "Imported from OpenClaw"
+            }
             agent.soulMD = soulText
             agent.capabilities = capabilities
             agent.openClawDefinition.agentIdentifier = record.name

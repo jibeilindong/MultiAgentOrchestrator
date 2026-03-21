@@ -166,6 +166,114 @@ enum AgentTemplateSoulRenderer {
     }
 }
 
+struct ParsedAgentTemplateSoul {
+    let name: String
+    let spec: AgentTemplateSoulSpec
+}
+
+enum AgentTemplateSoulMarkdownParser {
+    enum ParseError: LocalizedError {
+        case missingTitle
+        case missingSection(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .missingTitle:
+                return "SOUL.md 缺少一级标题，无法识别模板名称。"
+            case .missingSection(let title):
+                return "SOUL.md 缺少必需章节：\(title)。"
+            }
+        }
+    }
+
+    static func parse(_ markdown: String) throws -> ParsedAgentTemplateSoul {
+        let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+
+        var title: String?
+        var currentSection: String?
+        var sections: [String: [String]] = [:]
+
+        for rawLine in lines {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if trimmed.hasPrefix("# "), !trimmed.hasPrefix("## ") {
+                title = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                currentSection = nil
+                continue
+            }
+
+            if trimmed.hasPrefix("## ") {
+                currentSection = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+                sections[currentSection ?? "", default: []] = []
+                continue
+            }
+
+            guard let currentSection else { continue }
+            sections[currentSection, default: []].append(rawLine)
+        }
+
+        guard let name = title, !name.isEmpty else {
+            throw ParseError.missingTitle
+        }
+
+        let spec = AgentTemplateSoulSpec(
+            role: try parseTextSection("角色定位", from: sections),
+            mission: try parseTextSection("核心使命", from: sections),
+            coreCapabilities: try parseListSection("核心能力", from: sections),
+            responsibilities: try parseListSection("工作职责", from: sections),
+            workflow: try parseListSection("工作流程", from: sections),
+            inputs: try parseListSection("输入要求", from: sections),
+            outputs: try parseListSection("输出要求", from: sections),
+            collaboration: try parseListSection("协作边界", from: sections),
+            guardrails: try parseListSection("行为边界", from: sections),
+            successCriteria: try parseListSection("成功标准", from: sections)
+        )
+
+        return ParsedAgentTemplateSoul(name: name, spec: spec)
+    }
+
+    private static func parseTextSection(_ title: String, from sections: [String: [String]]) throws -> String {
+        let content = sections[title, default: []]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !content.isEmpty else {
+            throw ParseError.missingSection(title)
+        }
+
+        return content
+    }
+
+    private static func parseListSection(_ title: String, from sections: [String: [String]]) throws -> [String] {
+        let items = sections[title, default: []]
+            .compactMap(parseListItem)
+
+        guard !items.isEmpty else {
+            throw ParseError.missingSection(title)
+        }
+
+        return items
+    }
+
+    private static func parseListItem(_ rawLine: String) -> String? {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+            return String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let match = trimmed.range(of: #"^\d+\.\s+"#, options: .regularExpression) {
+            return String(trimmed[match.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return nil
+    }
+}
+
 enum AgentTemplateValidator {
     private static let bannedManagementPhrases: [String] = [
         "模板体系",
@@ -182,6 +290,10 @@ enum AgentTemplateValidator {
         "回复格式",
         "运行规则"
     ]
+
+    static var managementLeakPhrases: [String] {
+        bannedManagementPhrases
+    }
 
     static func validate(_ template: AgentTemplate) -> [AgentTemplateValidationIssue] {
         let spec = template.soulSpec
@@ -228,6 +340,362 @@ enum AgentTemplateValidator {
         }
 
         return issues
+    }
+}
+
+struct AgentTemplateManagementCleanupResult {
+    let template: AgentTemplate
+    let changedFields: [String]
+    let removedPhrases: [String]
+
+    var hasChanges: Bool {
+        !changedFields.isEmpty
+    }
+}
+
+struct AgentTemplateManagementCleanupFieldPreview: Identifiable {
+    let field: String
+    let before: String
+    let after: String
+    let removedPhrases: [String]
+
+    var id: String { field }
+}
+
+struct AgentTemplateManagementCleanupPreview: Identifiable {
+    let templateID: String
+    let templateName: String
+    let fieldPreviews: [AgentTemplateManagementCleanupFieldPreview]
+    let removedPhrases: [String]
+
+    var id: String { templateID }
+
+    var hasChanges: Bool {
+        !fieldPreviews.isEmpty
+    }
+}
+
+enum AgentTemplateManagementCleaner {
+    static func previewLeaks(in template: AgentTemplate) -> AgentTemplateManagementCleanupPreview {
+        let phrases = AgentTemplateValidator.managementLeakPhrases
+        var removedPhrases = Set<String>()
+        var fieldPreviews: [AgentTemplateManagementCleanupFieldPreview] = []
+
+        let roleResult = cleanText(template.soulSpec.role, phrases: phrases)
+        if roleResult.changed {
+            fieldPreviews.append(
+                AgentTemplateManagementCleanupFieldPreview(
+                    field: "role",
+                    before: template.soulSpec.role.trimmingCharacters(in: .whitespacesAndNewlines),
+                    after: roleResult.cleaned,
+                    removedPhrases: roleResult.removedPhrases
+                )
+            )
+            removedPhrases.formUnion(roleResult.removedPhrases)
+        }
+
+        let missionResult = cleanText(template.soulSpec.mission, phrases: phrases)
+        if missionResult.changed {
+            fieldPreviews.append(
+                AgentTemplateManagementCleanupFieldPreview(
+                    field: "mission",
+                    before: template.soulSpec.mission.trimmingCharacters(in: .whitespacesAndNewlines),
+                    after: missionResult.cleaned,
+                    removedPhrases: missionResult.removedPhrases
+                )
+            )
+            removedPhrases.formUnion(missionResult.removedPhrases)
+        }
+
+        let listFields: [(field: String, keyPath: KeyPath<AgentTemplateSoulSpec, [String]>)] = [
+            ("coreCapabilities", \.coreCapabilities),
+            ("inputs", \.inputs),
+            ("responsibilities", \.responsibilities),
+            ("workflow", \.workflow),
+            ("outputs", \.outputs),
+            ("collaboration", \.collaboration),
+            ("guardrails", \.guardrails),
+            ("successCriteria", \.successCriteria)
+        ]
+
+        for listField in listFields {
+            let original = template.soulSpec[keyPath: listField.keyPath]
+            let result = cleanItems(original, phrases: phrases)
+            if result.changed {
+                fieldPreviews.append(
+                    AgentTemplateManagementCleanupFieldPreview(
+                        field: listField.field,
+                        before: original.joined(separator: "\n"),
+                        after: result.cleaned.joined(separator: "\n"),
+                        removedPhrases: result.removedPhrases
+                    )
+                )
+                removedPhrases.formUnion(result.removedPhrases)
+            }
+        }
+
+        return AgentTemplateManagementCleanupPreview(
+            templateID: template.id,
+            templateName: template.name,
+            fieldPreviews: fieldPreviews,
+            removedPhrases: removedPhrases.sorted()
+        )
+    }
+
+    static func cleanupLeaks(in template: AgentTemplate) -> AgentTemplateManagementCleanupResult {
+        var updated = template
+        var changedFields: [String] = []
+        var removedPhrases = Set<String>()
+        let phrases = AgentTemplateValidator.managementLeakPhrases
+
+        let roleResult = cleanText(template.soulSpec.role, phrases: phrases)
+        if roleResult.changed {
+            updated.soulSpec.role = roleResult.cleaned
+            changedFields.append("role")
+            removedPhrases.formUnion(roleResult.removedPhrases)
+        }
+
+        let missionResult = cleanText(template.soulSpec.mission, phrases: phrases)
+        if missionResult.changed {
+            updated.soulSpec.mission = missionResult.cleaned
+            changedFields.append("mission")
+            removedPhrases.formUnion(missionResult.removedPhrases)
+        }
+
+        let listFields: [(field: String, keyPath: WritableKeyPath<AgentTemplateSoulSpec, [String]>)] = [
+            ("coreCapabilities", \.coreCapabilities),
+            ("inputs", \.inputs),
+            ("responsibilities", \.responsibilities),
+            ("workflow", \.workflow),
+            ("outputs", \.outputs),
+            ("collaboration", \.collaboration),
+            ("guardrails", \.guardrails),
+            ("successCriteria", \.successCriteria)
+        ]
+
+        for listField in listFields {
+            let original = template.soulSpec[keyPath: listField.keyPath]
+            let result = cleanItems(original, phrases: phrases)
+            if result.changed {
+                updated.soulSpec[keyPath: listField.keyPath] = result.cleaned
+                changedFields.append(listField.field)
+                removedPhrases.formUnion(result.removedPhrases)
+            }
+        }
+
+        return AgentTemplateManagementCleanupResult(
+            template: updated.sanitizedForPersistence(),
+            changedFields: changedFields,
+            removedPhrases: removedPhrases.sorted()
+        )
+    }
+
+    private static func cleanText(
+        _ text: String,
+        phrases: [String]
+    ) -> (cleaned: String, removedPhrases: [String], changed: Bool) {
+        let original = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !original.isEmpty else {
+            return (original, [], false)
+        }
+
+        var removed = Set<String>()
+        let cleanedLines = original
+            .components(separatedBy: .newlines)
+            .compactMap { rawLine -> String? in
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !line.isEmpty else { return nil }
+
+                let linePhrases = phrases.filter { line.contains($0) }
+                if linePhrases.isEmpty {
+                    return line
+                }
+
+                removed.formUnion(linePhrases)
+                let cleaned = normalizeCleanedText(
+                    removePhrases(line, phrases: linePhrases)
+                )
+                return cleaned.isEmpty ? nil : cleaned
+            }
+
+        let cleaned = cleanedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (cleaned, removed.sorted(), cleaned != original)
+    }
+
+    private static func cleanItems(
+        _ items: [String],
+        phrases: [String]
+    ) -> (cleaned: [String], removedPhrases: [String], changed: Bool) {
+        var removed = Set<String>()
+        let cleaned = items.compactMap { item -> String? in
+            let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+
+            let linePhrases = phrases.filter { trimmed.contains($0) }
+            if linePhrases.isEmpty {
+                return trimmed
+            }
+
+            removed.formUnion(linePhrases)
+            let cleanedItem = normalizeCleanedText(
+                removePhrases(trimmed, phrases: linePhrases)
+            )
+            return cleanedItem.isEmpty ? nil : cleanedItem
+        }
+
+        let normalizedOriginal = items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return (cleaned, removed.sorted(), cleaned != normalizedOriginal)
+    }
+
+    private static func removePhrases(_ text: String, phrases: [String]) -> String {
+        var result = text
+        for phrase in phrases {
+            result = result.replacingOccurrences(of: phrase, with: "")
+        }
+        return result
+    }
+
+    private static func normalizeCleanedText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "：:;；,，.-|/()[]{}<> "))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct AgentTemplateAutoFixResult {
+    let template: AgentTemplate
+    let changedFields: [String]
+
+    var hasChanges: Bool {
+        !changedFields.isEmpty
+    }
+}
+
+enum AgentTemplateAutoFixer {
+    static func autofillMissingFields(in template: AgentTemplate) -> AgentTemplateAutoFixResult {
+        var updated = template
+        var changedFields: [String] = []
+
+        if updated.soulSpec.role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            updated.soulSpec.role = defaultRole(for: updated)
+            changedFields.append("role")
+        }
+
+        if updated.soulSpec.mission.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            updated.soulSpec.mission = defaultMission(for: updated)
+            changedFields.append("mission")
+        }
+
+        if updated.soulSpec.coreCapabilities.isEmpty {
+            updated.soulSpec.coreCapabilities = AgentTemplateCatalog.suggestedCoreCapabilities(for: updated)
+            changedFields.append("coreCapabilities")
+        }
+
+        if updated.soulSpec.inputs.isEmpty {
+            updated.soulSpec.inputs = AgentTemplateCatalog.suggestedInputs(for: updated)
+            changedFields.append("inputs")
+        }
+
+        if updated.soulSpec.responsibilities.isEmpty {
+            updated.soulSpec.responsibilities = defaultResponsibilities(for: updated)
+            changedFields.append("responsibilities")
+        }
+
+        if updated.soulSpec.workflow.isEmpty {
+            updated.soulSpec.workflow = defaultWorkflow(for: updated)
+            changedFields.append("workflow")
+        }
+
+        if updated.soulSpec.outputs.isEmpty {
+            updated.soulSpec.outputs = defaultOutputs(for: updated)
+            changedFields.append("outputs")
+        }
+
+        if updated.soulSpec.collaboration.isEmpty {
+            updated.soulSpec.collaboration = defaultCollaboration(for: updated)
+            changedFields.append("collaboration")
+        }
+
+        if updated.soulSpec.guardrails.isEmpty {
+            updated.soulSpec.guardrails = defaultGuardrails(for: updated)
+            changedFields.append("guardrails")
+        }
+
+        if updated.soulSpec.successCriteria.isEmpty {
+            updated.soulSpec.successCriteria = defaultSuccessCriteria(for: updated)
+            changedFields.append("successCriteria")
+        }
+
+        return AgentTemplateAutoFixResult(
+            template: updated.sanitizedForPersistence(),
+            changedFields: changedFields
+        )
+    }
+
+    private static func defaultRole(for template: AgentTemplate) -> String {
+        "你是一名\(template.name) agent，负责围绕\(template.category.rawValue)任务进行专业执行与交付。"
+    }
+
+    private static func defaultMission(for template: AgentTemplate) -> String {
+        let trimmedSummary = template.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSummary.isEmpty {
+            return trimmedSummary
+        }
+        return "围绕\(template.category.rawValue)任务输出准确、完整、可直接协作的结果。"
+    }
+
+    private static func defaultResponsibilities(for template: AgentTemplate) -> [String] {
+        [
+            "理解\(template.category.rawValue)任务的目标、约束和交付边界。",
+            "梳理现有输入、缺口和优先级，保持执行主线清晰。",
+            "输出便于协作、复核和继续推进的阶段结果。"
+        ]
+    }
+
+    private static func defaultWorkflow(for template: AgentTemplate) -> [String] {
+        [
+            "先确认任务目标、输入材料和验收标准。",
+            "再识别关键约束、风险点和信息缺口。",
+            "按照\(template.category.rawValue)任务特征组织执行内容。",
+            "完成后自检结果质量、边界和一致性。",
+            "最后输出结果摘要、风险提示和下一步建议。"
+        ]
+    }
+
+    private static func defaultOutputs(for template: AgentTemplate) -> [String] {
+        [
+            "与\(template.category.rawValue)任务相匹配的结构化结果。",
+            "关键结论、限制条件和待确认项。",
+            "便于后续协作继续推进的摘要说明。"
+        ]
+    }
+
+    private static func defaultCollaboration(for template: AgentTemplate) -> [String] {
+        [
+            "与组织协调类 agent 对齐任务边界、节奏和依赖。",
+            "与结果审查类 agent 对齐质量标准和返工意见。",
+            "在输入不足或边界不清时，及时向上游补充澄清。"
+        ]
+    }
+
+    private static func defaultGuardrails(for template: AgentTemplate) -> [String] {
+        [
+            "不得编造事实、结果、引用或已完成状态。",
+            "不得把猜测写成结论，必要时明确标注假设。",
+            "遇到高风险或高不确定性内容时，优先保守表达。"
+        ]
+    }
+
+    private static func defaultSuccessCriteria(for template: AgentTemplate) -> [String] {
+        [
+            "结果与\(template.category.rawValue)任务目标保持一致。",
+            "输出结构清晰，便于他人快速理解和继续协作。",
+            "关键风险、限制和下一步动作都有明确表达。"
+        ]
     }
 }
 
@@ -1369,6 +1837,14 @@ enum AgentTemplateCatalog {
 
     static func validationIssues(for templateID: String) -> [AgentTemplateValidationIssue] {
         template(withID: templateID)?.validationIssues ?? []
+    }
+
+    static func suggestedInputs(for template: AgentTemplate) -> [String] {
+        defaultInputs(for: template.category, applicableScenarios: template.applicableScenarios)
+    }
+
+    static func suggestedCoreCapabilities(for template: AgentTemplate) -> [String] {
+        defaultCoreCapabilities(for: template.name, capabilities: template.capabilities)
     }
 
     static var invalidTemplateIDs: [String] {

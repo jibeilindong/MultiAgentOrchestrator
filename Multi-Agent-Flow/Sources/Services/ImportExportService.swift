@@ -215,10 +215,28 @@ class ImportExportService {
         // 转换Agent
         var agents: [Agent] = []
         for agentExport in arch.agents {
-            let newID = UUID()
-            idMapping[agentExport.id] = newID
-            var agent = Agent(name: agentExport.name)
-            agent.description = agentExport.description
+            let resolution = AgentImportNamingService.resolveImportedAgent(
+                rawName: agentExport.name,
+                soulMD: agentExport.soulMD,
+                capabilities: agentExport.capabilities
+            )
+            let functionDescription = resolution.recommendedFunctionDescription
+                ?? AgentImportNamingService.fallbackFunctionDescription(from: agentExport.name)
+            let normalizedName = Agent.normalizedName(
+                requestedName: functionDescription,
+                existingAgents: agents
+            )
+
+            var agent = Agent(name: normalizedName)
+            idMapping[agentExport.id] = agent.id
+            if let templateID = resolution.recommendedTemplateID,
+               let template = AgentTemplateLibraryStore.shared.template(withID: templateID) {
+                agent.identity = template.identity
+                agent.description = template.summary
+                agent.colorHex = template.colorHex
+            } else {
+                agent.description = agentExport.description
+            }
             agent.soulMD = agentExport.soulMD
             agent.position = agentExport.position
             agent.capabilities = agentExport.capabilities

@@ -15,6 +15,8 @@ struct NodesView: View {
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
     @Binding var transientNodePositions: [UUID: CGPoint]
+    let connectionCountsByNodeID: [UUID: WorkflowNodeConnectionCounts]
+    let visibleNodeIDs: Set<UUID>
     let scale: CGFloat
     let offset: CGSize
     let geometry: GeometryProxy
@@ -32,13 +34,15 @@ struct NodesView: View {
     var body: some View {
         let workflow = currentWorkflow
         let focusedNodeIDs = activeFocusedNodeIDs()
-        let nodeConnectionCounts = workflow?.connectionCountsByNodeID() ?? [:]
-        let connectedNodeIDs = allConnectedNodeIDs(in: workflow)
-        let relatedNodeIDs = relatedNodeIDs(for: focusedNodeIDs, in: workflow)
-        let nodeIDsInBoundaries = nodeIDsInBoundaries(in: workflow)
+        let relationships = relationshipSummary(for: focusedNodeIDs, in: workflow)
+        let renderedNodes = renderableNodes(in: workflow)
+        let nodeIDsInBoundaries = nodeIDsInBoundaries(
+            in: workflow,
+            renderedNodes: renderedNodes
+        )
 
-        ForEach(workflow?.nodes ?? []) { node in
-            let counts = nodeConnectionCounts[node.id] ?? .zero
+        ForEach(renderedNodes) { node in
+            let counts = connectionCountsByNodeID[node.id] ?? .zero
             NodeView(
                 node: node,
                 isSelected: selectedNodeIDs.contains(node.id) || node.id == selectedNodeID,
@@ -51,9 +55,9 @@ struct NodesView: View {
                 isBatchSource: batchSourceNodeIDs.contains(node.id),
                 isBatchTarget: batchTargetNodeIDs.contains(node.id),
                 hasBatchConflict: batchSourceNodeIDs.contains(node.id) && batchTargetNodeIDs.contains(node.id),
-                isRelatedToSelection: relatedNodeIDs.contains(node.id) && !focusedNodeIDs.contains(node.id) && node.type == .agent,
+                isRelatedToSelection: relationships.relatedNodeIDs.contains(node.id) && !focusedNodeIDs.contains(node.id) && node.type == .agent,
                 onTap: { handleSingleTap(node) },
-                accentColor: displayColor(for: node, connectedNodeIDs: connectedNodeIDs),
+                accentColor: displayColor(for: node, connectedNodeIDs: relationships.connectedNodeIDs),
                 textScale: appState.canvasDisplaySettings.textScale,
                 textColor: .black
             )
@@ -61,6 +65,12 @@ struct NodesView: View {
             .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
             .gesture(createNodeGesture(for: node))
         }
+    }
+
+    private func renderableNodes(in workflow: Workflow?) -> [WorkflowNode] {
+        guard let workflow else { return [] }
+        guard !visibleNodeIDs.isEmpty else { return workflow.nodes }
+        return workflow.nodes.filter { visibleNodeIDs.contains($0.id) }
     }
 
     private func adjustedPosition(_ node: WorkflowNode) -> CGPoint {
@@ -114,31 +124,34 @@ struct NodesView: View {
         return []
     }
 
-    private func relatedNodeIDs(for focusedNodeIDs: Set<UUID>, in workflow: Workflow?) -> Set<UUID> {
-        guard let workflow, !focusedNodeIDs.isEmpty else { return [] }
+    private func relationshipSummary(
+        for focusedNodeIDs: Set<UUID>,
+        in workflow: Workflow?
+    ) -> NodeRelationshipSummary {
+        guard let workflow else { return .empty }
 
-        var result: Set<UUID> = []
+        var connectedNodeIDs: Set<UUID> = []
+        connectedNodeIDs.reserveCapacity(workflow.edges.count * 2)
+        var relatedNodeIDs: Set<UUID> = []
+
         for edge in workflow.edges {
+            connectedNodeIDs.insert(edge.fromNodeID)
+            connectedNodeIDs.insert(edge.toNodeID)
+
+            guard !focusedNodeIDs.isEmpty else { continue }
+
             if focusedNodeIDs.contains(edge.fromNodeID) {
-                result.insert(edge.toNodeID)
+                relatedNodeIDs.insert(edge.toNodeID)
             }
             if focusedNodeIDs.contains(edge.toNodeID) {
-                result.insert(edge.fromNodeID)
+                relatedNodeIDs.insert(edge.fromNodeID)
             }
         }
-        return result
-    }
 
-    private func allConnectedNodeIDs(in workflow: Workflow?) -> Set<UUID> {
-        guard let workflow else { return [] }
-
-        var nodeIDs: Set<UUID> = []
-        nodeIDs.reserveCapacity(workflow.edges.count * 2)
-        for edge in workflow.edges {
-            nodeIDs.insert(edge.fromNodeID)
-            nodeIDs.insert(edge.toNodeID)
-        }
-        return nodeIDs
+        return NodeRelationshipSummary(
+            connectedNodeIDs: connectedNodeIDs,
+            relatedNodeIDs: relatedNodeIDs
+        )
     }
 
     private func updateNodePositions(for node: WorkflowNode, translation: CGSize) {
@@ -163,13 +176,19 @@ struct NodesView: View {
         transientNodePositions = updatedPositions
     }
 
-    private func nodeIDsInBoundaries(in workflow: Workflow?) -> Set<UUID> {
+    private func nodeIDsInBoundaries(
+        in workflow: Workflow?,
+        renderedNodes: [WorkflowNode]
+    ) -> Set<UUID> {
         guard let workflow else { return [] }
+        guard !renderedNodes.isEmpty else { return [] }
 
         var nodeIDs: Set<UUID> = []
+        let renderedNodeIDs = Set(renderedNodes.map(\.id))
+
         for boundary in workflow.boundaries {
-            nodeIDs.formUnion(boundary.memberNodeIDs)
-            for node in workflow.nodes where boundary.rect.contains(node.position) {
+            nodeIDs.formUnion(boundary.memberNodeIDs.filter { renderedNodeIDs.contains($0) })
+            for node in renderedNodes where boundary.rect.contains(node.position) {
                 nodeIDs.insert(node.id)
             }
         }
@@ -218,4 +237,14 @@ struct NodesView: View {
         }
         return nil
     }
+}
+
+private struct NodeRelationshipSummary {
+    let connectedNodeIDs: Set<UUID>
+    let relatedNodeIDs: Set<UUID>
+
+    static let empty = NodeRelationshipSummary(
+        connectedNodeIDs: [],
+        relatedNodeIDs: []
+    )
 }

@@ -1198,11 +1198,15 @@ class AppState: ObservableObject {
     }
 
     @discardableResult
-    func importDetectedOpenClawAgents(selectedRecordIDs: Set<String>) -> [ProjectOpenClawDetectedAgentRecord] {
+    func importDetectedOpenClawAgents(selections: [AgentImportSelection]) -> [ProjectOpenClawDetectedAgentRecord] {
         guard var project = currentProject else { return [] }
-        guard !selectedRecordIDs.isEmpty else { return [] }
+        guard !selections.isEmpty else { return [] }
 
-        let imported = openClawManager.importDetectedAgents(into: &project, selectedRecordIDs: selectedRecordIDs)
+        for selection in selections {
+            AgentTemplateLibraryStore.shared.recordCustomFunctionDescription(selection.functionDescription)
+        }
+
+        let imported = openClawManager.importDetectedAgents(into: &project, selections: selections)
         guard !imported.isEmpty else { return [] }
 
         currentProject = normalizeProjectNaming(project)

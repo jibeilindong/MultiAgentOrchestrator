@@ -11,6 +11,7 @@ import Combine
 struct AgentTemplateLibrarySnapshot: Codable {
     var builtInOverrides: [AgentTemplate]
     var customTemplates: [AgentTemplate]
+    var customFunctionDescriptions: [String]
     var favoriteTemplateIDs: [String]
     var recentTemplateIDs: [String]
     var orderedTemplateIDs: [String]
@@ -19,6 +20,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
     init(
         builtInOverrides: [AgentTemplate] = [],
         customTemplates: [AgentTemplate] = [],
+        customFunctionDescriptions: [String] = [],
         favoriteTemplateIDs: [String] = [],
         recentTemplateIDs: [String] = [],
         orderedTemplateIDs: [String] = [],
@@ -26,6 +28,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
     ) {
         self.builtInOverrides = builtInOverrides
         self.customTemplates = customTemplates
+        self.customFunctionDescriptions = customFunctionDescriptions
         self.favoriteTemplateIDs = favoriteTemplateIDs
         self.recentTemplateIDs = recentTemplateIDs
         self.orderedTemplateIDs = orderedTemplateIDs
@@ -35,6 +38,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
     private enum CodingKeys: String, CodingKey {
         case builtInOverrides
         case customTemplates
+        case customFunctionDescriptions
         case favoriteTemplateIDs
         case recentTemplateIDs
         case orderedTemplateIDs
@@ -45,6 +49,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         builtInOverrides = try container.decodeIfPresent([AgentTemplate].self, forKey: .builtInOverrides) ?? []
         customTemplates = try container.decodeIfPresent([AgentTemplate].self, forKey: .customTemplates) ?? []
+        customFunctionDescriptions = try container.decodeIfPresent([String].self, forKey: .customFunctionDescriptions) ?? []
         favoriteTemplateIDs = try container.decodeIfPresent([String].self, forKey: .favoriteTemplateIDs) ?? []
         recentTemplateIDs = try container.decodeIfPresent([String].self, forKey: .recentTemplateIDs) ?? []
         orderedTemplateIDs = try container.decodeIfPresent([String].self, forKey: .orderedTemplateIDs) ?? []
@@ -55,6 +60,7 @@ struct AgentTemplateLibrarySnapshot: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(builtInOverrides, forKey: .builtInOverrides)
         try container.encode(customTemplates, forKey: .customTemplates)
+        try container.encode(customFunctionDescriptions, forKey: .customFunctionDescriptions)
         try container.encode(favoriteTemplateIDs, forKey: .favoriteTemplateIDs)
         try container.encode(recentTemplateIDs, forKey: .recentTemplateIDs)
         try container.encode(orderedTemplateIDs, forKey: .orderedTemplateIDs)
@@ -108,6 +114,14 @@ final class AgentTemplateLibraryStore: ObservableObject {
 
     var builtInOverrides: [AgentTemplate] {
         snapshot.builtInOverrides
+    }
+
+    var customFunctionDescriptions: [String] {
+        snapshot.customFunctionDescriptions
+    }
+
+    var functionDescriptionOptions: [String] {
+        deduplicatedFunctionDescriptions(templates.map(\.name) + snapshot.customFunctionDescriptions)
     }
 
     var invalidTemplates: [AgentTemplate] {
@@ -165,6 +179,25 @@ final class AgentTemplateLibraryStore: ObservableObject {
         snapshot.recentTemplateIDs.removeAll { $0 == templateID }
         snapshot.recentTemplateIDs.insert(templateID, at: 0)
         snapshot.recentTemplateIDs = Array(deduplicatedTemplateIDs(snapshot.recentTemplateIDs).prefix(12))
+        persist()
+    }
+
+    func recordCustomFunctionDescription(_ description: String) {
+        let sanitized = sanitizeFunctionDescription(description)
+        guard !sanitized.isEmpty else { return }
+
+        let existingTemplateNames = Set(
+            templates.map { sanitizeFunctionDescription($0.name).lowercased() }
+        )
+        guard !existingTemplateNames.contains(sanitized.lowercased()) else { return }
+
+        snapshot.customFunctionDescriptions.removeAll {
+            sanitizeFunctionDescription($0).localizedCaseInsensitiveCompare(sanitized) == .orderedSame
+        }
+        snapshot.customFunctionDescriptions.insert(sanitized, at: 0)
+        snapshot.customFunctionDescriptions = Array(
+            deduplicatedFunctionDescriptions(snapshot.customFunctionDescriptions).prefix(24)
+        )
         persist()
     }
 
@@ -364,6 +397,9 @@ final class AgentTemplateLibraryStore: ObservableObject {
 
         let missingTemplateIDs = defaultTemplateIDs().filter { !snapshot.orderedTemplateIDs.contains($0) }
         snapshot.orderedTemplateIDs.append(contentsOf: missingTemplateIDs)
+        snapshot.customFunctionDescriptions = Array(
+            deduplicatedFunctionDescriptions(snapshot.customFunctionDescriptions).prefix(24)
+        )
     }
 
     private func deduplicatedTemplateIDs(_ ids: [String]) -> [String] {
@@ -375,6 +411,28 @@ final class AgentTemplateLibraryStore: ObservableObject {
         }
 
         return result
+    }
+
+    private func deduplicatedFunctionDescriptions(_ descriptions: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+
+        for description in descriptions {
+            let sanitized = sanitizeFunctionDescription(description)
+            guard !sanitized.isEmpty else { continue }
+            let key = sanitized.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            result.append(sanitized)
+        }
+
+        return result
+    }
+
+    private func sanitizeFunctionDescription(_ description: String) -> String {
+        description
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
     }
 
     private func uniqueCustomTemplateID(base: String) -> String {

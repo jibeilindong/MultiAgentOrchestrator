@@ -8,7 +8,10 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace @multi-agent-flow/desktop",
+    "capture:canvas-doc-screenshots": "npm run capture:canvas-doc-screenshots --workspace @multi-agent-flow/desktop",
     "validate:compat": "npm run validate:compat --workspace @multi-agent-flow/core",
+    "generate:canvas-doc-assets": "npm run generate:canvas-doc-assets --workspace @multi-agent-flow/desktop",
+    "validate:desktop-routing": "npm run validate:routing --workspace @multi-agent-flow/desktop",
     "validate:openclaw-runtime-governance": "npm run validate:runtime-governance --workspace @multi-agent-flow/core",
     "validate:openclaw-runtime-security": "npm run validate:runtime-security --workspace @multi-agent-flow/core",
     "validate:openclaw-runtime": "./scripts/validate-openclaw-runtime.sh",

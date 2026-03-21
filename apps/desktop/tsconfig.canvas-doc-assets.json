@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./.tmp-canvas-doc-assets",
+    "rootDir": "./",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "scripts/generate-canvas-doc-assets.ts",
+    "src/components/workflowCanvasRouting.ts"
+  ]
+}

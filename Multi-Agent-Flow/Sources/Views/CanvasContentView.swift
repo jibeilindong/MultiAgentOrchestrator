@@ -43,6 +43,8 @@ struct CanvasContentView: View {
     @State private var legendFrame: CGRect = .null
     @State private var transientNodePositions: [UUID: CGPoint] = [:]
     @State private var transientBoundaryRects: [UUID: CGRect] = [:]
+    @State private var nodeFrameCache = WorkflowCanvasNodeFrameCache()
+    @State private var boundaryFrameCache = WorkflowCanvasBoundaryFrameCache()
     @State private var edgeGeometryCache = WorkflowCanvasEdgeGeometryCache()
 
     private var currentWorkflow: Workflow? {
@@ -95,7 +97,22 @@ struct CanvasContentView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let canvasNodeFramesByID = nodeFramesByID(in: geometry)
+            let canvasConnectionCounts = currentConnectionCounts
+            let canvasNodeFramesByID = nodeFrameCache.resolve(
+                workflow: currentWorkflow,
+                connectionCountsByNodeID: canvasConnectionCounts,
+                transientNodePositions: transientNodePositions,
+                canvasSize: geometry.size,
+                scale: scale,
+                offset: offset
+            )
+            let canvasBoundaryFramesByID = boundaryFrameCache.resolve(
+                workflow: currentWorkflow,
+                transientBoundaryRects: transientBoundaryRects,
+                canvasSize: geometry.size,
+                scale: scale,
+                offset: offset
+            )
             let edgeGeometry = edgeGeometryCache.resolve(
                 workflow: currentWorkflow,
                 nodeFramesByID: canvasNodeFramesByID,
@@ -105,6 +122,14 @@ struct CanvasContentView: View {
             let sharedEdgeHitLayouts = edgeGeometry.sharedHitLayouts
             let previewLineLayouts = buildPreviewLineLayouts(nodeFramesByID: canvasNodeFramesByID)
             let visibleCanvasRect = canvasViewportRect(in: geometry)
+            let visibleNodeIDs = visibleNodeIDs(
+                in: canvasNodeFramesByID,
+                viewportRect: visibleCanvasRect
+            )
+            let visibleBoundaryIDs = visibleBoundaryIDs(
+                in: canvasBoundaryFramesByID,
+                viewportRect: visibleCanvasRect
+            )
             let visibleEdgeLayouts = canvasEdgeLayouts.filter { $0.bounds.intersects(visibleCanvasRect) }
             let visibleSharedEdgeHitLayouts = sharedEdgeHitLayouts.filter { $0.bounds.intersects(visibleCanvasRect) }
             let visiblePreviewLineLayouts = previewLineLayouts.filter { previewLineBounds(for: $0).intersects(visibleCanvasRect) }
@@ -141,8 +166,14 @@ struct CanvasContentView: View {
                 )
 
                 WorkflowBoundaryOverlay(
-                    groups: explicitBoundaryRects(in: geometry),
-                    fallbackGroups: collaborationGroups(in: geometry),
+                    groups: explicitBoundaryRects(
+                        boundaryFramesByID: canvasBoundaryFramesByID,
+                        visibleBoundaryIDs: visibleBoundaryIDs
+                    ),
+                    fallbackGroups: collaborationGroups(
+                        nodeFramesByID: canvasNodeFramesByID,
+                        viewportRect: visibleCanvasRect
+                    ),
                     selectedBoundaryIDs: selectedBoundaryIDs,
                     draggingBoundaryID: draggingBoundaryID,
                     onBoundaryTap: { boundaryID in
@@ -183,6 +214,8 @@ struct CanvasContentView: View {
                     connectingFromNode: $connectingFromNode,
                     tempConnectionEnd: $tempConnectionEnd,
                     transientNodePositions: $transientNodePositions,
+                    connectionCountsByNodeID: canvasConnectionCounts,
+                    visibleNodeIDs: visibleNodeIDs,
                     scale: scale,
                     offset: offset,
                     geometry: geometry,
@@ -211,7 +244,12 @@ struct CanvasContentView: View {
                 if isLassoMode || isTransientLassoMode {
                     canvasLayer
                         .contentShape(Rectangle())
-                        .highPriorityGesture(lassoGesture(in: geometry))
+                        .highPriorityGesture(
+                            lassoGesture(
+                                nodeFramesByID: canvasNodeFramesByID,
+                                boundaryFramesByID: canvasBoundaryFramesByID
+                            )
+                        )
                 } else {
                     canvasLayer
                         .contentShape(Rectangle())
@@ -268,7 +306,15 @@ struct CanvasContentView: View {
                         return true
                     },
                     isBlankLocation: { location in
-                        isBlankCanvasLocation(location, geometry: geometry, edgeLayouts: visibleEdgeLayouts)
+                        isBlankCanvasLocation(
+                            location,
+                            geometry: geometry,
+                            edgeLayouts: visibleEdgeLayouts,
+                            nodeFramesByID: canvasNodeFramesByID,
+                            visibleNodeIDs: visibleNodeIDs,
+                            boundaryFramesByID: canvasBoundaryFramesByID,
+                            visibleBoundaryIDs: visibleBoundaryIDs
+                        )
                     },
                     currentOffset: { offset },
                     onBlankClick: {
@@ -333,7 +379,11 @@ struct CanvasContentView: View {
                                 onEdgeSecondarySelected?(edge)
                                 return
                             }
-                            if let node = node(at: location, geometry: geometry) {
+                            if let node = node(
+                                at: location,
+                                nodeFramesByID: canvasNodeFramesByID,
+                                visibleNodeIDs: visibleNodeIDs
+                            ) {
                                 suppressCanvasTapClear = true
                                 selectedNodeIDs = [node.id]
                                 selectedNodeID = node.id
@@ -352,7 +402,11 @@ struct CanvasContentView: View {
                             width: abs(location.x - start.x),
                             height: abs(location.y - start.y)
                         )
-                        applyLassoSelection(with: rect, geometry: geometry)
+                        applyLassoSelection(
+                            with: rect,
+                            nodeFramesByID: canvasNodeFramesByID,
+                            boundaryFramesByID: canvasBoundaryFramesByID
+                        )
                         suppressCanvasTapClear = false
                     }
                 )
@@ -406,6 +460,46 @@ struct CanvasContentView: View {
         CGRect(origin: .zero, size: geometry.size).insetBy(dx: -240, dy: -240)
     }
 
+    private func visibleNodeIDs(
+        in nodeFramesByID: [UUID: CGRect],
+        viewportRect: CGRect
+    ) -> Set<UUID> {
+        var result = Set(
+            nodeFramesByID.compactMap { nodeID, frame in
+                frame.intersects(viewportRect) ? nodeID : nil
+            }
+        )
+
+        result.formUnion(selectedNodeIDs)
+        if let selectedNodeID {
+            result.insert(selectedNodeID)
+        }
+        result.formUnion(transientNodePositions.keys)
+        if let connectingFromNode {
+            result.insert(connectingFromNode.id)
+        }
+
+        return result
+    }
+
+    private func visibleBoundaryIDs(
+        in boundaryFramesByID: [UUID: CGRect],
+        viewportRect: CGRect
+    ) -> Set<UUID> {
+        var result = Set(
+            boundaryFramesByID.compactMap { boundaryID, frame in
+                frame.intersects(viewportRect) ? boundaryID : nil
+            }
+        )
+
+        result.formUnion(selectedBoundaryIDs)
+        if let draggingBoundaryID {
+            result.insert(draggingBoundaryID)
+        }
+
+        return result
+    }
+
     private func addWorkflowNodeToCanvas(type: WorkflowNode.NodeType, at location: CGPoint, geometry: GeometryProxy) {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
@@ -441,7 +535,10 @@ struct CanvasContentView: View {
         appState.addAgentNode(agentName: agent.name, position: position)
     }
 
-    private func lassoGesture(in geometry: GeometryProxy) -> some Gesture {
+    private func lassoGesture(
+        nodeFramesByID: [UUID: CGRect],
+        boundaryFramesByID: [UUID: CGRect]
+    ) -> some Gesture {
         DragGesture(minimumDistance: 3)
             .onChanged { value in
                 let lassoEnabled = isLassoMode || isTransientLassoMode
@@ -464,7 +561,11 @@ struct CanvasContentView: View {
                     return
                 }
 
-                applyLassoSelection(with: lassoRect, geometry: geometry)
+                applyLassoSelection(
+                    with: lassoRect,
+                    nodeFramesByID: nodeFramesByID,
+                    boundaryFramesByID: boundaryFramesByID
+                )
                 self.lassoRect = nil
                 if !isLassoMode {
                     isTransientLassoMode = false
@@ -472,23 +573,39 @@ struct CanvasContentView: View {
             }
     }
 
-    private func applyLassoSelection(with rect: CGRect, geometry: GeometryProxy) {
+    private func applyLassoSelection(
+        with rect: CGRect,
+        nodeFramesByID: [UUID: CGRect],
+        boundaryFramesByID: [UUID: CGRect]
+    ) {
         let workflow = currentWorkflow
-        let selectedNodesInRect = Set((workflow?.nodes ?? []).compactMap { node -> UUID? in
-            nodeFrame(for: node, geometry: geometry).intersects(rect) ? node.id : nil
+        let workflowNodes = workflow?.nodes ?? [WorkflowNode]()
+        let workflowBoundaries = workflow?.boundaries ?? [WorkflowBoundary]()
+
+        let selectedNodesInRect = Set(workflowNodes.compactMap { node -> UUID? in
+            guard let frame = nodeFramesByID[node.id] else { return nil }
+            return frame.intersects(rect) ? node.id : nil
         })
 
-        let selectedBoundaries = Set((workflow?.boundaries ?? []).compactMap { boundary -> UUID? in
-            boundaryFrame(for: boundary, geometry: geometry).intersects(rect) ? boundary.id : nil
+        let selectedBoundaries = Set(workflowBoundaries.compactMap { boundary -> UUID? in
+            guard let frame = boundaryFramesByID[boundary.id] else { return nil }
+            return frame.intersects(rect) ? boundary.id : nil
         })
 
-        let boundaryContainedNodes = Set((workflow?.boundaries ?? [])
-            .filter { selectedBoundaries.contains($0.id) }
-            .flatMap { boundary in
-                (workflow?.nodes ?? []).compactMap { node in
-                    boundaryFrame(for: boundary, geometry: geometry).contains(adjustedPosition(resolvedPosition(for: node), geometry: geometry)) ? node.id : nil
+        let boundaryContainedNodes = workflowBoundaries.reduce(into: Set<UUID>()) { result, boundary in
+            guard selectedBoundaries.contains(boundary.id),
+                  let boundaryFrame = boundaryFramesByID[boundary.id] else {
+                return
+            }
+
+            for node in workflowNodes {
+                guard let nodeFrame = nodeFramesByID[node.id],
+                      boundaryFrame.contains(nodeFrame.center) else {
+                    continue
                 }
-            })
+                result.insert(node.id)
+            }
+        }
 
         let selected = selectedNodesInRect.union(boundaryContainedNodes)
         selectedBoundaryIDs = selectedBoundaries
@@ -556,7 +673,10 @@ struct CanvasContentView: View {
         suppressCanvasTapClear = false
     }
 
-    private func collaborationGroups(in geometry: GeometryProxy) -> [CGRect] {
+    private func collaborationGroups(
+        nodeFramesByID: [UUID: CGRect],
+        viewportRect: CGRect
+    ) -> [CGRect] {
         guard currentWorkflow?.boundaries.isEmpty ?? true else { return [] }
         guard let workflow = currentWorkflow else { return [] }
 
@@ -583,19 +703,27 @@ struct CanvasContentView: View {
 
             guard component.count > 1 else { continue }
             let merged = component
-                .map { nodeFrame(for: $0, geometry: geometry) }
+                .compactMap { nodeFramesByID[$0.id] }
                 .reduce(CGRect.null) { $0.union($1) }
-            rects.append(merged.insetBy(dx: -28, dy: -28))
+            let expandedRect = merged.insetBy(dx: -28, dy: -28)
+            guard expandedRect.intersects(viewportRect) else { continue }
+            rects.append(expandedRect)
         }
 
         return rects
     }
 
-    private func explicitBoundaryRects(in geometry: GeometryProxy) -> [WorkflowBoundaryDisplayGroup] {
+    private func explicitBoundaryRects(
+        boundaryFramesByID: [UUID: CGRect],
+        visibleBoundaryIDs: Set<UUID>
+    ) -> [WorkflowBoundaryDisplayGroup] {
         guard let workflow = currentWorkflow else { return [] }
 
-        return workflow.boundaries.map { boundary in
-            let rect = boundaryFrame(for: boundary, geometry: geometry)
+        return workflow.boundaries.compactMap { boundary in
+            guard visibleBoundaryIDs.contains(boundary.id),
+                  let rect = boundaryFramesByID[boundary.id] else {
+                return nil
+            }
             return WorkflowBoundaryDisplayGroup(id: boundary.id, title: boundary.title, rect: rect)
         }
     }
@@ -624,28 +752,33 @@ struct CanvasContentView: View {
     }
 
     private func nodeSize(for node: WorkflowNode) -> CGSize {
-        switch node.type {
-        case .start:
-            return CGSize(width: 100, height: 68)
-        case .agent:
-            let outgoing = currentConnectionCounts[node.id]?.outgoing ?? 0
-            return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
-        }
+        let outgoing = currentConnectionCounts[node.id]?.outgoing ?? 0
+        return workflowCanvasNodeSize(for: node.type, outgoingConnections: outgoing)
     }
 
-    private func node(at location: CGPoint, geometry: GeometryProxy) -> WorkflowNode? {
+    private func node(
+        at location: CGPoint,
+        nodeFramesByID: [UUID: CGRect],
+        visibleNodeIDs: Set<UUID>
+    ) -> WorkflowNode? {
         guard let workflow = currentWorkflow else { return nil }
         return workflow.nodes.reversed().first { node in
-            nodeFrame(for: node, geometry: geometry).contains(location)
+            guard visibleNodeIDs.contains(node.id),
+                  let frame = nodeFramesByID[node.id] else { return false }
+            return frame.contains(location)
         }
     }
 
-    private func boundary(at location: CGPoint, geometry: GeometryProxy) -> WorkflowBoundary? {
+    private func boundary(
+        at location: CGPoint,
+        boundaryFramesByID: [UUID: CGRect],
+        visibleBoundaryIDs: Set<UUID>
+    ) -> WorkflowBoundary? {
         guard let workflow = currentWorkflow else { return nil }
         return workflow.boundaries.reversed().first { boundary in
-            boundaryFrame(for: boundary, geometry: geometry)
-                .insetBy(dx: -8, dy: -8)
-                .contains(location)
+            guard visibleBoundaryIDs.contains(boundary.id),
+                  let frame = boundaryFramesByID[boundary.id] else { return false }
+            return frame.insetBy(dx: -8, dy: -8).contains(location)
         }
     }
 
@@ -663,21 +796,24 @@ struct CanvasContentView: View {
     private func isBlankCanvasLocation(
         _ location: CGPoint,
         geometry: GeometryProxy,
-        edgeLayouts: [WorkflowCanvasEdgeLayout]
+        edgeLayouts: [WorkflowCanvasEdgeLayout],
+        nodeFramesByID: [UUID: CGRect],
+        visibleNodeIDs: Set<UUID>,
+        boundaryFramesByID: [UUID: CGRect],
+        visibleBoundaryIDs: Set<UUID>
     ) -> Bool {
-        guard node(at: location, geometry: geometry) == nil else { return false }
+        guard node(
+            at: location,
+            nodeFramesByID: nodeFramesByID,
+            visibleNodeIDs: visibleNodeIDs
+        ) == nil else { return false }
         guard edge(at: location, in: edgeLayouts) == nil else { return false }
-        guard boundary(at: location, geometry: geometry) == nil else { return false }
+        guard boundary(
+            at: location,
+            boundaryFramesByID: boundaryFramesByID,
+            visibleBoundaryIDs: visibleBoundaryIDs
+        ) == nil else { return false }
         return true
-    }
-
-    private func nodeFramesByID(in geometry: GeometryProxy) -> [UUID: CGRect] {
-        guard let workflow = currentWorkflow else { return [:] }
-        return Dictionary(
-            uniqueKeysWithValues: workflow.nodes.map { node in
-                (node.id, nodeFrame(for: node, geometry: geometry))
-            }
-        )
     }
 
     private func buildPreviewLineLayouts(
@@ -712,6 +848,263 @@ struct CanvasContentView: View {
 
 private struct BoundaryDragSnapshot {
     let rect: CGRect
+}
+
+private final class WorkflowCanvasNodeFrameCache {
+    private var lastInputs: [UUID: WorkflowCanvasNodeFrameInput] = [:]
+    private var lastFramesByID: [UUID: CGRect] = [:]
+    private var lastCanvasSize: CGSize = .zero
+    private var lastScale: CGFloat = 1
+    private var lastOffset: CGSize = .zero
+
+    func resolve(
+        workflow: Workflow?,
+        connectionCountsByNodeID: [UUID: WorkflowNodeConnectionCounts],
+        transientNodePositions: [UUID: CGPoint],
+        canvasSize: CGSize,
+        scale: CGFloat,
+        offset: CGSize
+    ) -> [UUID: CGRect] {
+        guard let workflow else {
+            reset()
+            return [:]
+        }
+
+        let currentInputs = Dictionary(
+            uniqueKeysWithValues: workflow.nodes.map { node in
+                let outgoing = connectionCountsByNodeID[node.id]?.outgoing ?? 0
+                return (
+                    node.id,
+                    WorkflowCanvasNodeFrameInput(
+                        position: transientNodePositions[node.id] ?? node.position,
+                        size: workflowCanvasNodeSize(for: node.type, outgoingConnections: outgoing)
+                    )
+                )
+            }
+        )
+
+        let nextFramesByID: [UUID: CGRect]
+        if let translation = transformTranslationDelta(
+            fromCanvasSize: lastCanvasSize,
+            fromScale: lastScale,
+            fromOffset: lastOffset,
+            toCanvasSize: canvasSize,
+            toScale: scale,
+            toOffset: offset
+        ) {
+            nextFramesByID = Dictionary(
+                uniqueKeysWithValues: currentInputs.map { nodeID, input in
+                    if lastInputs[nodeID] == input,
+                       let lastFrame = lastFramesByID[nodeID] {
+                        return (nodeID, lastFrame.offsetBy(dx: translation.x, dy: translation.y))
+                    }
+
+                    return (
+                        nodeID,
+                        nodeFrame(
+                            for: input,
+                            canvasSize: canvasSize,
+                            scale: scale,
+                            offset: offset
+                        )
+                    )
+                }
+            )
+        } else {
+            nextFramesByID = Dictionary(
+                uniqueKeysWithValues: currentInputs.map { nodeID, input in
+                    (
+                        nodeID,
+                        nodeFrame(
+                            for: input,
+                            canvasSize: canvasSize,
+                            scale: scale,
+                            offset: offset
+                        )
+                    )
+                }
+            )
+        }
+
+        lastInputs = currentInputs
+        lastFramesByID = nextFramesByID
+        lastCanvasSize = canvasSize
+        lastScale = scale
+        lastOffset = offset
+        return nextFramesByID
+    }
+
+    private func nodeFrame(
+        for input: WorkflowCanvasNodeFrameInput,
+        canvasSize: CGSize,
+        scale: CGFloat,
+        offset: CGSize
+    ) -> CGRect {
+        let centerX = canvasSize.width / 2
+        let centerY = canvasSize.height / 2
+        let center = CGPoint(
+            x: input.position.x * scale + offset.width + centerX,
+            y: input.position.y * scale + offset.height + centerY
+        )
+
+        return CGRect(
+            x: center.x - input.size.width / 2,
+            y: center.y - input.size.height / 2,
+            width: input.size.width,
+            height: input.size.height
+        )
+    }
+
+    private func reset() {
+        lastInputs = [:]
+        lastFramesByID = [:]
+        lastCanvasSize = .zero
+        lastScale = 1
+        lastOffset = .zero
+    }
+}
+
+private final class WorkflowCanvasBoundaryFrameCache {
+    private var lastInputs: [UUID: CGRect] = [:]
+    private var lastFramesByID: [UUID: CGRect] = [:]
+    private var lastCanvasSize: CGSize = .zero
+    private var lastScale: CGFloat = 1
+    private var lastOffset: CGSize = .zero
+
+    func resolve(
+        workflow: Workflow?,
+        transientBoundaryRects: [UUID: CGRect],
+        canvasSize: CGSize,
+        scale: CGFloat,
+        offset: CGSize
+    ) -> [UUID: CGRect] {
+        guard let workflow else {
+            reset()
+            return [:]
+        }
+
+        let currentInputs = Dictionary(
+            uniqueKeysWithValues: workflow.boundaries.map { boundary in
+                (boundary.id, transientBoundaryRects[boundary.id] ?? boundary.rect)
+            }
+        )
+
+        let nextFramesByID: [UUID: CGRect]
+        if let translation = transformTranslationDelta(
+            fromCanvasSize: lastCanvasSize,
+            fromScale: lastScale,
+            fromOffset: lastOffset,
+            toCanvasSize: canvasSize,
+            toScale: scale,
+            toOffset: offset
+        ) {
+            nextFramesByID = Dictionary(
+                uniqueKeysWithValues: currentInputs.map { boundaryID, rect in
+                    if lastInputs[boundaryID] == rect,
+                       let lastFrame = lastFramesByID[boundaryID] {
+                        return (boundaryID, lastFrame.offsetBy(dx: translation.x, dy: translation.y))
+                    }
+
+                    return (
+                        boundaryID,
+                        boundaryFrame(
+                            for: rect,
+                            canvasSize: canvasSize,
+                            scale: scale,
+                            offset: offset
+                        )
+                    )
+                }
+            )
+        } else {
+            nextFramesByID = Dictionary(
+                uniqueKeysWithValues: currentInputs.map { boundaryID, rect in
+                    (
+                        boundaryID,
+                        boundaryFrame(
+                            for: rect,
+                            canvasSize: canvasSize,
+                            scale: scale,
+                            offset: offset
+                        )
+                    )
+                }
+            )
+        }
+
+        lastInputs = currentInputs
+        lastFramesByID = nextFramesByID
+        lastCanvasSize = canvasSize
+        lastScale = scale
+        lastOffset = offset
+        return nextFramesByID
+    }
+
+    private func boundaryFrame(
+        for rect: CGRect,
+        canvasSize: CGSize,
+        scale: CGFloat,
+        offset: CGSize
+    ) -> CGRect {
+        let centerX = canvasSize.width / 2
+        let centerY = canvasSize.height / 2
+        let origin = CGPoint(
+            x: rect.minX * scale + offset.width + centerX,
+            y: rect.minY * scale + offset.height + centerY
+        )
+        let opposite = CGPoint(
+            x: rect.maxX * scale + offset.width + centerX,
+            y: rect.maxY * scale + offset.height + centerY
+        )
+
+        return CGRect(
+            x: min(origin.x, opposite.x),
+            y: min(origin.y, opposite.y),
+            width: abs(opposite.x - origin.x),
+            height: abs(opposite.y - origin.y)
+        )
+    }
+
+    private func reset() {
+        lastInputs = [:]
+        lastFramesByID = [:]
+        lastCanvasSize = .zero
+        lastScale = 1
+        lastOffset = .zero
+    }
+}
+
+private struct WorkflowCanvasNodeFrameInput: Equatable {
+    let position: CGPoint
+    let size: CGSize
+}
+
+private func transformTranslationDelta(
+    fromCanvasSize: CGSize,
+    fromScale: CGFloat,
+    fromOffset: CGSize,
+    toCanvasSize: CGSize,
+    toScale: CGFloat,
+    toOffset: CGSize
+) -> CGPoint? {
+    guard abs(fromScale - toScale) < 0.001 else { return nil }
+
+    return CGPoint(
+        x: (toCanvasSize.width - fromCanvasSize.width) / 2 + (toOffset.width - fromOffset.width),
+        y: (toCanvasSize.height - fromCanvasSize.height) / 2 + (toOffset.height - fromOffset.height)
+    )
+}
+
+private func workflowCanvasNodeSize(
+    for nodeType: WorkflowNode.NodeType,
+    outgoingConnections: Int
+) -> CGSize {
+    switch nodeType {
+    case .start:
+        return CGSize(width: 100, height: 68)
+    case .agent:
+        return CGSize(width: 110, height: outgoingConnections == 0 ? 92 : 78)
+    }
 }
 
 struct WorkflowBoundaryDisplayGroup: Identifiable {

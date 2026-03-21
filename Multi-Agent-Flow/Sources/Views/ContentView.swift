@@ -111,8 +111,8 @@ struct ContentView: View {
             OpenClawAgentImportSheet(
                 records: appState.openClawManager.discoveryResults,
                 actionTitle: LocalizedString.text("import_these_agents"),
-                onImport: { selectedIDs in
-                    let imported = appState.importDetectedOpenClawAgents(selectedRecordIDs: selectedIDs)
+                onImport: { selections in
+                    let imported = appState.importDetectedOpenClawAgents(selections: selections)
                     if imported.isEmpty {
                         openClawMessage = LocalizedString.text("no_agents_selected_for_import")
                     } else {

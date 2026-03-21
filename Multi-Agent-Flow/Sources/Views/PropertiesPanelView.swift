@@ -217,6 +217,16 @@ struct AgentPropertiesView: View {
     private var selectedTemplate: AgentTemplate {
         AgentTemplateCatalog.template(withID: selectedTemplateID) ?? AgentTemplateCatalog.defaultTemplate
     }
+
+    private var templateRecommendationContext: TemplateRecommendationContext {
+        TemplateRecommendationContext(
+            name: agentName,
+            identity: agentIdentity,
+            summary: agentDescription,
+            soulMD: soulMD,
+            capabilities: capabilities
+        )
+    }
     
     var body: some View {
         ScrollView {
@@ -336,7 +346,8 @@ struct AgentPropertiesView: View {
                                     TemplatePickerButton(
                                         selectedTemplateID: $selectedTemplateID,
                                         onSelect: { template in applyTemplate(template) },
-                                        labelTitle: selectedTemplate.name
+                                        labelTitle: selectedTemplate.name,
+                                        recommendationContext: templateRecommendationContext
                                     )
                                     Button("模板库") {
                                         showingTemplateManager = true
@@ -412,7 +423,8 @@ struct AgentPropertiesView: View {
                                 TemplatePickerButton(
                                     selectedTemplateID: $selectedTemplateID,
                                     onSelect: { _ in },
-                                    labelTitle: selectedTemplate.name
+                                    labelTitle: selectedTemplate.name,
+                                    recommendationContext: templateRecommendationContext
                                 )
 
                                 Button(LocalizedString.text("create_new_agent")) {
@@ -578,6 +590,7 @@ struct TemplatePickerButton: View {
     let existingAgents: [Agent]
     let onSelectExistingAgent: ((Agent) -> Void)?
     let variant: Variant
+    let recommendationContext: TemplateRecommendationContext?
 
     @State private var isPresented = false
 
@@ -590,6 +603,7 @@ struct TemplatePickerButton: View {
         onCreateBlank: (() -> Void)? = nil,
         existingAgents: [Agent] = [],
         onSelectExistingAgent: ((Agent) -> Void)? = nil,
+        recommendationContext: TemplateRecommendationContext? = nil,
         variant: Variant = .plain
     ) {
         self._selectedTemplateID = selectedTemplateID
@@ -600,6 +614,7 @@ struct TemplatePickerButton: View {
         self.onCreateBlank = onCreateBlank
         self.existingAgents = existingAgents
         self.onSelectExistingAgent = onSelectExistingAgent
+        self.recommendationContext = recommendationContext
         self.variant = variant
     }
 
@@ -647,10 +662,169 @@ struct TemplatePickerButton: View {
                 onCreateBlank: onCreateBlank,
                 existingAgents: existingAgents,
                 onSelectExistingAgent: onSelectExistingAgent,
+                recommendationContext: recommendationContext,
                 onSelect: onSelect
             )
             .frame(width: 460, height: 500)
         }
+    }
+}
+
+struct TemplateRecommendationContext {
+    let name: String
+    let identity: String
+    let summary: String
+    let soulMD: String
+    let capabilities: [String]
+
+    var searchableText: String {
+        [
+            name,
+            identity,
+            summary,
+            soulMD,
+            capabilities.joined(separator: " ")
+        ]
+        .joined(separator: " ")
+        .lowercased()
+    }
+
+    var normalizedCapabilities: Set<String> {
+        Set(
+            capabilities
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    var isMeaningful: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !identity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !soulMD.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !normalizedCapabilities.isEmpty
+    }
+}
+
+private struct TemplateRecommendation: Identifiable {
+    let template: AgentTemplate
+    let score: Int
+    let reasons: [String]
+
+    var id: String { template.id }
+}
+
+private enum TemplateRecommender {
+    static func recommendTemplates(
+        from templates: [AgentTemplate],
+        context: TemplateRecommendationContext,
+        limit: Int = 3
+    ) -> [TemplateRecommendation] {
+        guard context.isMeaningful else { return [] }
+
+        return templates
+            .compactMap { recommendation(for: $0, context: context) }
+            .sorted { lhs, rhs in
+                if lhs.score == rhs.score {
+                    return lhs.template.name.localizedCaseInsensitiveCompare(rhs.template.name) == .orderedAscending
+                }
+                return lhs.score > rhs.score
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private static func recommendation(
+        for template: AgentTemplate,
+        context: TemplateRecommendationContext
+    ) -> TemplateRecommendation? {
+        let contextText = context.searchableText
+        var score = 0
+        var reasons: [String] = []
+
+        if !template.identity.isEmpty,
+           context.identity.localizedCaseInsensitiveCompare(template.identity) == .orderedSame {
+            score += 140
+            reasons.append("身份与模板完全匹配")
+        } else if containsPhrase(template.identity, in: contextText) {
+            score += 60
+            reasons.append("当前身份接近该模板")
+        }
+
+        let capabilityOverlap = context.normalizedCapabilities.intersection(
+            Set(template.capabilities.map { $0.lowercased() })
+        )
+        if !capabilityOverlap.isEmpty {
+            score += capabilityOverlap.count * 24
+            reasons.append("能力标签重合 \(capabilityOverlap.count) 项")
+        }
+
+        let keywordMatches = matchedKeywordCount(
+            for: template,
+            in: contextText
+        )
+        if keywordMatches > 0 {
+            score += keywordMatches * 10
+            reasons.append("任务描述命中 \(keywordMatches) 个模板关键词")
+        }
+
+        if containsPhrase(template.name, in: contextText) {
+            score += 36
+            reasons.append("名称与当前任务描述接近")
+        }
+
+        if containsPhrase(template.category.rawValue, in: contextText) {
+            score += 22
+            reasons.append("命中模板分类")
+        }
+
+        if containsPhrase(template.family.rawValue, in: contextText) {
+            score += 12
+            reasons.append("命中模板主族")
+        }
+
+        if template.id == AgentTemplateCatalog.defaultTemplateID {
+            score += 2
+        }
+
+        let uniqueReasons = Array(reasons.prefix(3))
+        guard score > 0 else { return nil }
+        return TemplateRecommendation(template: template, score: score, reasons: uniqueReasons)
+    }
+
+    private static func matchedKeywordCount(for template: AgentTemplate, in contextText: String) -> Int {
+        var count = 0
+
+        for phrase in searchPhrases(for: template) {
+            if containsPhrase(phrase, in: contextText) {
+                count += 1
+            }
+        }
+
+        return count
+    }
+
+    private static func searchPhrases(for template: AgentTemplate) -> [String] {
+        let phrases = [
+            template.name,
+            template.summary,
+            template.identity,
+            template.category.rawValue,
+            template.family.rawValue
+        ]
+        + template.capabilities
+        + template.tags
+        + template.applicableScenarios
+
+        return phrases
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { $0.count >= 2 }
+    }
+
+    private static func containsPhrase(_ phrase: String, in contextText: String) -> Bool {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return false }
+        return contextText.localizedCaseInsensitiveContains(trimmed)
     }
 }
 
@@ -662,6 +836,7 @@ struct TemplatePickerPopover: View {
     let onCreateBlank: (() -> Void)?
     let existingAgents: [Agent]
     let onSelectExistingAgent: ((Agent) -> Void)?
+    let recommendationContext: TemplateRecommendationContext?
     let onSelect: (AgentTemplate) -> Void
 
     @State private var searchText: String = ""
@@ -678,6 +853,18 @@ struct TemplatePickerPopover: View {
         templateLibrary.recentTemplates
             .filter(matchesSearch)
             .filter { !templateLibrary.isFavorite($0.id) }
+    }
+
+    private var recommendedTemplates: [TemplateRecommendation] {
+        guard let recommendationContext else { return [] }
+
+        return TemplateRecommender.recommendTemplates(
+            from: AgentTemplateCatalog.templates.filter(matchesSearch),
+            context: recommendationContext
+        )
+        .filter { recommendation in
+            recommendation.template.id != selectedTemplateID || recommendation.score > 0
+        }
     }
 
     private var filteredFamilies: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
@@ -739,6 +926,10 @@ struct TemplatePickerPopover: View {
                             title: "收藏模板",
                             templates: favoriteTemplates
                         )
+                    }
+
+                    if !recommendedTemplates.isEmpty {
+                        templateRecommendationSection(recommendedTemplates)
                     }
 
                     if !recentTemplates.isEmpty {
@@ -831,7 +1022,26 @@ struct TemplatePickerPopover: View {
     }
 
     @ViewBuilder
-    private func templateSelectionButton(_ template: AgentTemplate) -> some View {
+    private func templateRecommendationSection(_ recommendations: [TemplateRecommendation]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("推荐模板")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach(recommendations) { recommendation in
+                templateSelectionButton(
+                    recommendation.template,
+                    recommendationReasons: recommendation.reasons
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func templateSelectionButton(
+        _ template: AgentTemplate,
+        recommendationReasons: [String] = []
+    ) -> some View {
         Button {
             templateLibrary.markUsed(template.id)
             selectedTemplateID = template.id
@@ -869,6 +1079,12 @@ struct TemplatePickerPopover: View {
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                }
+                if !recommendationReasons.isEmpty {
+                    Text("推荐原因：\(recommendationReasons.joined(separator: " · "))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.blue)
+                        .lineLimit(2)
                 }
             }
             .padding(10)
@@ -1150,69 +1366,14 @@ struct TemplateLibraryManagerSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("模板库管理")
-                    .font(.headline)
-                Spacer()
-                Menu("导出 JSON") {
-                    Button("导出筛选结果") {
-                        exportFilteredTemplates()
-                    }
-                    .disabled(filteredTemplates.isEmpty || filteredTemplates.count == sortedTemplates.count)
-
-                    Button("导出全部") {
-                        exportAllTemplates()
-                    }
-                    .disabled(sortedTemplates.isEmpty)
-                }
-                .menuStyle(.borderlessButton)
-
-                Menu("导出 SOUL") {
-                    Button("导出当前模板") {
-                        guard let selectedTemplate else { return }
-                        exportSoulDocument(for: selectedTemplate)
-                    }
-                    .disabled(selectedTemplate == nil)
-
-                    Button("导出筛选结果") {
-                        exportFilteredSoulDocuments()
-                    }
-                    .disabled(filteredTemplates.isEmpty)
-
-                    Button("导出全部") {
-                        exportAllSoulDocuments()
-                    }
-                    .disabled(sortedTemplates.isEmpty)
-                }
-                .menuStyle(.borderlessButton)
-
-                Picker("", selection: $mode) {
-                    ForEach(TemplateManagerMode.allCases) { item in
-                        Text(item.rawValue).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
-                Button("关闭") { dismiss() }
-            }
-            .padding()
+            headerBar
 
             Divider()
 
-            HStack(spacing: 0) {
-                templateListPane
-                Divider()
-                contentPane
-            }
+            mainContent
 
             if let feedbackMessage {
-                Divider()
-                Text(feedbackMessage)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                feedbackBar(message: feedbackMessage)
             }
         }
         .frame(minWidth: 980, minHeight: 680)
@@ -1247,6 +1408,89 @@ struct TemplateLibraryManagerSheet: View {
     }
 
     @ViewBuilder
+    private var headerBar: some View {
+        HStack {
+            Text("模板库管理")
+                .font(.headline)
+            Spacer()
+            exportJSONMenu
+            exportSoulMenu
+            modePicker
+            Button("关闭") { dismiss() }
+        }
+        .padding()
+    }
+
+    @ViewBuilder
+    private var exportJSONMenu: some View {
+        Menu("导出 JSON") {
+            Button("导出筛选结果") {
+                exportFilteredTemplates()
+            }
+            .disabled(filteredTemplates.isEmpty || filteredTemplates.count == sortedTemplates.count)
+
+            Button("导出全部") {
+                exportAllTemplates()
+            }
+            .disabled(sortedTemplates.isEmpty)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    @ViewBuilder
+    private var exportSoulMenu: some View {
+        Menu("导出 SOUL") {
+            Button("导出当前模板") {
+                guard let selectedTemplate else { return }
+                exportSoulDocument(for: selectedTemplate)
+            }
+            .disabled(selectedTemplate == nil)
+
+            Button("导出筛选结果") {
+                exportFilteredSoulDocuments()
+            }
+            .disabled(filteredTemplates.isEmpty)
+
+            Button("导出全部") {
+                exportAllSoulDocuments()
+            }
+            .disabled(sortedTemplates.isEmpty)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    @ViewBuilder
+    private var modePicker: some View {
+        Picker("", selection: $mode) {
+            ForEach(TemplateManagerMode.allCases) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 220)
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        HStack(spacing: 0) {
+            templateListPane
+            Divider()
+            contentPane
+        }
+    }
+
+    @ViewBuilder
+    private func feedbackBar(message: String) -> some View {
+        Divider()
+        Text(message)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
     private var templateListPane: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -1261,10 +1505,16 @@ struct TemplateLibraryManagerSheet: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button("导入模板") {
-                    importTemplates()
+                Menu("导入") {
+                    Button("导入 JSON 模板") {
+                        importTemplates()
+                    }
+
+                    Button("从 SOUL.md 新建模板") {
+                        importSoulAsTemplate()
+                    }
                 }
-                .buttonStyle(.bordered)
+                .menuStyle(.borderlessButton)
             }
 
             TextField("搜索模板", text: $searchText)
@@ -1366,6 +1616,18 @@ struct TemplateLibraryManagerSheet: View {
                     selectedTemplateManagerID = templateID
                     selectedTemplateID = templateID
                     mode = .editor
+                },
+                onAutoFixTemplate: { templateID in
+                    autoFixTemplate(templateID)
+                },
+                onAutoFixTemplates: { templateIDs in
+                    autoFixTemplates(templateIDs)
+                },
+                onCleanupTemplate: { templateID in
+                    cleanupManagementLeaks(templateID)
+                },
+                onCleanupTemplates: { templateIDs in
+                    cleanupManagementLeaks(templateIDs)
                 }
             )
         }
@@ -1388,6 +1650,11 @@ struct TemplateLibraryManagerSheet: View {
                         Spacer()
                         Button("导出当前模板") {
                             exportTemplate(templateID: template.id)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("载入 SOUL.md") {
+                            importSoulIntoDraft(template: template)
                         }
                         .buttonStyle(.bordered)
 
@@ -1443,6 +1710,16 @@ struct TemplateLibraryManagerSheet: View {
                         }
                         .buttonStyle(.bordered)
 
+                        Button("自动补齐缺失项") {
+                            autofillMissingFields(for: template, draft: draft)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("清理管理信息") {
+                            cleanupManagementLeaks(for: template, draft: draft)
+                        }
+                        .buttonStyle(.bordered)
+
                         Button("保存修改") {
                             saveDraft(baseTemplate: template, draft: draft)
                         }
@@ -1491,6 +1768,120 @@ struct TemplateLibraryManagerSheet: View {
         feedbackMessage = updated.validationIssues.isEmpty ? "模板已保存，并通过规范校验。" : "模板已保存，但仍有 \(updated.validationIssues.count) 个校验问题。"
     }
 
+    private func autofillMissingFields(for template: AgentTemplate, draft: TemplateEditorDraft) {
+        let candidate = draft.applying(to: template)
+        let fixResult = AgentTemplateAutoFixer.autofillMissingFields(in: candidate)
+        guard fixResult.hasChanges else {
+            feedbackMessage = "当前草稿没有可自动补齐的缺失字段。"
+            return
+        }
+
+        self.draft = TemplateEditorDraft(template: fixResult.template)
+        feedbackMessage = "已补齐 \(fixResult.changedFields.count) 个缺失字段：\(fixResult.changedFields.map(displayName(for:)).joined(separator: "、"))。"
+    }
+
+    private func cleanupManagementLeaks(for template: AgentTemplate, draft: TemplateEditorDraft) {
+        let candidate = draft.applying(to: template)
+        let cleanupResult = AgentTemplateManagementCleaner.cleanupLeaks(in: candidate)
+        guard cleanupResult.hasChanges else {
+            feedbackMessage = "当前草稿没有可清理的管理信息泄漏。"
+            return
+        }
+
+        self.draft = TemplateEditorDraft(template: cleanupResult.template)
+        feedbackMessage = "已清理 \(cleanupResult.changedFields.count) 个字段中的管理信息：\(cleanupResult.removedPhrases.joined(separator: "、"))。"
+    }
+
+    private func autoFixTemplate(_ templateID: String) {
+        guard let template = templateLibrary.template(withID: templateID) else { return }
+        let fixResult = AgentTemplateAutoFixer.autofillMissingFields(in: template)
+        guard fixResult.hasChanges else {
+            feedbackMessage = "该模板没有可自动补齐的缺失字段。"
+            return
+        }
+
+        templateLibrary.upsert(fixResult.template)
+        if selectedTemplateManagerID == templateID {
+            draft = TemplateEditorDraft(template: fixResult.template)
+        }
+        feedbackMessage = "已自动补齐模板 \(fixResult.template.name) 的 \(fixResult.changedFields.count) 个缺失字段。"
+    }
+
+    private func cleanupManagementLeaks(_ templateID: String) {
+        guard let template = templateLibrary.template(withID: templateID) else { return }
+        let cleanupResult = AgentTemplateManagementCleaner.cleanupLeaks(in: template)
+        guard cleanupResult.hasChanges else {
+            feedbackMessage = "该模板没有可清理的管理信息泄漏。"
+            return
+        }
+
+        templateLibrary.upsert(cleanupResult.template)
+        if selectedTemplateManagerID == templateID {
+            draft = TemplateEditorDraft(template: cleanupResult.template)
+        }
+        feedbackMessage = "已清理模板 \(cleanupResult.template.name) 中的管理信息：\(cleanupResult.removedPhrases.joined(separator: "、"))。"
+    }
+
+    private func autoFixTemplates(_ templateIDs: [String]) {
+        let templatesToFix = templateIDs.compactMap { templateLibrary.template(withID: $0) }
+        guard !templatesToFix.isEmpty else {
+            feedbackMessage = "当前没有可批量补齐的模板。"
+            return
+        }
+
+        var fixedTemplateNames: [String] = []
+        var totalChangedFields = 0
+
+        for template in templatesToFix {
+            let fixResult = AgentTemplateAutoFixer.autofillMissingFields(in: template)
+            guard fixResult.hasChanges else { continue }
+            templateLibrary.upsert(fixResult.template)
+            fixedTemplateNames.append(fixResult.template.name)
+            totalChangedFields += fixResult.changedFields.count
+
+            if selectedTemplateManagerID == template.id {
+                draft = TemplateEditorDraft(template: fixResult.template)
+            }
+        }
+
+        guard !fixedTemplateNames.isEmpty else {
+            feedbackMessage = "当前筛选结果里没有可自动补齐的缺失字段。"
+            return
+        }
+
+        feedbackMessage = "已批量补齐 \(fixedTemplateNames.count) 个模板，共修复 \(totalChangedFields) 个字段。"
+    }
+
+    private func cleanupManagementLeaks(_ templateIDs: [String]) {
+        let templatesToClean = templateIDs.compactMap { templateLibrary.template(withID: $0) }
+        guard !templatesToClean.isEmpty else {
+            feedbackMessage = "当前没有可批量清理的模板。"
+            return
+        }
+
+        var cleanedTemplateNames: [String] = []
+        var removedPhrases = Set<String>()
+
+        for template in templatesToClean {
+            let cleanupResult = AgentTemplateManagementCleaner.cleanupLeaks(in: template)
+            guard cleanupResult.hasChanges else { continue }
+            templateLibrary.upsert(cleanupResult.template)
+            cleanedTemplateNames.append(cleanupResult.template.name)
+            removedPhrases.formUnion(cleanupResult.removedPhrases)
+
+            if selectedTemplateManagerID == template.id {
+                draft = TemplateEditorDraft(template: cleanupResult.template)
+            }
+        }
+
+        guard !cleanedTemplateNames.isEmpty else {
+            feedbackMessage = "当前筛选结果里没有可清理的管理信息泄漏。"
+            return
+        }
+
+        feedbackMessage = "已批量清理 \(cleanedTemplateNames.count) 个模板中的管理信息：\(removedPhrases.sorted().joined(separator: "、"))。"
+    }
+
     private func importTemplates() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -1508,6 +1899,74 @@ struct TemplateLibraryManagerSheet: View {
                 feedbackMessage = "已导入 \(imported.count) 个模板。"
             } catch {
                 feedbackMessage = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importSoulAsTemplate() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [markdownContentType]
+        panel.begin { response in
+            guard response == .OK,
+                  let url = panel.url,
+                  let markdown = try? String(contentsOf: url, encoding: .utf8) else { return }
+
+            do {
+                let parsed = try AgentTemplateSoulMarkdownParser.parse(markdown)
+                let sourceID = selectedTemplateManagerID ?? AgentTemplateCatalog.defaultTemplateID
+                guard let duplicated = templateLibrary.duplicateTemplate(from: sourceID) else {
+                    feedbackMessage = "无法基于当前模板创建导入副本。"
+                    return
+                }
+
+                var imported = duplicated
+                imported.meta.name = parsed.name
+                imported.meta.summary = summaryText(from: parsed.spec.mission)
+                imported.soulSpec = parsed.spec
+                imported = imported.sanitizedForPersistence()
+
+                templateLibrary.upsert(imported)
+                selectedTemplateManagerID = imported.id
+                selectedTemplateID = imported.id
+                draft = TemplateEditorDraft(template: imported)
+                feedbackMessage = "已从 SOUL.md 创建模板：\(imported.name)"
+            } catch {
+                feedbackMessage = "SOUL.md 导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importSoulIntoDraft(template: AgentTemplate) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [markdownContentType]
+        panel.begin { response in
+            guard response == .OK,
+                  let url = panel.url,
+                  let markdown = try? String(contentsOf: url, encoding: .utf8) else { return }
+
+            do {
+                let parsed = try AgentTemplateSoulMarkdownParser.parse(markdown)
+                var updatedDraft = self.draft ?? TemplateEditorDraft(template: template)
+                updatedDraft.name = parsed.name
+                updatedDraft.summary = summaryText(from: parsed.spec.mission)
+                updatedDraft.role = parsed.spec.role
+                updatedDraft.mission = parsed.spec.mission
+                updatedDraft.coreCapabilitiesText = parsed.spec.coreCapabilities.joined(separator: "\n")
+                updatedDraft.inputsText = parsed.spec.inputs.joined(separator: "\n")
+                updatedDraft.responsibilitiesText = parsed.spec.responsibilities.joined(separator: "\n")
+                updatedDraft.workflowText = parsed.spec.workflow.joined(separator: "\n")
+                updatedDraft.outputsText = parsed.spec.outputs.joined(separator: "\n")
+                updatedDraft.collaborationText = parsed.spec.collaboration.joined(separator: "\n")
+                updatedDraft.guardrailsText = parsed.spec.guardrails.joined(separator: "\n")
+                updatedDraft.successCriteriaText = parsed.spec.successCriteria.joined(separator: "\n")
+                self.draft = updatedDraft
+                feedbackMessage = "已将 SOUL.md 载入当前草稿，请检查后保存。"
+            } catch {
+                feedbackMessage = "载入 SOUL.md 失败：\(error.localizedDescription)"
             }
         }
     }
@@ -1691,6 +2150,42 @@ struct TemplateLibraryManagerSheet: View {
 
         return cleaned.isEmpty ? template.id.replacingOccurrences(of: ".", with: "-") : cleaned
     }
+
+    private func summaryText(from mission: String) -> String {
+        let trimmed = mission.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "从 SOUL.md 导入的模板" }
+        if trimmed.count <= 80 {
+            return trimmed
+        }
+        return String(trimmed.prefix(80)) + "..."
+    }
+
+    private func displayName(for field: String) -> String {
+        switch field {
+        case "role":
+            return "角色定位"
+        case "mission":
+            return "核心使命"
+        case "coreCapabilities":
+            return "核心能力"
+        case "inputs":
+            return "输入要求"
+        case "responsibilities":
+            return "工作职责"
+        case "workflow":
+            return "工作流程"
+        case "outputs":
+            return "输出要求"
+        case "collaboration":
+            return "协作边界"
+        case "guardrails":
+            return "行为边界"
+        case "successCriteria":
+            return "成功标准"
+        default:
+            return field
+        }
+    }
 }
 
 private struct TemplateDraftEditor: View {
@@ -1768,9 +2263,14 @@ private struct TemplateDraftEditor: View {
 private struct TemplateValidationScannerView: View {
     let templates: [AgentTemplate]
     let onSelectTemplate: (String) -> Void
+    let onAutoFixTemplate: (String) -> Void
+    let onAutoFixTemplates: ([String]) -> Void
+    let onCleanupTemplate: (String) -> Void
+    let onCleanupTemplates: ([String]) -> Void
 
     @State private var searchText: String = ""
     @State private var severityFilter: TemplateValidationSeverityFilter = .all
+    @State private var cleanupPreviewSheetData: TemplateCleanupPreviewSheetData?
 
     private var invalidTemplates: [AgentTemplate] {
         templates.filter { !$0.validationIssues.isEmpty }
@@ -1796,6 +2296,18 @@ private struct TemplateValidationScannerView: View {
 
     private var totalWarningCount: Int {
         invalidTemplates.flatMap(\.validationIssues).filter { $0.severity == .warning }.count
+    }
+
+    private var fixableFilteredTemplateIDs: [String] {
+        filteredInvalidTemplates.compactMap { template in
+            AgentTemplateAutoFixer.autofillMissingFields(in: template).hasChanges ? template.id : nil
+        }
+    }
+
+    private var cleanupFilteredTemplateIDs: [String] {
+        filteredInvalidTemplates.compactMap { template in
+            AgentTemplateManagementCleaner.cleanupLeaks(in: template).hasChanges ? template.id : nil
+        }
     }
 
     private func filteredIssues(for template: AgentTemplate) -> [AgentTemplateValidationIssue] {
@@ -1857,7 +2369,28 @@ private struct TemplateValidationScannerView: View {
                     Text("提醒：\(totalWarningCount)")
                         .font(.caption.weight(.semibold))
                         .foregroundColor(.orange)
+                    Text("可自动补齐：\(fixableFilteredTemplateIDs.count)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.blue)
+                    Text("可清理泄漏：\(cleanupFilteredTemplateIDs.count)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.purple)
                     Spacer()
+                    Button("批量自动补齐") {
+                        onAutoFixTemplates(fixableFilteredTemplateIDs)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(fixableFilteredTemplateIDs.isEmpty)
+                    Button("批量清理管理信息") {
+                        onCleanupTemplates(cleanupFilteredTemplateIDs)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(cleanupFilteredTemplateIDs.isEmpty)
+                    Button("预览批量清理") {
+                        showCleanupPreview(for: cleanupFilteredTemplateIDs, title: "批量清理预览")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(cleanupFilteredTemplateIDs.isEmpty)
                     if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || severityFilter != .all {
                         Button("清除筛选") {
                             searchText = ""
@@ -1898,6 +2431,22 @@ private struct TemplateValidationScannerView: View {
                                         .foregroundColor(.secondary)
                                 }
                                 Spacer()
+                                if AgentTemplateAutoFixer.autofillMissingFields(in: template).hasChanges {
+                                    Button("自动补齐") {
+                                        onAutoFixTemplate(template.id)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                                if AgentTemplateManagementCleaner.cleanupLeaks(in: template).hasChanges {
+                                    Button("预览清理") {
+                                        showCleanupPreview(for: [template.id], title: "清理预览")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    Button("清理管理信息") {
+                                        onCleanupTemplate(template.id)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
                                 Button("打开模板") {
                                     onSelectTemplate(template.id)
                                 }
@@ -1908,6 +2457,13 @@ private struct TemplateValidationScannerView: View {
                                 Text("[\(issue.severity.rawValue.uppercased())] \(issue.field): \(issue.message)")
                                     .font(.caption)
                                     .foregroundColor(issue.severity == .error ? .red : .orange)
+                            }
+
+                            let cleanupPreview = AgentTemplateManagementCleaner.cleanupLeaks(in: template)
+                            if cleanupPreview.hasChanges && !cleanupPreview.removedPhrases.isEmpty {
+                                Text("清理建议：移除 \(cleanupPreview.removedPhrases.joined(separator: "、"))")
+                                    .font(.caption)
+                                    .foregroundColor(.purple)
                             }
                         }
                         .padding(12)
@@ -1920,6 +2476,174 @@ private struct TemplateValidationScannerView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(item: $cleanupPreviewSheetData) { sheetData in
+            TemplateCleanupPreviewSheet(
+                data: sheetData,
+                onConfirm: {
+                    if sheetData.templateIDs.count == 1, let first = sheetData.templateIDs.first {
+                        onCleanupTemplate(first)
+                    } else {
+                        onCleanupTemplates(sheetData.templateIDs)
+                    }
+                    cleanupPreviewSheetData = nil
+                }
+            )
+        }
+    }
+
+    private func showCleanupPreview(for templateIDs: [String], title: String) {
+        let previews = templateIDs
+            .compactMap { templateID in
+                templates.first(where: { $0.id == templateID })
+            }
+            .map { AgentTemplateManagementCleaner.previewLeaks(in: $0) }
+            .filter(\.hasChanges)
+
+        guard !previews.isEmpty else { return }
+        cleanupPreviewSheetData = TemplateCleanupPreviewSheetData(
+            title: title,
+            templateIDs: previews.map(\.templateID),
+            previews: previews
+        )
+    }
+}
+
+private struct TemplateCleanupPreviewSheetData: Identifiable {
+    let title: String
+    let templateIDs: [String]
+    let previews: [AgentTemplateManagementCleanupPreview]
+
+    var id: String {
+        templateIDs.joined(separator: "|")
+    }
+}
+
+private struct TemplateCleanupPreviewSheet: View {
+    let data: TemplateCleanupPreviewSheetData
+    let onConfirm: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(data.title)
+                        .font(.headline)
+                    Text("确认清理前，先检查每个模板会被移除的管理信息。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("关闭") {
+                    dismiss()
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(data.previews) { preview in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(preview.templateName)
+                                .font(.subheadline.weight(.semibold))
+                            Text("将移除：\(preview.removedPhrases.joined(separator: "、"))")
+                                .font(.caption)
+                                .foregroundColor(.purple)
+
+                            ForEach(preview.fieldPreviews) { fieldPreview in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(displayName(for: fieldPreview.field))
+                                        .font(.caption.weight(.semibold))
+                                    if !fieldPreview.removedPhrases.isEmpty {
+                                        Text("命中词：\(fieldPreview.removedPhrases.joined(separator: "、"))")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+
+                                    HStack(alignment: .top, spacing: 12) {
+                                        cleanupTextColumn(title: "清理前", text: fieldPreview.before)
+                                        cleanupTextColumn(title: "清理后", text: fieldPreview.after.isEmpty ? "(将被移除)" : fieldPreview.after)
+                                    }
+                                }
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.primary.opacity(0.04))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                }
+                .padding()
+            }
+
+            Divider()
+
+            HStack {
+                Button("取消") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+                Button(data.templateIDs.count > 1 ? "确认批量清理" : "确认清理") {
+                    onConfirm()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+        .frame(minWidth: 920, minHeight: 620)
+    }
+
+    @ViewBuilder
+    private func cleanupTextColumn(title: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(text)
+                .font(.system(.caption, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(Color.white.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func displayName(for field: String) -> String {
+        switch field {
+        case "role":
+            return "角色定位"
+        case "mission":
+            return "核心使命"
+        case "coreCapabilities":
+            return "核心能力"
+        case "inputs":
+            return "输入要求"
+        case "responsibilities":
+            return "工作职责"
+        case "workflow":
+            return "工作流程"
+        case "outputs":
+            return "输出要求"
+        case "collaboration":
+            return "协作边界"
+        case "guardrails":
+            return "行为边界"
+        case "successCriteria":
+            return "成功标准"
+        default:
+            return field
+        }
     }
 }
 
