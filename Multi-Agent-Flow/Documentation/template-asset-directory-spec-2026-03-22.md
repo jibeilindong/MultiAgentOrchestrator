@@ -228,18 +228,20 @@ Rules:
 
 Purpose:
 
-- user-facing description of what this agent is for
+- record the human context for the agent instance or copied template package
+- provide a standard place to learn about the person being helped over time
 
 Expected content:
 
-- what the agent helps with
-- intended use scenarios
-- expected interaction style
+- a standard scaffold headed by `# USER.md - About Your Human`
+- identity basics such as name, preferred form of address, pronouns, timezone, and notes
+- an explicit `## Context` section for ongoing preferences, projects, friction points, humor, and collaboration cues
 
 Rules:
 
-- should be understandable without reading all other files
-- should help a user decide whether to apply the template
+- should describe the human, not the template itself
+- should stay respectful and lightweight, never turning into a dossier
+- for standard templates, the file should be present and contentful even before any real user data is filled in
 
 ## `TOOLS.md`
 

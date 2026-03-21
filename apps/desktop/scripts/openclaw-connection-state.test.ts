@@ -127,7 +127,7 @@ test("remote probe contract becomes degraded when websocket is reachable but con
   assert.equal(phase, "degraded");
 });
 
-test("container probe contract succeeds without gateway handshake when CLI listing is available", () => {
+test("container probe contract reaches ready semantics when CLI and gateway both pass", () => {
   const config: OpenClawConfig = {
     ...baseConfig,
     deploymentKind: "container"
@@ -139,20 +139,59 @@ test("container probe contract succeeds without gateway handshake when CLI listi
     availableAgents: ["builder"],
     cliAvailable: true,
     agentListingAvailable: true,
-    gatewayProbe: null,
+    gatewayProbe: {
+      reachable: true,
+      authenticated: true,
+      latencyMs: 18,
+      message: "ok",
+      warnings: []
+    },
     probedAt: 1_700_000_002
   });
 
   assert.equal(contract.success, true);
   assert.deepEqual(contract.layers, {
     transport: "ready",
-    authentication: "not_required",
+    authentication: "ready",
     session: "ready",
     inventory: "ready"
   });
-  assert.equal(contract.capabilities.gatewayReachable, false);
-  assert.match(contract.message, /container cli/i);
+  assert.equal(contract.capabilities.gatewayReachable, true);
+  assert.match(contract.message, /container cli and gateway/i);
   assert.equal(contract.warnings.some((warning) => /transport=ready/i.test(warning)), false);
+});
+
+test("container probe contract becomes degraded when CLI listing succeeds but gateway transport is unreachable", () => {
+  const config: OpenClawConfig = {
+    ...baseConfig,
+    deploymentKind: "container"
+  };
+
+  const contract = buildOpenClawProbeContract({
+    config,
+    endpoint: "http://127.0.0.1:18789",
+    availableAgents: ["builder"],
+    cliAvailable: true,
+    agentListingAvailable: true,
+    gatewayProbe: {
+      reachable: false,
+      authenticated: false,
+      latencyMs: null,
+      message: "connection refused",
+      warnings: []
+    },
+    probedAt: 1_700_000_002
+  });
+
+  assert.equal(contract.success, false);
+  assert.deepEqual(contract.layers, {
+    transport: "degraded",
+    authentication: "degraded",
+    session: "degraded",
+    inventory: "ready"
+  });
+  assert.match(contract.health.degradationReason ?? "", /connection refused/i);
+  assert.match(contract.warnings.join(" "), /transport=degraded, auth=degraded/i);
 });
 
 test("local probe contract becomes failed when neither CLI nor gateway transport is available", () => {

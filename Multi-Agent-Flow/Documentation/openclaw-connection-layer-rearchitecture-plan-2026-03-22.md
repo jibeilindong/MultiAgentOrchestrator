@@ -3,6 +3,30 @@
 Last updated: 2026-03-22
 Status: Execution started
 
+## Current Execution Status
+
+Completed:
+
+- unified `connectionState`, `lastProbeReport`, and structured `layers`
+- desktop runtime readiness, recovery plan, recovery report, and recovery audit
+- upgraded `retry guidance` into a budgeted and cooldown-aware `controlled retry policy`
+- exposed a guarded `smart retry` action in the desktop UI to avoid unbounded recovery loops
+- reliable disconnect propagation from gateway drop events into published app state
+- added a structured `session lifecycle` snapshot so project state can distinguish `prepared`, `pending_sync`, and `synced`
+- started separating `connect` from `sync current session` in the Swift entry layer so a successful connect no longer implies runtime write-back
+- reordered Swift `connect` so probing completes before session preparation begins; failed connections no longer pre-create a prepared session lifecycle or leave attach-side effects behind
+- changed `workflow apply` to a local mirror-apply step only; live runtime write-back and allow-list sync now flow through explicit `sync current session`
+- split the Workflow Editor toolbar into explicit `Apply Mirror` and `Sync Session` actions, with pending-sync status surfaced in the editor chrome
+- upgraded the Swift container probe to the same CLI + gateway contract, and started reusing `openclaw.json` gateway parsing across local and container deployments
+- upgraded the Electron container probe to the same CLI + gateway contract, and removed the special-case assumption that container mode can skip gateway handshake
+- added a testable Electron `openclaw-discovery` helper so container mode now prefers in-container root discovery before falling back to explicit candidates, reducing reliance on `workspaceMountPath` guesswork
+
+In progress:
+
+- pushing the canonical connection contract further down into the Electron/Swift discovery and probe entry points so local, container, and remote share one definition of "connected" and one inventory source of truth
+- continuing to split read-only probe/attach from session preparation and runtime commit, while aligning the cleanup semantics for session-preparation failures
+- continuing to unify container and remote inventory discovery around one source of truth and one runtime handshake path, with discovery helpers being pulled into reusable contracts
+
 ## Purpose
 
 This document defines the next-generation OpenClaw connection layer for Multi-Agent-Flow.

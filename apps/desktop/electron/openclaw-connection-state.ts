@@ -142,9 +142,21 @@ export function buildOpenClawProbeContract(input: {
   capabilities.agentListingAvailable = agentListingAvailable;
 
   if (config.deploymentKind === "container") {
-    layers.transport = cliAvailable ? "ready" : "unavailable";
-    layers.authentication = "not_required";
-    layers.session = cliAvailable && agentListingAvailable ? "ready" : cliAvailable ? "degraded" : "unavailable";
+    layers.transport =
+      cliAvailable && gatewayProbe?.reachable ? "ready" : cliAvailable || gatewayProbe?.reachable ? "degraded" : "unavailable";
+    layers.authentication = gatewayProbe?.reachable
+      ? gatewayProbe.authenticated
+        ? "ready"
+        : "degraded"
+      : cliAvailable
+        ? "degraded"
+        : "unavailable";
+    layers.session =
+      cliAvailable && agentListingAvailable && gatewayProbe?.authenticated
+        ? "ready"
+        : cliAvailable || gatewayProbe?.reachable
+          ? "degraded"
+          : "unavailable";
     layers.inventory = agentListingAvailable ? "ready" : cliAvailable ? "degraded" : "unavailable";
   } else if (config.deploymentKind === "remoteServer") {
     layers.transport = gatewayProbe?.reachable ? "ready" : "unavailable";
@@ -185,8 +197,6 @@ export function buildOpenClawProbeContract(input: {
     capabilities.gatewayAgentAvailable = gatewayProbe.authenticated;
     capabilities.gatewayChatAvailable = gatewayProbe.authenticated;
     capabilities.sessionHistoryAvailable = gatewayProbe.authenticated;
-  } else if (config.deploymentKind === "container") {
-    warnings.push("Container desktop probe currently validates CLI and container-backed config discovery; host-side gateway handshake is not required.");
   }
 
   capabilities.projectAttachmentSupported = config.deploymentKind !== "remoteServer" && capabilities.cliAvailable;
@@ -194,9 +204,7 @@ export function buildOpenClawProbeContract(input: {
   const success =
     config.deploymentKind === "remoteServer"
       ? capabilities.gatewayAuthenticated
-      : config.deploymentKind === "container"
-        ? capabilities.cliAvailable && capabilities.agentListingAvailable
-        : capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated;
+      : capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated;
 
   let degradationReason: string | null = null;
   if (!success) {
@@ -204,7 +212,7 @@ export function buildOpenClawProbeContract(input: {
     if (config.deploymentKind !== "remoteServer" && !capabilities.cliAvailable) {
       reasons.push(cliFailureMessage || "OpenClaw CLI probe failed.");
     }
-    if (config.deploymentKind !== "container" && gatewayProbe) {
+    if (gatewayProbe) {
       if (!capabilities.gatewayReachable) {
         reasons.push(gatewayProbe.message || "OpenClaw gateway is unreachable.");
       } else if (!capabilities.gatewayAuthenticated) {
@@ -218,7 +226,7 @@ export function buildOpenClawProbeContract(input: {
     ? config.deploymentKind === "remoteServer"
       ? `Connected to remote OpenClaw gateway at ${endpoint}.`
       : config.deploymentKind === "container"
-        ? `Connected to OpenClaw container CLI. Found ${availableAgents.length} agent(s).`
+        ? `Connected to OpenClaw container CLI and gateway. Found ${availableAgents.length} agent(s).`
         : `Connected to OpenClaw CLI and gateway. Found ${availableAgents.length} agent(s).`
     : degradationReason ?? gatewayProbe?.message ?? "OpenClaw probe failed.";
 

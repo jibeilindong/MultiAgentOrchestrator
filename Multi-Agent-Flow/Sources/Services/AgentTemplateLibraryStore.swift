@@ -29,6 +29,9 @@ private enum AgentTemplateLibraryStoreError: LocalizedError {
     case noTemplateAssetDirectoriesFound
     case missingTemplate(String)
     case unreadableTemplateAsset(URL)
+    case unreadableDraftFile(String)
+    case invalidTemplateDocument(String)
+    case invalidSoulDocument(String)
 
     var errorDescription: String? {
         switch self {
@@ -38,6 +41,12 @@ private enum AgentTemplateLibraryStoreError: LocalizedError {
             return "找不到模板 \(templateID)。"
         case let .unreadableTemplateAsset(url):
             return "无法读取模板资产目录：\(url.lastPathComponent)。"
+        case let .unreadableDraftFile(relativePath):
+            return "无法读取模板草稿文件：\(relativePath)。"
+        case let .invalidTemplateDocument(message):
+            return "template.json 无法保存：\(message)"
+        case let .invalidSoulDocument(message):
+            return "SOUL.md 无法保存：\(message)"
         }
     }
 }
@@ -729,6 +738,8 @@ final class AgentTemplateLibraryStore: ObservableObject {
 
         session.selectedFilePath = relativePath
         session.hasUnsavedChanges = true
+        session.lastValidationState = nil
+        session.hasValidationErrors = false
         session.dirtyFilePaths = mergedDirtyPaths(
             session.dirtyFilePaths,
             inserting: relativePath
@@ -760,6 +771,8 @@ final class AgentTemplateLibraryStore: ObservableObject {
         session.selectedFilePath = relativePath
         session.dirtyFilePaths.removeAll { $0 == relativePath }
         session.hasUnsavedChanges = !session.dirtyFilePaths.isEmpty
+        session.lastValidationState = nil
+        session.hasValidationErrors = false
         draftSessions[templateID] = session
         return session
     }
@@ -784,12 +797,163 @@ final class AgentTemplateLibraryStore: ObservableObject {
 
         session.selectedFilePath = relativePath
         session.hasUnsavedChanges = true
+        session.lastValidationState = nil
+        session.hasValidationErrors = false
         session.dirtyFilePaths = mergedDirtyPaths(
             session.dirtyFilePaths,
             inserting: relativePath
         )
         draftSessions[templateID] = session
         return session
+    }
+
+    func validateDraftSession(for templateID: String) throws -> TemplateValidationState {
+        var session = try openDraftSession(for: templateID)
+        var issues: [AgentTemplateValidationIssue] = []
+
+        if let index = templateFileIndex(for: templateID, prefersDraft: true) {
+            let missingRequiredFiles = index.flattenedNodes.filter {
+                $0.isDirectory == false && $0.isRequired && $0.isPresent == false
+            }
+            issues.append(contentsOf: missingRequiredFiles.map {
+                AgentTemplateValidationIssue(
+                    severity: .error,
+                    field: $0.relativePath,
+                    message: "缺少必需模板文件：\($0.displayName)。"
+                )
+            })
+        }
+
+        let document: TemplateAssetDocument?
+        do {
+            document = try decodeDraftTemplateDocument(from: session)
+        } catch {
+            issues.append(
+                AgentTemplateValidationIssue(
+                    severity: .error,
+                    field: "template.json",
+                    message: error.localizedDescription
+                )
+            )
+            session.lastValidationState = TemplateValidationState(issues: issues)
+            session.hasValidationErrors = session.lastValidationState?.hasErrors ?? false
+            draftSessions[templateID] = session
+            return session.lastValidationState ?? TemplateValidationState(issues: issues)
+        }
+
+        let parsedSoul: ParsedAgentTemplateSoul
+        do {
+            parsedSoul = try parseDraftSoul(from: session)
+        } catch {
+            issues.append(
+                AgentTemplateValidationIssue(
+                    severity: .error,
+                    field: "SOUL.md",
+                    message: error.localizedDescription
+                )
+            )
+            session.lastValidationState = TemplateValidationState(issues: issues)
+            session.hasValidationErrors = session.lastValidationState?.hasErrors ?? false
+            draftSessions[templateID] = session
+            return session.lastValidationState ?? TemplateValidationState(issues: issues)
+        }
+
+        if let document {
+            var template = document.asTemplate().sanitizedForPersistence()
+            template.meta.name = parsedSoul.name
+            template.soulSpec = parsedSoul.spec
+            issues.append(contentsOf: AgentTemplateValidator.validate(template))
+        }
+
+        let validationState = TemplateValidationState(issues: issues)
+        session.lastValidationState = validationState
+        session.hasValidationErrors = validationState.hasErrors
+        draftSessions[templateID] = session
+        return validationState
+    }
+
+    func templateRevisionHistory(for templateID: String) -> [TemplateAssetDocument] {
+        guard let rootURL = templateAssetDirectoryURL(for: templateID) else { return [] }
+        return templateFileSystem.loadTemplateRevisions(at: rootURL)
+    }
+
+    @discardableResult
+    func persistDraftSession(for templateID: String) throws -> AgentTemplate {
+        guard let sourceTemplate = template(withID: templateID) else {
+            throw AgentTemplateLibraryStoreError.missingTemplate(templateID)
+        }
+
+        let session = try openDraftSession(for: templateID)
+        let draftDocument = try decodeDraftTemplateDocument(from: session)
+        let parsedSoul = try parseDraftSoul(from: session)
+
+        var prepared = draftDocument.asTemplate().sanitizedForPersistence()
+        prepared.meta.name = parsedSoul.name
+        prepared.soulSpec = parsedSoul.spec
+        prepared.meta.isRecommended = false
+        prepared.meta.summary = prepared.meta.summary.isEmpty ? sourceTemplate.summary : prepared.meta.summary
+        prepared.meta.identity = prepared.meta.identity.isEmpty ? sourceTemplate.identity : prepared.meta.identity
+        prepared.meta.colorHex = prepared.meta.colorHex.isEmpty ? sourceTemplate.colorHex : prepared.meta.colorHex
+
+        let persisted: AgentTemplate
+
+        if isBuiltInTemplate(templateID) {
+            var fork = prepared
+            let requestedBaseID = prepared.id.isEmpty ? sourceTemplate.id : prepared.id
+            fork.meta.id = uniqueCustomTemplateID(
+                base: "custom.\(normalizedTemplateIDBase(from: requestedBaseID))"
+            )
+            fork.meta.name = uniqueTemplateName(
+                base: prepared.name.isEmpty ? "\(sourceTemplate.name) Custom" : prepared.name
+            )
+            fork.meta.identity = uniqueIdentity(
+                base: prepared.identity.isEmpty ? fork.name : prepared.identity
+            )
+            fork.meta.sortOrder = nextCustomSortOrder()
+
+            let lineage = TemplateLineage(
+                sourceScope: .duplicatedTemplate,
+                sourceTemplateID: sourceTemplate.id,
+                sourceRevision: draftDocument.revision,
+                createdReason: "Customized from built-in template draft \(sourceTemplate.id)."
+            )
+
+            persisted = persistCustomTemplate(
+                fork,
+                existingDocument: nil,
+                lineage: lineage,
+                draftRootURL: session.draftRootURL
+            )
+        } else {
+            let existingDocument = customTemplateDocuments[templateID]
+            var updated = prepared
+            updated.meta.id = templateID
+            updated.meta.name = updated.meta.name.isEmpty ? sourceTemplate.name : updated.meta.name
+            updated.meta.identity = updated.meta.identity.isEmpty ? sourceTemplate.identity : updated.meta.identity
+            updated.meta.sortOrder = existingDocument?.meta.sortOrder ?? sourceTemplate.meta.sortOrder
+
+            let lineage = existingDocument.flatMap { existingDocument in
+                customTemplateLineages[existingDocument.id].map {
+                    updatedLineage($0, sourceTemplateID: existingDocument.id)
+                }
+            } ?? TemplateLineage(
+                sourceScope: .manualCreation,
+                sourceTemplateID: templateID,
+                sourceRevision: existingDocument?.revision,
+                createdReason: "Saved template asset from draft workspace."
+            )
+
+            persisted = persistCustomTemplate(
+                updated,
+                existingDocument: existingDocument,
+                lineage: lineage,
+                draftRootURL: session.draftRootURL
+            )
+        }
+
+        try? templateFileSystem.removeTemplateDraft(for: templateID, under: appSupportRootDirectory)
+        draftSessions.removeValue(forKey: templateID)
+        return persisted
     }
 
     func closeDraftSession(for templateID: String) {
@@ -977,7 +1141,8 @@ final class AgentTemplateLibraryStore: ObservableObject {
     private func persistCustomTemplate(
         _ templateValue: AgentTemplate,
         existingDocument: TemplateAssetDocument?,
-        lineage: TemplateLineage
+        lineage: TemplateLineage,
+        draftRootURL: URL? = nil
     ) -> AgentTemplate {
         var prepared = templateValue.sanitizedForPersistence()
         prepared.meta.isRecommended = false
@@ -997,11 +1162,21 @@ final class AgentTemplateLibraryStore: ObservableObject {
             sourceRevision: existingDocument?.revision
         )
 
-        try? templateFileSystem.writeTemplateAsset(
-            document: document,
-            lineage: finalLineage,
-            under: appSupportRootDirectory
-        )
+        if let draftRootURL {
+            try? templateFileSystem.commitTemplateDraft(
+                from: draftRootURL,
+                toTemplateID: document.id,
+                document: document,
+                lineage: finalLineage,
+                under: appSupportRootDirectory
+            )
+        } else {
+            try? templateFileSystem.writeTemplateAsset(
+                document: document,
+                lineage: finalLineage,
+                under: appSupportRootDirectory
+            )
+        }
 
         customTemplateDocuments[document.id] = document
         customTemplateLineages[document.id] = finalLineage
@@ -1248,6 +1423,40 @@ final class AgentTemplateLibraryStore: ObservableObject {
             sourceRevision: customTemplateDocuments[templateID]?.revision,
             createdReason: "Draft scaffold generated for \(template.name)."
         )
+    }
+
+    private func decodeDraftTemplateDocument(
+        from session: TemplateDraftSession
+    ) throws -> TemplateAssetDocument {
+        let documentURL = session.draftRootURL.appendingPathComponent("template.json", isDirectory: false)
+        guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            throw AgentTemplateLibraryStoreError.unreadableDraftFile("template.json")
+        }
+
+        do {
+            let data = try Data(contentsOf: documentURL)
+            return try decoder.decode(TemplateAssetDocument.self, from: data)
+        } catch {
+            throw AgentTemplateLibraryStoreError.invalidTemplateDocument(error.localizedDescription)
+        }
+    }
+
+    private func parseDraftSoul(
+        from session: TemplateDraftSession
+    ) throws -> ParsedAgentTemplateSoul {
+        let relativePath = "SOUL.md"
+
+        do {
+            let soulMarkdown = try templateFileSystem.fileContents(
+                at: session.draftRootURL,
+                relativePath: relativePath
+            )
+            return try AgentTemplateSoulMarkdownParser.parse(soulMarkdown)
+        } catch let error as AgentTemplateSoulMarkdownParser.ParseError {
+            throw AgentTemplateLibraryStoreError.invalidSoulDocument(error.localizedDescription)
+        } catch {
+            throw AgentTemplateLibraryStoreError.unreadableDraftFile(relativePath)
+        }
     }
 
     private func buildTemplateAssetImportPreviewEntries(

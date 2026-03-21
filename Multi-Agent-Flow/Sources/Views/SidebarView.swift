@@ -195,7 +195,8 @@ struct SidebarView: View {
         [
             NavigationItem(tag: 0, title: LocalizedString.text("workflow_editor_nav"), icon: "square.grid.2x2"),
             NavigationItem(tag: 1, title: LocalizedString.text("workbench_nav"), icon: "message.badge.waveform"),
-            NavigationItem(tag: 2, title: LocalizedString.text("monitoring_dashboard_nav"), icon: "gauge.with.dots.needle.33percent")
+            NavigationItem(tag: 2, title: LocalizedString.text("monitoring_dashboard_nav"), icon: "gauge.with.dots.needle.33percent"),
+            NavigationItem(tag: 3, title: LocalizedString.text("template_library_nav"), icon: "shippingbox")
         ]
     }
 

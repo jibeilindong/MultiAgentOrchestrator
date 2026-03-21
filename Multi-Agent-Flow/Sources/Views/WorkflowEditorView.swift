@@ -121,7 +121,8 @@ struct WorkflowEditorView: View {
                 onPreviewBatchConnections: previewBatchConnections,
                 onCommitBatchConnections: commitBatchConnections,
                 onCancelBatchConnections: cancelBatchConnectionMode,
-                onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() }
+                onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() },
+                onSyncWorkflowSession: { appState.syncOpenClawActiveSession() }
             )
             .zIndex(1000)
             .background(
@@ -947,6 +948,7 @@ struct EditorToolbar: View {
     var onCommitBatchConnections: () -> Void
     var onCancelBatchConnections: () -> Void
     var onApplyWorkflow: () -> Void
+    var onSyncWorkflowSession: () -> Void
 
     @State private var quickAddTemplateID: String = AgentTemplateCatalog.defaultTemplateID
 
@@ -983,6 +985,48 @@ struct EditorToolbar: View {
 
     private var hasDeleteTarget: Bool {
         hasDeletableNodeSelection || hasBoundarySelection || selectedEdgeID != nil
+    }
+
+    private var applyWorkflowButtonTitle: String {
+        appState.isApplyingWorkflowConfiguration
+            ? LocalizedString.text("applying")
+            : LocalizedString.text("apply_workflow_to_mirror")
+    }
+
+    private var applyWorkflowButtonTooltip: String {
+        appState.hasPendingWorkflowConfiguration
+            ? LocalizedString.text("apply_workflow_to_mirror_tooltip")
+            : LocalizedString.text("apply_workflow_tooltip_idle")
+    }
+
+    private var syncWorkflowButtonTitle: String {
+        appState.isSyncingOpenClawSession
+            ? LocalizedString.text("syncing_current_session")
+            : LocalizedString.text("sync_current_session")
+    }
+
+    private var syncWorkflowButtonTooltip: String {
+        if appState.isSyncingOpenClawSession {
+            return LocalizedString.text("syncing_current_session_tooltip")
+        }
+
+        if appState.hasPendingOpenClawSessionSync {
+            if !appState.openClawManager.isConnected {
+                return LocalizedString.text("sync_current_session_connect_required_tooltip")
+            }
+
+            if appState.openClawManager.config.deploymentKind == .remoteServer {
+                return LocalizedString.text("sync_current_session_remote_unsupported_tooltip")
+            }
+
+            return LocalizedString.text("sync_current_session_tooltip")
+        }
+
+        return LocalizedString.text("sync_current_session_tooltip_idle")
+    }
+
+    private var shouldShowWorkflowSyncStatus: Bool {
+        appState.isSyncingOpenClawSession || appState.hasPendingOpenClawSessionSync
     }
 
     var body: some View {
@@ -1195,16 +1239,21 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: appState.hasPendingWorkflowConfiguration ? "checkmark.seal.fill" : "checkmark.seal",
-                        title: appState.isApplyingWorkflowConfiguration
-                            ? LocalizedString.text("applying")
-                            : LocalizedString.text("confirm_workflow_setup"),
+                        title: applyWorkflowButtonTitle,
                         action: onApplyWorkflow,
-                        tooltip: appState.hasPendingWorkflowConfiguration
-                            ? LocalizedString.text("confirm_workflow_setup_tooltip")
-                            : LocalizedString.text("apply_workflow_tooltip_idle"),
+                        tooltip: applyWorkflowButtonTooltip,
                         prominent: appState.hasPendingWorkflowConfiguration && !appState.isApplyingWorkflowConfiguration
                     )
                     .disabled(!appState.hasPendingWorkflowConfiguration || appState.isApplyingWorkflowConfiguration)
+
+                    toolbarIconButton(
+                        systemName: appState.hasPendingOpenClawSessionSync ? "arrow.clockwise.circle.fill" : "arrow.clockwise.circle",
+                        title: syncWorkflowButtonTitle,
+                        action: onSyncWorkflowSession,
+                        tooltip: syncWorkflowButtonTooltip,
+                        prominent: appState.hasPendingOpenClawSessionSync && !appState.isSyncingOpenClawSession
+                    )
+                    .disabled(!appState.canSyncOpenClawSessionFromWorkflow)
 
                     toolbarIconButton(
                         systemName: "square.and.arrow.down.on.square",
@@ -1266,14 +1315,17 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isSavingDraft || appState.lastDraftSaveTime != nil || appState.hasPendingWorkflowConfiguration || appState.lastAppliedWorkflowConfigurationAt != nil {
+            if appState.isSavingDraft || appState.lastDraftSaveTime != nil || appState.hasPendingWorkflowConfiguration || shouldShowWorkflowSyncStatus || appState.lastAppliedWorkflowConfigurationAt != nil {
                 HStack(spacing: 8) {
                     if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
                         toolbarSaveStatusView
                     }
                     if appState.hasPendingWorkflowConfiguration {
                         workflowApplyStatusView
-                    } else if let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
+                    }
+                    if shouldShowWorkflowSyncStatus {
+                        workflowSessionSyncStatusView
+                    } else if !appState.hasPendingWorkflowConfiguration, let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
                         workflowAppliedStatusView(lastApplied)
                     }
                 }
@@ -1618,6 +1670,49 @@ struct EditorToolbar: View {
             Image(systemName: "clock.badge.exclamationmark")
                 .foregroundColor(.orange)
             Text(LocalizedString.format("workflow_apply_pending_count", pendingCount))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.82))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private var workflowSessionSyncStatusView: some View {
+        let label: String
+        let iconName: String
+        let iconColor: Color
+
+        if appState.isSyncingOpenClawSession {
+            label = LocalizedString.text("syncing_current_session")
+            iconName = "arrow.clockwise.circle.fill"
+            iconColor = .accentColor
+        } else if appState.openClawManager.config.deploymentKind == .remoteServer {
+            label = LocalizedString.text("workflow_session_sync_remote_unavailable")
+            iconName = "exclamationmark.triangle.fill"
+            iconColor = .orange
+        } else if appState.openClawManager.isConnected {
+            label = LocalizedString.text("workflow_session_sync_pending")
+            iconName = "arrow.clockwise.circle"
+            iconColor = .orange
+        } else {
+            label = LocalizedString.text("workflow_session_sync_connect_required")
+            iconName = "bolt.horizontal.circle"
+            iconColor = .orange
+        }
+
+        return HStack(spacing: 6) {
+            Image(systemName: iconName)
+                .foregroundColor(iconColor)
+            Text(label)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
@@ -3758,19 +3853,24 @@ struct NodePropertyPanel: View {
     @State private var reloadStatus: String?
     @State private var reloadStatusIsError = false
     @State private var managedConfigFiles: [ManagedAgentWorkspaceDocumentReference] = []
-    @State private var selectedConfigFileName: String = "SOUL.md"
+    @State private var selectedConfigRelativePath: String = "SOUL.md"
     @State private var selectedConfigFilePath: String?
     @State private var managedConfigDrafts: [String: String] = [:]
+    @State private var dirtyManagedConfigPaths: Set<String> = []
     @State private var outgoingEdgeDrafts: [UUID: EdgeDraft] = [:]
+    @State private var showingDiscardChangesAlert = false
     
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text(LocalizedString.nodeProperties)
                     .font(.headline)
+                if hasUnsavedChanges {
+                    WorkflowEditorDirtyBadgeView()
+                }
                 Spacer()
                 Button(LocalizedString.close) {
-                    isPresented = false
+                    requestClose()
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.cancelAction)
@@ -3848,51 +3948,26 @@ struct NodePropertyPanel: View {
                                         .foregroundColor(.primary)
                                 }
 
-                                VStack(alignment: .leading, spacing: 10) {
-                                    HStack(spacing: 12) {
-                                        Picker("Config File", selection: $selectedConfigFileName) {
-                                            ForEach(managedConfigFiles, id: \.fileName) { file in
-                                                Text(file.fileName).tag(file.fileName)
-                                            }
-                                        }
-                                        .pickerStyle(.menu)
-                                        .frame(maxWidth: 220, alignment: .leading)
-                                        .onChange(of: selectedConfigFileName) { _, newValue in
-                                            loadManagedConfigDraft(agentID: agentID, fileName: newValue)
-                                        }
-
-                                        Spacer()
-                                    }
-
-                                    managedConfigQuickAccessView(agentID: agentID)
-
-                                    if let selectedConfigFilePath {
-                                        Text(selectedConfigFilePath)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                            .textSelection(.enabled)
-                                    }
-
-                                    Text(LocalizedString.text("managed_config_edit_hint"))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-
-                                    TextEditor(text: managedConfigTextBinding)
-                                        .font(.system(.caption, design: .monospaced))
-                                        .frame(minHeight: 380, idealHeight: 440, maxHeight: 560)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                        )
-                                }
+                                ManagedConfigEditorPane(
+                                    files: managedConfigFiles,
+                                    selectedRelativePath: $selectedConfigRelativePath,
+                                    selectedFilePath: selectedConfigFilePath,
+                                    text: managedConfigTextBinding,
+                                    onSelectRelativePath: { newValue in
+                                        loadManagedConfigDraft(agentID: agentID, relativePath: newValue)
+                                    },
+                                    editorFont: .system(.caption, design: .monospaced),
+                                    minEditorHeight: 380,
+                                    idealEditorHeight: 440,
+                                    maxEditorHeight: 560
+                                )
                                 
                                 if let reloadStatus {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: reloadStatusIsError ? "xmark.octagon.fill" : "checkmark.circle.fill")
-                                        Text(reloadStatus)
-                                    }
-                                    .font(.caption)
-                                    .foregroundColor(reloadStatusIsError ? .red : .green)
+                                    WorkflowEditorInlineStatusView(
+                                        message: reloadStatus,
+                                        isError: reloadStatusIsError,
+                                        pendingApplyCount: reloadStatusIsError ? 0 : appState.pendingWorkflowConfigurationRevisionDelta
+                                    )
                                 }
                             }
                             .padding(8)
@@ -3905,7 +3980,7 @@ struct NodePropertyPanel: View {
 
             HStack {
                 Button(LocalizedString.cancel) {
-                    isPresented = false
+                    requestClose()
                 }
                 .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
@@ -3916,6 +3991,7 @@ struct NodePropertyPanel: View {
                     saveChanges()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!hasUnsavedChanges)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 16)
@@ -3936,92 +4012,105 @@ struct NodePropertyPanel: View {
         .onChange(of: node) { _, _ in
             loadNodeData()
         }
+        .onChange(of: nodeTitle) { _, _ in
+            clearReloadStatus()
+        }
+        .onChange(of: conditionExpression) { _, _ in
+            clearReloadStatus()
+        }
+        .onChange(of: loopEnabled) { _, _ in
+            clearReloadStatus()
+        }
+        .onChange(of: maxIterations) { _, _ in
+            clearReloadStatus()
+        }
+        .onChange(of: nodeDisplayColorHex) { _, _ in
+            clearReloadStatus()
+        }
+        .alert(LocalizedString.text("discard_changes_title"), isPresented: $showingDiscardChangesAlert) {
+            Button(LocalizedString.text("discard_changes_action"), role: .destructive) {
+                isPresented = false
+            }
+            Button(LocalizedString.text("keep_editing_action"), role: .cancel) {}
+        } message: {
+            Text(LocalizedString.text("discard_changes_message"))
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        let hasNodeMetadataChanges: Bool = {
+            if node.type != .agent {
+                let existingNodes = appState.currentProject?.workflows.first?.nodes ?? []
+                let normalizedTitle = WorkflowNode.normalizedTitle(
+                    requestedTitle: nodeTitle,
+                    nodeType: node.type,
+                    existingNodes: existingNodes,
+                    excludingNodeID: node.id
+                )
+                if normalizedTitle != node.title {
+                    return true
+                }
+            }
+
+            return node.conditionExpression != conditionExpression
+                || node.loopEnabled != loopEnabled
+                || node.maxIterations != Int(maxIterations.rounded())
+                || CanvasStylePalette.normalizedHex(node.displayColorHex) != CanvasStylePalette.normalizedHex(nodeDisplayColorHex)
+        }()
+
+        return hasNodeMetadataChanges || !dirtyManagedConfigPaths.isEmpty
     }
 
     private var managedConfigTextBinding: Binding<String> {
         Binding(
-            get: { managedConfigDrafts[selectedConfigFileName] ?? "" },
-            set: { managedConfigDrafts[selectedConfigFileName] = $0 }
+            get: { managedConfigDrafts[selectedConfigRelativePath] ?? "" },
+            set: {
+                managedConfigDrafts[selectedConfigRelativePath] = $0
+                dirtyManagedConfigPaths.insert(selectedConfigRelativePath)
+                clearReloadStatus()
+            }
         )
+    }
+
+    private func clearReloadStatus() {
+        guard reloadStatus != nil else { return }
+        reloadStatus = nil
+        reloadStatusIsError = false
     }
 
     private func getAgent(id: UUID) -> Agent? {
         appState.currentProject?.agents.first { $0.id == id }
     }
 
-    private func loadManagedConfigDraft(agentID: UUID, fileName: String) {
-        if let existingDraft = managedConfigDrafts[fileName], !existingDraft.isEmpty,
-           let file = managedConfigFiles.first(where: { $0.fileName == fileName }) {
+    private func loadManagedConfigDraft(agentID: UUID, relativePath: String) {
+        if managedConfigDrafts[relativePath] != nil,
+           let file = managedConfigFiles.first(where: { $0.relativePath == relativePath }) {
             selectedConfigFilePath = file.absolutePath
             return
         }
 
-        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agentID, fileName: fileName) {
-            managedConfigDrafts[fileName] = loaded.content
+        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agentID, relativePath: relativePath) {
+            managedConfigDrafts[relativePath] = loaded.content
             selectedConfigFilePath = loaded.documentPath
         } else {
-            managedConfigDrafts[fileName] = ""
-            selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
+            managedConfigDrafts[relativePath] = ""
+            selectedConfigFilePath = managedConfigFiles.first(where: { $0.relativePath == relativePath })?.absolutePath
         }
     }
 
-    private func preferredConfigFileName() -> String {
-        if managedConfigFiles.contains(where: { $0.fileName == "SOUL.md" }) {
+    private func requestClose() {
+        if hasUnsavedChanges {
+            showingDiscardChangesAlert = true
+        } else {
+            isPresented = false
+        }
+    }
+
+    private func preferredConfigRelativePath() -> String {
+        if managedConfigFiles.contains(where: { $0.relativePath == "SOUL.md" }) {
             return "SOUL.md"
         }
-        return managedConfigFiles.first?.fileName ?? "SOUL.md"
-    }
-
-    private var quickAccessManagedConfigFiles: [ManagedAgentWorkspaceDocumentReference] {
-        let priority = [
-            "SOUL.md",
-            "AGENTS.md",
-            "IDENTITY.md",
-            "USER.md",
-            "TOOLS.md",
-            "HEARTBEAT.md"
-        ]
-        let prioritized = priority.compactMap { target in
-            managedConfigFiles.first(where: { $0.fileName == target })
-        }
-        if prioritized.count >= min(4, managedConfigFiles.count) {
-            return Array(prioritized.prefix(4))
-        }
-
-        let remaining = managedConfigFiles.filter { file in
-            prioritized.contains(where: { $0.fileName == file.fileName }) == false
-        }
-        return Array((prioritized + remaining).prefix(4))
-    }
-
-    @ViewBuilder
-    private func managedConfigQuickAccessView(agentID: UUID) -> some View {
-        if !quickAccessManagedConfigFiles.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(quickAccessManagedConfigFiles, id: \.fileName) { file in
-                        managedConfigQuickAccessButton(fileName: file.fileName) {
-                            guard selectedConfigFileName != file.fileName else { return }
-                            selectedConfigFileName = file.fileName
-                            loadManagedConfigDraft(agentID: agentID, fileName: file.fileName)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func managedConfigQuickAccessButton(fileName: String, action: @escaping () -> Void) -> some View {
-        if selectedConfigFileName == fileName {
-            Button(fileName, action: action)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-        } else {
-            Button(fileName, action: action)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
+        return managedConfigFiles.first?.relativePath ?? "SOUL.md"
     }
 
     private func loadNodeData() {
@@ -4033,6 +4122,7 @@ struct NodePropertyPanel: View {
         nodeDisplayColorHex = CanvasStylePalette.normalizedHex(node.displayColorHex)
         managedConfigFiles = []
         managedConfigDrafts = [:]
+        dirtyManagedConfigPaths = []
         selectedConfigFilePath = nil
         reloadStatus = nil
         reloadStatusIsError = false
@@ -4042,8 +4132,8 @@ struct NodePropertyPanel: View {
             nodeTitle = agent.name
             agentDescription = agent.description
             managedConfigFiles = appState.managedAgentWorkspaceDocuments(agentID: agentID)
-            selectedConfigFileName = preferredConfigFileName()
-            loadManagedConfigDraft(agentID: agentID, fileName: selectedConfigFileName)
+            selectedConfigRelativePath = preferredConfigRelativePath()
+            loadManagedConfigDraft(agentID: agentID, relativePath: selectedConfigRelativePath)
         }
     }
     
@@ -4064,18 +4154,20 @@ struct NodePropertyPanel: View {
         updatedNode.displayColorHex = CanvasStylePalette.normalizedHex(nodeDisplayColorHex)
         appState.updateNode(updatedNode)
 
-        if let agentID = node.agentID {
+        if let agentID = node.agentID, !dirtyManagedConfigPaths.isEmpty {
+            let dirtyDocuments = managedConfigDrafts.filter { dirtyManagedConfigPaths.contains($0.key) }
             let fileResult = appState.persistManagedAgentWorkspaceDocuments(
                 agentID: agentID,
-                documents: managedConfigDrafts
+                documents: dirtyDocuments
             )
             reloadStatus = fileResult.message
             reloadStatusIsError = !fileResult.success
             if fileResult.success {
-                selectedConfigFilePath = fileResult.paths[selectedConfigFileName] ?? selectedConfigFilePath
+                selectedConfigFilePath = fileResult.paths[selectedConfigRelativePath] ?? selectedConfigFilePath
+                dirtyManagedConfigPaths.removeAll()
             }
         } else {
-            reloadStatus = LocalizedString.text("workflow_apply_pending")
+            reloadStatus = LocalizedString.text("workflow_changes_saved_locally")
             reloadStatusIsError = false
         }
     }
@@ -4665,25 +4757,32 @@ struct AgentEditSheet: View {
     
     @State private var name: String = ""
     @State private var managedConfigFiles: [ManagedAgentWorkspaceDocumentReference] = []
-    @State private var selectedConfigFileName: String = "SOUL.md"
+    @State private var selectedConfigRelativePath: String = "SOUL.md"
     @State private var selectedConfigFilePath: String?
     @State private var managedConfigDrafts: [String: String] = [:]
+    @State private var dirtyManagedConfigPaths: Set<String> = []
     @State private var statusMessage: String?
     @State private var statusIsError = false
+    @State private var showingDiscardChangesAlert = false
     
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(LocalizedString.format("agent_edit_title", agent.name))
-                        .font(.headline)
-                    Text("Editing node-local managed config files for this agent.")
+                    HStack(spacing: 8) {
+                        Text(LocalizedString.format("agent_edit_title", agent.name))
+                            .font(.headline)
+                        if hasUnsavedChanges {
+                            WorkflowEditorDirtyBadgeView()
+                        }
+                    }
+                    Text(LocalizedString.text("managed_config_editor_scope_hint"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
                 Button(LocalizedString.close) {
-                    isPresented = false
+                    requestClose()
                 }
                 .buttonStyle(.borderless)
             }
@@ -4697,61 +4796,34 @@ struct AgentEditSheet: View {
                         VStack(alignment: .leading, spacing: 12) {
                             TextField(LocalizedString.name, text: $name)
                                 .textFieldStyle(.roundedBorder)
-                            Text("Node title follows the agent name and is not edited separately.")
+                            Text(LocalizedString.text("agent_node_title_follows_name_hint"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         .padding(8)
                     }
 
-                    GroupBox("Managed Config") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 12) {
-                                Picker("Config File", selection: $selectedConfigFileName) {
-                                    ForEach(managedConfigFiles, id: \.fileName) { file in
-                                        Text(file.fileName).tag(file.fileName)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .frame(maxWidth: 240, alignment: .leading)
-                                .onChange(of: selectedConfigFileName) { _, newValue in
-                                    loadManagedConfigDraft(fileName: newValue)
-                                }
-
-                                Spacer()
-                            }
-
-                            managedConfigQuickAccessView()
-
-                            if let selectedConfigFilePath {
-                                Text(selectedConfigFilePath)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .textSelection(.enabled)
-                            }
-
-                            Text(LocalizedString.text("managed_config_edit_hint"))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
-                            TextEditor(text: managedConfigTextBinding)
-                                .font(.system(.body, design: .monospaced))
-                                .frame(minHeight: 320)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Color.gray.opacity(0.25), lineWidth: 1)
-                                )
-                        }
+                    GroupBox(LocalizedString.text("managed_config_group_title")) {
+                        ManagedConfigEditorPane(
+                            files: managedConfigFiles,
+                            selectedRelativePath: $selectedConfigRelativePath,
+                            selectedFilePath: selectedConfigFilePath,
+                            text: managedConfigTextBinding,
+                            onSelectRelativePath: { newValue in
+                                loadManagedConfigDraft(relativePath: newValue)
+                            },
+                            editorFont: .system(.body, design: .monospaced),
+                            minEditorHeight: 320
+                        )
                         .padding(8)
                     }
 
                     if let statusMessage {
-                        HStack(spacing: 8) {
-                            Image(systemName: statusIsError ? "xmark.octagon.fill" : "checkmark.circle.fill")
-                            Text(statusMessage)
-                        }
-                        .font(.caption)
-                        .foregroundColor(statusIsError ? .red : .green)
+                        WorkflowEditorInlineStatusView(
+                            message: statusMessage,
+                            isError: statusIsError,
+                            pendingApplyCount: statusIsError ? 0 : appState.pendingWorkflowConfigurationRevisionDelta
+                        )
                     }
                 }
                 .padding()
@@ -4759,7 +4831,7 @@ struct AgentEditSheet: View {
 
             HStack {
                 Button(LocalizedString.cancel) {
-                    isPresented = false
+                    requestClose()
                 }
                 .buttonStyle(.bordered)
                 
@@ -4769,6 +4841,7 @@ struct AgentEditSheet: View {
                     saveChanges()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!hasUnsavedChanges)
             }
             .padding()
             .background(.regularMaterial)
@@ -4777,13 +4850,38 @@ struct AgentEditSheet: View {
         .onAppear {
             loadAgentData()
         }
+        .onChange(of: name) { _, _ in
+            clearStatusMessage()
+        }
+        .alert(LocalizedString.text("discard_changes_title"), isPresented: $showingDiscardChangesAlert) {
+            Button(LocalizedString.text("discard_changes_action"), role: .destructive) {
+                isPresented = false
+            }
+            Button(LocalizedString.text("keep_editing_action"), role: .cancel) {}
+        } message: {
+            Text(LocalizedString.text("discard_changes_message"))
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        name != agent.name || !dirtyManagedConfigPaths.isEmpty
     }
 
     private var managedConfigTextBinding: Binding<String> {
         Binding(
-            get: { managedConfigDrafts[selectedConfigFileName] ?? "" },
-            set: { managedConfigDrafts[selectedConfigFileName] = $0 }
+            get: { managedConfigDrafts[selectedConfigRelativePath] ?? "" },
+            set: {
+                managedConfigDrafts[selectedConfigRelativePath] = $0
+                dirtyManagedConfigPaths.insert(selectedConfigRelativePath)
+                clearStatusMessage()
+            }
         )
+    }
+
+    private func clearStatusMessage() {
+        guard statusMessage != nil else { return }
+        statusMessage = nil
+        statusIsError = false
     }
     
     private func loadAgentData() {
@@ -4791,80 +4889,29 @@ struct AgentEditSheet: View {
            let a = project.agents.first(where: { $0.id == agent.id }) {
             name = a.name
             managedConfigFiles = appState.managedAgentWorkspaceDocuments(agentID: a.id)
-            selectedConfigFileName = managedConfigFiles.contains(where: { $0.fileName == "SOUL.md" })
+            selectedConfigRelativePath = managedConfigFiles.contains(where: { $0.relativePath == "SOUL.md" })
                 ? "SOUL.md"
-                : (managedConfigFiles.first?.fileName ?? "SOUL.md")
-            loadManagedConfigDraft(fileName: selectedConfigFileName)
+                : (managedConfigFiles.first?.relativePath ?? "SOUL.md")
+            loadManagedConfigDraft(relativePath: selectedConfigRelativePath)
+            dirtyManagedConfigPaths = []
             statusMessage = nil
             statusIsError = false
         }
     }
 
-    private func loadManagedConfigDraft(fileName: String) {
-        if let existingDraft = managedConfigDrafts[fileName], !existingDraft.isEmpty,
-           let file = managedConfigFiles.first(where: { $0.fileName == fileName }) {
+    private func loadManagedConfigDraft(relativePath: String) {
+        if managedConfigDrafts[relativePath] != nil,
+           let file = managedConfigFiles.first(where: { $0.relativePath == relativePath }) {
             selectedConfigFilePath = file.absolutePath
             return
         }
 
-        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agent.id, fileName: fileName) {
-            managedConfigDrafts[fileName] = loaded.content
+        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agent.id, relativePath: relativePath) {
+            managedConfigDrafts[relativePath] = loaded.content
             selectedConfigFilePath = loaded.documentPath
         } else {
-            managedConfigDrafts[fileName] = ""
-            selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
-        }
-    }
-
-    private var quickAccessManagedConfigFiles: [ManagedAgentWorkspaceDocumentReference] {
-        let priority = [
-            "SOUL.md",
-            "AGENTS.md",
-            "IDENTITY.md",
-            "USER.md",
-            "TOOLS.md",
-            "HEARTBEAT.md"
-        ]
-        let prioritized = priority.compactMap { target in
-            managedConfigFiles.first(where: { $0.fileName == target })
-        }
-        if prioritized.count >= min(4, managedConfigFiles.count) {
-            return Array(prioritized.prefix(4))
-        }
-
-        let remaining = managedConfigFiles.filter { file in
-            prioritized.contains(where: { $0.fileName == file.fileName }) == false
-        }
-        return Array((prioritized + remaining).prefix(4))
-    }
-
-    @ViewBuilder
-    private func managedConfigQuickAccessView() -> some View {
-        if !quickAccessManagedConfigFiles.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(quickAccessManagedConfigFiles, id: \.fileName) { file in
-                        managedConfigQuickAccessButton(fileName: file.fileName) {
-                            guard selectedConfigFileName != file.fileName else { return }
-                            selectedConfigFileName = file.fileName
-                            loadManagedConfigDraft(fileName: file.fileName)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func managedConfigQuickAccessButton(fileName: String, action: @escaping () -> Void) -> some View {
-        if selectedConfigFileName == fileName {
-            Button(fileName, action: action)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-        } else {
-            Button(fileName, action: action)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            managedConfigDrafts[relativePath] = ""
+            selectedConfigFilePath = managedConfigFiles.first(where: { $0.relativePath == relativePath })?.absolutePath
         }
     }
 
@@ -4878,19 +4925,38 @@ struct AgentEditSheet: View {
         updatedAgent.name = name
         updatedAgent.soulMD = managedConfigDrafts["SOUL.md"] ?? updatedAgent.soulMD
         updatedAgent.updatedAt = Date()
+        appState.updateAgent(updatedAgent, reload: true)
 
-        let fileResult = appState.persistManagedAgentWorkspaceDocuments(
-            agentID: updatedAgent.id,
-            documents: managedConfigDrafts
-        )
-        if fileResult.success {
-            selectedConfigFilePath = fileResult.paths[selectedConfigFileName] ?? selectedConfigFilePath
+        if !dirtyManagedConfigPaths.isEmpty {
+            let dirtyDocuments = managedConfigDrafts.filter { dirtyManagedConfigPaths.contains($0.key) }
+            let fileResult = appState.persistManagedAgentWorkspaceDocuments(
+                agentID: updatedAgent.id,
+                documents: dirtyDocuments
+            )
+            if fileResult.success {
+                selectedConfigFilePath = fileResult.paths[selectedConfigRelativePath] ?? selectedConfigFilePath
+                dirtyManagedConfigPaths.removeAll()
+            }
+
+            statusMessage = fileResult.message
+            statusIsError = !fileResult.success
+            if fileResult.success {
+                isPresented = false
+            }
+            return
         }
 
-        appState.updateAgent(updatedAgent, reload: true)
-        statusMessage = fileResult.success ? LocalizedString.text("workflow_apply_pending") : fileResult.message
-        statusIsError = !fileResult.success
-        if fileResult.success {
+        statusMessage = LocalizedString.text("workflow_changes_saved_locally")
+        statusIsError = false
+        if name != agent.name || !managedConfigFiles.isEmpty {
+            isPresented = false
+        }
+    }
+
+    private func requestClose() {
+        if hasUnsavedChanges {
+            showingDiscardChangesAlert = true
+        } else {
             isPresented = false
         }
     }

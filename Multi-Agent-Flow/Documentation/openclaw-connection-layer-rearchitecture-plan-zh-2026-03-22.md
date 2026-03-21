@@ -3,6 +3,30 @@
 最后更新：2026-03-22
 状态：已开始执行
 
+## 当前执行进展
+
+已完成：
+
+- 统一 `connectionState`、`lastProbeReport` 与结构化 `layers` 契约
+- 将 runtime readiness、recovery plan、recovery report、recovery audit 接入桌面端
+- 将 `retry guidance` 升级为带预算、冷却窗口与执行门控的 `controlled retry policy`
+- 在桌面端接入受控 `smart retry` 入口，避免无界重复恢复
+- 让 gateway 断线稳定回推到公开应用状态
+- 为项目快照新增结构化 `session lifecycle`，明确区分 `prepared`、`pending_sync`、`synced`
+- 在 Swift 入口层开始拆分 `connect` 与 `sync current session`，连接后不再默认宣称已经写回运行时
+- Swift `connect` 已重排为“先 probe，再 prepare session”；失败连接不再提前创建会话准备态，也不会把 `sessionLifecycle` 错误推进到 `prepared`
+- `workflow apply` 已改为只做本地 mirror apply；live runtime 写回与 allow list 同步改由显式 `sync current session` 触发
+- Workflow Editor 工具栏已拆分为“应用镜像”与“同步当前会话”两个显式动作，并补充待同步状态提示
+- Swift 侧 container probe 已升级为 CLI + gateway 双阶段探测，`preferredGatewayConfig` 与 `openclaw.json` 的 gateway 解析逻辑开始在 local/container 之间复用
+- Electron 侧 container probe 已升级为 CLI + gateway 双阶段探测，桌面端 `buildOpenClawProbeContract` 不再把 container 视为“无需 gateway handshake”的特例
+- Electron 侧新增可测试的 `openclaw-discovery` helper，container 模式在拿不到 CLI config path 时会优先尝试容器内 root 发现，再回退到显式候选顺序，开始减少对 `workspaceMountPath` 猜测路径的依赖
+
+当前进行中：
+
+- 将“统一连接契约”继续下沉到 Electron/Swift 的发现与探测入口，进一步收敛 local、container、remote 的连接定义与 inventory source-of-truth
+- 继续把“只读 probe / attach”与“prepare session / runtime commit”拆得更干净，并统一会话准备失败时的收口语义
+- 继续为 container/remote 模式补齐统一的 inventory source-of-truth 与 runtime handshake，并把 discovery helper 进一步下沉为可复用契约
+
 ## 目的
 
 本文档定义 Multi-Agent-Flow 下一代 OpenClaw 连接层方案。

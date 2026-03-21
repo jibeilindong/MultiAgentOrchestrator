@@ -485,6 +485,7 @@ export function syncOpenClawState(
     activeAgents?: MAProject["openClaw"]["activeAgents"];
     detectedAgents?: MAProject["openClaw"]["detectedAgents"];
     connectionState?: MAProject["openClaw"]["connectionState"];
+    sessionLifecycle?: MAProject["openClaw"]["sessionLifecycle"];
     lastProbeReport?: MAProject["openClaw"]["lastProbeReport"];
     recoveryReports?: MAProject["openClaw"]["recoveryReports"];
   }
@@ -496,6 +497,8 @@ export function syncOpenClawState(
     activeAgents: payload.activeAgents ?? project.openClaw.activeAgents,
     detectedAgents: payload.detectedAgents ?? project.openClaw.detectedAgents,
     connectionState: payload.connectionState ?? project.openClaw.connectionState,
+    sessionLifecycle:
+      payload.sessionLifecycle === undefined ? project.openClaw.sessionLifecycle ?? null : payload.sessionLifecycle,
     lastProbeReport:
       payload.lastProbeReport === undefined ? project.openClaw.lastProbeReport ?? null : payload.lastProbeReport,
     recoveryReports: payload.recoveryReports ?? project.openClaw.recoveryReports ?? [],

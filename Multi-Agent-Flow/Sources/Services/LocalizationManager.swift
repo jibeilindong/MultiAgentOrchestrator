@@ -794,6 +794,9 @@ struct LocalizedString {
                 "workflow_editor_nav": "Workflow Editor",
                 "workbench_nav": "Workbench Conversation",
                 "monitoring_dashboard_nav": "Monitoring Dashboard",
+                "open_template_library": "Open Template Library",
+                "template_library_nav": "Template Library",
+                "template_library_via_sidebar": "Template library is available from the sidebar.",
                 "open_project_first": "Open a Project first",
                 "open_project_first_dashboard_desc": "The dashboard uses the current project to show workflow runtime, task state, and OpenClaw intervention entry points.",
                 "connect_openclaw_first": "Connect OpenClaw first",
@@ -952,8 +955,22 @@ struct LocalizedString {
                 "workflow_apply_in_progress": "Workflow application is already in progress.",
                 "workflow_apply_project_required": "Create or open a project before applying workflow settings.",
                 "workflow_apply_no_pending": "The current workflow has no pending changes to apply.",
+                "workflow_apply_sync_current_session_hint": "Workflow changes were applied to project mirrors. Sync the current session when you are ready to write them back to the live runtime.",
+                "workflow_apply_local_only_hint": "Workflow changes were applied locally. Connect or sync a session later when runtime write-back is needed.",
+                "apply_workflow_to_mirror": "Apply Mirror",
+                "apply_workflow_to_mirror_tooltip": "Apply the current workflow changes to project mirrors only. Live runtime sync stays manual.",
                 "confirm_workflow_setup": "Confirm Build",
                 "confirm_workflow_setup_tooltip": "Confirm the current workflow build",
+                "sync_current_session": "Sync Session",
+                "sync_current_session_tooltip": "Write the current project mirror back into the active OpenClaw session and refresh its communication allow list.",
+                "sync_current_session_tooltip_idle": "There are no pending mirror changes to sync to the current OpenClaw session.",
+                "sync_current_session_connect_required_tooltip": "The current project mirror has pending changes. Connect OpenClaw before syncing the active session.",
+                "sync_current_session_remote_unsupported_tooltip": "Remote gateway mode does not support writing project mirrors back to the active session yet.",
+                "syncing_current_session": "Syncing Session...",
+                "syncing_current_session_tooltip": "The active OpenClaw session is syncing. Please wait for the current write-back to complete.",
+                "workflow_session_sync_pending": "Current session pending sync",
+                "workflow_session_sync_connect_required": "Mirror changes pending session sync",
+                "workflow_session_sync_remote_unavailable": "Mirror changes pending; remote sync unavailable",
                 "save_tooltip": "Save",
                 "save_draft": "Save Draft",
                 "save_draft_tooltip": "Save the current canvas edits as a draft without materializing the workflow",
@@ -984,6 +1001,11 @@ struct LocalizedString {
                 "focus_agent": "Focus Agent",
                 "edit_soul_md": "Edit Config Files",
                 "reveal_soul_md": "Reveal Config File",
+                "managed_config_file_label": "Config File",
+                "managed_config_group_title": "Managed Config",
+                "managed_config_editor_scope_hint": "Editing node-local managed config files for this agent.",
+                "managed_config_unavailable_for_unbound_agent": "This agent has no node-local managed config yet. Place it on the workflow canvas to edit its managed files.",
+                "agent_node_title_follows_name_hint": "Node title follows the agent name and is not edited separately.",
                 "reveal_expected_soul": "Reveal Expected Config Location",
                 "open_workspace": "Open Workspace",
                 "manage_skills": "Manage Skills",
@@ -1304,8 +1326,14 @@ struct LocalizedString {
                 "no_real_soul_file_project_cache": "No node-local managed config file was found for this agent.",
                 "reloaded_from_path": "Reloaded managed config from %@",
                 "read_soul_failed": "Failed to read managed config file: %@",
-                "managed_config_saved_locally": "Saved to the node-local managed config. Apply to push changes into OpenClaw."
+                "managed_config_saved_locally": "Saved to the node-local managed config. Apply to push changes into OpenClaw.",
+                "workflow_changes_saved_locally": "Saved locally in the workflow editor. Apply when you are ready to push changes into OpenClaw."
                 ,"managed_config_edit_hint": "Saving here only updates the node-local managed config. Use toolbar Apply to push changes into OpenClaw."
+                ,"discard_changes_title": "Discard unsaved changes?"
+                ,"discard_changes_message": "Your local edits have not been saved yet."
+                ,"discard_changes_action": "Discard Changes"
+                ,"keep_editing_action": "Keep Editing"
+                ,"unsaved_changes_badge": "Unsaved Changes"
                 ,"no_agents_permission_desc": "Add some agents in the sidebar to configure permissions",
                 "na_short": "N/A",
                 "create_action": "Create",
@@ -1612,6 +1640,9 @@ struct LocalizedString {
                 "workflow_editor_nav": "工作流编辑器",
                 "workbench_nav": "工作台对话",
                 "monitoring_dashboard_nav": "监控仪表盘",
+                "open_template_library": "打开模板资产库",
+                "template_library_nav": "模板资产库",
+                "template_library_via_sidebar": "模板资产库已通过侧边栏独立打开。",
                 "open_project_first": "先打开一个 Project",
                 "open_project_first_dashboard_desc": "仪表盘会基于当前 project 展示工作流运行态、任务状态和 OpenClaw 干预入口。",
                 "connect_openclaw_first": "先连接 OpenClaw",
@@ -1770,8 +1801,22 @@ struct LocalizedString {
                 "workflow_apply_in_progress": "工作流配置正在应用中。",
                 "workflow_apply_project_required": "请先创建或打开项目，再应用工作流配置。",
                 "workflow_apply_no_pending": "当前工作流没有待应用的变更。",
+                "workflow_apply_sync_current_session_hint": "工作流变更已写入项目镜像；如需写回当前运行时，请在准备好后执行“同步当前会话”。",
+                "workflow_apply_local_only_hint": "工作流变更已在本地项目中应用；需要写回运行时时，可稍后连接或同步会话。",
+                "apply_workflow_to_mirror": "应用镜像",
+                "apply_workflow_to_mirror_tooltip": "仅将当前工作流变更应用到项目镜像，不会自动写回当前运行时。",
                 "confirm_workflow_setup": "确认搭建",
                 "confirm_workflow_setup_tooltip": "确认当前工作流搭建",
+                "sync_current_session": "同步当前会话",
+                "sync_current_session_tooltip": "将当前项目镜像显式写回到活动 OpenClaw 会话，并刷新通信 allow list。",
+                "sync_current_session_tooltip_idle": "当前没有待同步到 OpenClaw 会话的镜像变更。",
+                "sync_current_session_connect_required_tooltip": "当前项目镜像存在待同步变更。请先连接 OpenClaw，再同步当前会话。",
+                "sync_current_session_remote_unsupported_tooltip": "远程网关模式暂不支持将项目镜像写回当前会话。",
+                "syncing_current_session": "正在同步会话...",
+                "syncing_current_session_tooltip": "当前 OpenClaw 会话正在同步中，请等待本次写回完成。",
+                "workflow_session_sync_pending": "当前会话待同步",
+                "workflow_session_sync_connect_required": "镜像变更待同步到会话",
+                "workflow_session_sync_remote_unavailable": "镜像变更待同步，远程模式暂不支持",
                 "save_tooltip": "保存",
                 "save_draft": "保存草稿",
                 "save_draft_tooltip": "将当前画布编辑状态保存为草稿，不会实际搭建",
@@ -1802,6 +1847,11 @@ struct LocalizedString {
                 "focus_agent": "聚焦 Agent",
                 "edit_soul_md": "编辑配置文件",
                 "reveal_soul_md": "定位配置文件",
+                "managed_config_file_label": "配置文件",
+                "managed_config_group_title": "受管配置",
+                "managed_config_editor_scope_hint": "这里只编辑当前 Agent 的节点本地受管配置文件。",
+                "managed_config_unavailable_for_unbound_agent": "这个 Agent 目前还没有节点本地受管配置。请先把它放到工作流画布上，再编辑受管文件。",
+                "agent_node_title_follows_name_hint": "节点标题始终跟随 Agent 名称，不单独编辑。",
                 "reveal_expected_soul": "定位预期配置位置",
                 "open_workspace": "打开工作区",
                 "manage_skills": "管理技能",
@@ -2122,8 +2172,14 @@ struct LocalizedString {
                 "no_real_soul_file_project_cache": "没有找到这个 agent 对应的节点本地受管配置文件。",
                 "reloaded_from_path": "已从 %@ 重新加载受管配置",
                 "read_soul_failed": "读取受管配置文件失败：%@",
-                "managed_config_saved_locally": "已保存到节点本地受管配置；点击 Apply 后会统一推送到 OpenClaw。"
+                "managed_config_saved_locally": "已保存到节点本地受管配置；点击 Apply 后会统一推送到 OpenClaw。",
+                "workflow_changes_saved_locally": "已在 workflow 编辑器中保存到本地；准备好后可点击 Apply 推送到 OpenClaw。"
                 ,"managed_config_edit_hint": "这里的保存只会更新节点本地受管配置；需要通过工具栏 Apply 才会推送到 OpenClaw。"
+                ,"discard_changes_title": "要放弃未保存的更改吗？"
+                ,"discard_changes_message": "你当前的本地编辑还没有保存。"
+                ,"discard_changes_action": "放弃更改"
+                ,"keep_editing_action": "继续编辑"
+                ,"unsaved_changes_badge": "未保存更改"
                 ,"no_agents_permission_desc": "请先在侧边栏添加一些 Agents，再来配置权限",
                 "na_short": "不适用",
                 "create_action": "创建",
@@ -2430,6 +2486,9 @@ struct LocalizedString {
                 "workflow_editor_nav": "工作流編輯器",
                 "workbench_nav": "工作台對話",
                 "monitoring_dashboard_nav": "監控儀表板",
+                "open_template_library": "開啟模板資產庫",
+                "template_library_nav": "模板資產庫",
+                "template_library_via_sidebar": "模板資產庫已透過側邊欄獨立開啟。",
                 "open_project_first": "先開啟一個 Project",
                 "open_project_first_dashboard_desc": "儀表板會根據目前 project 顯示工作流執行態、任務狀態與 OpenClaw 介入入口。",
                 "connect_openclaw_first": "先連線 OpenClaw",
@@ -2588,8 +2647,22 @@ struct LocalizedString {
                 "workflow_apply_in_progress": "工作流設定正在套用中。",
                 "workflow_apply_project_required": "請先建立或開啟專案，再套用工作流設定。",
                 "workflow_apply_no_pending": "目前工作流沒有待套用的變更。",
+                "workflow_apply_sync_current_session_hint": "工作流變更已寫入專案鏡像；如需寫回目前執行時，請在準備好後執行「同步目前會話」。",
+                "workflow_apply_local_only_hint": "工作流變更已在本地專案中套用；需要寫回執行時時，可稍後連線或同步會話。",
+                "apply_workflow_to_mirror": "套用鏡像",
+                "apply_workflow_to_mirror_tooltip": "僅將目前工作流變更套用到專案鏡像，不會自動寫回目前執行時。",
                 "confirm_workflow_setup": "確認搭建",
                 "confirm_workflow_setup_tooltip": "確認目前工作流搭建",
+                "sync_current_session": "同步目前會話",
+                "sync_current_session_tooltip": "將目前專案鏡像明確寫回到啟用中的 OpenClaw 會話，並刷新通訊 allow list。",
+                "sync_current_session_tooltip_idle": "目前沒有待同步到 OpenClaw 會話的鏡像變更。",
+                "sync_current_session_connect_required_tooltip": "目前專案鏡像存在待同步變更。請先連線 OpenClaw，再同步目前會話。",
+                "sync_current_session_remote_unsupported_tooltip": "遠端閘道模式暫不支援將專案鏡像寫回目前會話。",
+                "syncing_current_session": "正在同步會話...",
+                "syncing_current_session_tooltip": "目前 OpenClaw 會話正在同步中，請等待本次寫回完成。",
+                "workflow_session_sync_pending": "目前會話待同步",
+                "workflow_session_sync_connect_required": "鏡像變更待同步到會話",
+                "workflow_session_sync_remote_unavailable": "鏡像變更待同步，遠端模式暫不支援",
                 "save_tooltip": "儲存",
                 "save_draft": "儲存草稿",
                 "save_draft_tooltip": "將目前畫布編輯狀態儲存為草稿，不會實際搭建",
@@ -2620,6 +2693,11 @@ struct LocalizedString {
                 "focus_agent": "聚焦 Agent",
                 "edit_soul_md": "編輯設定檔",
                 "reveal_soul_md": "定位設定檔",
+                "managed_config_file_label": "設定檔",
+                "managed_config_group_title": "受管設定",
+                "managed_config_editor_scope_hint": "這裡只會編輯目前 Agent 的節點本地受管設定檔。",
+                "managed_config_unavailable_for_unbound_agent": "這個 Agent 目前還沒有節點本地受管設定。請先把它放到工作流畫布上，再編輯受管檔案。",
+                "agent_node_title_follows_name_hint": "節點標題會跟隨 Agent 名稱，不會另外編輯。",
                 "reveal_expected_soul": "定位預期設定位置",
                 "open_workspace": "開啟工作區",
                 "manage_skills": "管理技能",
@@ -2940,8 +3018,14 @@ struct LocalizedString {
                 "no_real_soul_file_project_cache": "找不到這個 agent 對應的節點本地受管設定檔。",
                 "reloaded_from_path": "已從 %@ 重新載入受管設定",
                 "read_soul_failed": "讀取受管設定檔失敗：%@",
-                "managed_config_saved_locally": "已儲存到節點本地受管設定；點擊 Apply 後會統一推送到 OpenClaw。"
+                "managed_config_saved_locally": "已儲存到節點本地受管設定；點擊 Apply 後會統一推送到 OpenClaw。",
+                "workflow_changes_saved_locally": "已在 workflow 編輯器中儲存到本地；準備好後可點擊 Apply 推送到 OpenClaw。"
                 ,"managed_config_edit_hint": "這裡的儲存只會更新節點本地受管設定；需要透過工具列 Apply 才會推送到 OpenClaw。"
+                ,"discard_changes_title": "要捨棄未儲存的變更嗎？"
+                ,"discard_changes_message": "你目前的本地編輯尚未儲存。"
+                ,"discard_changes_action": "捨棄變更"
+                ,"keep_editing_action": "繼續編輯"
+                ,"unsaved_changes_badge": "未儲存變更"
                 ,"no_agents_permission_desc": "請先在側邊欄新增一些 Agents，再來設定權限",
                 "na_short": "不適用",
                 "create_action": "建立",

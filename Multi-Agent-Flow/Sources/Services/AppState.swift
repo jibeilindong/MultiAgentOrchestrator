@@ -20,8 +20,9 @@ struct ProjectFileReference: Identifiable, Hashable {
 }
 
 struct ManagedAgentWorkspaceDocumentReference: Identifiable, Hashable {
-    var id: String { fileName }
+    var id: String { relativePath }
     let fileName: String
+    let relativePath: String
     let absolutePath: String
 }
 
@@ -605,6 +606,7 @@ class AppState: ObservableObject {
     @Published private(set) var canUndoWorkflowChange: Bool = false
     @Published private(set) var canRedoWorkflowChange: Bool = false
     @Published private(set) var isApplyingWorkflowConfiguration: Bool = false
+    @Published private(set) var isSyncingOpenClawSession: Bool = false
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
@@ -636,21 +638,41 @@ class AppState: ObservableObject {
     }
 
     var hasPendingWorkflowConfiguration: Bool {
-        guard let runtimeState = currentProject?.runtimeState else { return false }
-        return runtimeState.workflowConfigurationRevision != runtimeState.appliedWorkflowConfigurationRevision
+        Self.hasPendingWorkflowConfiguration(currentProject?.runtimeState)
     }
 
     var pendingWorkflowConfigurationRevisionDelta: Int {
-        guard let runtimeState = currentProject?.runtimeState else { return 0 }
-        return max(0, runtimeState.workflowConfigurationRevision - runtimeState.appliedWorkflowConfigurationRevision)
+        Self.pendingWorkflowConfigurationRevisionDelta(currentProject?.runtimeState)
     }
 
     var lastAppliedWorkflowConfigurationAt: Date? {
         currentProject?.runtimeState.lastAppliedWorkflowAt
     }
 
+    var hasPendingOpenClawSessionSync: Bool {
+        openClawManager.sessionLifecycle.stage == .pendingSync && openClawManager.sessionLifecycle.hasPendingMirrorChanges
+    }
+
+    var canSyncOpenClawSessionFromWorkflow: Bool {
+        hasPendingOpenClawSessionSync
+            && openClawManager.isConnected
+            && openClawManager.config.deploymentKind != .remoteServer
+            && !isApplyingWorkflowConfiguration
+            && !isSyncingOpenClawSession
+    }
+
     private var projectPendingConfirmation: Bool {
         hasPendingWorkflowConfiguration
+    }
+
+    static func hasPendingWorkflowConfiguration(_ runtimeState: RuntimeState?) -> Bool {
+        guard let runtimeState else { return false }
+        return runtimeState.workflowConfigurationRevision > runtimeState.appliedWorkflowConfigurationRevision
+    }
+
+    static func pendingWorkflowConfigurationRevisionDelta(_ runtimeState: RuntimeState?) -> Int {
+        guard let runtimeState else { return 0 }
+        return max(0, runtimeState.workflowConfigurationRevision - runtimeState.appliedWorkflowConfigurationRevision)
     }
     
     init() {
@@ -843,6 +865,19 @@ class AppState: ObservableObject {
             logs: openClawService.executionLogs,
             state: nil
         )
+    }
+
+    private func decorateOpenClawConnectionMessage(_ message: String) -> String {
+        switch openClawManager.sessionLifecycle.stage {
+        case .pendingSync:
+            return "\(message) 当前项目镜像已准备完成，但仍有待同步变更；如需写回运行时，请执行“同步当前会话”。"
+        case .prepared:
+            return "\(message) 当前项目镜像已准备完成；如需写回运行时，请执行“同步当前会话”。"
+        case .synced:
+            return "\(message) 当前会话已与项目镜像同步。"
+        case .inactive:
+            return message
+        }
     }
 
     private func syncConversationPermissions(for workflows: [Workflow], in project: inout MAProject) {
@@ -1473,8 +1508,54 @@ class AppState: ObservableObject {
                     }
                     self.persistCurrentProjectSilently()
                 }
-                completion?(success, message)
+                completion?(success, success ? self.decorateOpenClawConnectionMessage(message) : message)
             })
+        }
+    }
+
+    func syncOpenClawActiveSession(completion: ((Bool, String) -> Void)? = nil) {
+        guard !isSyncingOpenClawSession else {
+            completion?(false, "当前 OpenClaw 会话正在同步中，请稍候。")
+            return
+        }
+
+        guard let project = snapshotCurrentProject() else {
+            completion?(false, "请先创建或打开项目，再同步当前 OpenClaw 会话。")
+            return
+        }
+
+        guard openClawManager.config.deploymentKind != .remoteServer else {
+            completion?(false, "远程网关模式当前不支持项目镜像写回会话。")
+            return
+        }
+
+        guard openClawManager.isConnected else {
+            completion?(false, "请先连接 OpenClaw，再同步当前会话。")
+            return
+        }
+
+        currentProject = project
+        isSyncingOpenClawSession = true
+        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] success, message in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.syncCurrentProjectFromManagers()
+                guard success else {
+                    self.isSyncingOpenClawSession = false
+                    completion?(false, message)
+                    return
+                }
+
+                self.syncOpenClawCommunicationAllowListIfNeeded(project: project, reason: "manual_sync") { allowListSuccess, allowListMessage in
+                    let combinedMessage = "\(message) \(allowListMessage)".trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.syncCurrentProjectFromManagers()
+                    self.isSyncingOpenClawSession = false
+                    if allowListSuccess {
+                        self.persistCurrentProjectSilently()
+                    }
+                    completion?(allowListSuccess, combinedMessage)
+                }
+            }
         }
     }
 
@@ -2737,54 +2818,139 @@ class AppState: ObservableObject {
         )
     }
 
-    private func ensureManagedAgentWorkspaceDocument(
-        named fileName: String,
+    private func normalizedManagedWorkspaceRelativePath(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let normalized = NSString(string: trimmed.replacingOccurrences(of: "\\", with: "/")).standardizingPath
+        guard !normalized.isEmpty,
+              normalized != ".",
+              normalized != "..",
+              !normalized.hasPrefix("/"),
+              !normalized.hasPrefix("../"),
+              !normalized.contains("/../"),
+              URL(fileURLWithPath: normalized).pathExtension.lowercased() == "md" else {
+            return nil
+        }
+
+        return normalized
+    }
+
+    private func managedAgentWorkspaceDocumentURL(
+        relativePath: String,
         context: ManagedAgentWorkspaceContext
     ) throws -> URL {
-        guard ProjectFileSystem.shared.isManagedOpenClawWorkspaceMarkdownFile(fileName) else {
+        guard let normalizedRelativePath = normalizedManagedWorkspaceRelativePath(relativePath) else {
             throw NSError(
                 domain: "AppState.ManagedWorkspace",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Unsupported managed workspace document: \(fileName)"]
+                userInfo: [NSLocalizedDescriptionKey: "Unsupported managed workspace document: \(relativePath)"]
             )
         }
 
         try FileManager.default.createDirectory(at: context.workspaceURL, withIntermediateDirectories: true)
-        let documentURL = context.workspaceURL.appendingPathComponent(fileName, isDirectory: false)
+        let workspaceURL = context.workspaceURL.standardizedFileURL
+        let documentURL = workspaceURL
+            .appendingPathComponent(normalizedRelativePath, isDirectory: false)
+            .standardizedFileURL
+
+        guard documentURL.path == workspaceURL.path || documentURL.path.hasPrefix(workspaceURL.path + "/") else {
+            throw NSError(
+                domain: "AppState.ManagedWorkspace",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Managed workspace document escaped workspace root: \(normalizedRelativePath)"]
+            )
+        }
+
+        try FileManager.default.createDirectory(
+            at: documentURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
 
         if !FileManager.default.fileExists(atPath: documentURL.path) {
-            let agent = context.project.agents[context.agentIndex]
-            let defaultContent = ProjectFileSystem.shared.defaultManagedOpenClawWorkspaceDocument(
-                named: fileName,
-                agent: agent,
-                nodeID: context.nodeID
-            ) ?? ""
-            try defaultContent.write(to: documentURL, atomically: true, encoding: .utf8)
+            let rootFileName = URL(fileURLWithPath: normalizedRelativePath).lastPathComponent
+            if !normalizedRelativePath.contains("/"),
+               ProjectFileSystem.shared.isManagedOpenClawWorkspaceMarkdownFile(rootFileName) {
+                let agent = context.project.agents[context.agentIndex]
+                let defaultContent = ProjectFileSystem.shared.defaultManagedOpenClawWorkspaceDocument(
+                    named: rootFileName,
+                    agent: agent,
+                    nodeID: context.nodeID
+                ) ?? ""
+                try defaultContent.write(to: documentURL, atomically: true, encoding: .utf8)
+            }
         }
 
         return documentURL
     }
 
-    func managedAgentWorkspaceDocuments(agentID: UUID) -> [ManagedAgentWorkspaceDocumentReference] {
-        guard let context = managedAgentWorkspaceContext(for: agentID) else { return [] }
+    private func discoveredManagedAgentWorkspaceDocuments(
+        context: ManagedAgentWorkspaceContext
+    ) -> [ManagedAgentWorkspaceDocumentReference] {
+        for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles {
+            _ = try? managedAgentWorkspaceDocumentURL(relativePath: fileName, context: context)
+        }
 
-        return ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles.compactMap { fileName in
-            guard let documentURL = try? ensureManagedAgentWorkspaceDocument(named: fileName, context: context) else {
-                return nil
+        guard let enumerator = FileManager.default.enumerator(
+            at: context.workspaceURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        var documents: [ManagedAgentWorkspaceDocumentReference] = []
+
+        for case let fileURL as URL in enumerator {
+            guard fileURL.pathExtension.lowercased() == "md" else { continue }
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true else { continue }
+
+            let relativePath = fileURL.path.replacingOccurrences(
+                of: context.workspaceURL.path + "/",
+                with: ""
+            )
+
+            guard let normalizedRelativePath = normalizedManagedWorkspaceRelativePath(relativePath) else {
+                continue
             }
-            return ManagedAgentWorkspaceDocumentReference(
-                fileName: fileName,
-                absolutePath: documentURL.path
+
+            documents.append(
+                ManagedAgentWorkspaceDocumentReference(
+                    fileName: fileURL.lastPathComponent,
+                    relativePath: normalizedRelativePath,
+                    absolutePath: fileURL.path
+                )
             )
         }
+
+        let priority = Dictionary(
+            uniqueKeysWithValues: ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles.enumerated().map { index, value in
+                (value, index)
+            }
+        )
+
+        return documents.sorted { lhs, rhs in
+            let lhsPriority = lhs.relativePath.contains("/") ? Int.max : (priority[lhs.relativePath] ?? Int.max)
+            let rhsPriority = rhs.relativePath.contains("/") ? Int.max : (priority[rhs.relativePath] ?? Int.max)
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            return lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
+        }
+    }
+
+    func managedAgentWorkspaceDocuments(agentID: UUID) -> [ManagedAgentWorkspaceDocumentReference] {
+        guard let context = managedAgentWorkspaceContext(for: agentID) else { return [] }
+        return discoveredManagedAgentWorkspaceDocuments(context: context)
     }
 
     func loadManagedAgentWorkspaceDocument(
         agentID: UUID,
-        fileName: String
+        relativePath: String
     ) -> (content: String, documentPath: String?)? {
         guard let context = managedAgentWorkspaceContext(for: agentID),
-              let documentURL = try? ensureManagedAgentWorkspaceDocument(named: fileName, context: context),
+              let documentURL = try? managedAgentWorkspaceDocumentURL(relativePath: relativePath, context: context),
               let content = try? String(contentsOf: documentURL, encoding: .utf8) else {
             return nil
         }
@@ -2808,13 +2974,13 @@ class AppState: ObservableObject {
         var writtenPaths: [String: String] = [:]
 
         do {
-            for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles where documents[fileName] != nil {
-                let content = documents[fileName] ?? ""
-                let documentURL = try ensureManagedAgentWorkspaceDocument(named: fileName, context: context)
+            for relativePath in documents.keys.sorted() {
+                let content = documents[relativePath] ?? ""
+                let documentURL = try managedAgentWorkspaceDocumentURL(relativePath: relativePath, context: context)
                 try content.write(to: documentURL, atomically: true, encoding: .utf8)
-                writtenPaths[fileName] = documentURL.path
+                writtenPaths[relativePath] = documentURL.path
 
-                if fileName == "SOUL.md" {
+                if relativePath == "SOUL.md" {
                     context.project.agents[context.agentIndex].soulMD = content
                     context.project.agents[context.agentIndex].openClawDefinition.soulSourcePath = documentURL.path
                 }
@@ -2843,7 +3009,7 @@ class AppState: ObservableObject {
         let availableDocuments = managedAgentWorkspaceDocuments(agentID: agentID)
         guard !availableDocuments.isEmpty else { return nil }
 
-        if let preferred = availableDocuments.first(where: { $0.fileName == preferredFileName }) {
+        if let preferred = availableDocuments.first(where: { $0.relativePath == preferredFileName }) {
             return URL(fileURLWithPath: preferred.absolutePath, isDirectory: false)
         }
 
@@ -3112,39 +3278,42 @@ class AppState: ObservableObject {
 
         currentProject = project
         isApplyingWorkflowConfiguration = true
+        defer {
+            isApplyingWorkflowConfiguration = false
+        }
 
-        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] stageSuccess, stageMessage in
-            guard let self else {
-                completion?(stageSuccess, stageMessage)
-                return
+        openClawManager.noteProjectMirrorChangesPendingSync()
+        syncCurrentProjectFromManagers()
+
+        if var refreshedProject = currentProject,
+           refreshedProject.id == project.id,
+           refreshedProject.runtimeState.workflowConfigurationRevision == requestedRevision {
+            refreshedProject.permissions = conversationPermissions(for: refreshedProject.workflows)
+            refreshedProject.runtimeState.appliedWorkflowConfigurationRevision = requestedRevision
+            refreshedProject.runtimeState.lastAppliedWorkflowAt = Date()
+            refreshedProject.updatedAt = Date()
+            currentProject = refreshedProject
+            appliedProjectSnapshot = refreshedProject
+            persistCurrentProjectSilently()
+        }
+
+        let completionMessage = workflowApplyCompletionMessage(baseMessage: mirrorMaterialization.message)
+        openClawService.addLog(.info, "[workflow_apply] \(completionMessage)")
+        completion?(true, completionMessage)
+    }
+
+    private func workflowApplyCompletionMessage(baseMessage: String) -> String {
+        let pendingSyncHint = LocalizedString.text("workflow_apply_sync_current_session_hint")
+        let localOnlyHint = LocalizedString.text("workflow_apply_local_only_hint")
+
+        switch openClawManager.sessionLifecycle.stage {
+        case .pendingSync, .prepared, .synced:
+            guard openClawManager.config.deploymentKind != .remoteServer else {
+                return "\(baseMessage) \(localOnlyHint)".trimmingCharacters(in: .whitespacesAndNewlines)
             }
-
-            self.openClawService.addLog(stageSuccess ? .info : .warning, "[workflow_apply] \(stageMessage)")
-            guard stageSuccess else {
-                self.isApplyingWorkflowConfiguration = false
-                completion?(false, stageMessage)
-                return
-            }
-
-            self.syncOpenClawCommunicationAllowListIfNeeded(project: project, reason: "workflow_apply") { allowListSuccess, allowListMessage in
-                let combinedMessage = "\(stageMessage) \(allowListMessage)".trimmingCharacters(in: .whitespacesAndNewlines)
-
-                if allowListSuccess,
-                   var refreshedProject = self.currentProject,
-                   refreshedProject.id == project.id,
-                   refreshedProject.runtimeState.workflowConfigurationRevision == requestedRevision {
-                    refreshedProject.permissions = self.conversationPermissions(for: refreshedProject.workflows)
-                    refreshedProject.runtimeState.appliedWorkflowConfigurationRevision = requestedRevision
-                    refreshedProject.runtimeState.lastAppliedWorkflowAt = Date()
-                    refreshedProject.updatedAt = Date()
-                    self.currentProject = refreshedProject
-                    self.appliedProjectSnapshot = refreshedProject
-                    self.persistCurrentProjectSilently()
-                }
-
-                self.isApplyingWorkflowConfiguration = false
-                completion?(allowListSuccess, combinedMessage)
-            }
+            return "\(baseMessage) \(pendingSyncHint)".trimmingCharacters(in: .whitespacesAndNewlines)
+        case .inactive:
+            return "\(baseMessage) \(localOnlyHint)".trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 

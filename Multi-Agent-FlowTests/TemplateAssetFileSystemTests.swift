@@ -84,6 +84,14 @@ final class TemplateAssetFileSystemTests: XCTestCase {
             contentsOf: fileSystem.templateAgentsURL(for: template.id, under: rootURL),
             encoding: .utf8
         )
+        let userMarkdown = try String(
+            contentsOf: fileSystem.templateUserURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
+        let bootstrapMarkdown = try String(
+            contentsOf: fileSystem.templateBootstrapURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
         let examplePrompt = try String(
             contentsOf: fileSystem.templateExamplePromptURL(for: template.id, under: rootURL),
             encoding: .utf8
@@ -95,6 +103,10 @@ final class TemplateAssetFileSystemTests: XCTestCase {
 
         XCTAssertTrue(agentsMarkdown.contains("## Recommended Scenarios"))
         XCTAssertTrue(agentsMarkdown.contains(template.name))
+        XCTAssertTrue(userMarkdown.contains("# USER.md - About Your Human"))
+        XCTAssertTrue(userMarkdown.contains("## Context"))
+        XCTAssertTrue(userMarkdown.contains("you're learning about a person"))
+        XCTAssertTrue(bootstrapMarkdown.contains("human context"))
         XCTAssertTrue(examplePrompt.contains("## Suggested User Brief"))
         XCTAssertTrue(examplePrompt.contains(template.name))
         XCTAssertTrue(acceptanceChecklist.contains("## Success Criteria"))
@@ -450,8 +462,119 @@ final class TemplateAssetFileSystemTests: XCTestCase {
         )
 
         let scaffoldedContents = try String(contentsOf: userURL, encoding: .utf8)
-        XCTAssertTrue(scaffoldedContents.contains("# USER"))
-        XCTAssertTrue(scaffoldedContents.contains("## Expected Deliverables"))
+        XCTAssertTrue(scaffoldedContents.contains("# USER.md - About Your Human"))
+        XCTAssertTrue(scaffoldedContents.contains("## Context"))
+    }
+
+    func testCommitTemplateDraftPreservesEditedSupportFiles() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let initialDocument = TemplateAssetDocument(
+            template: template,
+            revision: 1,
+            status: .published
+        )
+        let initialLineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test draft commit overlay."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: initialDocument,
+            lineage: initialLineage,
+            under: rootURL
+        )
+
+        let sourceURL = fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        let draftURL = try fileSystem.createTemplateDraftDirectory(
+            for: template.id,
+            from: sourceURL,
+            under: rootURL
+        )
+
+        let editedUserContents = "# USER\n\nCustom contract from draft."
+        try fileSystem.writeFileContents(
+            editedUserContents,
+            at: draftURL,
+            relativePath: "USER.md"
+        )
+
+        var updatedTemplate = template
+        updatedTemplate.soulSpec.mission = "Updated mission from SOUL draft."
+        let updatedDocument = TemplateAssetDocument(
+            template: updatedTemplate,
+            revision: 2,
+            status: .published
+        )
+        let updatedLineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            sourceTemplateID: template.id,
+            sourceRevision: 1,
+            createdReason: "Committed draft overlay."
+        )
+
+        try fileSystem.commitTemplateDraft(
+            from: draftURL,
+            toTemplateID: template.id,
+            document: updatedDocument,
+            lineage: updatedLineage,
+            under: rootURL
+        )
+
+        let persistedUserContents = try String(
+            contentsOf: fileSystem.templateUserURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
+        let persistedSoulContents = try String(
+            contentsOf: fileSystem.templateSoulURL(for: template.id, under: rootURL),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(persistedUserContents, editedUserContents)
+        XCTAssertTrue(persistedSoulContents.contains("Updated mission from SOUL draft."))
+    }
+
+    func testLoadTemplateRevisionsReturnsNewestFirst() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        var template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test revision loading."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: TemplateAssetDocument(
+                template: template,
+                revision: 1,
+                status: .published
+            ),
+            lineage: lineage,
+            under: rootURL
+        )
+
+        template.soulSpec.mission = "Mission for revision 2"
+        try fileSystem.writeTemplateAsset(
+            document: TemplateAssetDocument(
+                template: template,
+                revision: 2,
+                status: .published
+            ),
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let revisions = fileSystem.loadTemplateRevisions(
+            at: fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        )
+
+        XCTAssertEqual(revisions.map(\.revision), [2, 1])
+        XCTAssertEqual(revisions.first?.soulSpec.mission, "Mission for revision 2")
     }
 
     func testBuiltInTemplateAssetCatalogMaterializesStandardAssets() throws {

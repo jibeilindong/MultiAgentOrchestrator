@@ -441,6 +441,32 @@ struct OpenClawProbeReportSnapshot: Codable {
     }
 }
 
+enum OpenClawSessionLifecycleStage: String, Codable {
+    case inactive
+    case prepared
+    case pendingSync = "pending_sync"
+    case synced
+}
+
+struct OpenClawSessionLifecycleSnapshot: Codable {
+    var stage: OpenClawSessionLifecycleStage
+    var hasPendingMirrorChanges: Bool
+    var preparedAt: Date?
+    var lastAppliedAt: Date?
+
+    init(
+        stage: OpenClawSessionLifecycleStage = .inactive,
+        hasPendingMirrorChanges: Bool = false,
+        preparedAt: Date? = nil,
+        lastAppliedAt: Date? = nil
+    ) {
+        self.stage = stage
+        self.hasPendingMirrorChanges = hasPendingMirrorChanges
+        self.preparedAt = preparedAt
+        self.lastAppliedAt = lastAppliedAt
+    }
+}
+
 enum OpenClawRecoveryReportStatus: String, Codable {
     case completed
     case partial
@@ -502,6 +528,7 @@ struct ProjectOpenClawSnapshot: Codable {
     var activeAgents: [ProjectOpenClawAgentRecord]
     var detectedAgents: [ProjectOpenClawDetectedAgentRecord]
     var connectionState: OpenClawConnectionStateSnapshot
+    var sessionLifecycle: OpenClawSessionLifecycleSnapshot
     var lastProbeReport: OpenClawProbeReportSnapshot?
     var recoveryReports: [OpenClawRecoveryReportSnapshot]
     var sessionBackupPath: String?
@@ -515,6 +542,7 @@ struct ProjectOpenClawSnapshot: Codable {
         case activeAgents
         case detectedAgents
         case connectionState
+        case sessionLifecycle
         case lastProbeReport
         case recoveryReports
         case sessionBackupPath
@@ -529,6 +557,7 @@ struct ProjectOpenClawSnapshot: Codable {
         activeAgents: [ProjectOpenClawAgentRecord] = [],
         detectedAgents: [ProjectOpenClawDetectedAgentRecord] = [],
         connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot(),
+        sessionLifecycle: OpenClawSessionLifecycleSnapshot = OpenClawSessionLifecycleSnapshot(),
         lastProbeReport: OpenClawProbeReportSnapshot? = nil,
         recoveryReports: [OpenClawRecoveryReportSnapshot] = [],
         sessionBackupPath: String? = nil,
@@ -541,6 +570,7 @@ struct ProjectOpenClawSnapshot: Codable {
         self.activeAgents = activeAgents
         self.detectedAgents = detectedAgents
         self.connectionState = connectionState
+        self.sessionLifecycle = sessionLifecycle
         self.lastProbeReport = lastProbeReport
         self.recoveryReports = recoveryReports
         self.sessionBackupPath = sessionBackupPath
@@ -560,6 +590,8 @@ struct ProjectOpenClawSnapshot: Codable {
                 phase: isConnected ? .ready : .idle,
                 deploymentKind: config.deploymentKind
             )
+        sessionLifecycle = try container.decodeIfPresent(OpenClawSessionLifecycleSnapshot.self, forKey: .sessionLifecycle)
+            ?? OpenClawSessionLifecycleSnapshot()
         lastProbeReport = try container.decodeIfPresent(OpenClawProbeReportSnapshot.self, forKey: .lastProbeReport)
         recoveryReports = try container.decodeIfPresent([OpenClawRecoveryReportSnapshot].self, forKey: .recoveryReports) ?? []
         sessionBackupPath = try container.decodeIfPresent(String.self, forKey: .sessionBackupPath)
@@ -575,6 +607,7 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(activeAgents, forKey: .activeAgents)
         try container.encode(detectedAgents, forKey: .detectedAgents)
         try container.encode(connectionState, forKey: .connectionState)
+        try container.encode(sessionLifecycle, forKey: .sessionLifecycle)
         try container.encodeIfPresent(lastProbeReport, forKey: .lastProbeReport)
         try container.encode(recoveryReports, forKey: .recoveryReports)
         try container.encodeIfPresent(sessionBackupPath, forKey: .sessionBackupPath)

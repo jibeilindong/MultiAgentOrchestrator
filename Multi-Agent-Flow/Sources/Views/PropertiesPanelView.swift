@@ -182,6 +182,13 @@ struct NodePropertiesView: View {
 
 // Agent属性视图
 struct AgentPropertiesView: View {
+    private enum PendingDiscardAction {
+        case selectAgent(UUID?)
+        case applyTemplate(String)
+        case createNewAgent
+        case deleteSelectedAgent
+    }
+
     @EnvironmentObject var appState: AppState
     @ObservedObject private var templateLibrary = AgentTemplateLibraryStore.shared
     @State private var selectedAgentID: UUID?
@@ -189,6 +196,11 @@ struct AgentPropertiesView: View {
     @State private var agentIdentity: String = ""
     @State private var agentDescription: String = ""
     @State private var soulMD: String = ""
+    @State private var managedConfigFiles: [ManagedAgentWorkspaceDocumentReference] = []
+    @State private var selectedConfigRelativePath: String = "SOUL.md"
+    @State private var selectedConfigFilePath: String?
+    @State private var managedConfigDrafts: [String: String] = [:]
+    @State private var dirtyManagedConfigPaths: Set<String> = []
     @State private var capabilities: [String] = ["Basic"]
     @State private var colorHex: String = ""
     @State private var openClawAgentIdentifier: String = ""
@@ -197,6 +209,10 @@ struct AgentPropertiesView: View {
     @State private var openClawMemoryBackupPath: String = ""
     @State private var selectedTemplateID: String = AgentTemplateCatalog.defaultTemplateID
     @State private var showingTemplateManager = false
+    @State private var saveStatusMessage: String?
+    @State private var saveStatusIsError = false
+    @State private var showingDiscardChangesAlert = false
+    @State private var pendingDiscardAction: PendingDiscardAction?
 
     private let agentColorPresets: [(title: String, hex: String, color: Color)] = [
         ("蓝", "2563EB", .blue),
@@ -223,7 +239,7 @@ struct AgentPropertiesView: View {
             name: agentName,
             identity: agentIdentity,
             summary: agentDescription,
-            soulMD: soulMD,
+            soulMD: currentSoulMarkdown,
             capabilities: capabilities
         )
     }
@@ -231,214 +247,12 @@ struct AgentPropertiesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionView(title: LocalizedString.text("agent_selection")) {
-                    Picker(LocalizedString.text("select_agent_label"), selection: $selectedAgentID) {
-                        Text(LocalizedString.text("none_option")).tag(nil as UUID?)
-                        if let agents = appState.currentProject?.agents {
-                            ForEach(agents) { agent in
-                                Text(agent.name).tag(agent.id as UUID?)
-                            }
-                        }
-                    }
-                    .onChange(of: selectedAgentID) { _, newAgentID in
-                        if let agentID = newAgentID,
-                           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
-                            agentName = agent.name
-                            agentIdentity = agent.identity
-                            agentDescription = agent.description
-                            soulMD = agent.soulMD
-                            capabilities = agent.capabilities
-                            colorHex = agent.colorHex ?? ""
-                            openClawAgentIdentifier = agent.openClawDefinition.agentIdentifier
-                            openClawModelIdentifier = agent.openClawDefinition.modelIdentifier
-                            openClawRuntimeProfile = agent.openClawDefinition.runtimeProfile
-                            openClawMemoryBackupPath = agent.openClawDefinition.memoryBackupPath ?? ""
-                            selectedTemplateID = matchingTemplateID(for: agent)
-                        } else {
-                            resetForm()
-                        }
-                    }
-                }
+                agentSelectionSection
                 
                 if let _ = selectedAgent {
-                    SectionView(title: LocalizedString.text("agent_configuration_title")) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(LocalizedString.name)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                TextField(LocalizedString.agentName, text: $agentName)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                            }
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(LocalizedString.text("identity"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                TextField(LocalizedString.text("agent_identity"), text: $agentIdentity)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                            }
-                            
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(LocalizedString.description)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                TextField(LocalizedString.text("agent_description_label"), text: $agentDescription)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                            }
-
-                            Divider()
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(LocalizedString.text("openclaw_definition"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-
-                                TextField(LocalizedString.text("openclaw_agent_id"), text: $openClawAgentIdentifier)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                                TextField(LocalizedString.text("model_identifier"), text: $openClawModelIdentifier)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                                TextField(LocalizedString.text("runtime_profile"), text: $openClawRuntimeProfile)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                                TextField(LocalizedString.text("memory_backup_path"), text: $openClawMemoryBackupPath)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                            }
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(LocalizedString.text("agent_color"))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-
-                                HStack(spacing: 8) {
-                                    ForEach(agentColorPresets, id: \.hex) { preset in
-                                        Button(action: { colorHex = preset.hex }) {
-                                            Circle()
-                                                .fill(preset.color)
-                                                .frame(width: 18, height: 18)
-                                                .overlay(
-                                                    Circle()
-                                                        .stroke(colorHex == preset.hex ? Color.primary : Color.clear, lineWidth: 2)
-                                                )
-                                        }
-                                        .buttonStyle(.plain)
-                                        .help(preset.title)
-                                    }
-
-                                    Button(LocalizedString.text("clear_action")) {
-                                        colorHex = ""
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.borderless)
-                                }
-
-                                TextField(LocalizedString.text("hex_color"), text: $colorHex)
-                                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                            }
-                            
-                            Divider()
-                            
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text(LocalizedString.text("workspace_soul_content"))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    TemplatePickerButton(
-                                        selectedTemplateID: $selectedTemplateID,
-                                        onSelect: { template in applyTemplate(template) },
-                                        labelTitle: selectedTemplate.name,
-                                        recommendationContext: templateRecommendationContext
-                                    )
-                                    Button("模板库") {
-                                        showingTemplateManager = true
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.borderless)
-                                    Button(LocalizedString.text("apply_template")) {
-                                        loadTemplate()
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.borderless)
-                                }
-
-                                TemplateSummaryCard(template: selectedTemplate)
-                                
-                                TextEditor(text: $soulMD)
-                                    .font(.system(.body, design: .monospaced))
-                                    .frame(height: 200)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                    )
-                            }
-                            
-                            Divider()
-                            
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(LocalizedString.manageSkills)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                
-                                HStack {
-                                    ForEach(["Basic", "Web Search", "File I/O", "API Call", "Data Analysis"], id: \.self) { capability in
-                                        Button(capability) {
-                                            toggleCapability(capability)
-                                        }
-                                        .font(.caption)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 4)
-                                        .background(
-                                            capabilities.contains(capability) ?
-                                                Color.blue.opacity(0.3) :
-                                                Color.gray.opacity(0.1)
-                                        )
-                                        .cornerRadius(4)
-                                    }
-                                }
-                            }
-                            
-                            Divider()
-                            
-                            HStack {
-                                Button(LocalizedString.text("save_changes")) {
-                                    saveAgentChanges()
-                                }
-                                .disabled(!hasChanges)
-
-                                Button("另存为模板") {
-                                    saveCurrentAgentAsTemplate()
-                                }
-                                .disabled(selectedAgent == nil)
-                                
-                                Spacer()
-                                
-                                Button(LocalizedString.deleteAgent, role: .destructive) {
-                                    deleteAgent()
-                                }
-                            }
-                        }
-                    }
+                    agentConfigurationSection
                 } else if appState.currentProject?.agents.isEmpty ?? true {
-                    SectionView(title: LocalizedString.noAgents) {
-                        VStack(spacing: 12) {
-                            Text(LocalizedString.text("no_agents_created_yet"))
-                                .foregroundColor(.secondary)
-                            
-                            HStack {
-                                TemplatePickerButton(
-                                    selectedTemplateID: $selectedTemplateID,
-                                    onSelect: { _ in },
-                                    labelTitle: selectedTemplate.name,
-                                    recommendationContext: templateRecommendationContext
-                                )
-
-                                Button(LocalizedString.text("create_new_agent")) {
-                                    createNewAgent()
-                                }
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
+                    noAgentsSection
                 }
             }
             .padding()
@@ -455,6 +269,351 @@ struct AgentPropertiesView: View {
         .sheet(isPresented: $showingTemplateManager) {
             TemplateLibraryManagerSheet(selectedTemplateID: $selectedTemplateID)
         }
+        .alert(LocalizedString.text("discard_changes_title"), isPresented: $showingDiscardChangesAlert) {
+            Button(LocalizedString.text("discard_changes_action"), role: .destructive) {
+                performPendingDiscardAction()
+            }
+            Button(LocalizedString.text("keep_editing_action"), role: .cancel) {
+                pendingDiscardAction = nil
+            }
+        } message: {
+            Text(LocalizedString.text("discard_changes_message"))
+        }
+    }
+
+    @ViewBuilder
+    private var agentSelectionSection: some View {
+        SectionView(title: LocalizedString.text("agent_selection")) {
+            Picker(LocalizedString.text("select_agent_label"), selection: selectedAgentSelectionBinding) {
+                Text(LocalizedString.text("none_option")).tag(nil as UUID?)
+                if let agents = appState.currentProject?.agents {
+                    ForEach(agents) { agent in
+                        Text(agent.name).tag(agent.id as UUID?)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var agentConfigurationSection: some View {
+        SectionView(title: LocalizedString.text("agent_configuration_title")) {
+            VStack(alignment: .leading, spacing: 12) {
+                agentBasicFieldsSection
+                Divider()
+                openClawDefinitionSection
+                agentColorSection
+                Divider()
+                managedConfigSection
+                Divider()
+                capabilitiesSection
+                Divider()
+                saveActionsSection
+                if let saveStatusMessage {
+                    WorkflowEditorInlineStatusView(
+                        message: saveStatusMessage,
+                        isError: saveStatusIsError,
+                        pendingApplyCount: saveStatusIsError ? 0 : appState.pendingWorkflowConfigurationRevisionDelta
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var noAgentsSection: some View {
+        SectionView(title: LocalizedString.noAgents) {
+            VStack(spacing: 12) {
+                Text(LocalizedString.text("no_agents_created_yet"))
+                    .foregroundColor(.secondary)
+                
+                HStack {
+                    TemplatePickerButton(
+                        selectedTemplateID: $selectedTemplateID,
+                        onSelect: { _ in },
+                        labelTitle: selectedTemplate.name,
+                        recommendationContext: templateRecommendationContext,
+                        marksTemplateUsedOnPick: false
+                    )
+
+                    Button(LocalizedString.text("create_new_agent")) {
+                        createNewAgent()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private var agentBasicFieldsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(LocalizedString.name)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextField(LocalizedString.agentName, text: agentNameBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text(LocalizedString.text("identity"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextField(LocalizedString.text("agent_identity"), text: agentIdentityBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text(LocalizedString.description)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextField(LocalizedString.text("agent_description_label"), text: agentDescriptionBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var openClawDefinitionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(LocalizedString.text("openclaw_definition"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            TextField(LocalizedString.text("openclaw_agent_id"), text: openClawAgentIdentifierBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+            TextField(LocalizedString.text("model_identifier"), text: openClawModelIdentifierBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+            TextField(LocalizedString.text("runtime_profile"), text: openClawRuntimeProfileBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+            TextField(LocalizedString.text("memory_backup_path"), text: openClawMemoryBackupPathBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var agentColorSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(LocalizedString.text("agent_color"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 8) {
+                ForEach(agentColorPresets, id: \.hex) { preset in
+                    Button(action: {
+                        clearSaveStatus()
+                        colorHex = preset.hex
+                    }) {
+                        Circle()
+                            .fill(preset.color)
+                            .frame(width: 18, height: 18)
+                            .overlay(
+                                Circle()
+                                    .stroke(colorHex == preset.hex ? Color.primary : Color.clear, lineWidth: 2)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(preset.title)
+                }
+
+                Button(LocalizedString.text("clear_action")) {
+                    clearSaveStatus()
+                    colorHex = ""
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+            }
+
+            TextField(LocalizedString.text("hex_color"), text: colorHexBinding)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var managedConfigSection: some View {
+        GroupBox(LocalizedString.text("managed_config_group_title")) {
+            ManagedConfigEditorPane(
+                files: managedConfigFiles,
+                selectedRelativePath: $selectedConfigRelativePath,
+                selectedFilePath: selectedConfigFilePath,
+                text: managedConfigTextBinding,
+                onSelectRelativePath: { newValue in
+                    loadManagedConfigDraft(agentID: selectedAgent?.id, relativePath: newValue)
+                },
+                editorFont: .system(.body, design: .monospaced),
+                minEditorHeight: 200,
+                idealEditorHeight: 200,
+                maxEditorHeight: 200
+            ) {
+                HStack {
+                    Text(LocalizedString.text("managed_config_editor_scope_hint"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    TemplatePickerButton(
+                        selectedTemplateID: $selectedTemplateID,
+                        onSelect: { template in
+                            requestDiscardingUnsavedChanges(for: .applyTemplate(template.id))
+                        },
+                        labelTitle: selectedTemplate.name,
+                        recommendationContext: templateRecommendationContext,
+                        updatesSelectedTemplateIDOnPick: false,
+                        marksTemplateUsedOnPick: false
+                    )
+                    Button("模板库") {
+                        showingTemplateManager = true
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    Button(LocalizedString.text("apply_template")) {
+                        loadTemplate()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                }
+
+                TemplateSummaryCard(template: selectedTemplate)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var capabilitiesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(LocalizedString.manageSkills)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            HStack {
+                ForEach(["Basic", "Web Search", "File I/O", "API Call", "Data Analysis"], id: \.self) { capability in
+                    Button(capability) {
+                        toggleCapability(capability)
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        capabilities.contains(capability) ?
+                            Color.blue.opacity(0.3) :
+                            Color.gray.opacity(0.1)
+                    )
+                    .cornerRadius(4)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var saveActionsSection: some View {
+        HStack {
+            if hasChanges {
+                WorkflowEditorDirtyBadgeView()
+            }
+
+            Button(LocalizedString.text("save_changes")) {
+                saveAgentChanges()
+            }
+            .disabled(!hasChanges)
+
+            Button("另存为模板") {
+                saveCurrentAgentAsTemplate()
+            }
+            .disabled(selectedAgent == nil)
+            
+            Spacer()
+            
+            Button(LocalizedString.deleteAgent, role: .destructive) {
+                deleteAgent()
+            }
+        }
+    }
+
+    private var selectedAgentSelectionBinding: Binding<UUID?> {
+        Binding(
+            get: { selectedAgentID },
+            set: { newValue in
+                requestAgentSelectionChange(to: newValue)
+            }
+        )
+    }
+
+    private var agentNameBinding: Binding<String> {
+        Binding(
+            get: { agentName },
+            set: { newValue in
+                clearSaveStatus()
+                agentName = newValue
+            }
+        )
+    }
+
+    private var agentIdentityBinding: Binding<String> {
+        Binding(
+            get: { agentIdentity },
+            set: { newValue in
+                clearSaveStatus()
+                agentIdentity = newValue
+            }
+        )
+    }
+
+    private var agentDescriptionBinding: Binding<String> {
+        Binding(
+            get: { agentDescription },
+            set: { newValue in
+                clearSaveStatus()
+                agentDescription = newValue
+            }
+        )
+    }
+
+    private var colorHexBinding: Binding<String> {
+        Binding(
+            get: { colorHex },
+            set: { newValue in
+                clearSaveStatus()
+                colorHex = newValue
+            }
+        )
+    }
+
+    private var openClawAgentIdentifierBinding: Binding<String> {
+        Binding(
+            get: { openClawAgentIdentifier },
+            set: { newValue in
+                clearSaveStatus()
+                openClawAgentIdentifier = newValue
+            }
+        )
+    }
+
+    private var openClawModelIdentifierBinding: Binding<String> {
+        Binding(
+            get: { openClawModelIdentifier },
+            set: { newValue in
+                clearSaveStatus()
+                openClawModelIdentifier = newValue
+            }
+        )
+    }
+
+    private var openClawRuntimeProfileBinding: Binding<String> {
+        Binding(
+            get: { openClawRuntimeProfile },
+            set: { newValue in
+                clearSaveStatus()
+                openClawRuntimeProfile = newValue
+            }
+        )
+    }
+
+    private var openClawMemoryBackupPathBinding: Binding<String> {
+        Binding(
+            get: { openClawMemoryBackupPath },
+            set: { newValue in
+                clearSaveStatus()
+                openClawMemoryBackupPath = newValue
+            }
+        )
     }
     
     private var hasChanges: Bool {
@@ -462,33 +621,38 @@ struct AgentPropertiesView: View {
         return agent.name != agentName ||
                agent.identity != agentIdentity ||
                agent.description != agentDescription ||
-               agent.soulMD != soulMD ||
                agent.capabilities != capabilities ||
                (agent.colorHex ?? "") != colorHex ||
                agent.openClawDefinition.agentIdentifier != openClawAgentIdentifier ||
                agent.openClawDefinition.modelIdentifier != openClawModelIdentifier ||
                agent.openClawDefinition.runtimeProfile != openClawRuntimeProfile ||
-               (agent.openClawDefinition.memoryBackupPath ?? "") != openClawMemoryBackupPath
+               (agent.openClawDefinition.memoryBackupPath ?? "") != openClawMemoryBackupPath ||
+               !dirtyManagedConfigPaths.isEmpty
     }
     
     private func loadTemplate() {
-        templateLibrary.markUsed(selectedTemplate.id)
-        applyTemplate(selectedTemplate)
+        requestDiscardingUnsavedChanges(for: .applyTemplate(selectedTemplate.id))
     }
 
     private func applyTemplate(_ template: AgentTemplate) {
+        clearSaveStatus()
         if agentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             agentName = template.name
         }
         agentIdentity = template.identity
         agentDescription = template.summary
         soulMD = template.soulMD
+        if managedConfigFiles.contains(where: { $0.relativePath == "SOUL.md" }) {
+            managedConfigDrafts["SOUL.md"] = template.soulMD
+            dirtyManagedConfigPaths.insert("SOUL.md")
+        }
         capabilities = template.capabilities
         colorHex = template.colorHex
         selectedTemplateID = template.id
     }
 
     private func toggleCapability(_ capability: String) {
+        clearSaveStatus()
         if capabilities.contains(capability) {
             capabilities.removeAll { $0 == capability }
         } else {
@@ -503,7 +667,9 @@ struct AgentPropertiesView: View {
         updatedAgent.name = agentName
         updatedAgent.identity = agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "generalist" : agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.description = agentDescription
-        updatedAgent.soulMD = soulMD
+        if managedConfigFiles.contains(where: { $0.relativePath == "SOUL.md" }) {
+            updatedAgent.soulMD = currentSoulMarkdown
+        }
         updatedAgent.capabilities = capabilities
         updatedAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.openClawDefinition.agentIdentifier = openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? updatedAgent.name : openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -511,6 +677,27 @@ struct AgentPropertiesView: View {
         updatedAgent.openClawDefinition.runtimeProfile = openClawRuntimeProfile
         updatedAgent.openClawDefinition.memoryBackupPath = openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.updatedAt = Date()
+
+        if !dirtyManagedConfigPaths.isEmpty {
+            let dirtyDocuments = managedConfigDrafts.filter { dirtyManagedConfigPaths.contains($0.key) }
+            let fileResult = appState.persistManagedAgentWorkspaceDocuments(
+                agentID: updatedAgent.id,
+                documents: dirtyDocuments
+            )
+            guard fileResult.success else {
+                saveStatusMessage = fileResult.message
+                saveStatusIsError = true
+                return
+            }
+
+            selectedConfigFilePath = fileResult.paths[selectedConfigRelativePath] ?? selectedConfigFilePath
+            dirtyManagedConfigPaths.removeAll()
+            saveStatusMessage = fileResult.message
+            saveStatusIsError = false
+        } else {
+            saveStatusMessage = LocalizedString.text("workflow_changes_saved_locally")
+            saveStatusIsError = false
+        }
         
         appState.updateAgent(updatedAgent, reload: true)
     }
@@ -526,6 +713,10 @@ struct AgentPropertiesView: View {
     }
     
     private func deleteAgent() {
+        requestDiscardingUnsavedChanges(for: .deleteSelectedAgent)
+    }
+
+    private func performDeleteAgent() {
         guard let agent = selectedAgent,
               appState.currentProject?.agents.contains(where: { $0.id == agent.id }) == true else { return }
 
@@ -535,6 +726,10 @@ struct AgentPropertiesView: View {
     }
     
     private func createNewAgent() {
+        requestDiscardingUnsavedChanges(for: .createNewAgent)
+    }
+
+    private func performCreateNewAgent() {
         templateLibrary.markUsed(selectedTemplateID)
         guard let newAgent = appState.addNewAgent(templateID: selectedTemplateID) else { return }
         selectedAgentID = newAgent.id
@@ -568,39 +763,73 @@ struct AgentPropertiesView: View {
     }
 
     private func syncSelectionFromCanvas() {
+        let projectAgents = appState.currentProject?.agents ?? []
+
         if let nodeID = appState.selectedNodeID,
            let workflow = appState.currentProject?.workflows.first,
            let node = workflow.nodes.first(where: { $0.id == nodeID }),
            let agentID = node.agentID,
-           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
-            selectedAgentID = agent.id
-            agentName = agent.name
-            agentIdentity = agent.identity
-            agentDescription = agent.description
-            soulMD = agent.soulMD
-            capabilities = agent.capabilities
-            colorHex = agent.colorHex ?? ""
-            openClawAgentIdentifier = agent.openClawDefinition.agentIdentifier
-            openClawModelIdentifier = agent.openClawDefinition.modelIdentifier
-            openClawRuntimeProfile = agent.openClawDefinition.runtimeProfile
-            openClawMemoryBackupPath = agent.openClawDefinition.memoryBackupPath ?? ""
-            selectedTemplateID = matchingTemplateID(for: agent)
+           projectAgents.contains(where: { $0.id == agentID }) {
+            requestAgentSelectionChange(to: agentID)
             return
         }
 
-        if selectedAgentID == nil, let firstAgent = appState.currentProject?.agents.first {
-            selectedAgentID = firstAgent.id
-            agentName = firstAgent.name
-            agentIdentity = firstAgent.identity
-            agentDescription = firstAgent.description
-            soulMD = firstAgent.soulMD
-            capabilities = firstAgent.capabilities
-            colorHex = firstAgent.colorHex ?? ""
-            openClawAgentIdentifier = firstAgent.openClawDefinition.agentIdentifier
-            openClawModelIdentifier = firstAgent.openClawDefinition.modelIdentifier
-            openClawRuntimeProfile = firstAgent.openClawDefinition.runtimeProfile
-            openClawMemoryBackupPath = firstAgent.openClawDefinition.memoryBackupPath ?? ""
-            selectedTemplateID = matchingTemplateID(for: firstAgent)
+        if let selectedAgentID,
+           projectAgents.contains(where: { $0.id == selectedAgentID }) {
+            return
+        }
+
+        if let firstAgent = projectAgents.first {
+            requestAgentSelectionChange(to: firstAgent.id)
+        } else {
+            applyAgentSelection(nil)
+        }
+    }
+
+    private func requestAgentSelectionChange(to newAgentID: UUID?) {
+        guard newAgentID != selectedAgentID else { return }
+        requestDiscardingUnsavedChanges(for: .selectAgent(newAgentID))
+    }
+
+    private func applyAgentSelection(_ agentID: UUID?) {
+        selectedAgentID = agentID
+
+        if let agentID,
+           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
+            populateForm(with: agent)
+        } else {
+            resetForm()
+        }
+    }
+
+    private func requestDiscardingUnsavedChanges(for action: PendingDiscardAction) {
+        if hasChanges {
+            pendingDiscardAction = action
+            showingDiscardChangesAlert = true
+            return
+        }
+
+        perform(action)
+    }
+
+    private func performPendingDiscardAction() {
+        guard let action = pendingDiscardAction else { return }
+        pendingDiscardAction = nil
+        perform(action)
+    }
+
+    private func perform(_ action: PendingDiscardAction) {
+        switch action {
+        case .selectAgent(let agentID):
+            applyAgentSelection(agentID)
+        case .applyTemplate(let templateID):
+            guard let template = templateLibrary.template(withID: templateID) else { return }
+            templateLibrary.markUsed(template.id)
+            applyTemplate(template)
+        case .createNewAgent:
+            performCreateNewAgent()
+        case .deleteSelectedAgent:
+            performDeleteAgent()
         }
     }
     
@@ -609,6 +838,11 @@ struct AgentPropertiesView: View {
         agentIdentity = ""
         agentDescription = ""
         soulMD = ""
+        managedConfigFiles = []
+        selectedConfigRelativePath = "SOUL.md"
+        selectedConfigFilePath = nil
+        managedConfigDrafts = [:]
+        dirtyManagedConfigPaths = []
         capabilities = ["Basic"]
         colorHex = ""
         openClawAgentIdentifier = ""
@@ -616,6 +850,8 @@ struct AgentPropertiesView: View {
         openClawRuntimeProfile = "default"
         openClawMemoryBackupPath = ""
         selectedTemplateID = AgentTemplateCatalog.defaultTemplateID
+        saveStatusMessage = nil
+        saveStatusIsError = false
     }
 
     private func draftAgentForTemplateAsset() -> Agent? {
@@ -629,7 +865,7 @@ struct AgentPropertiesView: View {
             ? "generalist"
             : agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
         draftAgent.description = agentDescription
-        draftAgent.soulMD = soulMD
+        draftAgent.soulMD = currentSoulMarkdown
         draftAgent.capabilities = capabilities
         draftAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
@@ -645,6 +881,102 @@ struct AgentPropertiesView: View {
         draftAgent.updatedAt = Date()
         return draftAgent
     }
+
+    private var currentSoulMarkdown: String {
+        managedConfigDrafts["SOUL.md"] ?? soulMD
+    }
+
+    private var managedConfigTextBinding: Binding<String> {
+        Binding(
+            get: { managedConfigDrafts[selectedConfigRelativePath] ?? "" },
+            set: { newValue in
+                managedConfigDrafts[selectedConfigRelativePath] = newValue
+                dirtyManagedConfigPaths.insert(selectedConfigRelativePath)
+                clearSaveStatus()
+                if selectedConfigRelativePath == "SOUL.md" {
+                    soulMD = newValue
+                }
+            }
+        )
+    }
+
+    private func clearSaveStatus() {
+        guard saveStatusMessage != nil else { return }
+        saveStatusMessage = nil
+        saveStatusIsError = false
+    }
+
+    private func populateForm(with agent: Agent) {
+        agentName = agent.name
+        agentIdentity = agent.identity
+        agentDescription = agent.description
+        soulMD = agent.soulMD
+        capabilities = agent.capabilities
+        colorHex = agent.colorHex ?? ""
+        openClawAgentIdentifier = agent.openClawDefinition.agentIdentifier
+        openClawModelIdentifier = agent.openClawDefinition.modelIdentifier
+        openClawRuntimeProfile = agent.openClawDefinition.runtimeProfile
+        openClawMemoryBackupPath = agent.openClawDefinition.memoryBackupPath ?? ""
+        selectedTemplateID = matchingTemplateID(for: agent)
+        saveStatusMessage = nil
+        saveStatusIsError = false
+        refreshManagedConfigState(for: agent)
+    }
+
+    private func refreshManagedConfigState(for agent: Agent) {
+        managedConfigFiles = appState.managedAgentWorkspaceDocuments(agentID: agent.id)
+        managedConfigDrafts = [:]
+        dirtyManagedConfigPaths = []
+        selectedConfigFilePath = nil
+
+        guard !managedConfigFiles.isEmpty else {
+            selectedConfigRelativePath = "SOUL.md"
+            return
+        }
+
+        selectedConfigRelativePath = preferredConfigRelativePath()
+        if managedConfigFiles.contains(where: { $0.relativePath == "SOUL.md" }) {
+            loadManagedConfigDraft(agentID: agent.id, relativePath: "SOUL.md")
+        }
+        if selectedConfigRelativePath != "SOUL.md" {
+            loadManagedConfigDraft(agentID: agent.id, relativePath: selectedConfigRelativePath)
+        }
+    }
+
+    private func loadManagedConfigDraft(agentID: UUID?, relativePath: String) {
+        guard let agentID else { return }
+
+        if let existingDraft = managedConfigDrafts[relativePath],
+           let file = managedConfigFiles.first(where: { $0.relativePath == relativePath }) {
+            selectedConfigFilePath = file.absolutePath
+            if relativePath == "SOUL.md" {
+                soulMD = existingDraft
+            }
+            return
+        }
+
+        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agentID, relativePath: relativePath) {
+            managedConfigDrafts[relativePath] = loaded.content
+            selectedConfigFilePath = loaded.documentPath
+            if relativePath == "SOUL.md" {
+                soulMD = loaded.content
+            }
+        } else {
+            managedConfigDrafts[relativePath] = ""
+            selectedConfigFilePath = managedConfigFiles.first(where: { $0.relativePath == relativePath })?.absolutePath
+            if relativePath == "SOUL.md" {
+                soulMD = ""
+            }
+        }
+    }
+
+    private func preferredConfigRelativePath() -> String {
+        if managedConfigFiles.contains(where: { $0.relativePath == "SOUL.md" }) {
+            return "SOUL.md"
+        }
+        return managedConfigFiles.first?.relativePath ?? "SOUL.md"
+    }
+
 }
 
 struct TemplatePickerButton: View {
@@ -663,6 +995,8 @@ struct TemplatePickerButton: View {
     let onSelectExistingAgent: ((Agent) -> Void)?
     let variant: Variant
     let recommendationContext: TemplateRecommendationContext?
+    let updatesSelectedTemplateIDOnPick: Bool
+    let marksTemplateUsedOnPick: Bool
 
     @State private var isPresented = false
 
@@ -676,6 +1010,8 @@ struct TemplatePickerButton: View {
         existingAgents: [Agent] = [],
         onSelectExistingAgent: ((Agent) -> Void)? = nil,
         recommendationContext: TemplateRecommendationContext? = nil,
+        updatesSelectedTemplateIDOnPick: Bool = true,
+        marksTemplateUsedOnPick: Bool = true,
         variant: Variant = .plain
     ) {
         self._selectedTemplateID = selectedTemplateID
@@ -687,6 +1023,8 @@ struct TemplatePickerButton: View {
         self.existingAgents = existingAgents
         self.onSelectExistingAgent = onSelectExistingAgent
         self.recommendationContext = recommendationContext
+        self.updatesSelectedTemplateIDOnPick = updatesSelectedTemplateIDOnPick
+        self.marksTemplateUsedOnPick = marksTemplateUsedOnPick
         self.variant = variant
     }
 
@@ -735,6 +1073,8 @@ struct TemplatePickerButton: View {
                 existingAgents: existingAgents,
                 onSelectExistingAgent: onSelectExistingAgent,
                 recommendationContext: recommendationContext,
+                updatesSelectedTemplateIDOnPick: updatesSelectedTemplateIDOnPick,
+                marksTemplateUsedOnPick: marksTemplateUsedOnPick,
                 onSelect: onSelect
             )
             .frame(width: 460, height: 500)
@@ -909,6 +1249,8 @@ struct TemplatePickerPopover: View {
     let existingAgents: [Agent]
     let onSelectExistingAgent: ((Agent) -> Void)?
     let recommendationContext: TemplateRecommendationContext?
+    let updatesSelectedTemplateIDOnPick: Bool
+    let marksTemplateUsedOnPick: Bool
     let onSelect: (AgentTemplate) -> Void
 
     @State private var searchText: String = ""
@@ -1115,8 +1457,12 @@ struct TemplatePickerPopover: View {
         recommendationReasons: [String] = []
     ) -> some View {
         Button {
-            templateLibrary.markUsed(template.id)
-            selectedTemplateID = template.id
+            if marksTemplateUsedOnPick {
+                templateLibrary.markUsed(template.id)
+            }
+            if updatesSelectedTemplateIDOnPick {
+                selectedTemplateID = template.id
+            }
             onSelect(template)
             isPresented = false
         } label: {
@@ -1345,6 +1691,7 @@ private struct TemplateEditorDraft {
 struct TemplateLibraryManagerSheet: View {
     @ObservedObject private var templateLibrary = AgentTemplateLibraryStore.shared
     @Binding var selectedTemplateID: String
+    var showsCloseButton: Bool = true
 
     @Environment(\.dismiss) private var dismiss
 
@@ -1358,8 +1705,9 @@ struct TemplateLibraryManagerSheet: View {
     @State private var tagFilter: String?
     @State private var importPreviewReport: TemplateAssetImportPreviewReport?
 
-    init(selectedTemplateID: Binding<String>) {
+    init(selectedTemplateID: Binding<String>, showsCloseButton: Bool = true) {
         self._selectedTemplateID = selectedTemplateID
+        self.showsCloseButton = showsCloseButton
     }
 
     private var selectedTemplate: AgentTemplate? {
@@ -1498,7 +1846,9 @@ struct TemplateLibraryManagerSheet: View {
             exportExchangeJSONMenu
             exportSoulMenu
             modePicker
-            Button("关闭") { dismiss() }
+            if showsCloseButton {
+                Button("关闭") { dismiss() }
+            }
         }
         .padding()
     }
@@ -1851,6 +2201,11 @@ struct TemplateLibraryManagerSheet: View {
                         template: template,
                         onFeedback: { message in
                             feedbackMessage = message
+                        },
+                        onPersisted: { persisted in
+                            selectedTemplateManagerID = persisted.id
+                            selectedTemplateID = persisted.id
+                            self.draft = TemplateEditorDraft(template: persisted)
                         }
                     )
                 }

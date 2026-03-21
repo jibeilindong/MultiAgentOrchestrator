@@ -192,6 +192,7 @@ class OpenClawManager: ObservableObject {
     @Published var status: OpenClawStatus = .disconnected
     @Published var config: OpenClawConfig = .load()
     @Published var connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot()
+    @Published var sessionLifecycle: OpenClawSessionLifecycleSnapshot = OpenClawSessionLifecycleSnapshot()
     @Published var lastProbeReport: OpenClawProbeReportSnapshot?
     private var cachedLocalWorkspaceMap: [String: String] = [:]
     private var cachedLocalWorkspaceConfigModificationDate: Date?
@@ -418,6 +419,11 @@ class OpenClawManager: ObservableObject {
         let report: SoulReconcileReport
     }
 
+    private struct ConnectedSessionPreparationResult {
+        let stageNote: String?
+        let reconcileNote: String?
+    }
+
     private enum SoulMirrorStagePolicy {
         case projectContent
         case backupContent
@@ -579,6 +585,7 @@ class OpenClawManager: ObservableObject {
         status = .connecting
         config.save()
         pendingSoulReconcileResult = nil
+        let previousSessionLifecycle = sessionLifecycle
         updateConnectionState(
             phase: .discovering,
             deploymentKind: config.deploymentKind,
@@ -588,60 +595,124 @@ class OpenClawManager: ObservableObject {
 
         let cleanupResult = cleanupStalePluginInstallStageArtifactsIfNeeded(using: config)
         let cleanupNote: String? = cleanupResult.success ? nil : cleanupResult.message
-        var stageNote: String?
-        var reconcileNote: String?
-
-        if let projectID, config.deploymentKind != .remoteServer {
-            do {
-                try beginSession(for: projectID)
-                if let project {
-                    let reconciledProject = reconcileProjectAgentsFromSessionBackup(project)
-                    pendingSoulReconcileResult = PendingSoulReconcileResult(
-                        projectID: project.id,
-                        updates: reconciledProject.updates,
-                        report: reconciledProject.report
-                    )
-                    reconcileNote = reconciledProject.report.summaryText
-                    let stageResult = stageProjectAgentsIntoMirror(
-                        reconciledProject.project,
-                        stagePolicies: reconciledProject.stagePolicies
-                    )
-                    stageNote = stagedMirrorPreparationMessage(from: stageResult)
-                }
-            } catch {
-                endSession(restoreOriginalState: true)
-                status = .error(error.localizedDescription)
-                recordProbeResult(using: config, success: false, message: error.localizedDescription, agentNames: [])
-                completion?(false, error.localizedDescription)
-                return
-            }
-        }
 
         confirmConnection(using: config) { [weak self] success, message in
             guard let self else { return }
-            if !success, projectID != nil {
-                self.endSession(restoreOriginalState: true)
+            guard success else {
                 self.pendingSoulReconcileResult = nil
-            }
-            var extraNotes: [String] = []
-            if let stageNote, !stageNote.isEmpty {
-                extraNotes.append(stageNote)
-            }
-            if let reconcileNote, !reconcileNote.isEmpty {
-                extraNotes.append(reconcileNote)
-            }
-            if let cleanupNote, !cleanupNote.isEmpty {
-                extraNotes.append(cleanupNote)
+                completion?(false, self.connectionCompletionMessage(baseMessage: message, cleanupNote: cleanupNote))
+                return
             }
 
-            let finalMessage: String
-            if extraNotes.isEmpty {
-                finalMessage = message
-            } else {
-                finalMessage = "\(message)（附加信息：\(extraNotes.joined(separator: "；"))）"
+            var stageNote: String?
+            var reconcileNote: String?
+            if let projectID, config.deploymentKind != .remoteServer {
+                do {
+                    let preparationResult = try self.prepareConnectedSession(
+                        for: projectID,
+                        project: project
+                    )
+                    stageNote = preparationResult.stageNote
+                    reconcileNote = preparationResult.reconcileNote
+                } catch {
+                    if self.sessionContext != nil {
+                        self.endSession(restoreOriginalState: true)
+                    }
+                    self.pendingSoulReconcileResult = nil
+                    self.sessionLifecycle = previousSessionLifecycle
+                    let failureMessage = "OpenClaw 连接预检成功，但项目会话准备失败：\(error.localizedDescription)"
+                    self.failConnectionPreparation(using: config, message: failureMessage)
+                    completion?(false, self.connectionCompletionMessage(baseMessage: failureMessage, cleanupNote: cleanupNote))
+                    return
+                }
             }
-            completion?(success, finalMessage)
+
+            completion?(
+                true,
+                self.connectionCompletionMessage(
+                    baseMessage: message,
+                    stageNote: stageNote,
+                    reconcileNote: reconcileNote,
+                    cleanupNote: cleanupNote
+                )
+            )
         }
+    }
+
+    private func prepareConnectedSession(
+        for projectID: UUID,
+        project: MAProject?
+    ) throws -> ConnectedSessionPreparationResult {
+        try beginSession(for: projectID)
+
+        guard let project else {
+            return ConnectedSessionPreparationResult(stageNote: nil, reconcileNote: nil)
+        }
+
+        let reconciledProject = reconcileProjectAgentsFromSessionBackup(project)
+        pendingSoulReconcileResult = PendingSoulReconcileResult(
+            projectID: project.id,
+            updates: reconciledProject.updates,
+            report: reconciledProject.report
+        )
+
+        let stageResult = stageProjectAgentsIntoMirror(
+            reconciledProject.project,
+            stagePolicies: reconciledProject.stagePolicies
+        )
+        if stageResult.updatedAgentCount > 0 {
+            markSessionPendingSync()
+        } else {
+            ensureSessionPrepared()
+        }
+
+        return ConnectedSessionPreparationResult(
+            stageNote: stagedMirrorPreparationMessage(from: stageResult),
+            reconcileNote: reconciledProject.report.summaryText
+        )
+    }
+
+    private func failConnectionPreparation(using config: OpenClawConfig, message: String) {
+        isConnected = false
+        activeAgents.removeAll()
+        resetAgentRuntimeChannels()
+        resetGatewayConnection()
+        status = .error(message)
+
+        var health = connectionState.health
+        health.lastHeartbeatAt = Date()
+        health.degradationReason = message
+        health.lastMessage = message
+        updateConnectionState(
+            phase: .failed,
+            deploymentKind: config.deploymentKind,
+            capabilities: connectionState.capabilities,
+            health: health
+        )
+    }
+
+    private func connectionCompletionMessage(
+        baseMessage: String,
+        stageNote: String? = nil,
+        reconcileNote: String? = nil,
+        cleanupNote: String? = nil
+    ) -> String {
+        var extraNotes: [String] = []
+        if let stageNote, !stageNote.isEmpty {
+            extraNotes.append(stageNote)
+        }
+        if let reconcileNote, !reconcileNote.isEmpty {
+            extraNotes.append(reconcileNote)
+        }
+        if let cleanupNote, !cleanupNote.isEmpty {
+            extraNotes.append(cleanupNote)
+        }
+
+        guard !extraNotes.isEmpty else {
+            return baseMessage
+        }
+
+        return "\(baseMessage)（附加信息：\(extraNotes.joined(separator: "；"))）"
     }
 
     func cleanupStalePluginInstallStageArtifactsIfNeeded(
@@ -798,6 +869,7 @@ class OpenClawManager: ObservableObject {
         }
 
         sessionDeploymentModified = false
+        ensureSessionPrepared()
 
         sessionContext = SessionContext(
             projectID: projectID,
@@ -844,6 +916,7 @@ class OpenClawManager: ObservableObject {
 
         sessionContext = nil
         sessionDeploymentModified = false
+        finalizeDetachedSessionLifecycle()
     }
 
     func testConnection(
@@ -934,6 +1007,7 @@ class OpenClawManager: ObservableObject {
                 },
             detectedAgents: discoveryResults,
             connectionState: connectionState,
+            sessionLifecycle: sessionLifecycle,
             lastProbeReport: lastProbeReport,
             sessionBackupPath: sessionContext?.backupURL.path,
             sessionMirrorPath: sessionContext?.mirrorURL.path,
@@ -953,6 +1027,7 @@ class OpenClawManager: ObservableObject {
             restoredConnectionState.health.lastMessage = "已从项目快照恢复 OpenClaw 状态，尚未重新连接运行时。"
         }
         connectionState = restoredConnectionState
+        sessionLifecycle = restoredSessionLifecycle(from: snapshot.sessionLifecycle)
         lastProbeReport = snapshot.lastProbeReport
         activeAgents = Dictionary(uniqueKeysWithValues: snapshot.activeAgents.map {
             (
@@ -967,6 +1042,12 @@ class OpenClawManager: ObservableObject {
         })
         isConnected = false
         status = .disconnected
+    }
+
+    func noteProjectMirrorChangesPendingSync() {
+        guard config.deploymentKind != .remoteServer else { return }
+        guard sessionLifecycle.stage != .inactive else { return }
+        markSessionPendingSync()
     }
 
     @discardableResult
@@ -1625,6 +1706,9 @@ class OpenClawManager: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let stageResult = self.stageProjectAgentsIntoMirror(project)
+            if stageResult.updatedAgentCount > 0 {
+                self.markSessionPendingSync()
+            }
 
             guard let sessionContext = self.sessionContext,
                   sessionContext.projectID == project.id,
@@ -1632,6 +1716,14 @@ class OpenClawManager: ObservableObject {
                 let note = self.mirrorStageMessage(from: stageResult) ?? "项目镜像已更新，待连接后显式同步到 OpenClaw 会话。"
                 DispatchQueue.main.async {
                     completion(true, note)
+                }
+                return
+            }
+
+            guard self.sessionLifecycle.hasPendingMirrorChanges else {
+                let message = self.mirrorStageMessage(from: stageResult) ?? "项目镜像已是最新，当前 OpenClaw 会话无需同步。"
+                DispatchQueue.main.async {
+                    completion(true, message)
                 }
                 return
             }
@@ -1793,11 +1885,26 @@ class OpenClawManager: ObservableObject {
                 projectAttachmentSupported: true
             )
         case .container:
+            if success {
+                return OpenClawConnectionCapabilitiesSnapshot(
+                    cliAvailable: true,
+                    gatewayReachable: true,
+                    gatewayAuthenticated: true,
+                    agentListingAvailable: true,
+                    sessionHistoryAvailable: true,
+                    gatewayAgentAvailable: true,
+                    gatewayChatAvailable: true,
+                    projectAttachmentSupported: true
+                )
+            }
+
+            let cliAvailable = trimmedMessage.contains("CLI 可用")
+            let hasAgents = !agentNames.isEmpty
             return OpenClawConnectionCapabilitiesSnapshot(
-                cliAvailable: success,
+                cliAvailable: cliAvailable,
                 gatewayReachable: false,
                 gatewayAuthenticated: false,
-                agentListingAvailable: success && !agentNames.isEmpty,
+                agentListingAvailable: cliAvailable && hasAgents,
                 sessionHistoryAvailable: false,
                 gatewayAgentAvailable: false,
                 gatewayChatAvailable: false,
@@ -1851,9 +1958,9 @@ class OpenClawManager: ObservableObject {
         switch config.deploymentKind {
         case .container:
             return OpenClawProbeLayersSnapshot(
-                transport: capabilities.cliAvailable ? .ready : .unavailable,
-                authentication: .notRequired,
-                session: capabilities.cliAvailable && capabilities.agentListingAvailable ? .ready : (capabilities.cliAvailable ? .degraded : .unavailable),
+                transport: capabilities.cliAvailable && capabilities.gatewayReachable ? .ready : ((capabilities.cliAvailable || capabilities.gatewayReachable) ? .degraded : .unavailable),
+                authentication: capabilities.gatewayReachable ? (capabilities.gatewayAuthenticated ? .ready : .degraded) : (capabilities.cliAvailable ? .degraded : .unavailable),
+                session: capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated ? .ready : ((capabilities.cliAvailable || capabilities.gatewayReachable) ? .degraded : .unavailable),
                 inventory: capabilities.agentListingAvailable ? .ready : (capabilities.cliAvailable ? .degraded : .unavailable)
             )
         case .remoteServer:
@@ -1906,6 +2013,15 @@ class OpenClawManager: ObservableObject {
         )
 
         let layers = inferredProbeLayers(for: config, capabilities: capabilities)
+        let sourceOfTruth: String = {
+            guard success else { return "probe" }
+            switch config.deploymentKind {
+            case .remoteServer:
+                return "gateway"
+            case .local, .container:
+                return capabilities.gatewayReachable ? "cli+gateway+inspection" : "cli+inspection"
+            }
+        }()
         lastProbeReport = OpenClawProbeReportSnapshot(
             success: success,
             deploymentKind: config.deploymentKind,
@@ -1916,7 +2032,7 @@ class OpenClawManager: ObservableObject {
             availableAgents: agentNames,
             message: message,
             warnings: success ? [] : [message],
-            sourceOfTruth: success ? (config.deploymentKind == .remoteServer ? "gateway" : "cli+inspection") : "probe",
+            sourceOfTruth: sourceOfTruth,
             observedDefaultTransports: observedDefaultTransports(for: config, capabilities: capabilities)
         )
     }
@@ -1931,7 +2047,7 @@ class OpenClawManager: ObservableObject {
         case .local:
             return localLoopbackGatewayConfig(using: resolvedConfig)
         case .container:
-            return nil
+            return containerGatewayConfig(using: resolvedConfig)
         }
     }
 
@@ -3711,6 +3827,54 @@ class OpenClawManager: ObservableObject {
         }
 
         sessionDeploymentModified = true
+        markSessionSynchronized()
+    }
+
+    private func ensureSessionPrepared() {
+        if sessionLifecycle.preparedAt == nil {
+            sessionLifecycle.preparedAt = Date()
+        }
+
+        if sessionLifecycle.stage == .inactive {
+            sessionLifecycle.stage = .prepared
+        }
+    }
+
+    private func markSessionPendingSync() {
+        if sessionLifecycle.preparedAt == nil {
+            sessionLifecycle.preparedAt = Date()
+        }
+        sessionLifecycle.stage = .pendingSync
+        sessionLifecycle.hasPendingMirrorChanges = true
+    }
+
+    private func markSessionSynchronized() {
+        if sessionLifecycle.preparedAt == nil {
+            sessionLifecycle.preparedAt = Date()
+        }
+        sessionLifecycle.stage = .synced
+        sessionLifecycle.hasPendingMirrorChanges = false
+        sessionLifecycle.lastAppliedAt = Date()
+    }
+
+    private func finalizeDetachedSessionLifecycle() {
+        switch sessionLifecycle.stage {
+        case .synced:
+            sessionLifecycle.stage = .prepared
+            sessionLifecycle.hasPendingMirrorChanges = false
+        case .inactive, .prepared, .pendingSync:
+            break
+        }
+    }
+
+    private func restoredSessionLifecycle(
+        from snapshot: OpenClawSessionLifecycleSnapshot
+    ) -> OpenClawSessionLifecycleSnapshot {
+        var restored = snapshot
+        if restored.stage == .synced {
+            restored.stage = .prepared
+        }
+        return restored
     }
 
     private func mirrorStageMessage(from result: MirrorStageResult) -> String? {
@@ -4044,25 +4208,48 @@ class OpenClawManager: ObservableObject {
             return gatewayConfig
         }
 
-        func fallbackGatewayConfig(port: Int? = nil) -> OpenClawConfig? {
-            let resolvedPort = port ?? baseConfig.port
-            guard resolvedPort > 0 else { return cache(nil) }
+        return cache(
+            gatewayConfig(
+                fromOpenClawRoot: localOpenClawRootURL(),
+                using: baseConfig,
+                hostFallback: "127.0.0.1",
+                useSSLFallback: false,
+                fallbackPort: baseConfig.port
+            )
+        )
+    }
 
-            return cache(
-                OpenClawConfig(
-                    deploymentKind: .remoteServer,
-                    host: "127.0.0.1",
-                    port: resolvedPort,
-                    useSSL: false,
-                    apiKey: fallbackToken,
-                    defaultAgent: baseConfig.defaultAgent,
-                    timeout: baseConfig.timeout,
-                    autoConnect: baseConfig.autoConnect,
-                    localBinaryPath: baseConfig.localBinaryPath,
-                    container: baseConfig.container,
-                    cliQuietMode: baseConfig.cliQuietMode,
-                    cliLogLevel: baseConfig.cliLogLevel
-                )
+    func gatewayConfig(
+        fromOpenClawRoot rootURL: URL,
+        using baseConfig: OpenClawConfig,
+        hostFallback: String,
+        useSSLFallback: Bool,
+        fallbackPort: Int? = nil
+    ) -> OpenClawConfig? {
+        let configURL = rootURL.appendingPathComponent("openclaw.json")
+        let fallbackToken = baseConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedHost = hostFallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "127.0.0.1"
+            : hostFallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedFallbackPort = fallbackPort ?? baseConfig.port
+
+        func fallbackGatewayConfig(port: Int? = nil) -> OpenClawConfig? {
+            let resolvedPort = port ?? resolvedFallbackPort
+            guard resolvedPort > 0 else { return nil }
+
+            return OpenClawConfig(
+                deploymentKind: .remoteServer,
+                host: resolvedHost,
+                port: resolvedPort,
+                useSSL: useSSLFallback,
+                apiKey: fallbackToken,
+                defaultAgent: baseConfig.defaultAgent,
+                timeout: baseConfig.timeout,
+                autoConnect: baseConfig.autoConnect,
+                localBinaryPath: baseConfig.localBinaryPath,
+                container: baseConfig.container,
+                cliQuietMode: baseConfig.cliQuietMode,
+                cliLogLevel: baseConfig.cliLogLevel
             )
         }
 
@@ -4077,12 +4264,12 @@ class OpenClawManager: ObservableObject {
 
         let mode = (stringValue(gateway, keys: ["mode"]) ?? "local").lowercased()
         guard mode == "local" else {
-            return cache(nil)
+            return nil
         }
 
-        let port = intValue(gateway, keys: ["port"]) ?? baseConfig.port
+        let port = intValue(gateway, keys: ["port"]) ?? resolvedFallbackPort
         guard port > 0 else {
-            return fallbackGatewayConfig(port: baseConfig.port)
+            return fallbackGatewayConfig(port: resolvedFallbackPort)
         }
 
         let auth = gateway["auth"] as? [String: Any] ?? [:]
@@ -4097,15 +4284,14 @@ class OpenClawManager: ObservableObject {
         case "token":
             resolvedToken = normalizedToken.isEmpty ? fallbackToken : normalizedToken
         default:
-            return cache(nil)
+            return nil
         }
 
-        return cache(
-            OpenClawConfig(
+        return OpenClawConfig(
             deploymentKind: .remoteServer,
-            host: "127.0.0.1",
+            host: resolvedHost,
             port: port,
-            useSSL: false,
+            useSSL: useSSLFallback,
             apiKey: resolvedToken,
             defaultAgent: baseConfig.defaultAgent,
             timeout: baseConfig.timeout,
@@ -4114,7 +4300,42 @@ class OpenClawManager: ObservableObject {
             container: baseConfig.container,
             cliQuietMode: baseConfig.cliQuietMode,
             cliLogLevel: baseConfig.cliLogLevel
+        )
+    }
+
+    private func containerGatewayConfig(using baseConfig: OpenClawConfig) -> OpenClawConfig? {
+        let hostFallback = baseConfig.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "127.0.0.1"
+            : baseConfig.host.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let snapshotURL: URL
+        if let discoverySnapshotURL, FileManager.default.fileExists(atPath: discoverySnapshotURL.path) {
+            snapshotURL = discoverySnapshotURL
+        } else if let preparedSnapshotURL = try? prepareDiscoverySnapshot(using: baseConfig) {
+            snapshotURL = preparedSnapshotURL
+        } else {
+            return OpenClawConfig(
+                deploymentKind: .remoteServer,
+                host: hostFallback,
+                port: baseConfig.port,
+                useSSL: baseConfig.useSSL,
+                apiKey: baseConfig.apiKey,
+                defaultAgent: baseConfig.defaultAgent,
+                timeout: baseConfig.timeout,
+                autoConnect: baseConfig.autoConnect,
+                localBinaryPath: baseConfig.localBinaryPath,
+                container: baseConfig.container,
+                cliQuietMode: baseConfig.cliQuietMode,
+                cliLogLevel: baseConfig.cliLogLevel
             )
+        }
+
+        return gatewayConfig(
+            fromOpenClawRoot: snapshotURL,
+            using: baseConfig,
+            hostFallback: hostFallback,
+            useSSLFallback: baseConfig.useSSL,
+            fallbackPort: baseConfig.port
         )
     }
 
@@ -5002,15 +5223,67 @@ class OpenClawManager: ObservableObject {
                     message = fallback.isEmpty ? "OpenClaw 容器连接失败" : fallback
                 }
 
-                DispatchQueue.main.async {
-                    if success {
-                        self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: agentNames)
-                        self.agents = self.discoveryResults.map(\.name)
-                    } else {
+                guard success else {
+                    DispatchQueue.main.async {
                         self.discoveryResults = []
                         self.agents = []
+                        completion(false, message, [])
                     }
-                    completion(success, message, agentNames)
+                    return
+                }
+
+                guard let gatewayConfig = self.preferredGatewayConfig(using: config) else {
+                    DispatchQueue.main.async {
+                        self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: agentNames)
+                        if self.discoveryResults.isEmpty {
+                            self.discoveryResults = agentNames.map {
+                                ProjectOpenClawDetectedAgentRecord(
+                                    id: $0,
+                                    name: $0,
+                                    directoryValidated: false,
+                                    configValidated: false,
+                                    issues: ["CLI 可用，但容器 Gateway 配置不可用。"]
+                                )
+                            }
+                        }
+                        self.agents = self.discoveryResults.map(\.name)
+                        completion(false, "OpenClaw CLI 可用，但容器 Gateway 配置不可用。", agentNames)
+                    }
+                    return
+                }
+
+                _Concurrency.Task {
+                    do {
+                        let probe = try await self.gatewayClient.probe(using: gatewayConfig)
+                        let resolvedAgentNames = probe.agentNames.isEmpty ? agentNames : probe.agentNames
+
+                        DispatchQueue.main.async {
+                            self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: resolvedAgentNames)
+                            if self.discoveryResults.isEmpty {
+                                self.discoveryResults = resolvedAgentNames.map {
+                                    ProjectOpenClawDetectedAgentRecord(
+                                        id: $0,
+                                        name: $0,
+                                        directoryValidated: false,
+                                        configValidated: false,
+                                        issues: ["未发现可验证的 agent 文件，仅保留 CLI/Gateway 结果。"]
+                                    )
+                                }
+                            }
+                            self.agents = self.discoveryResults.map(\.name)
+                            completion(
+                                true,
+                                "容器内 OpenClaw CLI 与 Gateway 连接成功：\((gatewayConfig.useSSL ? "wss" : "ws"))://\(gatewayConfig.host):\(gatewayConfig.port)",
+                                resolvedAgentNames
+                            )
+                        }
+                    } catch {
+                        DispatchQueue.main.async {
+                            self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: agentNames)
+                            self.agents = self.discoveryResults.map(\.name)
+                            completion(false, "OpenClaw CLI 可用，但容器 Gateway 不可用：\(error.localizedDescription)", agentNames)
+                        }
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {

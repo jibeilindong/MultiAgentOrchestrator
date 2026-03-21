@@ -327,6 +327,25 @@ struct TemplateFileSystem {
         )
     }
 
+    func loadTemplateRevisions(at templateRootDirectory: URL) -> [TemplateAssetDocument] {
+        let revisionsDirectoryURL = templateRootDirectory.appendingPathComponent("revisions", isDirectory: true)
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: revisionsDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        return contents
+            .sorted {
+                $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedDescending
+            }
+            .compactMap { url in
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+                guard values?.isDirectory != true else { return nil }
+                return load(TemplateAssetDocument.self, from: url)
+            }
+    }
+
     func writeTemplateAsset(
         document: TemplateAssetDocument,
         lineage: TemplateLineage,
@@ -563,6 +582,29 @@ struct TemplateFileSystem {
         try writeFileContents(contents, at: rootDirectoryURL, relativePath: relativePath)
     }
 
+    func commitTemplateDraft(
+        from draftRootDirectoryURL: URL,
+        toTemplateID templateID: String,
+        document: TemplateAssetDocument,
+        lineage: TemplateLineage,
+        under appSupportRootDirectory: URL
+    ) throws {
+        try writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: appSupportRootDirectory
+        )
+
+        let destinationRootURL = templateRootDirectory(for: templateID, under: appSupportRootDirectory)
+        for relativePath in overlayEditableDraftPaths {
+            let sourceURL = templateFileURL(at: draftRootDirectoryURL, relativePath: relativePath)
+            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+
+            let contents = try fileContents(at: draftRootDirectoryURL, relativePath: relativePath)
+            try writeFileContents(contents, at: destinationRootURL, relativePath: relativePath)
+        }
+    }
+
     func exportTemplateAssetDirectory(
         for templateID: String,
         under appSupportRootDirectory: URL,
@@ -628,6 +670,20 @@ struct TemplateFileSystem {
         - `tests/`: validation fixtures or test cases
         - `assets/`: supporting files bundled with the template
         """
+    }
+
+    private var overlayEditableDraftPaths: [String] {
+        let flattenedBlueprints = standardTemplateBlueprints.flatMap { blueprint in
+            flattenBlueprint(blueprint)
+        }
+
+        return flattenedBlueprints.compactMap { blueprint in
+            guard blueprint.kind != .directory else { return nil }
+            guard blueprint.isEditable else { return nil }
+            guard blueprint.relativePath != "template.json" else { return nil }
+            guard blueprint.relativePath != "SOUL.md" else { return nil }
+            return blueprint.relativePath
+        }
     }
 
     private var standardTemplateBlueprints: [TemplateFileBlueprint] {
@@ -872,6 +928,10 @@ struct TemplateFileSystem {
         )
     }
 
+    private func flattenBlueprint(_ blueprint: TemplateFileBlueprint) -> [TemplateFileBlueprint] {
+        [blueprint] + blueprint.children.flatMap(flattenBlueprint)
+    }
+
     private func dynamicRevisionNodes(
         in revisionsDirectoryURL: URL,
         dirtyFilePaths: Set<String>
@@ -1105,38 +1165,24 @@ struct TemplateFileSystem {
     }
 
     private func renderUserMarkdown(template: AgentTemplate) -> String {
-        let scenarios = template.applicableScenarios.isEmpty
-            ? "- No specific scenarios recorded."
-            : template.applicableScenarios.map { "- \($0)" }.joined(separator: "\n")
-        let briefingChecklist = markdownBulletList(
-            template.soulSpec.inputs,
-            fallback: "Clarify goal, scope, constraints, and acceptance criteria before invocation."
-        )
-        let deliverables = markdownBulletList(
-            template.soulSpec.outputs,
-            fallback: "Produce a directly usable result and the supporting notes required for handoff."
-        )
-        let boundaries = markdownBulletList(
-            template.soulSpec.guardrails,
-            fallback: "Do not exceed the role boundary declared by the template."
-        )
-
         return """
-        # USER
+        # USER.md - About Your Human
 
-        \(normalizedOrPlaceholder(template.summary, fallback: "No user-facing description recorded."))
+        _Learn about the person you're helping. Update this as you go._
 
-        ## Applicable Scenarios
-        \(scenarios)
+        - **Name:**
+        - **What to call them:**
+        - **Pronouns:** _(optional)_
+        - **Timezone:**
+        - **Notes:**
 
-        ## Briefing Checklist
-        \(briefingChecklist)
+        ## Context
 
-        ## Expected Deliverables
-        \(deliverables)
+        _(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
 
-        ## Usage Boundaries
-        \(boundaries)
+        ---
+
+        The more you know, the better you can help. But remember - you're learning about a person, not building a dossier. Respect the difference.
         """
     }
 
@@ -1177,7 +1223,7 @@ struct TemplateFileSystem {
         let startupChecklist = markdownNumberedList(
             [
                 "Read `SOUL.md` and align on role, mission, workflow, and boundaries.",
-                "Check `USER.md` to confirm the invocation contract and the expected deliverables.",
+                "Check `USER.md` to understand the human context, preferred address, timezone, and evolving collaboration notes.",
                 "Check `TOOLS.md` and determine whether the available tools match the task.",
                 "Check `MEMORY.md` and `HEARTBEAT.md` to align on continuity and self-review rules.",
                 "Before execution, restate the goal, assumptions, risks, and completion criteria."

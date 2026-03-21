@@ -14,6 +14,7 @@ import {
   evaluateWorkflowLaunchTestCase,
   finalizeWorkflowLaunchVerification,
   fromSwiftDate,
+  toSwiftDate,
   type WorkflowLaunchExecutionObservation,
   generateTasksFromWorkflow,
   moveTaskToStatus,
@@ -73,6 +74,7 @@ import { WorkflowCanvasPreview } from "./components/WorkflowCanvasPreview";
 import { buildOpenClawRecoveryAudit, formatOpenClawRecoveryStatus } from "./openclaw-recovery-audit";
 import { buildOpenClawRecoveryReport } from "./openclaw-recovery-report";
 import { buildOpenClawRetryGuidance } from "./openclaw-retry-guidance";
+import { buildOpenClawRetryPolicy } from "./openclaw-retry-policy";
 import { assessOpenClawRuntimeReadiness, formatOpenClawRuntimeLayers } from "./openclaw-runtime-readiness";
 
 type BusyAction = "new" | "open" | "save" | "saveAs" | null;
@@ -765,6 +767,7 @@ export function App() {
   const openClawLastRecoveryReport = openClawRecoveryReports[0] ?? null;
   const openClawRecoveryAudit = buildOpenClawRecoveryAudit(openClawRecoveryReports);
   const openClawRetryGuidance = project ? buildOpenClawRetryGuidance(project.openClaw) : null;
+  const openClawRetryPolicy = project ? buildOpenClawRetryPolicy(project.openClaw) : null;
   const selectedEdge =
     activeWorkflow?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const selectedTask = project?.tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -2406,7 +2409,7 @@ export function App() {
             buildOpenClawRecoveryReport({
               before: startingProject.openClaw,
               after: workingProject.openClaw,
-              createdAt: Date.now(),
+              createdAt: toSwiftDate(),
               completedSteps,
               manualSteps
             })
@@ -2433,7 +2436,7 @@ export function App() {
               buildOpenClawRecoveryReport({
                 before: startingProject.openClaw,
                 after: nextProject.openClaw,
-                createdAt: Date.now(),
+                createdAt: toSwiftDate(),
                 completedSteps
               })
             );
@@ -2457,7 +2460,7 @@ export function App() {
         buildOpenClawRecoveryReport({
           before: startingProject.openClaw,
           after: workingProject.openClaw,
-          createdAt: Date.now(),
+          createdAt: toSwiftDate(),
           completedSteps
         })
       );
@@ -2471,7 +2474,7 @@ export function App() {
         buildOpenClawRecoveryReport({
           before: startingProject.openClaw,
           after: workingProject.openClaw,
-          createdAt: Date.now(),
+          createdAt: toSwiftDate(),
           completedSteps,
           errorMessage: actionError instanceof Error ? actionError.message : String(actionError)
         })
@@ -2480,6 +2483,20 @@ export function App() {
     } finally {
       setOpenClawAction(null);
     }
+  }
+
+  async function handleRunOpenClawSmartRetry() {
+    if (!project) {
+      return;
+    }
+
+    const retryPolicy = buildOpenClawRetryPolicy(project.openClaw);
+    if (!retryPolicy.canAutoRetry || !retryPolicy.immediate) {
+      setStatus(retryPolicy.detail);
+      return;
+    }
+
+    await handleRunOpenClawRecoveryPlan();
   }
 
   function handleImportDetectedAgents(detectedAgentIds?: string[]) {
@@ -5253,6 +5270,29 @@ export function App() {
                     <span>{openClawRetryGuidance.recommendation.replaceAll("_", " ")}</span>
                   </div>
                   <p className="dashboardEventBody">{openClawRetryGuidance.detail}</p>
+                  {openClawRetryPolicy ? (
+                    <>
+                      <p className="dashboardEventMeta">
+                        Policy: {openClawRetryPolicy.status} • Budget remaining {openClawRetryPolicy.retryBudgetRemaining}/
+                        {openClawRetryPolicy.maxRetryBudget}
+                        {openClawRetryPolicy.cooldownRemainingMs > 0
+                          ? ` • Cooldown ${Math.ceil(openClawRetryPolicy.cooldownRemainingMs / 1000)}s`
+                          : ""}
+                      </p>
+                      <p className="dashboardEventMeta">{openClawRetryPolicy.detail}</p>
+                      {openClawRetryPolicy.plannedCommands.length > 0 ? (
+                        <div className="inspectorActions">
+                          <button
+                            type="button"
+                            onClick={() => void handleRunOpenClawSmartRetry()}
+                            disabled={!openClawRetryPolicy.canAutoRetry || !openClawRetryPolicy.immediate || openClawAction !== null}
+                          >
+                            {openClawAction === "recover" ? "Recovering..." : "Run smart retry"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
                   {openClawRetryGuidance.suggestedCommands.length > 0 ? (
                     <p className="dashboardEventMeta">
                       Suggested automatic steps: {openClawRetryGuidance.suggestedCommands.join(" -> ")}

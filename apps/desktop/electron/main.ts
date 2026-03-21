@@ -18,6 +18,10 @@ import {
   type GatewayTransportProbeResult
 } from "./openclaw-connection-state";
 import {
+  buildContainerOpenClawRootDiscoveryScript,
+  buildOpenClawRootFallbackCandidates
+} from "./openclaw-discovery";
+import {
   buildOpenClawGovernanceAuditReport,
   assessOpenClawSandboxSecurityFromText,
   createEmptyProject,
@@ -815,20 +819,36 @@ function firstExistingChildPath(directoryPath: string, candidates: string[]): st
   return null;
 }
 
-function openClawRootCandidatesForConfig(config: OpenClawConfig): string[] {
-  switch (config.deploymentKind) {
-    case "local":
-      return [path.join(os.homedir(), ".openclaw")];
-    case "container": {
-      const mountPath = config.container.workspaceMountPath.trim();
-      if (!mountPath) {
-        return [];
-      }
-      return [path.join(mountPath, ".openclaw"), path.join(mountPath, "openclaw"), mountPath];
-    }
-    case "remoteServer":
-      return [];
+async function discoverContainerOpenClawRootPath(config: OpenClawConfig): Promise<string | null> {
+  if (config.deploymentKind !== "container") {
+    return null;
   }
+
+  try {
+    const { stdout } = await runOpenClawDeploymentShell(
+      config,
+      buildContainerOpenClawRootDiscoveryScript(config.container.workspaceMountPath),
+      {
+        timeoutMs: Math.max(config.timeout, 5) * 1000
+      }
+    );
+    return trimmedString(stdout) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openClawRootCandidatesForConfig(config: OpenClawConfig): Promise<string[]> {
+  if (config.deploymentKind === "container") {
+    const deploymentHomeDirectory = await resolveDeploymentHomeDirectory(config);
+    return buildOpenClawRootFallbackCandidates(config, {
+      deploymentHomeDirectory
+    });
+  }
+
+  return buildOpenClawRootFallbackCandidates(config, {
+    localHomeDirectory: os.homedir()
+  });
 }
 
 async function inspectAgentDirectories(agentsDirectory: string): Promise<DirectoryInspection[]> {
@@ -1083,7 +1103,17 @@ async function inspectOpenClawAgents(config: OpenClawConfig, fallbackAgentNames:
     }
   }
 
-  for (const candidate of openClawRootCandidatesForConfig(config)) {
+  if (config.deploymentKind === "container") {
+    const discoveredRoot = await resolveOpenClawRootPathForProbe(config);
+    if (discoveredRoot) {
+      const configPath = await firstExistingChildPathForConfig(config, discoveredRoot, ["openclaw.json"]);
+      if (configPath) {
+        return inspectOpenClawAgentsFromConfigPath(config, configPath, fallbackAgentNames);
+      }
+    }
+  }
+
+  for (const candidate of await openClawRootCandidatesForConfig(config)) {
     if (candidate && existsSync(candidate)) {
       return inspectOpenClawAgentsAtRoot(candidate, fallbackAgentNames);
     }
@@ -1401,6 +1431,150 @@ async function readJSONRecordForConfig(config: OpenClawConfig, filePath: string)
   }
 }
 
+function createFallbackGatewayProbeConfig(
+  baseConfig: OpenClawConfig,
+  hostFallback: string,
+  useSSLFallback: boolean,
+  fallbackPort: number = baseConfig.port
+): OpenClawConfig | null {
+  const resolvedHost = trimmedString(hostFallback) || "127.0.0.1";
+  const resolvedPort = normalizedPositiveInteger(fallbackPort, baseConfig.port);
+  if (resolvedPort <= 0) {
+    return null;
+  }
+
+  return {
+    ...baseConfig,
+    deploymentKind: "remoteServer",
+    host: resolvedHost,
+    port: resolvedPort,
+    useSSL: useSSLFallback,
+    apiKey: trimmedString(baseConfig.apiKey)
+  };
+}
+
+async function resolveOpenClawRootPathForProbe(config: OpenClawConfig): Promise<string | null> {
+  const cliConfigPath = await resolveOpenClawConfigPathFromCli(config);
+  if (cliConfigPath) {
+    return path.dirname(cliConfigPath);
+  }
+
+  if (config.deploymentKind === "container") {
+    const discoveredRoot = await discoverContainerOpenClawRootPath(config);
+    if (discoveredRoot) {
+      return discoveredRoot;
+    }
+  }
+
+  for (const candidate of await openClawRootCandidatesForConfig(config)) {
+    if (candidate && (await pathExistsForConfig(config, candidate))) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+async function resolveGatewayProbeConfigFromRoot(
+  baseConfig: OpenClawConfig,
+  rootPath: string,
+  options: {
+    hostFallback: string;
+    useSSLFallback: boolean;
+    fallbackPort?: number;
+  }
+): Promise<OpenClawConfig | null> {
+  const configRecord = await readJSONRecordForConfig(baseConfig, path.join(rootPath, "openclaw.json"));
+  const fallback = createFallbackGatewayProbeConfig(
+    baseConfig,
+    options.hostFallback,
+    options.useSSLFallback,
+    options.fallbackPort ?? baseConfig.port
+  );
+
+  if (!configRecord) {
+    return fallback;
+  }
+
+  const gateway = jsonRecord(configRecord.gateway);
+  if (!gateway) {
+    return fallback;
+  }
+
+  const mode = (firstNonEmptyString(gateway, ["mode"]) ?? "local").toLowerCase();
+  if (mode !== "local") {
+    return null;
+  }
+
+  const portValue = typeof gateway.port === "number" && Number.isFinite(gateway.port)
+    ? Math.max(1, Math.round(gateway.port))
+    : options.fallbackPort ?? baseConfig.port;
+  const auth = jsonRecord(gateway.auth) ?? {};
+  const authMode = (firstNonEmptyString(auth, ["mode"]) ?? "token").toLowerCase();
+  const normalizedToken = trimmedString(typeof auth.token === "string" ? auth.token : "");
+
+  let apiKey = trimmedString(baseConfig.apiKey);
+  switch (authMode) {
+    case "none":
+      apiKey = "";
+      break;
+    case "token":
+      apiKey = normalizedToken || apiKey;
+      break;
+    default:
+      return null;
+  }
+
+  if (portValue <= 0) {
+    return fallback;
+  }
+
+  return {
+    ...baseConfig,
+    deploymentKind: "remoteServer",
+    host: trimmedString(options.hostFallback) || "127.0.0.1",
+    port: portValue,
+    useSSL: options.useSSLFallback,
+    apiKey
+  };
+}
+
+async function resolveGatewayProbeConfig(config: OpenClawConfig): Promise<OpenClawConfig | null> {
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  switch (normalizedConfig.deploymentKind) {
+    case "remoteServer":
+      return trimmedString(normalizedConfig.host) ? normalizedConfig : null;
+    case "local": {
+      const rootPath = await resolveOpenClawRootPathForProbe(normalizedConfig);
+      if (!rootPath) {
+        return createFallbackGatewayProbeConfig(normalizedConfig, "127.0.0.1", false, normalizedConfig.port);
+      }
+      return resolveGatewayProbeConfigFromRoot(normalizedConfig, rootPath, {
+        hostFallback: "127.0.0.1",
+        useSSLFallback: false,
+        fallbackPort: normalizedConfig.port
+      });
+    }
+    case "container": {
+      const hostFallback = trimmedString(normalizedConfig.host) || "127.0.0.1";
+      const rootPath = await resolveOpenClawRootPathForProbe(normalizedConfig);
+      if (!rootPath) {
+        return createFallbackGatewayProbeConfig(
+          normalizedConfig,
+          hostFallback,
+          normalizedConfig.useSSL,
+          normalizedConfig.port
+        );
+      }
+      return resolveGatewayProbeConfigFromRoot(normalizedConfig, rootPath, {
+        hostFallback,
+        useSSLFallback: normalizedConfig.useSSL,
+        fallbackPort: normalizedConfig.port
+      });
+    }
+  }
+}
+
 async function writeJSONFileForConfig(config: OpenClawConfig, filePath: string, value: unknown): Promise<void> {
   const rendered = `${JSON.stringify(value, null, 2)}\n`;
   switch (config.deploymentKind) {
@@ -1581,7 +1755,18 @@ async function resolveOpenClawGovernancePaths(config: OpenClawConfig): Promise<O
     };
   }
 
-  for (const candidate of openClawRootCandidatesForConfig(normalizedConfig)) {
+  if (normalizedConfig.deploymentKind === "container") {
+    const discoveredRoot = await resolveOpenClawRootPathForProbe(normalizedConfig);
+    if (discoveredRoot) {
+      return {
+        rootPath: discoveredRoot,
+        configPath: await firstExistingChildPathForConfig(normalizedConfig, discoveredRoot, ["openclaw.json"]),
+        approvalsPath: await firstExistingChildPathForConfig(normalizedConfig, discoveredRoot, ["exec-approvals.json"])
+      };
+    }
+  }
+
+  for (const candidate of await openClawRootCandidatesForConfig(normalizedConfig)) {
     if (!candidate || !(await pathExistsForConfig(normalizedConfig, candidate))) {
       continue;
     }
@@ -2306,7 +2491,10 @@ async function testLocalOpenClawConnection(config: OpenClawConfig): Promise<Open
   return connectOpenClaw(config);
 }
 
-async function probeGatewayEndpoint(config: OpenClawConfig): Promise<GatewayTransportProbeResult> {
+async function probeGatewayEndpoint(
+  config: OpenClawConfig,
+  sourceDeploymentKind: OpenClawConfig["deploymentKind"] = config.deploymentKind
+): Promise<GatewayTransportProbeResult> {
   const endpoint = buildOpenClawWebSocketUrl(config);
   const timeoutMs = Math.max(config.timeout, 5) * 1000;
   const startedAt = Date.now();
@@ -2506,7 +2694,7 @@ async function probeGatewayEndpoint(config: OpenClawConfig): Promise<GatewayTran
               ? errorPayload.message.trim()
               : null;
           const warnings =
-            config.deploymentKind === "remoteServer"
+            sourceDeploymentKind === "remoteServer"
               ? ["Desktop shell probe now validates websocket challenge plus RPC connect, but device-identity parity with the Swift gateway client is still pending."]
               : [];
 
@@ -2569,7 +2757,7 @@ async function probeGatewayEndpoint(config: OpenClawConfig): Promise<GatewayTran
 async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeReportSnapshot> {
   const normalizedConfig = normalizeOpenClawConfig(config);
   const availableAgents: string[] = [];
-  const endpoint = buildOpenClawBaseUrl(normalizedConfig);
+  const fallbackEndpoint = buildOpenClawBaseUrl(normalizedConfig);
   let cliFailureMessage: string | null = null;
   let cliAvailable = false;
   let agentListingAvailable = false;
@@ -2586,7 +2774,7 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
     return {
       success: false,
       deploymentKind: normalizedConfig.deploymentKind,
-      endpoint,
+      endpoint: fallbackEndpoint,
       layers: null,
       capabilities,
       health: failedHealth,
@@ -2597,6 +2785,9 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
       observedDefaultTransports: []
     };
   }
+
+  const gatewayProbeConfig = await resolveGatewayProbeConfig(normalizedConfig);
+  const endpoint = buildOpenClawBaseUrl(gatewayProbeConfig ?? normalizedConfig);
 
   if (normalizedConfig.deploymentKind !== "remoteServer") {
     try {
@@ -2613,9 +2804,18 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
   }
 
   const probedAt = toSwiftDate();
-  const gatewayProbe = normalizedConfig.deploymentKind === "container"
-    ? null
-    : await probeGatewayEndpoint(normalizedConfig);
+  const gatewayProbe = gatewayProbeConfig
+    ? await probeGatewayEndpoint(gatewayProbeConfig, normalizedConfig.deploymentKind)
+    : {
+        reachable: false,
+        authenticated: false,
+        latencyMs: null,
+        message:
+          normalizedConfig.deploymentKind === "container"
+            ? "OpenClaw CLI 可用，但容器 Gateway 配置不可用。"
+            : "OpenClaw CLI 可用，但本地 Gateway 配置不可用。",
+        warnings: []
+      };
   const probeContract = buildOpenClawProbeContract({
     config: normalizedConfig,
     endpoint,

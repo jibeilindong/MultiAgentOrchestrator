@@ -2925,6 +2925,15 @@ struct MonitoringDashboardView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
+                if appState.openClawManager.isConnected,
+                   appState.openClawManager.config.deploymentKind != .remoteServer,
+                   appState.openClawManager.sessionLifecycle.stage != .inactive {
+                    Button("同步当前会话") {
+                        appState.syncOpenClawActiveSession()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 Button(LocalizedString.text("detect_connection")) {
                     appState.openClawService.checkConnection()
                 }

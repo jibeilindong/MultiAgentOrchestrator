@@ -2,12 +2,34 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class OpenClawConnectionStateTests: XCTestCase {
+    private var originalStoredOpenClawConfigData: Data?
+
+    override func setUp() {
+        super.setUp()
+        originalStoredOpenClawConfigData = UserDefaults.standard.data(forKey: OpenClawConfig.storageKey)
+    }
+
+    override func tearDown() {
+        if let originalStoredOpenClawConfigData {
+            UserDefaults.standard.set(originalStoredOpenClawConfigData, forKey: OpenClawConfig.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: OpenClawConfig.storageKey)
+        }
+        super.tearDown()
+    }
+
     private func drainMainQueue() {
         let expectation = expectation(description: "main queue drained")
         DispatchQueue.main.async {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     func testGatewayDisconnectNotificationDowngradesConnectedState() {
@@ -179,5 +201,149 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         XCTAssertTrue(snapshot.recoveryReports.isEmpty)
         XCTAssertEqual(snapshot.connectionState.phase, .idle)
+        XCTAssertEqual(snapshot.sessionLifecycle.stage, .inactive)
+        XCTAssertFalse(snapshot.sessionLifecycle.hasPendingMirrorChanges)
+    }
+
+    func testRestoreDowngradesSyncedSessionLifecycleToPrepared() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let snapshot = ProjectOpenClawSnapshot(
+            config: .default,
+            isConnected: false,
+            availableAgents: [],
+            activeAgents: [],
+            detectedAgents: [],
+            connectionState: OpenClawConnectionStateSnapshot(phase: .degraded, deploymentKind: .local),
+            sessionLifecycle: OpenClawSessionLifecycleSnapshot(
+                stage: .synced,
+                hasPendingMirrorChanges: false,
+                preparedAt: Date(),
+                lastAppliedAt: Date()
+            ),
+            lastProbeReport: nil,
+            recoveryReports: [],
+            sessionBackupPath: nil,
+            sessionMirrorPath: nil,
+            lastSyncedAt: Date()
+        )
+
+        manager.restore(from: snapshot)
+
+        XCTAssertEqual(manager.sessionLifecycle.stage, .prepared)
+        XCTAssertFalse(manager.sessionLifecycle.hasPendingMirrorChanges)
+    }
+
+    func testNoteProjectMirrorChangesPromotesPreparedSessionToPendingSync() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        manager.config = .default
+        manager.sessionLifecycle = OpenClawSessionLifecycleSnapshot(
+            stage: .prepared,
+            hasPendingMirrorChanges: false,
+            preparedAt: Date(),
+            lastAppliedAt: nil
+        )
+
+        manager.noteProjectMirrorChangesPendingSync()
+
+        XCTAssertEqual(manager.sessionLifecycle.stage, .pendingSync)
+        XCTAssertTrue(manager.sessionLifecycle.hasPendingMirrorChanges)
+    }
+
+    func testGatewayConfigParsesLocalGatewayContractFromOpenClawRoot() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let payload = """
+        {
+          "gateway": {
+            "mode": "local",
+            "port": 22345,
+            "auth": {
+              "mode": "token",
+              "token": "container-secret"
+            }
+          }
+        }
+        """
+        try payload.write(
+            to: rootURL.appendingPathComponent("openclaw.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var baseConfig = OpenClawConfig.default
+        baseConfig.deploymentKind = .container
+        baseConfig.host = "127.0.0.1"
+        baseConfig.port = 18789
+        baseConfig.apiKey = "fallback-token"
+
+        let gatewayConfig = manager.gatewayConfig(
+            fromOpenClawRoot: rootURL,
+            using: baseConfig,
+            hostFallback: "127.0.0.1",
+            useSSLFallback: false,
+            fallbackPort: baseConfig.port
+        )
+
+        XCTAssertEqual(gatewayConfig?.deploymentKind, .remoteServer)
+        XCTAssertEqual(gatewayConfig?.host, "127.0.0.1")
+        XCTAssertEqual(gatewayConfig?.port, 22345)
+        XCTAssertEqual(gatewayConfig?.apiKey, "container-secret")
+        XCTAssertEqual(gatewayConfig?.useSSL, false)
+    }
+
+    func testGatewayConfigFallsBackToBasePortAndTokenWhenConfigIsMissing() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        var baseConfig = OpenClawConfig.default
+        baseConfig.deploymentKind = .container
+        baseConfig.host = "container-gateway.local"
+        baseConfig.port = 19888
+        baseConfig.apiKey = "fallback-token"
+        baseConfig.useSSL = true
+
+        let gatewayConfig = manager.gatewayConfig(
+            fromOpenClawRoot: rootURL,
+            using: baseConfig,
+            hostFallback: baseConfig.host,
+            useSSLFallback: baseConfig.useSSL,
+            fallbackPort: baseConfig.port
+        )
+
+        XCTAssertEqual(gatewayConfig?.deploymentKind, .remoteServer)
+        XCTAssertEqual(gatewayConfig?.host, "container-gateway.local")
+        XCTAssertEqual(gatewayConfig?.port, 19888)
+        XCTAssertEqual(gatewayConfig?.apiKey, "fallback-token")
+        XCTAssertEqual(gatewayConfig?.useSSL, true)
+    }
+
+    func testConnectFailureDoesNotPrepareSessionBeforeProbeSucceeds() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = "/tmp/openclaw-missing-\(UUID().uuidString)"
+        config.autoConnect = false
+        manager.config = config
+
+        let project = MAProject(name: "Probe Order Regression")
+        let completion = expectation(description: "connect completed")
+
+        manager.connect(for: project) { success, message in
+            XCTAssertFalse(success)
+            XCTAssertFalse(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            completion.fulfill()
+        }
+
+        wait(for: [completion], timeout: 5.0)
+        drainMainQueue()
+
+        let snapshot = manager.snapshot()
+        XCTAssertFalse(manager.isConnected)
+        XCTAssertEqual(manager.sessionLifecycle.stage, .inactive)
+        XCTAssertNil(snapshot.sessionBackupPath)
+        XCTAssertNil(snapshot.sessionMirrorPath)
     }
 }

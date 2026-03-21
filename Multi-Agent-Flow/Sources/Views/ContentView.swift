@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
     @State private var isPresentingOpenClawImportSheet = false
+    @State private var selectedTemplateLibraryID: String = AgentTemplateCatalog.defaultTemplateID
     
     var body: some View {
         VStack(spacing: 0) {
@@ -32,9 +33,14 @@ struct ContentView: View {
 
                         Spacer(minLength: 12)
 
-                        if selectedTab == 2 {
+                        if selectedTab == 2 || selectedTab == 3 {
                             HStack(spacing: 8) {
-                                Label(LocalizedString.text("dashboard_via_sidebar"), systemImage: "gauge.with.dots.needle.33percent")
+                                Label(
+                                    selectedTab == 2
+                                        ? LocalizedString.text("dashboard_via_sidebar")
+                                        : LocalizedString.text("template_library_via_sidebar"),
+                                    systemImage: selectedTab == 2 ? "gauge.with.dots.needle.33percent" : "shippingbox"
+                                )
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Button(LocalizedString.text("switch_to_workbench")) {
@@ -60,14 +66,15 @@ struct ContentView: View {
 
                     // 主内容
                     Group {
-                        if appState.currentProject == nil {
-                            ProjectOnboardingView()
+                        if appState.currentProject == nil && selectedTab != 3 {
+                            ProjectOnboardingView(selectedTab: $selectedTab)
                                 .environmentObject(appState)
                         } else {
                             switch selectedTab {
                             case 0: WorkflowEditorView(zoomScale: $zoomScale)
                             case 1: WorkbenchConversationView(messageManager: appState.messageManager)
                             case 2: OpsCenterDashboardView(displayMode: .fullScreen)
+                            case 3: TemplateLibraryManagerSheet(selectedTemplateID: $selectedTemplateLibraryID, showsCloseButton: false)
                             default: WorkflowEditorView(zoomScale: $zoomScale)
                             }
                         }
@@ -207,6 +214,19 @@ struct ContentView: View {
                     appState.disconnectOpenClaw()
                 }
 
+                if appState.openClawManager.config.deploymentKind != .remoteServer,
+                   appState.openClawManager.sessionLifecycle.stage != .inactive {
+                    StatusBarButton(title: "同步会话", icon: "arrow.triangle.merge") {
+                        appState.syncOpenClawActiveSession { success, message in
+                            openClawMessage = message
+                            if !success {
+                                return
+                            }
+                            openClawMessage = message
+                        }
+                    }
+                }
+
                 StatusBarButton(title: LocalizedString.text("import_agents"), icon: "person.badge.plus") {
                     if appState.openClawManager.discoveryResults.isEmpty {
                         openClawMessage = LocalizedString.text("detect_agents_first")
@@ -226,7 +246,7 @@ struct ContentView: View {
                         if !success {
                             return
                         }
-                        openClawMessage = LocalizedString.format("connected_synced_agents", appState.openClawManager.agents.count)
+                        openClawMessage = message
                     }
                 }
             }
@@ -277,6 +297,7 @@ struct ContentView: View {
 
 private struct ProjectOnboardingView: View {
     @EnvironmentObject var appState: AppState
+    @Binding var selectedTab: Int
 
     var body: some View {
         VStack(spacing: 22) {
@@ -318,6 +339,11 @@ private struct ProjectOnboardingView: View {
 
                 Button(LocalizedString.openProject) {
                     appState.openProject()
+                }
+                .buttonStyle(.bordered)
+
+                Button(LocalizedString.text("open_template_library")) {
+                    selectedTab = 3
                 }
                 .buttonStyle(.bordered)
             }

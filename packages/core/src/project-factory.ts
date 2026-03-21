@@ -84,6 +84,15 @@ function createDefaultOpenClawConnectionState(): OpenClawConnectionStateSnapshot
   };
 }
 
+function createDefaultOpenClawSessionLifecycle() {
+  return {
+    stage: "inactive" as const,
+    hasPendingMirrorChanges: false,
+    preparedAt: null,
+    lastAppliedAt: null
+  };
+}
+
 function createDefaultOpenClawSnapshot(now: number): ProjectOpenClawSnapshot {
   return {
     config: createDefaultOpenClawConfig(),
@@ -92,6 +101,7 @@ function createDefaultOpenClawSnapshot(now: number): ProjectOpenClawSnapshot {
     activeAgents: [],
     detectedAgents: [],
     connectionState: createDefaultOpenClawConnectionState(),
+    sessionLifecycle: createDefaultOpenClawSessionLifecycle(),
     lastProbeReport: null,
     recoveryReports: [],
     sessionBackupPath: null,

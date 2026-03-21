@@ -87,6 +87,16 @@ export interface OpenClawConnectionStateSnapshot {
   health: OpenClawConnectionHealthSnapshot;
 }
 
+export const OPENCLAW_SESSION_LIFECYCLE_STAGES = ["inactive", "prepared", "pending_sync", "synced"] as const;
+export type OpenClawSessionLifecycleStage = (typeof OPENCLAW_SESSION_LIFECYCLE_STAGES)[number];
+
+export interface OpenClawSessionLifecycleSnapshot {
+  stage: OpenClawSessionLifecycleStage;
+  hasPendingMirrorChanges: boolean;
+  preparedAt?: SwiftDate | null;
+  lastAppliedAt?: SwiftDate | null;
+}
+
 export const OPENCLAW_PROBE_LAYER_STATES = ["ready", "degraded", "unavailable", "not_required"] as const;
 export type OpenClawProbeLayerState = (typeof OPENCLAW_PROBE_LAYER_STATES)[number];
 
@@ -138,6 +148,7 @@ export interface ProjectOpenClawSnapshot {
   activeAgents: ProjectOpenClawAgentRecord[];
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
   connectionState: OpenClawConnectionStateSnapshot;
+  sessionLifecycle?: OpenClawSessionLifecycleSnapshot | null;
   lastProbeReport?: OpenClawProbeReportSnapshot | null;
   recoveryReports?: OpenClawRecoveryReportSnapshot[];
   sessionBackupPath?: string | null;

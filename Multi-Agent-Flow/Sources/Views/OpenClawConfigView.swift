@@ -10,6 +10,7 @@ struct OpenClawConfigView: View {
     @State private var config: OpenClawConfig = .default
     @State private var isTesting = false
     @State private var isSaving = false
+    @State private var isSyncingSession = false
     @State private var testResult: String?
     @State private var statusMessage: String?
     @State private var statusTone: StatusTone = .neutral
@@ -150,6 +151,17 @@ struct OpenClawConfigView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isTesting || isSaving || !canTestConnection)
+
+                    Button(action: syncCurrentSession) {
+                        HStack(spacing: 8) {
+                            if isSyncingSession {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(isSyncingSession ? "正在同步会话..." : "同步当前会话")
+                        }
+                    }
+                    .disabled(isTesting || isSaving || isSyncingSession || !canSyncCurrentSession)
                 }
 
                 if let testResult {
@@ -158,6 +170,11 @@ struct OpenClawConfigView: View {
                         .foregroundColor(lastTestSucceeded ? .green : .red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Text(sessionLifecycleHint)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 detectedAgentsSection
             }
@@ -203,6 +220,27 @@ struct OpenClawConfigView: View {
             return !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .container:
             return !config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private var canSyncCurrentSession: Bool {
+        appState.openClawManager.isConnected
+            && appState.openClawManager.config.deploymentKind != .remoteServer
+            && appState.openClawManager.sessionLifecycle.stage != .inactive
+    }
+
+    private var sessionLifecycleHint: String {
+        let lifecycle = appState.openClawManager.sessionLifecycle
+
+        switch lifecycle.stage {
+        case .inactive:
+            return "当前还没有项目级 OpenClaw 会话。先执行连接，系统会准备项目镜像。"
+        case .prepared:
+            return "当前项目镜像已准备完成，但尚未写回当前 OpenClaw 会话。"
+        case .pendingSync:
+            return "当前项目镜像存在待同步变更。确认连接无误后，请执行“同步当前会话”。"
+        case .synced:
+            return "当前项目镜像已写回本次 OpenClaw 会话。"
         }
     }
 
@@ -285,7 +323,17 @@ struct OpenClawConfigView: View {
         appState.connectOpenClaw(using: config) { success, message in
             isSaving = false
             testResult = message
-            statusMessage = success ? LocalizedString.text("connection_confirmed_sync") : LocalizedString.format("error_status", message)
+            statusMessage = success ? message : LocalizedString.format("error_status", message)
+            statusTone = success ? .success : .error
+        }
+    }
+
+    private func syncCurrentSession() {
+        isSyncingSession = true
+        appState.syncOpenClawActiveSession { success, message in
+            isSyncingSession = false
+            testResult = message
+            statusMessage = success ? message : LocalizedString.format("error_status", message)
             statusTone = success ? .success : .error
         }
     }
@@ -293,7 +341,7 @@ struct OpenClawConfigView: View {
     private func refreshStatusFromManager() {
         switch appState.openClawManager.status {
         case .connected:
-            statusMessage = LocalizedString.text("current_connected_sync")
+            statusMessage = sessionLifecycleHint
             statusTone = .success
         case .connecting:
             statusMessage = LocalizedString.text("processing_openclaw_session")
