@@ -190,6 +190,91 @@ private struct NodeOpenClawBindingDocument: Codable, Equatable {
     var environment: [String: String]
 }
 
+private struct NodeOpenClawSourceMapDocument: Codable, Equatable {
+    var nodeID: UUID
+    var agentID: UUID
+    var agentIdentifier: String
+    var soulSourcePath: String?
+    var mirroredSoulRelativePath: String
+    var memoryBackupPath: String?
+    var mirroredWorkspaceRelativePath: String
+    var generatedAt: Date
+}
+
+private struct NodeOpenClawSyncBaselineDocument: Codable, Equatable {
+    var nodeID: UUID
+    var agentID: UUID
+    var lastImportedSoulHash: String?
+    var lastImportedSoulPath: String?
+    var lastImportedAt: Date?
+    var generatedAt: Date
+}
+
+private struct NodeOpenClawImportRecordDocument: Codable, Equatable {
+    var nodeID: UUID
+    var agentID: UUID
+    var agentIdentifier: String
+    var soulSourcePath: String?
+    var memoryBackupPath: String?
+    var lastImportedSoulHash: String?
+    var lastImportedSoulPath: String?
+    var lastImportedAt: Date?
+    var generatedAt: Date
+}
+
+private struct AnalyticsOverviewProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var workflowCount: Int
+    var nodeCount: Int
+    var agentCount: Int
+    var taskCount: Int
+    var messageCount: Int
+    var executionResultCount: Int
+    var completedExecutionCount: Int
+    var failedExecutionCount: Int
+    var warningLogCount: Int
+    var errorLogCount: Int
+    var pendingApprovalCount: Int
+}
+
+private struct AnalyticsTraceProjectionEntry: Codable, Equatable {
+    var executionID: UUID
+    var nodeID: UUID
+    var agentID: UUID
+    var sessionID: String?
+    var status: ExecutionStatus
+    var outputType: ExecutionOutputType
+    var startedAt: Date
+    var completedAt: Date?
+    var duration: TimeInterval?
+    var protocolRepairCount: Int
+    var previewText: String
+}
+
+private struct AnalyticsTraceProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var traces: [AnalyticsTraceProjectionEntry]
+}
+
+private struct AnalyticsAnomalyProjectionEntry: Codable, Equatable {
+    var id: String
+    var source: String
+    var severity: String
+    var message: String
+    var nodeID: UUID?
+    var agentID: UUID?
+    var sessionID: String?
+    var timestamp: Date
+}
+
+private struct AnalyticsAnomalyProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var anomalies: [AnalyticsAnomalyProjectionEntry]
+}
+
 private struct WorkflowCommunicationRouteDocument: Codable, Equatable {
     var edgeID: UUID
     var fromNodeID: UUID
@@ -426,6 +511,26 @@ struct ProjectFileSystem {
             .appendingPathComponent("analytics.sqlite", isDirectory: false)
     }
 
+    func analyticsProjectionDirectory(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsRootDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("projections", isDirectory: true)
+    }
+
+    func analyticsOverviewProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("overview.json", isDirectory: false)
+    }
+
+    func analyticsTraceProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("traces.json", isDirectory: false)
+    }
+
+    func analyticsAnomalyProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("anomalies.json", isDirectory: false)
+    }
+
     func validateProject(_ project: MAProject) throws {
         try validateNodeAgentBindings(workflows: project.workflows, knownAgentIDs: Set(project.agents.map(\.id)))
     }
@@ -450,6 +555,7 @@ struct ProjectFileSystem {
         try writeRuntimeState(for: project, under: appSupportRootDirectory)
         try writeTaskState(for: project, under: appSupportRootDirectory)
         try writeExecutionState(for: project, under: appSupportRootDirectory)
+        try writeAnalyticsProjectionState(for: project, under: appSupportRootDirectory)
         try writeIndexes(for: project, under: appSupportRootDirectory)
 
         let manifest = ProjectStorageManifest(
@@ -580,6 +686,116 @@ struct ProjectFileSystem {
 
         try encode(tasks, to: tasksListURL(for: project.id, under: appSupportRootDirectory))
         try encode(workspaceIndex, to: workspaceIndexURL(for: project.id, under: appSupportRootDirectory))
+    }
+
+    private func writeAnalyticsProjectionState(for project: MAProject, under appSupportRootDirectory: URL) throws {
+        let projectionRootURL = analyticsProjectionDirectory(for: project.id, under: appSupportRootDirectory)
+        try fileManager.createDirectory(at: projectionRootURL, withIntermediateDirectories: true)
+
+        let workflowCount = project.workflows.count
+        let nodeCount = project.workflows.reduce(0) { $0 + $1.nodes.count }
+        let warningLogCount = project.executionLogs.filter { $0.level == .warning }.count
+        let errorLogCount = project.executionLogs.filter { $0.level == .error }.count
+        let pendingApprovalCount = project.messages.filter { $0.status == .waitingForApproval }.count
+        let completedExecutionCount = project.executionResults.filter { $0.status == .completed }.count
+        let failedExecutionCount = project.executionResults.filter { $0.status == .failed }.count
+
+        try encode(
+            AnalyticsOverviewProjectionDocument(
+                projectID: project.id,
+                generatedAt: Date(),
+                workflowCount: workflowCount,
+                nodeCount: nodeCount,
+                agentCount: project.agents.count,
+                taskCount: project.tasks.count,
+                messageCount: project.messages.count,
+                executionResultCount: project.executionResults.count,
+                completedExecutionCount: completedExecutionCount,
+                failedExecutionCount: failedExecutionCount,
+                warningLogCount: warningLogCount,
+                errorLogCount: errorLogCount,
+                pendingApprovalCount: pendingApprovalCount
+            ),
+            to: analyticsOverviewProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+
+        let traces = project.executionResults
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.completedAt ?? lhs.startedAt
+                let rhsDate = rhs.completedAt ?? rhs.startedAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+            .map { result in
+                AnalyticsTraceProjectionEntry(
+                    executionID: result.id,
+                    nodeID: result.nodeID,
+                    agentID: result.agentID,
+                    sessionID: result.sessionID,
+                    status: result.status,
+                    outputType: result.outputType,
+                    startedAt: result.startedAt,
+                    completedAt: result.completedAt,
+                    duration: result.duration,
+                    protocolRepairCount: result.protocolRepairCount,
+                    previewText: truncatedText(result.output)
+                )
+            }
+        try encode(
+            AnalyticsTraceProjectionDocument(
+                projectID: project.id,
+                generatedAt: Date(),
+                traces: traces
+            ),
+            to: analyticsTraceProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+
+        let executionAnomalies = project.executionResults
+            .filter { $0.status == .failed }
+            .map { result in
+                AnalyticsAnomalyProjectionEntry(
+                    id: result.id.uuidString,
+                    source: "execution",
+                    severity: "error",
+                    message: truncatedText(result.output, limit: 160),
+                    nodeID: result.nodeID,
+                    agentID: result.agentID,
+                    sessionID: result.sessionID,
+                    timestamp: result.completedAt ?? result.startedAt
+                )
+            }
+
+        let logAnomalies = project.executionLogs
+            .filter { $0.level == .warning || $0.level == .error }
+            .map { entry in
+                AnalyticsAnomalyProjectionEntry(
+                    id: entry.id.uuidString,
+                    source: "log",
+                    severity: entry.level == .error ? "error" : "warning",
+                    message: truncatedText(entry.message, limit: 160),
+                    nodeID: entry.nodeID,
+                    agentID: nil,
+                    sessionID: nil,
+                    timestamp: entry.timestamp
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id > rhs.id
+            }
+
+        try encode(
+            AnalyticsAnomalyProjectionDocument(
+                projectID: project.id,
+                generatedAt: Date(),
+                anomalies: executionAnomalies + logAnomalies
+            ),
+            to: analyticsAnomalyProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
     }
 
     private func encode<T: Encodable>(_ value: T, to url: URL) throws {
@@ -1054,11 +1270,213 @@ struct ProjectFileSystem {
             agent.openClawDefinition.protocolMemory,
             to: stateRootURL.appendingPathComponent("protocol-memory.json", isDirectory: false)
         )
-        try agent.soulMD.write(
-            to: workspaceRootURL.appendingPathComponent("SOUL.md", isDirectory: false),
-            atomically: true,
-            encoding: .utf8
+        try writeOpenClawWorkspaceDocuments(
+            for: agent,
+            nodeID: node.id,
+            workspaceRootURL: workspaceRootURL,
+            mirrorRootURL: mirrorRootURL,
+            stateRootURL: stateRootURL
         )
+    }
+
+    private func writeOpenClawWorkspaceDocuments(
+        for agent: Agent,
+        nodeID: UUID,
+        workspaceRootURL: URL,
+        mirrorRootURL: URL,
+        stateRootURL: URL
+    ) throws {
+        let memoryRootURL = workspaceRootURL.appendingPathComponent("memory", isDirectory: true)
+        let skillsRootURL = workspaceRootURL.appendingPathComponent("skills", isDirectory: true)
+
+        for directory in [memoryRootURL, skillsRootURL] {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+
+        try writeTextDocument(
+            renderAgentsMarkdown(agent: agent, nodeID: nodeID),
+            to: workspaceRootURL.appendingPathComponent("AGENTS.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            renderIdentityMarkdown(agent: agent),
+            to: workspaceRootURL.appendingPathComponent("IDENTITY.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            renderUserMarkdown(agent: agent),
+            to: workspaceRootURL.appendingPathComponent("USER.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            renderToolsMarkdown(agent: agent),
+            to: workspaceRootURL.appendingPathComponent("TOOLS.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            renderBootstrapMarkdown(agent: agent),
+            to: workspaceRootURL.appendingPathComponent("BOOTSTRAP.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            renderHeartbeatMarkdown(agent: agent),
+            to: workspaceRootURL.appendingPathComponent("HEARTBEAT.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            renderMemoryMarkdown(agent: agent),
+            to: workspaceRootURL.appendingPathComponent("MEMORY.md", isDirectory: false)
+        )
+        try writeTextDocument(
+            agent.soulMD,
+            to: workspaceRootURL.appendingPathComponent("SOUL.md", isDirectory: false)
+        )
+
+        try encode(
+            NodeOpenClawSourceMapDocument(
+                nodeID: nodeID,
+                agentID: agent.id,
+                agentIdentifier: agent.openClawDefinition.agentIdentifier,
+                soulSourcePath: agent.openClawDefinition.soulSourcePath,
+                mirroredSoulRelativePath: "workspace/SOUL.md",
+                memoryBackupPath: agent.openClawDefinition.memoryBackupPath,
+                mirroredWorkspaceRelativePath: "workspace",
+                generatedAt: Date()
+            ),
+            to: mirrorRootURL.appendingPathComponent("source-map.json", isDirectory: false)
+        )
+        try encode(
+            NodeOpenClawSyncBaselineDocument(
+                nodeID: nodeID,
+                agentID: agent.id,
+                lastImportedSoulHash: agent.openClawDefinition.lastImportedSoulHash,
+                lastImportedSoulPath: agent.openClawDefinition.lastImportedSoulPath,
+                lastImportedAt: agent.openClawDefinition.lastImportedAt,
+                generatedAt: Date()
+            ),
+            to: mirrorRootURL.appendingPathComponent("sync-baseline.json", isDirectory: false)
+        )
+        try encode(
+            NodeOpenClawImportRecordDocument(
+                nodeID: nodeID,
+                agentID: agent.id,
+                agentIdentifier: agent.openClawDefinition.agentIdentifier,
+                soulSourcePath: agent.openClawDefinition.soulSourcePath,
+                memoryBackupPath: agent.openClawDefinition.memoryBackupPath,
+                lastImportedSoulHash: agent.openClawDefinition.lastImportedSoulHash,
+                lastImportedSoulPath: agent.openClawDefinition.lastImportedSoulPath,
+                lastImportedAt: agent.openClawDefinition.lastImportedAt,
+                generatedAt: Date()
+            ),
+            to: stateRootURL.appendingPathComponent("import-record.json", isDirectory: false)
+        )
+    }
+
+    private func writeTextDocument(_ text: String, to url: URL) throws {
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func renderAgentsMarkdown(agent: Agent, nodeID: UUID) -> String {
+        """
+        # AGENTS
+
+        - agent_name: \(agent.name)
+        - agent_id: \(agent.id.uuidString)
+        - node_id: \(nodeID.uuidString)
+        - agent_identifier: \(normalizedOrPlaceholder(agent.openClawDefinition.agentIdentifier))
+        """
+    }
+
+    private func renderIdentityMarkdown(agent: Agent) -> String {
+        """
+        # IDENTITY
+
+        \(normalizedOrPlaceholder(agent.identity))
+        """
+    }
+
+    private func renderUserMarkdown(agent: Agent) -> String {
+        """
+        # USER
+
+        \(normalizedOrPlaceholder(agent.description, fallback: "No user-facing description recorded."))
+        """
+    }
+
+    private func renderToolsMarkdown(agent: Agent) -> String {
+        let capabilities = agent.capabilities.isEmpty
+            ? "- none"
+            : agent.capabilities.sorted().map { "- \($0)" }.joined(separator: "\n")
+        let environment = agent.openClawDefinition.environment.isEmpty
+            ? "- none"
+            : agent.openClawDefinition.environment
+                .sorted { $0.key < $1.key }
+                .map { "- \($0.key)=\($0.value)" }
+                .joined(separator: "\n")
+
+        return """
+        # TOOLS
+
+        Model: \(normalizedOrPlaceholder(agent.openClawDefinition.modelIdentifier))
+        Runtime Profile: \(normalizedOrPlaceholder(agent.openClawDefinition.runtimeProfile))
+
+        ## Capabilities
+        \(capabilities)
+
+        ## Environment
+        \(environment)
+        """
+    }
+
+    private func renderBootstrapMarkdown(agent: Agent) -> String {
+        """
+        # BOOTSTRAP
+
+        Agent Identifier: \(normalizedOrPlaceholder(agent.openClawDefinition.agentIdentifier))
+        Model Identifier: \(normalizedOrPlaceholder(agent.openClawDefinition.modelIdentifier))
+        Runtime Profile: \(normalizedOrPlaceholder(agent.openClawDefinition.runtimeProfile))
+        Soul Source Path: \(normalizedOrPlaceholder(agent.openClawDefinition.soulSourcePath))
+        """
+    }
+
+    private func renderHeartbeatMarkdown(agent: Agent) -> String {
+        let recentCount = agent.openClawDefinition.protocolMemory.recentCorrections.count
+        let repeatCount = agent.openClawDefinition.protocolMemory.repeatOffenses.count
+
+        return """
+        # HEARTBEAT
+
+        Protocol Version: \(agent.openClawDefinition.protocolMemory.protocolVersion)
+        Last Updated: \(iso8601String(from: agent.openClawDefinition.protocolMemory.lastUpdatedAt))
+        Recent Corrections: \(recentCount)
+        Repeat Offenses: \(repeatCount)
+        """
+    }
+
+    private func renderMemoryMarkdown(agent: Agent) -> String {
+        let stableRules = agent.openClawDefinition.protocolMemory.stableRules.isEmpty
+            ? "- none"
+            : agent.openClawDefinition.protocolMemory.stableRules.map { "- \($0)" }.joined(separator: "\n")
+
+        return """
+        # MEMORY
+
+        Memory Backup Path: \(normalizedOrPlaceholder(agent.openClawDefinition.memoryBackupPath))
+        Last Session Digest: \(normalizedOrPlaceholder(agent.openClawDefinition.protocolMemory.lastSessionDigest))
+
+        ## Stable Rules
+        \(stableRules)
+        """
+    }
+
+    private func normalizedOrPlaceholder(_ value: String?, fallback: String = "Not recorded.") -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func iso8601String(from date: Date?) -> String {
+        guard let date else { return "Not recorded." }
+        return ISO8601DateFormatter().string(from: date)
+    }
+
+    private func truncatedText(_ text: String, limit: Int = 120) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit)) + "..."
     }
 
     private func writeDerivedWorkflowState(for workflow: Workflow, under derivedRootURL: URL) throws {

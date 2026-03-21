@@ -100,6 +100,39 @@ private struct RuntimeDispatchRecordEnvelopeFixture: Decodable {
     var record: RuntimeDispatchRecord
 }
 
+private struct AnalyticsOverviewProjectionFixture: Decodable {
+    var projectID: UUID
+    var taskCount: Int
+    var messageCount: Int
+    var executionResultCount: Int
+    var completedExecutionCount: Int
+    var failedExecutionCount: Int
+    var warningLogCount: Int
+    var errorLogCount: Int
+    var pendingApprovalCount: Int
+}
+
+private struct AnalyticsTraceProjectionFixture: Decodable {
+    struct Entry: Decodable {
+        var executionID: UUID
+        var status: ExecutionStatus
+        var outputType: ExecutionOutputType
+    }
+
+    var projectID: UUID
+    var traces: [Entry]
+}
+
+private struct AnalyticsAnomalyProjectionFixture: Decodable {
+    struct Entry: Decodable {
+        var source: String
+        var severity: String
+    }
+
+    var projectID: UUID
+    var anomalies: [Entry]
+}
+
 private func decodeNDJSON<T: Decodable>(_ type: T.Type, from url: URL) throws -> [T] {
     let data = try Data(contentsOf: url)
     guard let contents = String(data: data, encoding: .utf8), !contents.isEmpty else {
@@ -176,6 +209,14 @@ final class ProjectFileSystemTests: XCTestCase {
         agent.description = "Design agent"
         agent.soulMD = "# SOUL\nDesign soul"
         agent.openClawDefinition.agentIdentifier = "design-agent"
+        agent.openClawDefinition.modelIdentifier = "gpt-test"
+        agent.openClawDefinition.runtimeProfile = "strict"
+        agent.openClawDefinition.memoryBackupPath = "/tmp/design-agent-memory"
+        agent.openClawDefinition.soulSourcePath = "/tmp/design-agent/SOUL.md"
+        agent.openClawDefinition.lastImportedSoulHash = "hash-123"
+        agent.openClawDefinition.lastImportedSoulPath = "/tmp/design-agent/SOUL.md"
+        agent.openClawDefinition.lastImportedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        agent.openClawDefinition.environment = ["MODE": "test"]
         project.agents = [agent]
 
         var workflow = project.workflows[0]
@@ -213,8 +254,56 @@ final class ProjectFileSystemTests: XCTestCase {
             "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/SOUL.md",
             isDirectory: false
         )
+        let agentsMarkdownURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/AGENTS.md",
+            isDirectory: false
+        )
+        let identityURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/IDENTITY.md",
+            isDirectory: false
+        )
+        let userURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/USER.md",
+            isDirectory: false
+        )
+        let toolsURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/TOOLS.md",
+            isDirectory: false
+        )
+        let heartbeatURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/HEARTBEAT.md",
+            isDirectory: false
+        )
+        let bootstrapURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/BOOTSTRAP.md",
+            isDirectory: false
+        )
+        let memoryURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/MEMORY.md",
+            isDirectory: false
+        )
+        let memoryDirectoryURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/memory",
+            isDirectory: true
+        )
+        let skillsDirectoryURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace/skills",
+            isDirectory: true
+        )
         let bindingURL = projectRoot.appendingPathComponent(
             "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/binding.json",
+            isDirectory: false
+        )
+        let sourceMapURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/mirror/source-map.json",
+            isDirectory: false
+        )
+        let syncBaselineURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/mirror/sync-baseline.json",
+            isDirectory: false
+        )
+        let importRecordURL = projectRoot.appendingPathComponent(
+            "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/state/import-record.json",
             isDirectory: false
         )
 
@@ -223,10 +312,30 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: nodeURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: agentURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: soulURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: agentsMarkdownURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: identityURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: userURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: toolsURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: heartbeatURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: bootstrapURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: memoryURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: memoryDirectoryURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: skillsDirectoryURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: bindingURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceMapURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: syncBaselineURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: importRecordURL.path))
 
         let soulContents = try String(contentsOf: soulURL, encoding: .utf8)
+        let identityContents = try String(contentsOf: identityURL, encoding: .utf8)
+        let toolsContents = try String(contentsOf: toolsURL, encoding: .utf8)
+        let importRecordData = try Data(contentsOf: importRecordURL)
+        let importRecordJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: importRecordData) as? [String: Any])
         XCTAssertEqual(soulContents, agent.soulMD)
+        XCTAssertTrue(identityContents.contains(agent.identity))
+        XCTAssertTrue(toolsContents.contains(agent.openClawDefinition.modelIdentifier))
+        XCTAssertEqual(importRecordJSON["agentIdentifier"] as? String, agent.openClawDefinition.agentIdentifier)
+        XCTAssertEqual(importRecordJSON["memoryBackupPath"] as? String, agent.openClawDefinition.memoryBackupPath)
     }
 
     func testSynchronizeProjectWritesDerivedWorkflowIndexes() throws {
@@ -528,6 +637,9 @@ final class ProjectFileSystemTests: XCTestCase {
         let logsURL = projectRoot.appendingPathComponent("execution/logs.ndjson", isDirectory: false)
         let tasksURL = projectRoot.appendingPathComponent("tasks/tasks.json", isDirectory: false)
         let workspaceIndexURL = projectRoot.appendingPathComponent("tasks/workspace-index.json", isDirectory: false)
+        let analyticsOverviewURL = projectRoot.appendingPathComponent("analytics/projections/overview.json", isDirectory: false)
+        let analyticsTracesURL = projectRoot.appendingPathComponent("analytics/projections/traces.json", isDirectory: false)
+        let analyticsAnomaliesURL = projectRoot.appendingPathComponent("analytics/projections/anomalies.json", isDirectory: false)
         let workflowIndexURL = projectRoot.appendingPathComponent("indexes/workflows.json", isDirectory: false)
         let nodeIndexURL = projectRoot.appendingPathComponent("indexes/nodes.json", isDirectory: false)
         let threadIndexURL = projectRoot.appendingPathComponent("indexes/threads.json", isDirectory: false)
@@ -548,6 +660,9 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: logsURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: tasksURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspaceIndexURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsOverviewURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsTracesURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsAnomaliesURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workflowIndexURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: nodeIndexURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: threadIndexURL.path))
@@ -596,10 +711,35 @@ final class ProjectFileSystemTests: XCTestCase {
             [ProjectWorkspaceRecord].self,
             from: Data(contentsOf: workspaceIndexURL)
         )
+        let analyticsOverview = try JSONDecoder().decode(
+            AnalyticsOverviewProjectionFixture.self,
+            from: Data(contentsOf: analyticsOverviewURL)
+        )
+        let analyticsTraces = try JSONDecoder().decode(
+            AnalyticsTraceProjectionFixture.self,
+            from: Data(contentsOf: analyticsTracesURL)
+        )
+        let analyticsAnomalies = try JSONDecoder().decode(
+            AnalyticsAnomalyProjectionFixture.self,
+            from: Data(contentsOf: analyticsAnomaliesURL)
+        )
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(logs.count, 1)
         XCTAssertEqual(persistedTasks.map(\.id), [task.id])
         XCTAssertEqual(persistedWorkspaceIndex.map(\.taskID), [task.id])
+        XCTAssertEqual(analyticsOverview.projectID, project.id)
+        XCTAssertEqual(analyticsOverview.taskCount, 1)
+        XCTAssertEqual(analyticsOverview.messageCount, 2)
+        XCTAssertEqual(analyticsOverview.executionResultCount, 1)
+        XCTAssertEqual(analyticsOverview.completedExecutionCount, 1)
+        XCTAssertEqual(analyticsOverview.failedExecutionCount, 0)
+        XCTAssertEqual(analyticsOverview.warningLogCount, 0)
+        XCTAssertEqual(analyticsOverview.errorLogCount, 0)
+        XCTAssertEqual(analyticsOverview.pendingApprovalCount, 1)
+        XCTAssertEqual(analyticsTraces.projectID, project.id)
+        XCTAssertEqual(analyticsTraces.traces.first?.executionID, result.id)
+        XCTAssertEqual(analyticsAnomalies.projectID, project.id)
+        XCTAssertTrue(analyticsAnomalies.anomalies.isEmpty)
 
         let workflowIndex = try JSONDecoder().decode([WorkflowIndexEntryFixture].self, from: Data(contentsOf: workflowIndexURL))
         let nodeIndex = try JSONDecoder().decode([NodeIndexEntryFixture].self, from: Data(contentsOf: nodeIndexURL))

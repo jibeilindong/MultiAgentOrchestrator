@@ -3,6 +3,27 @@
 Last updated: 2026-03-21
 Status: In progress
 
+## Progress Update
+
+Completed:
+
+- managed project root, manifest, and snapshot bridge
+- design-state split persistence and assembled-project loading
+- node-local `agent.json`, `binding.json`, `SOUL.md`
+- node-local OpenClaw workspace scaffold documents and state files
+- collaboration/runtime/execution split persistence
+- tasks/workspace index consolidation under managed project root
+- OpenClaw session root migration to managed project root
+- analytics sqlite migration to managed project root
+- analytics projection files under `analytics/projections`
+- duplicate node-agent binding validation and regression coverage
+
+Remaining:
+
+- broaden regression coverage around legacy-path migration edge cases
+- decide whether node-local `skills/` and `memory/` should stay scaffold-only or mirror external artifacts
+- continue tightening any remaining call sites that still assume legacy layout details
+
 ## Goal
 
 Reshape the project file system without changing existing product semantics.
