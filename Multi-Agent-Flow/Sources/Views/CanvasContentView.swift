@@ -87,7 +87,15 @@ struct CanvasContentView: View {
     private var legendInteractionFrame: CGRect {
         let candidates = [
             legendFrame.isNull ? CGRect.null : legendFrame.insetBy(dx: -16, dy: -16),
-            fallbackLegendFrame
+            fallbackLegendFrame,
+            visibleLegendGroupCount > 0
+                ? CGRect(
+                    x: 0,
+                    y: 0,
+                    width: max(420, fallbackLegendFrame.width + 48),
+                    height: max(240, fallbackLegendFrame.height + 40)
+                )
+                : CGRect.null
         ].filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
 
         return candidates.reduce(CGRect.null) { partial, rect in
@@ -1632,8 +1640,10 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
                 guard view.bounds.contains(location) else { return event }
+                let alternateLocation = CGPoint(x: converted.x, y: converted.y)
                 if (!self.tracking && self.hitInteractiveControl(at: event.locationInWindow)) ||
-                    self.shouldIgnoreLocation(location) {
+                    self.shouldIgnoreLocation(location) ||
+                    self.shouldIgnoreLocation(alternateLocation) {
                     return event
                 }
 
@@ -1699,7 +1709,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
             var currentView: NSView? = hitView
             while currentView != nil {
-                if currentView is NSControl || currentView is NSTextView {
+                if let currentView, isInteractiveView(currentView) {
                     return true
                 }
                 if currentView == view {
@@ -1709,6 +1719,27 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
             }
 
             return false
+        }
+
+        private func isInteractiveView(_ view: NSView) -> Bool {
+            if view is NSControl || view is NSTextView {
+                return true
+            }
+
+            let accessibilityRole = view.accessibilityRole()
+            if [
+                NSAccessibility.Role.button,
+                NSAccessibility.Role.textField,
+                NSAccessibility.Role.textArea,
+                NSAccessibility.Role.popUpButton,
+                NSAccessibility.Role.checkBox,
+                NSAccessibility.Role.radioButton
+            ].contains(where: { $0 == accessibilityRole }) {
+                return true
+            }
+
+            let className = NSStringFromClass(type(of: view)).lowercased()
+            return className.contains("button") || className.contains("textfield")
         }
 
         func detach() {

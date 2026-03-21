@@ -103,6 +103,7 @@ struct WorkflowEditorView: View {
                 batchSourceCount: batchSourceNodeIDs.count,
                 batchTargetCount: batchTargetNodeIDs.count,
                 batchPreviewCount: batchPreview?.newEdgeCount ?? 0,
+                batchCanCommit: batchPreview?.hasActionableEdges ?? false,
                 onAddNode: { addNode() },
                 onAddNodeWithTemplate: { templateID in addNode(templateID: templateID) },
                 onDeleteSelectedEdge: deleteSelectedEdge,
@@ -122,9 +123,9 @@ struct WorkflowEditorView: View {
                 onAssignBatchSources: assignBatchSourcesFromSelection,
                 onAssignBatchTargets: assignBatchTargetsFromSelection,
                 onPreviewBatchConnections: previewBatchConnections,
+                onCommitBatchConnections: commitBatchConnections,
                 onCancelBatchConnections: cancelBatchConnectionMode,
-                onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() },
-                onSave: { appState.saveProject() }
+                onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() }
             )
             .zIndex(1000)
             .background(
@@ -946,6 +947,7 @@ struct EditorToolbar: View {
     let batchSourceCount: Int
     let batchTargetCount: Int
     let batchPreviewCount: Int
+    let batchCanCommit: Bool
     var onAddNode: () -> Void
     var onAddNodeWithTemplate: (String?) -> Void
     var onDeleteSelectedEdge: () -> Void
@@ -965,9 +967,9 @@ struct EditorToolbar: View {
     var onAssignBatchSources: () -> Void
     var onAssignBatchTargets: () -> Void
     var onPreviewBatchConnections: () -> Void
+    var onCommitBatchConnections: () -> Void
     var onCancelBatchConnections: () -> Void
     var onApplyWorkflow: () -> Void
-    var onSave: () -> Void
 
     @State private var quickAddTemplateID: String = AgentTemplateCatalog.defaultTemplateID
 
@@ -975,8 +977,19 @@ struct EditorToolbar: View {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
     }
 
+    private var activeNodeCount: Int {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs.count
+        }
+        return selectedNodeID == nil ? 0 : 1
+    }
+
     private var hasBoundarySelection: Bool {
         !selectedBoundaryIDs.isEmpty
+    }
+
+    private var activeBoundaryCount: Int {
+        selectedBoundaryIDs.count
     }
 
     private var hasDeleteTarget: Bool {
@@ -1003,78 +1016,60 @@ struct EditorToolbar: View {
 
             WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_execution")) {
                 HStack(spacing: 8) {
-                    TemplatePickerButton(
-                        selectedTemplateID: $quickAddTemplateID,
-                        onSelect: { template in
-                            onAddNodeWithTemplate(template.id)
-                        },
-                        labelTitle: LocalizedString.text("add_node_toolbar"),
-                        labelSystemImage: "plus.circle",
-                        blankActionTitle: LocalizedString.text("new_blank_agent_node"),
-                        onCreateBlank: {
-                            onAddNode()
-                        },
-                        existingAgents: appState.currentProject?.agents ?? [],
-                        onSelectExistingAgent: { agent in
-                            appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
-                        },
-                        variant: .toolbar
-                    )
+                    Group {
+                        TemplatePickerButton(
+                            selectedTemplateID: $quickAddTemplateID,
+                            onSelect: { template in
+                                onAddNodeWithTemplate(template.id)
+                            },
+                            labelTitle: LocalizedString.text("add_node_toolbar"),
+                            labelSystemImage: "plus.circle",
+                            blankActionTitle: LocalizedString.text("new_blank_agent_node"),
+                            onCreateBlank: {
+                                onAddNode()
+                            },
+                            existingAgents: appState.currentProject?.agents ?? [],
+                            onSelectExistingAgent: { agent in
+                                appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+                            },
+                            variant: .toolbar
+                        )
 
-                    Menu {
-                        Button(LocalizedString.text("add_boundary")) { onAddBoundary() }
-                            .disabled(!hasNodeSelection)
-                        Button(LocalizedString.text("remove_boundary")) { onDeleteBoundary() }
-                            .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.text("insert_menu"), systemName: "plus.square.on.square")
-                    }
-                    .menuStyle(.borderlessButton)
+                        Menu {
+                            Button(LocalizedString.copy) { onCopySelection() }.disabled(!hasNodeSelection)
+                            Button(LocalizedString.cut) { onCutSelection() }.disabled(!hasNodeSelection)
+                            Button(LocalizedString.paste) { onPasteSelection() }
+                        } label: {
+                            toolbarMenuLabel(title: LocalizedString.node, systemName: "square.on.square")
+                        }
+                        .menuStyle(.borderlessButton)
 
-                    Menu {
-                        Button(LocalizedString.undo) { appState.undoWorkflowChange() }
-                            .disabled(!appState.canUndoWorkflowChange)
-                        Button(LocalizedString.redo) { appState.redoWorkflowChange() }
-                            .disabled(!appState.canRedoWorkflowChange)
-                        Divider()
-                        Button(LocalizedString.copy) { onCopySelection() }.disabled(!hasNodeSelection)
-                        Button(LocalizedString.cut) { onCutSelection() }.disabled(!hasNodeSelection)
-                        Button(LocalizedString.paste) { onPasteSelection() }
-                        Button(LocalizedString.selectAll) { selectAllItems() }
-                        Button(LocalizedString.delete) { handleDeleteAction() }
-                            .disabled(!hasDeleteTarget)
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.edit, systemName: "doc.on.doc")
+                        Menu {
+                            Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
+                                .disabled(!hasNodeSelection)
+                            Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
+                                .disabled(!hasNodeSelection)
+                            Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
+                                .disabled(!hasNodeSelection)
+                            Divider()
+                            Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
+                                .disabled(!hasNodeSelection)
+                            Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
+                                .disabled(!hasNodeSelection)
+                            Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
+                                .disabled(!hasNodeSelection)
+                            Divider()
+                            Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
+                                .disabled(activeNodeCount < 3)
+                            Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
+                                .disabled(activeNodeCount < 3)
+                        } label: {
+                            toolbarMenuLabel(title: LocalizedString.text("layout_menu"), systemName: "square.grid.3x3")
+                        }
+                        .menuStyle(.borderlessButton)
                     }
-                    .menuStyle(.borderlessButton)
 
-                    Menu {
-                        Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Divider()
-                        Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
-                            .disabled(!hasNodeSelection && !hasBoundarySelection)
-                        Divider()
-                        Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
-                            .disabled((selectedNodeIDs.count + selectedBoundaryIDs.count) < 3)
-                        Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
-                            .disabled((selectedNodeIDs.count + selectedBoundaryIDs.count) < 3)
-                        Divider()
-                        Button(LocalizedString.text("organize_connections")) { onOrganizeConnections() }
-                        Button(LocalizedString.text("delete_selected_edge")) { onDeleteSelectedEdge() }
-                            .disabled(selectedEdgeID == nil)
-                    } label: {
-                        toolbarMenuLabel(title: LocalizedString.text("layout_menu"), systemName: "rectangle.3.group")
-                    }
-                    .menuStyle(.borderlessButton)
+                    toolbarSectionDivider()
 
                     toolbarIconToggleButton(
                         systemName: isConnectMode ? "link.circle.fill" : "link.circle",
@@ -1127,6 +1122,15 @@ struct EditorToolbar: View {
                         )
 
                         toolbarIconButton(
+                            systemName: "checkmark.circle",
+                            title: batchPanelActionText("create_now"),
+                            action: onCommitBatchConnections,
+                            tooltip: batchLocalizedString("create_now_help"),
+                            prominent: batchCanCommit
+                        )
+                        .disabled(!batchCanCommit)
+
+                        toolbarIconButton(
                             systemName: "xmark.circle",
                             title: batchLocalizedString("cancel"),
                             action: onCancelBatchConnections,
@@ -1134,22 +1138,73 @@ struct EditorToolbar: View {
                         )
                     }
 
+                    Menu {
+                        Button(LocalizedString.text("organize_connections")) { onOrganizeConnections() }
+                        Button(LocalizedString.text("delete_selected_edge")) { onDeleteSelectedEdge() }
+                            .disabled(selectedEdgeID == nil)
+                    } label: {
+                        toolbarMenuLabel(title: LocalizedString.text("connect_toolbar"), systemName: "arrow.triangle.branch")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    toolbarSectionDivider()
+
+                    Menu {
+                        Button(LocalizedString.text("add_boundary")) { onAddBoundary() }
+                            .disabled(!hasNodeSelection)
+                        Button(LocalizedString.text("remove_boundary")) { onDeleteBoundary() }
+                            .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
+                    } label: {
+                        toolbarMenuLabel(title: LocalizedString.text("boundary"), systemName: "square.dashed")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    Menu {
+                        Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
+                            .disabled(!hasBoundarySelection)
+                        Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
+                            .disabled(!hasBoundarySelection)
+                        Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
+                            .disabled(!hasBoundarySelection)
+                        Divider()
+                        Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
+                            .disabled(!hasBoundarySelection)
+                        Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
+                            .disabled(!hasBoundarySelection)
+                        Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
+                            .disabled(!hasBoundarySelection)
+                        Divider()
+                        Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
+                            .disabled(activeBoundaryCount < 3)
+                        Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
+                            .disabled(activeBoundaryCount < 3)
+                    } label: {
+                        toolbarMenuLabel(title: LocalizedString.text("layout_menu"), systemName: "rectangle.dashed")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    toolbarSectionDivider()
+
+                    Menu {
+                        Button(LocalizedString.undo) { appState.undoWorkflowChange() }
+                            .disabled(!appState.canUndoWorkflowChange)
+                        Button(LocalizedString.redo) { appState.redoWorkflowChange() }
+                            .disabled(!appState.canRedoWorkflowChange)
+                        Divider()
+                        Button(LocalizedString.selectAll) { selectAllItems() }
+                        Button(LocalizedString.delete) { handleDeleteAction() }
+                            .disabled(!hasDeleteTarget)
+                    } label: {
+                        toolbarMenuLabel(title: LocalizedString.workflow, systemName: "point.3.connected.trianglepath.dotted")
+                    }
+                    .menuStyle(.borderlessButton)
+
                     toolbarIconButton(
                         systemName: "list.bullet.clipboard",
                         title: LocalizedString.text("tasks_toolbar"),
                         action: onGenerateTasks,
                         tooltip: LocalizedString.text("generate_tasks_tooltip")
                     )
-
-                    toolbarIconButton(
-                        systemName: "trash",
-                        title: LocalizedString.delete,
-                        action: handleDeleteAction,
-                        tooltip: selectedEdgeID != nil && !hasNodeSelection && !hasBoundarySelection
-                            ? LocalizedString.text("delete_selected_edge")
-                            : LocalizedString.delete
-                    )
-                    .disabled(!hasDeleteTarget)
 
                     Button(action: isRunning ? onStopTest : onRunTest) {
                         HStack(spacing: 8) {
@@ -1176,21 +1231,14 @@ struct EditorToolbar: View {
                         systemName: appState.hasPendingWorkflowConfiguration ? "checkmark.seal.fill" : "checkmark.seal",
                         title: appState.isApplyingWorkflowConfiguration
                             ? LocalizedString.text("applying")
-                            : LocalizedString.text("apply_workflow"),
+                            : LocalizedString.text("confirm_workflow_setup"),
                         action: onApplyWorkflow,
                         tooltip: appState.hasPendingWorkflowConfiguration
-                            ? LocalizedString.text("apply_workflow_tooltip_pending")
+                            ? LocalizedString.text("confirm_workflow_setup_tooltip")
                             : LocalizedString.text("apply_workflow_tooltip_idle"),
                         prominent: appState.hasPendingWorkflowConfiguration && !appState.isApplyingWorkflowConfiguration
                     )
                     .disabled(!appState.hasPendingWorkflowConfiguration || appState.isApplyingWorkflowConfiguration)
-
-                    toolbarIconButton(
-                        systemName: "square.and.arrow.down",
-                        title: LocalizedString.text("confirm_workflow_setup"),
-                        action: onSave,
-                        tooltip: LocalizedString.text("confirm_workflow_setup_tooltip")
-                    )
                 }
             }
 
@@ -1317,6 +1365,13 @@ struct EditorToolbar: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    private func toolbarSectionDivider() -> some View {
+        Rectangle()
+            .fill(Color.black.opacity(0.08))
+            .frame(width: 1, height: 28)
+            .padding(.horizontal, 2)
     }
 
     private func selectAllItems() {
@@ -5455,6 +5510,7 @@ private func batchLocalizedString(_ key: String) -> String {
         case "set_targets_help": return "Use the current node selection as the target set"
         case "preview": return "Preview"
         case "preview_help": return "Preview how many edges will be created or skipped"
+        case "create_now_help": return "Create the valid connections from the current preview"
         case "cancel": return "Cancel"
         case "cancel_help": return "Exit batch connect mode"
         default: return key
@@ -5475,6 +5531,7 @@ private func batchLocalizedString(_ key: String) -> String {
         case "set_targets_help": return "將當前選取的節點設為目標集合"
         case "preview": return "預覽"
         case "preview_help": return "預覽本次會新增或跳過多少條連線"
+        case "create_now_help": return "建立當前預覽中的有效連線"
         case "cancel": return "取消"
         case "cancel_help": return "退出批量連線模式"
         default: return key
@@ -5495,8 +5552,29 @@ private func batchLocalizedString(_ key: String) -> String {
         case "set_targets_help": return "将当前选中的节点设为目标集合"
         case "preview": return "预览"
         case "preview_help": return "预览本次会新增或跳过多少条连接"
+        case "create_now_help": return "创建当前预览中的有效连接"
         case "cancel": return "取消"
         case "cancel_help": return "退出批量连接模式"
+        default: return key
+        }
+    }
+}
+
+private func batchPanelActionText(_ key: String) -> String {
+    switch LocalizationManager.shared.currentLanguage {
+    case .english:
+        switch key {
+        case "create_now": return "Create"
+        default: return key
+        }
+    case .traditionalChinese:
+        switch key {
+        case "create_now": return "建立"
+        default: return key
+        }
+    case .simplifiedChinese:
+        switch key {
+        case "create_now": return "创建"
         default: return key
         }
     }
