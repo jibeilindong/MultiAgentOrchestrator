@@ -983,6 +983,10 @@ struct EditorToolbar: View {
         !selectedBoundaryIDs.isEmpty
     }
 
+    private var hasDeleteTarget: Bool {
+        hasNodeSelection || hasBoundarySelection || selectedEdgeID != nil
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_view")) {
@@ -1054,7 +1058,8 @@ struct EditorToolbar: View {
                         Button(LocalizedString.cut) { onCutSelection() }.disabled(!hasNodeSelection)
                         Button(LocalizedString.paste) { onPasteSelection() }
                         Button(LocalizedString.selectAll) { selectAllItems() }
-                        Button(LocalizedString.delete) { onDeleteSelection() }.disabled(!hasNodeSelection && selectedBoundaryIDs.isEmpty && selectedEdgeID == nil)
+                        Button(LocalizedString.delete) { handleDeleteAction() }
+                            .disabled(!hasDeleteTarget)
                     } label: {
                         toolbarMenuLabel(title: LocalizedString.edit, systemName: "doc.on.doc")
                     }
@@ -1152,6 +1157,16 @@ struct EditorToolbar: View {
                         action: onGenerateTasks,
                         tooltip: LocalizedString.text("generate_tasks_tooltip")
                     )
+
+                    toolbarIconButton(
+                        systemName: "trash",
+                        title: LocalizedString.delete,
+                        action: handleDeleteAction,
+                        tooltip: selectedEdgeID != nil && !hasNodeSelection && !hasBoundarySelection
+                            ? LocalizedString.text("delete_selected_edge")
+                            : LocalizedString.delete
+                    )
+                    .disabled(!hasDeleteTarget)
 
                     Button(action: isRunning ? onStopTest : onRunTest) {
                         HStack(spacing: 8) {
@@ -1466,6 +1481,14 @@ struct EditorToolbar: View {
         }
         .buttonStyle(.plain)
         .help(type.description)
+    }
+
+    private func handleDeleteAction() {
+        if selectedEdgeID != nil && !hasNodeSelection && !hasBoundarySelection {
+            onDeleteSelectedEdge()
+        } else {
+            onDeleteSelection()
+        }
     }
 
     private func toolbarActionLabel(
