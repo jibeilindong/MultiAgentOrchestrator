@@ -444,21 +444,13 @@ struct AgentPropertiesView: View {
             .padding()
         }
         .onAppear {
-            // 默认选择第一个agent
-            if selectedAgentID == nil, let firstAgent = appState.currentProject?.agents.first {
-                selectedAgentID = firstAgent.id
-                agentName = firstAgent.name
-                agentIdentity = firstAgent.identity
-                agentDescription = firstAgent.description
-                soulMD = firstAgent.soulMD
-                capabilities = firstAgent.capabilities
-                colorHex = firstAgent.colorHex ?? ""
-                openClawAgentIdentifier = firstAgent.openClawDefinition.agentIdentifier
-                openClawModelIdentifier = firstAgent.openClawDefinition.modelIdentifier
-                openClawRuntimeProfile = firstAgent.openClawDefinition.runtimeProfile
-                openClawMemoryBackupPath = firstAgent.openClawDefinition.memoryBackupPath ?? ""
-                selectedTemplateID = matchingTemplateID(for: firstAgent)
-            }
+            syncSelectionFromCanvas()
+        }
+        .onChange(of: appState.selectedNodeID) { _, _ in
+            syncSelectionFromCanvas()
+        }
+        .onChange(of: appState.currentProject?.agents.map(\.id) ?? []) { _, _ in
+            syncSelectionFromCanvas()
         }
         .sheet(isPresented: $showingTemplateManager) {
             TemplateLibraryManagerSheet(selectedTemplateID: $selectedTemplateID)
@@ -573,6 +565,43 @@ struct AgentPropertiesView: View {
         }
 
         return AgentTemplateCatalog.defaultTemplateID
+    }
+
+    private func syncSelectionFromCanvas() {
+        if let nodeID = appState.selectedNodeID,
+           let workflow = appState.currentProject?.workflows.first,
+           let node = workflow.nodes.first(where: { $0.id == nodeID }),
+           let agentID = node.agentID,
+           let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
+            selectedAgentID = agent.id
+            agentName = agent.name
+            agentIdentity = agent.identity
+            agentDescription = agent.description
+            soulMD = agent.soulMD
+            capabilities = agent.capabilities
+            colorHex = agent.colorHex ?? ""
+            openClawAgentIdentifier = agent.openClawDefinition.agentIdentifier
+            openClawModelIdentifier = agent.openClawDefinition.modelIdentifier
+            openClawRuntimeProfile = agent.openClawDefinition.runtimeProfile
+            openClawMemoryBackupPath = agent.openClawDefinition.memoryBackupPath ?? ""
+            selectedTemplateID = matchingTemplateID(for: agent)
+            return
+        }
+
+        if selectedAgentID == nil, let firstAgent = appState.currentProject?.agents.first {
+            selectedAgentID = firstAgent.id
+            agentName = firstAgent.name
+            agentIdentity = firstAgent.identity
+            agentDescription = firstAgent.description
+            soulMD = firstAgent.soulMD
+            capabilities = firstAgent.capabilities
+            colorHex = firstAgent.colorHex ?? ""
+            openClawAgentIdentifier = firstAgent.openClawDefinition.agentIdentifier
+            openClawModelIdentifier = firstAgent.openClawDefinition.modelIdentifier
+            openClawRuntimeProfile = firstAgent.openClawDefinition.runtimeProfile
+            openClawMemoryBackupPath = firstAgent.openClawDefinition.memoryBackupPath ?? ""
+            selectedTemplateID = matchingTemplateID(for: firstAgent)
+        }
     }
     
     private func resetForm() {

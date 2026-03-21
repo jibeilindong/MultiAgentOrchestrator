@@ -139,6 +139,8 @@ final class OpsAnalyticsStore {
                 lastSyncSignatureByProjectID[project.id] = syncSignature
             }
 
+            writeProjectionDocuments(db: db, projectID: project.id)
+
             return OpsAnalyticsPersistenceSummary(
                 dailyActivity: loadDailyActivity(db: db, projectID: project.id, days: 14),
                 historicalSeries: loadGoalMetricSeries(db: db, projectID: project.id, days: 30),
@@ -287,6 +289,17 @@ final class OpsAnalyticsStore {
         }
     }
 
+    func refreshProjectionDocuments(projectID: UUID) {
+        queue.sync {
+            let dbURL = ProjectManager.shared.analyticsDatabaseURL(for: projectID)
+            guard let db = openDatabase(at: dbURL) else { return }
+            defer { sqlite3_close(db) }
+
+            guard createSchema(in: db) else { return }
+            writeProjectionDocuments(db: db, projectID: projectID)
+        }
+    }
+
     private func openDatabase(at url: URL) -> OpaquePointer? {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -413,6 +426,221 @@ final class OpsAnalyticsStore {
 
         let alterSQL = "ALTER TABLE \(table) ADD COLUMN \(column) \(definition);"
         return sqlite3_exec(db, alterSQL, nil, nil, nil) == SQLITE_OK
+    }
+
+    private func writeProjectionDocuments(db: OpaquePointer, projectID: UUID) {
+        let fileSystem = ProjectFileSystem.shared
+        let appSupportRoot = ProjectManager.shared.appSupportRootDirectory
+        let projectionRoot = fileSystem.analyticsProjectionDirectory(for: projectID, under: appSupportRoot)
+        try? FileManager.default.createDirectory(at: projectionRoot, withIntermediateDirectories: true)
+
+        let generatedAt = Date()
+        try? encodeProjectionDocument(
+            buildCronProjectionDocument(db: db, projectID: projectID, generatedAt: generatedAt),
+            to: fileSystem.analyticsCronProjectionURL(for: projectID, under: appSupportRoot)
+        )
+        try? encodeProjectionDocument(
+            buildToolProjectionDocument(db: db, projectID: projectID, generatedAt: generatedAt),
+            to: fileSystem.analyticsToolProjectionURL(for: projectID, under: appSupportRoot)
+        )
+    }
+
+    private func encodeProjectionDocument<T: Encodable>(_ value: T, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(value)
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func buildCronProjectionDocument(
+        db: OpaquePointer,
+        projectID: UUID,
+        generatedAt: Date
+    ) -> OpsCenterProjectionCronDocument {
+        let cronNames = loadProjectedCronNames(db: db, projectID: projectID)
+        let entries = cronNames.map { cronName in
+            OpsCenterProjectionCronEntry(
+                cronName: cronName,
+                summary: loadCronReliabilitySummary(db: db, projectID: projectID, days: 14, cronName: cronName)
+                    .map { projectionCronSummary(from: $0) },
+                historySeries: makeProjectionMetricSeries(
+                    from: loadCronScopedHistorySeries(db: db, projectID: projectID, days: 14, cronName: cronName)
+                ),
+                runs: loadRecentCronRuns(db: db, projectID: projectID, cronName: cronName, limit: 12).map { run in
+                    OpsCenterProjectionCronRunEntry(
+                        id: run.id,
+                        cronName: run.cronName,
+                        statusText: run.statusText,
+                        runAt: run.runAt,
+                        duration: run.duration,
+                        deliveryStatus: run.deliveryStatus,
+                        summaryText: run.summaryText,
+                        jobID: run.jobID,
+                        runID: run.runID,
+                        sourcePath: run.sourcePath
+                    )
+                },
+                anomalies: makeProjectionAnomalies(
+                    from: loadRecentCronAnomalyRows(db: db, projectID: projectID, cronName: cronName, limit: 12)
+                )
+            )
+        }
+
+        return OpsCenterProjectionCronDocument(
+            projectID: projectID,
+            generatedAt: generatedAt,
+            summary: loadCronReliabilitySummary(db: db, projectID: projectID, days: 14).map { projectionCronSummary(from: $0) },
+            crons: entries
+        )
+    }
+
+    private func buildToolProjectionDocument(
+        db: OpaquePointer,
+        projectID: UUID,
+        generatedAt: Date
+    ) -> OpsCenterProjectionToolsDocument {
+        let toolIdentifiers = loadProjectedToolIdentifiers(db: db, projectID: projectID)
+        let entries = toolIdentifiers.map { toolIdentifier in
+            OpsCenterProjectionToolEntry(
+                toolIdentifier: toolIdentifier,
+                historySeries: makeProjectionMetricSeries(
+                    from: loadToolScopedHistorySeries(db: db, projectID: projectID, days: 14, toolIdentifier: toolIdentifier)
+                ),
+                spans: loadRecentToolSpans(db: db, projectID: projectID, toolIdentifier: toolIdentifier, limit: 12).map { span in
+                    OpsCenterProjectionToolSpanEntry(
+                        id: span.id,
+                        title: span.title,
+                        service: span.service,
+                        statusText: span.statusText,
+                        agentName: span.agentName,
+                        startedAt: span.startedAt,
+                        duration: span.duration,
+                        summaryText: span.summaryText
+                    )
+                },
+                anomalies: makeProjectionAnomalies(
+                    from: loadRecentToolAnomalyRows(db: db, projectID: projectID, toolIdentifier: toolIdentifier, limit: 12)
+                )
+            )
+        }
+
+        return OpsCenterProjectionToolsDocument(
+            projectID: projectID,
+            generatedAt: generatedAt,
+            tools: entries
+        )
+    }
+
+    private func loadProjectedCronNames(db: OpaquePointer, projectID: UUID) -> [String] {
+        let sql = """
+        SELECT cron_name, COALESCE(run_at, slot_time, created_at)
+        FROM cron_runs
+        WHERE project_id = ?
+        ORDER BY COALESCE(run_at, slot_time, created_at) DESC;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+
+        var orderedNames: [String] = []
+        var seenNames = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let nameCString = sqlite3_column_text(statement, 0) else { continue }
+            let cronName = String(cString: nameCString).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cronName.isEmpty else { continue }
+            let normalizedName = cronName.lowercased()
+            guard seenNames.insert(normalizedName).inserted else { continue }
+            orderedNames.append(cronName)
+        }
+        return orderedNames
+    }
+
+    private func loadProjectedToolIdentifiers(db: OpaquePointer, projectID: UUID) -> [String] {
+        let sql = """
+        SELECT name, service, attributes
+        FROM spans
+        WHERE project_id = ?
+          AND service LIKE '%tool%'
+        ORDER BY start_time DESC;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID.uuidString, to: 1, in: statement)
+
+        var orderedIdentifiers: [String] = []
+        var seenIdentifiers = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let name = sqlite3_column_type(statement, 0) == SQLITE_NULL ? "" : String(cString: sqlite3_column_text(statement, 0))
+            let service = sqlite3_column_type(statement, 1) == SQLITE_NULL ? "" : String(cString: sqlite3_column_text(statement, 1))
+            let attributes = sqlite3_column_type(statement, 2) == SQLITE_NULL
+                ? [:]
+                : dictionary(from: String(cString: sqlite3_column_text(statement, 2)))
+            let identifier = projectionToolIdentifier(name: name, service: service, attributes: attributes)
+            let normalizedIdentifier = identifier.lowercased()
+            guard !normalizedIdentifier.isEmpty else { continue }
+            guard seenIdentifiers.insert(normalizedIdentifier).inserted else { continue }
+            orderedIdentifiers.append(identifier)
+        }
+
+        return orderedIdentifiers
+    }
+
+    private func makeProjectionMetricSeries(from series: [OpsMetricHistorySeries]) -> [OpsCenterProjectionMetricSeries] {
+        series.map { item in
+            OpsCenterProjectionMetricSeries(
+                metricID: item.metric.rawValue,
+                points: item.points.map { OpsCenterProjectionMetricPoint(date: $0.date, value: $0.value) }
+            )
+        }
+    }
+
+    private func makeProjectionAnomalies(from rows: [OpsAnomalyRow]) -> [OpsCenterProjectionScopedAnomalyEntry] {
+        rows.map { row in
+            OpsCenterProjectionScopedAnomalyEntry(
+                id: row.id,
+                title: row.title,
+                sourceLabel: row.sourceLabel,
+                detailText: row.detailText,
+                fullDetailText: row.fullDetailText,
+                occurredAt: row.occurredAt,
+                status: row.status.rawValue,
+                statusText: row.statusText,
+                sourceService: row.sourceService,
+                linkedSpanID: row.linkedSpanID,
+                relatedRunID: row.relatedRunID,
+                relatedJobID: row.relatedJobID,
+                relatedSourcePath: row.relatedSourcePath
+            )
+        }
+    }
+
+    private func projectionCronSummary(from summary: OpsCronReliabilitySummary) -> OpsCenterProjectionCronSummary {
+        OpsCenterProjectionCronSummary(
+            successRate: summary.successRate,
+            successfulRuns: summary.successfulRuns,
+            failedRuns: summary.failedRuns,
+            latestRunAt: summary.latestRunAt
+        )
+    }
+
+    private func projectionToolIdentifier(name: String, service: String, attributes: [String: String]) -> String {
+        let candidates = [
+            attributes["tool_name"],
+            attributes["toolName"],
+            attributes["name"],
+            emptyToNil(name),
+            emptyToNil(service)
+        ]
+
+        return candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty }) ?? service
     }
 
     private func makeSyncSignature(
@@ -2466,7 +2694,7 @@ final class OpsAnalyticsStore {
         }
 
         let spanSQL = """
-        SELECT span_id, name, service, status, start_time, COALESCE(events, json_extract(attributes, '$.preview_text'), 'Trace anomaly')
+        SELECT span_id, name, service, status, start_time, COALESCE(events, json_extract(attributes, '$.preview_text'), 'Trace anomaly'), attributes
         FROM spans
         WHERE project_id = ?
           AND (
@@ -2497,21 +2725,32 @@ final class OpsAnalyticsStore {
                 let detailText = sqlite3_column_type(spanStatement, 5) == SQLITE_NULL
                     ? "Trace anomaly"
                     : String(cString: sqlite3_column_text(spanStatement, 5))
+                let attributes = sqlite3_column_type(spanStatement, 6) == SQLITE_NULL
+                    ? [:]
+                    : dictionary(from: String(cString: sqlite3_column_text(spanStatement, 6)))
                 let normalizedDetail = detailText.trimmingCharacters(in: .whitespacesAndNewlines)
                 let spanID = UUID(uuidString: String(cString: idCString))
                 let rawStatus = String(cString: statusCString)
+                let service = String(cString: serviceCString)
+                let sourceService = service.lowercased().contains("tool")
+                    ? projectionToolIdentifier(
+                        name: String(cString: nameCString),
+                        service: service,
+                        attributes: attributes
+                    )
+                    : service
 
                 rows.append(
                     OpsAnomalyRow(
                         id: "span-\(String(cString: idCString))",
                         title: String(cString: nameCString),
-                        sourceLabel: anomalySourceLabel(forService: String(cString: serviceCString)),
+                        sourceLabel: anomalySourceLabel(forService: service),
                         detailText: (normalizedDetail.isEmpty ? "Trace anomaly" : normalizedDetail).compactSingleLinePreview(limit: 180),
                         fullDetailText: normalizedDetail.isEmpty ? "Trace anomaly" : normalizedDetail,
                         occurredAt: occurredAt,
                         status: rawStatus == "error" ? .critical : .warning,
                         statusText: rawStatus,
-                        sourceService: String(cString: serviceCString),
+                        sourceService: sourceService,
                         linkedSpanID: spanID
                     )
                 )
@@ -2610,7 +2849,7 @@ final class OpsAnalyticsStore {
     ) -> [OpsAnomalyRow] {
         let normalizedToolIdentifier = toolIdentifier.lowercased()
         let sql = """
-        SELECT span_id, name, service, status, start_time, COALESCE(events, json_extract(attributes, '$.preview_text'), 'Tool anomaly')
+        SELECT span_id, name, service, status, start_time, COALESCE(events, json_extract(attributes, '$.preview_text'), 'Tool anomaly'), attributes
         FROM spans
         WHERE project_id = ?
           AND service LIKE '%tool%'
@@ -2652,9 +2891,17 @@ final class OpsAnalyticsStore {
             let detailText = sqlite3_column_type(statement, 5) == SQLITE_NULL
                 ? "Tool anomaly"
                 : String(cString: sqlite3_column_text(statement, 5))
+            let attributes = sqlite3_column_type(statement, 6) == SQLITE_NULL
+                ? [:]
+                : dictionary(from: String(cString: sqlite3_column_text(statement, 6)))
             let normalizedDetail = detailText.trimmingCharacters(in: .whitespacesAndNewlines)
             let spanID = UUID(uuidString: String(cString: idCString))
             let rawStatus = String(cString: statusCString)
+            let sourceService = projectionToolIdentifier(
+                name: String(cString: nameCString),
+                service: String(cString: serviceCString),
+                attributes: attributes
+            )
 
             rows.append(
                 OpsAnomalyRow(
@@ -2666,7 +2913,7 @@ final class OpsAnalyticsStore {
                     occurredAt: occurredAt,
                     status: rawStatus == "error" ? .critical : .warning,
                     statusText: rawStatus,
-                    sourceService: String(cString: serviceCString),
+                    sourceService: sourceService,
                     linkedSpanID: spanID
                 )
             )

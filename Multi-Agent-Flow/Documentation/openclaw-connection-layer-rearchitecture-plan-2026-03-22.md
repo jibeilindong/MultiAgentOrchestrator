@@ -342,3 +342,5 @@ Initial implementation slice:
 - add initial persisted `ConnectionState` / `ProbeReport` snapshots so probe outcomes, capabilities, and degraded states have a formal compatibility layer
 - start converging desktop `connect` / `detect` onto one shared `probe` contract and carry `ConnectionState` / `ProbeReport` from the Electron main process into persisted project snapshots
 - prefer container-side `openclaw config file` discovery for agent inventory so container mode no longer depends only on host mount-path guesses
+- move the Swift probe / CLI and container snapshot archive hot paths onto a safe process executor with concurrent stdout/stderr draining and timeout-based termination to avoid pipe-buffer deadlocks
+- upgrade desktop gateway probing from HTTP `fetch()` to websocket upgrade plus `connect.challenge`, `connect` RPC validation, and persisted device-identity signing so local and remote modes continue converging toward Swift gateway semantics

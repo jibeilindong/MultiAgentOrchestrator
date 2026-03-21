@@ -20,6 +20,8 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         for projectID in projectIDsToClean {
             let dbURL = ProjectManager.shared.analyticsDatabaseURL(for: projectID)
             try? fileManager.removeItem(at: dbURL)
+            let projectRootURL = ProjectManager.shared.managedProjectRootDirectory(for: projectID)
+            try? fileManager.removeItem(at: projectRootURL)
         }
         projectIDsToClean.removeAll()
         for url in temporaryURLsToClean {
@@ -189,6 +191,91 @@ final class OpsAnalyticsQueryTests: XCTestCase {
 
         let errorBudget = try XCTUnwrap(series(detail.historySeries, metric: .errorBudget))
         XCTAssertEqual(try XCTUnwrap(errorBudget.points.last).value, 1, accuracy: 0.001)
+    }
+
+    func testRefreshProjectionDocumentsWritesCronAndToolProjectionBundles() throws {
+        let projectID = makeProjectID()
+        try prepareEmptyAnalyticsDatabase(for: projectID)
+
+        let now = Date()
+        let yesterday = Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: now) ?? now
+
+        try withDatabase(for: projectID) { db in
+            try insertCronRun(
+                db: db,
+                projectID: projectID,
+                date: calendarDayString(for: now),
+                cronName: "nightly-sync",
+                status: "completed",
+                jobID: "job-success",
+                runID: UUID().uuidString,
+                runAt: now,
+                durationMs: 1_000,
+                summary: "Completed nightly sync",
+                sourcePath: "/tmp/nightly-success.jsonl"
+            )
+            try insertCronRun(
+                db: db,
+                projectID: projectID,
+                date: calendarDayString(for: yesterday),
+                cronName: "nightly-sync",
+                status: "timeout",
+                jobID: "job-timeout",
+                runID: UUID().uuidString,
+                runAt: yesterday,
+                durationMs: 9_500,
+                error: "Timed out",
+                sourcePath: "/tmp/nightly-timeout.jsonl"
+            )
+            try insertSpan(
+                db: db,
+                projectID: projectID,
+                spanID: UUID(),
+                name: "Search Tool Success",
+                service: "openclaw.external-tool-result",
+                status: "ok",
+                startedAt: now,
+                durationMs: 200,
+                attributes: [
+                    "agent_name": "Scout",
+                    "tool_name": "search.web",
+                    "preview_text": "Search completed"
+                ],
+                events: "ok"
+            )
+            try insertSpan(
+                db: db,
+                projectID: projectID,
+                spanID: UUID(),
+                name: "Search Tool Failure",
+                service: "openclaw.external-tool-result",
+                status: "error",
+                startedAt: yesterday,
+                durationMs: 800,
+                attributes: [
+                    "agent_name": "Scout",
+                    "tool_name": "search.web",
+                    "preview_text": "Search failed"
+                ],
+                events: "timeout while calling provider"
+            )
+        }
+
+        OpsAnalyticsStore.shared.refreshProjectionDocuments(projectID: projectID)
+
+        let bundle = try XCTUnwrap(
+            OpsCenterProjectionStore.load(
+                projectID: projectID,
+                appSupportRootDirectory: ProjectManager.shared.appSupportRootDirectory
+            )
+        )
+
+        XCTAssertEqual(bundle.cronSummary?.successfulRuns, 1)
+        XCTAssertEqual(bundle.cronSummary?.failedRuns, 1)
+        XCTAssertEqual(bundle.cronInvestigation(for: "nightly-sync")?.runs.count, 2)
+        XCTAssertEqual(bundle.toolEntries().map(\.toolIdentifier), ["search.web"])
+        XCTAssertEqual(bundle.toolInvestigation(for: "search.web")?.spans.count, 2)
+        XCTAssertEqual(bundle.toolInvestigation(for: "search.web")?.anomalies.first?.sourceService, "search.web")
     }
 
     func testScopedHistorySeriesFiltersCronAndToolScopesIndependently() throws {

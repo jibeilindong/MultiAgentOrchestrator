@@ -2,6 +2,28 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class TemplateNodeCreationTests: XCTestCase {
+    @MainActor
+    func testFocusAgentNodeSelectsWorkflowNodeBoundToAgent() throws {
+        let appState = AppState()
+        appState.currentProject = MAProject(name: "Template Selection Test")
+
+        let agent = try XCTUnwrap(appState.addNewAgent(named: "模板智能体"))
+        let nodeID = try XCTUnwrap(
+            appState.focusAgentNode(
+                agentID: agent.id,
+                createIfMissing: true,
+                suggestedPosition: CGPoint(x: 300, y: 200)
+            )
+        )
+
+        XCTAssertEqual(appState.selectedNodeID, nodeID)
+        XCTAssertNotEqual(appState.selectedNodeID, agent.id)
+        XCTAssertEqual(
+            appState.currentProject?.workflows.first?.nodes.first(where: { $0.id == nodeID })?.agentID,
+            agent.id
+        )
+    }
+
     func testResolvedNewAgentNameUsesTemplateNameForDefaultCreation() throws {
         let template = try XCTUnwrap(AgentTemplateCatalog.templates.first)
         XCTAssertEqual(

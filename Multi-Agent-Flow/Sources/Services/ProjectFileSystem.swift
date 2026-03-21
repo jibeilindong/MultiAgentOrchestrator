@@ -352,6 +352,31 @@ private struct AnalyticsNodeRuntimeProjectionDocument: Codable, Equatable {
     var nodes: [AnalyticsNodeRuntimeProjectionEntry]
 }
 
+private struct AnalyticsThreadProjectionEntry: Codable, Equatable {
+    var threadID: String
+    var sessionID: String
+    var workflowID: UUID?
+    var workflowName: String?
+    var entryAgentName: String?
+    var participantNames: [String]
+    var status: String
+    var startedAt: Date?
+    var lastUpdatedAt: Date?
+    var messageCount: Int
+    var taskCount: Int
+    var pendingApprovalCount: Int
+    var blockedTaskCount: Int
+    var activeTaskCount: Int
+    var completedTaskCount: Int
+    var failedMessageCount: Int
+}
+
+private struct AnalyticsThreadProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var threads: [AnalyticsThreadProjectionEntry]
+}
+
 private struct AnalyticsWorkflowHealthProjectionEntry: Codable, Equatable {
     var workflowID: UUID
     var workflowName: String
@@ -550,6 +575,16 @@ private struct RuntimeSessionIndexEntryDocument: Codable {
 
 struct ProjectFileSystem {
     static let shared = ProjectFileSystem()
+    static let managedOpenClawWorkspaceMarkdownFiles: [String] = [
+        "SOUL.md",
+        "AGENTS.md",
+        "IDENTITY.md",
+        "USER.md",
+        "TOOLS.md",
+        "HEARTBEAT.md",
+        "BOOTSTRAP.md",
+        "MEMORY.md",
+    ]
 
     private static let derivedDocumentNames: Set<String> = [
         "communication-matrix.json",
@@ -678,6 +713,53 @@ struct ProjectFileSystem {
         .appendingPathComponent("SOUL.md", isDirectory: false)
     }
 
+    func nodeOpenClawWorkspaceDocumentURL(
+        for nodeID: UUID,
+        workflowID: UUID,
+        projectID: UUID,
+        fileName: String,
+        under appSupportRootDirectory: URL
+    ) -> URL {
+        nodeOpenClawWorkspaceDirectory(
+            for: nodeID,
+            workflowID: workflowID,
+            projectID: projectID,
+            under: appSupportRootDirectory
+        )
+        .appendingPathComponent(fileName, isDirectory: false)
+    }
+
+    func isManagedOpenClawWorkspaceMarkdownFile(_ fileName: String) -> Bool {
+        Self.managedOpenClawWorkspaceMarkdownFiles.contains(fileName)
+    }
+
+    func defaultManagedOpenClawWorkspaceDocument(
+        named fileName: String,
+        agent: Agent,
+        nodeID: UUID
+    ) -> String? {
+        switch fileName {
+        case "AGENTS.md":
+            return renderAgentsMarkdown(agent: agent, nodeID: nodeID)
+        case "IDENTITY.md":
+            return renderIdentityMarkdown(agent: agent)
+        case "USER.md":
+            return renderUserMarkdown(agent: agent)
+        case "TOOLS.md":
+            return renderToolsMarkdown(agent: agent)
+        case "BOOTSTRAP.md":
+            return renderBootstrapMarkdown(agent: agent)
+        case "HEARTBEAT.md":
+            return renderHeartbeatMarkdown(agent: agent)
+        case "MEMORY.md":
+            return renderMemoryMarkdown(agent: agent)
+        case "SOUL.md":
+            return agent.soulMD
+        default:
+            return nil
+        }
+    }
+
     func analyticsRootDirectory(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
         managedProjectRootDirectory(for: projectID, under: appSupportRootDirectory)
             .appendingPathComponent("analytics", isDirectory: true)
@@ -726,6 +808,21 @@ struct ProjectFileSystem {
     func analyticsNodeRuntimeProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
         analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
             .appendingPathComponent("nodes-runtime.json", isDirectory: false)
+    }
+
+    func analyticsThreadProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("threads.json", isDirectory: false)
+    }
+
+    func analyticsCronProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("cron.json", isDirectory: false)
+    }
+
+    func analyticsToolProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("tools.json", isDirectory: false)
     }
 
     func validateProject(_ project: MAProject) throws {
@@ -997,6 +1094,7 @@ struct ProjectFileSystem {
 
         let sessionEntries = makeAnalyticsSessionProjectionEntries(for: project)
         let nodeRuntimeEntries = makeAnalyticsNodeRuntimeProjectionEntries(for: project)
+        let threadEntries = makeAnalyticsThreadProjectionEntries(for: project)
         let workflowHealthEntries = makeAnalyticsWorkflowHealthProjectionEntries(
             for: project,
             nodeEntries: nodeRuntimeEntries,
@@ -1028,6 +1126,14 @@ struct ProjectFileSystem {
                 nodes: nodeRuntimeEntries
             ),
             to: analyticsNodeRuntimeProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+        try encode(
+            AnalyticsThreadProjectionDocument(
+                projectID: project.id,
+                generatedAt: generatedAt,
+                threads: threadEntries
+            ),
+            to: analyticsThreadProjectionURL(for: project.id, under: appSupportRootDirectory)
         )
         try encode(
             AnalyticsWorkflowHealthProjectionDocument(
@@ -1597,38 +1703,19 @@ struct ProjectFileSystem {
             skillsRootURL: skillsRootURL
         )
 
-        try writeTextDocument(
-            renderAgentsMarkdown(agent: agent, nodeID: nodeID),
-            to: workspaceRootURL.appendingPathComponent("AGENTS.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            renderIdentityMarkdown(agent: agent),
-            to: workspaceRootURL.appendingPathComponent("IDENTITY.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            renderUserMarkdown(agent: agent),
-            to: workspaceRootURL.appendingPathComponent("USER.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            renderToolsMarkdown(agent: agent),
-            to: workspaceRootURL.appendingPathComponent("TOOLS.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            renderBootstrapMarkdown(agent: agent),
-            to: workspaceRootURL.appendingPathComponent("BOOTSTRAP.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            renderHeartbeatMarkdown(agent: agent),
-            to: workspaceRootURL.appendingPathComponent("HEARTBEAT.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            renderMemoryMarkdown(agent: agent),
-            to: workspaceRootURL.appendingPathComponent("MEMORY.md", isDirectory: false)
-        )
-        try writeTextDocument(
-            agent.soulMD,
-            to: workspaceRootURL.appendingPathComponent("SOUL.md", isDirectory: false)
-        )
+        for fileName in Self.managedOpenClawWorkspaceMarkdownFiles {
+            guard let defaultContent = defaultManagedOpenClawWorkspaceDocument(
+                named: fileName,
+                agent: agent,
+                nodeID: nodeID
+            ) else {
+                continue
+            }
+            try writeManagedWorkspaceDocumentIfMissing(
+                defaultContent,
+                to: workspaceRootURL.appendingPathComponent(fileName, isDirectory: false)
+            )
+        }
 
         try encode(
             NodeOpenClawSourceMapDocument(
@@ -1784,6 +1871,11 @@ struct ProjectFileSystem {
 
     private func writeTextDocument(_ text: String, to url: URL) throws {
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func writeManagedWorkspaceDocumentIfMissing(_ text: String, to url: URL) throws {
+        guard !fileManager.fileExists(atPath: url.path) else { return }
+        try writeTextDocument(text, to: url)
     }
 
     private func renderAgentsMarkdown(agent: Agent, nodeID: UUID) -> String {
@@ -2486,6 +2578,61 @@ struct ProjectFileSystem {
                 }
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
+    }
+
+    private func makeAnalyticsThreadProjectionEntries(for project: MAProject) -> [AnalyticsThreadProjectionEntry] {
+        let workbenchMessages = project.messages.filter { $0.metadata["channel"] == "workbench" }
+        let workbenchTasks = project.tasks.filter { $0.metadata["source"] == "workbench" }
+        let sessionIDs = Set(workbenchMessages.compactMap { workbenchSessionID(from: $0.metadata) })
+            .union(workbenchTasks.compactMap { workbenchSessionID(from: $0.metadata) })
+            .sorted()
+        let workflowsByID = Dictionary(uniqueKeysWithValues: project.workflows.map { ($0.id, $0.name) })
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0.name) })
+
+        return sessionIDs.map { sessionID in
+            let threadMessages = workbenchMessages.filter { workbenchSessionID(from: $0.metadata) == sessionID }
+            let threadTasks = workbenchTasks.filter { workbenchSessionID(from: $0.metadata) == sessionID }
+            let resolvedWorkflowID = threadMessages.compactMap { workflowIDFromMetadata($0.metadata) }.first
+                ?? threadTasks.compactMap { workflowIDFromMetadata($0.metadata) }.first
+            let resolvedEntryAgentID = threadMessages.compactMap { entryAgentIDFromMetadata($0.metadata) }.first
+                ?? threadTasks.compactMap(\.assignedAgentID).first
+            let participantNames = Set(
+                threadMessages.flatMap { [$0.fromAgentID, $0.toAgentID] }
+                    + threadTasks.compactMap(\.assignedAgentID)
+            )
+            .compactMap { agentNamesByID[$0] }
+            .sorted()
+            let taskDates = threadTasks.map { $0.completedAt ?? $0.startedAt ?? $0.createdAt }
+            let activeTaskCount = threadTasks.filter { $0.status == .todo || $0.status == .inProgress }.count
+            let blockedTaskCount = threadTasks.filter { $0.status == .blocked }.count
+            let completedTaskCount = threadTasks.filter { $0.status == .done }.count
+            let failedMessageCount = threadMessages.filter { $0.status == .failed || $0.status == .rejected }.count
+
+            return AnalyticsThreadProjectionEntry(
+                threadID: sessionID,
+                sessionID: sessionID,
+                workflowID: resolvedWorkflowID,
+                workflowName: resolvedWorkflowID.flatMap { workflowsByID[$0] },
+                entryAgentName: resolvedEntryAgentID.flatMap { agentNamesByID[$0] },
+                participantNames: participantNames,
+                status: workbenchThreadStatus(messages: threadMessages, tasks: threadTasks),
+                startedAt: (threadMessages.map(\.timestamp) + threadTasks.map(\.createdAt)).min(),
+                lastUpdatedAt: (threadMessages.map(\.timestamp) + taskDates).max(),
+                messageCount: threadMessages.count,
+                taskCount: threadTasks.count,
+                pendingApprovalCount: threadMessages.filter { $0.status == .waitingForApproval }.count,
+                blockedTaskCount: blockedTaskCount,
+                activeTaskCount: activeTaskCount,
+                completedTaskCount: completedTaskCount,
+                failedMessageCount: failedMessageCount
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.lastUpdatedAt != rhs.lastUpdatedAt {
+                return (lhs.lastUpdatedAt ?? .distantPast) > (rhs.lastUpdatedAt ?? .distantPast)
+            }
+            return lhs.threadID < rhs.threadID
+        }
     }
 
     private func makeAnalyticsWorkflowHealthProjectionEntries(

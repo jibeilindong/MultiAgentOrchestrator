@@ -130,6 +130,202 @@ struct OpsCenterProjectionNodesRuntimeDocument: Codable {
     let nodes: [OpsCenterProjectionNodeRuntimeEntry]
 }
 
+struct OpsCenterProjectionThreadEntry: Codable {
+    let threadID: String
+    let sessionID: String
+    let workflowID: UUID?
+    let workflowName: String?
+    let entryAgentName: String?
+    let participantNames: [String]
+    let status: String
+    let startedAt: Date?
+    let lastUpdatedAt: Date?
+    let messageCount: Int
+    let taskCount: Int
+    let pendingApprovalCount: Int
+    let blockedTaskCount: Int
+    let activeTaskCount: Int
+    let completedTaskCount: Int
+    let failedMessageCount: Int
+}
+
+struct OpsCenterProjectionThreadsDocument: Codable {
+    let projectID: UUID
+    let generatedAt: Date
+    let threads: [OpsCenterProjectionThreadEntry]
+}
+
+struct OpsCenterProjectionMetricPoint: Codable {
+    let date: Date
+    let value: Double
+}
+
+struct OpsCenterProjectionMetricSeries: Codable {
+    let metricID: String
+    let points: [OpsCenterProjectionMetricPoint]
+
+    func historySeries() -> OpsMetricHistorySeries? {
+        guard let metric = OpsHistoryMetric(rawValue: metricID) else { return nil }
+        return OpsMetricHistorySeries(
+            metric: metric,
+            points: points.map { OpsMetricHistoryPoint(date: $0.date, value: $0.value) }
+        )
+    }
+}
+
+struct OpsCenterProjectionScopedAnomalyEntry: Codable {
+    let id: String
+    let title: String
+    let sourceLabel: String
+    let detailText: String
+    let fullDetailText: String
+    let occurredAt: Date
+    let status: String
+    let statusText: String
+    let sourceService: String?
+    let linkedSpanID: UUID?
+    let relatedRunID: String?
+    let relatedJobID: String?
+    let relatedSourcePath: String?
+
+    func anomalyRow() -> OpsAnomalyRow {
+        OpsAnomalyRow(
+            id: id,
+            title: title,
+            sourceLabel: sourceLabel,
+            detailText: detailText,
+            fullDetailText: fullDetailText,
+            occurredAt: occurredAt,
+            status: projectionHealthStatus(from: status),
+            statusText: statusText,
+            sourceService: sourceService,
+            linkedSpanID: linkedSpanID,
+            relatedRunID: relatedRunID,
+            relatedJobID: relatedJobID,
+            relatedSourcePath: relatedSourcePath
+        )
+    }
+
+    private func projectionHealthStatus(from rawValue: String) -> OpsHealthStatus {
+        OpsHealthStatus(rawValue: rawValue) ?? .neutral
+    }
+}
+
+struct OpsCenterProjectionCronSummary: Codable {
+    let successRate: Double
+    let successfulRuns: Int
+    let failedRuns: Int
+    let latestRunAt: Date?
+
+    func summary() -> OpsCronReliabilitySummary {
+        OpsCronReliabilitySummary(
+            successRate: successRate,
+            successfulRuns: successfulRuns,
+            failedRuns: failedRuns,
+            latestRunAt: latestRunAt
+        )
+    }
+}
+
+struct OpsCenterProjectionCronRunEntry: Codable {
+    let id: String
+    let cronName: String
+    let statusText: String
+    let runAt: Date
+    let duration: TimeInterval?
+    let deliveryStatus: String?
+    let summaryText: String
+    let jobID: String?
+    let runID: String?
+    let sourcePath: String?
+
+    func runRow() -> OpsCronRunRow {
+        OpsCronRunRow(
+            id: id,
+            cronName: cronName,
+            statusText: statusText,
+            runAt: runAt,
+            duration: duration,
+            deliveryStatus: deliveryStatus,
+            summaryText: summaryText,
+            jobID: jobID,
+            runID: runID,
+            sourcePath: sourcePath
+        )
+    }
+}
+
+struct OpsCenterProjectionCronEntry: Codable {
+    let cronName: String
+    let summary: OpsCenterProjectionCronSummary?
+    let historySeries: [OpsCenterProjectionMetricSeries]
+    let runs: [OpsCenterProjectionCronRunEntry]
+    let anomalies: [OpsCenterProjectionScopedAnomalyEntry]
+
+    func investigation() -> OpsCenterCronInvestigation {
+        OpsCenterCronInvestigation(
+            cronName: cronName,
+            summary: summary?.summary(),
+            historySeries: historySeries.compactMap { $0.historySeries() },
+            runs: runs.map { $0.runRow() },
+            anomalies: anomalies.map { $0.anomalyRow() }
+        )
+    }
+}
+
+struct OpsCenterProjectionCronDocument: Codable {
+    let projectID: UUID
+    let generatedAt: Date
+    let summary: OpsCenterProjectionCronSummary?
+    let crons: [OpsCenterProjectionCronEntry]
+}
+
+struct OpsCenterProjectionToolSpanEntry: Codable {
+    let id: UUID
+    let title: String
+    let service: String
+    let statusText: String
+    let agentName: String
+    let startedAt: Date
+    let duration: TimeInterval?
+    let summaryText: String
+
+    func spanRow() -> OpsToolSpanRow {
+        OpsToolSpanRow(
+            id: id,
+            title: title,
+            service: service,
+            statusText: statusText,
+            agentName: agentName,
+            startedAt: startedAt,
+            duration: duration,
+            summaryText: summaryText
+        )
+    }
+}
+
+struct OpsCenterProjectionToolEntry: Codable {
+    let toolIdentifier: String
+    let historySeries: [OpsCenterProjectionMetricSeries]
+    let spans: [OpsCenterProjectionToolSpanEntry]
+    let anomalies: [OpsCenterProjectionScopedAnomalyEntry]
+
+    func investigation() -> OpsCenterToolInvestigation {
+        OpsCenterToolInvestigation(
+            toolIdentifier: toolIdentifier,
+            historySeries: historySeries.compactMap { $0.historySeries() },
+            spans: spans.map { $0.spanRow() },
+            anomalies: anomalies.map { $0.anomalyRow() }
+        )
+    }
+}
+
+struct OpsCenterProjectionToolsDocument: Codable {
+    let projectID: UUID
+    let generatedAt: Date
+    let tools: [OpsCenterProjectionToolEntry]
+}
+
 struct OpsCenterProjectionWorkflowHealthEntry: Codable {
     let workflowID: UUID
     let workflowName: String
@@ -161,6 +357,9 @@ struct OpsCenterProjectionBundle {
     let liveRun: OpsCenterProjectionLiveRunDocument?
     let sessions: OpsCenterProjectionSessionsDocument?
     let nodesRuntime: OpsCenterProjectionNodesRuntimeDocument?
+    let threads: OpsCenterProjectionThreadsDocument?
+    let cron: OpsCenterProjectionCronDocument?
+    let tools: OpsCenterProjectionToolsDocument?
     let workflowHealth: OpsCenterProjectionWorkflowHealthDocument?
 
     var freshestGeneratedAt: Date? {
@@ -171,6 +370,9 @@ struct OpsCenterProjectionBundle {
             liveRun?.generatedAt,
             sessions?.generatedAt,
             nodesRuntime?.generatedAt,
+            threads?.generatedAt,
+            cron?.generatedAt,
+            tools?.generatedAt,
             workflowHealth?.generatedAt
         ]
         .compactMap { $0 }
@@ -237,6 +439,72 @@ struct OpsCenterProjectionBundle {
                 }
                 return projectionStatusRank(lhs.status) < projectionStatusRank(rhs.status)
             }
+    }
+
+    func threadEntries(for workflowID: UUID?) -> [OpsCenterProjectionThreadEntry] {
+        (threads?.threads ?? [])
+            .filter { entry in
+                guard let workflowID else { return true }
+                return entry.workflowID == workflowID
+            }
+            .sorted { lhs, rhs in
+                if lhs.lastUpdatedAt != rhs.lastUpdatedAt {
+                    return (lhs.lastUpdatedAt ?? .distantPast) > (rhs.lastUpdatedAt ?? .distantPast)
+                }
+                return lhs.threadID < rhs.threadID
+            }
+    }
+
+    var cronSummary: OpsCronReliabilitySummary? {
+        cron?.summary?.summary()
+    }
+
+    func cronEntries() -> [OpsCenterProjectionCronEntry] {
+        (cron?.crons ?? []).sorted { lhs, rhs in
+            let lhsDate = lhs.summary?.latestRunAt ?? lhs.runs.first?.runAt ?? .distantPast
+            let rhsDate = rhs.summary?.latestRunAt ?? rhs.runs.first?.runAt ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            return lhs.cronName.localizedCaseInsensitiveCompare(rhs.cronName) == .orderedAscending
+        }
+    }
+
+    func cronInvestigation(for cronName: String) -> OpsCenterCronInvestigation? {
+        cronEntries()
+            .first(where: { $0.cronName.caseInsensitiveCompare(cronName) == .orderedSame })
+            .map { $0.investigation() }
+    }
+
+    func recentCronRuns(limit: Int? = nil) -> [OpsCronRunRow] {
+        let runs = cronEntries()
+            .flatMap(\.runs)
+            .map { $0.runRow() }
+            .sorted { lhs, rhs in
+                if lhs.runAt != rhs.runAt {
+                    return lhs.runAt > rhs.runAt
+                }
+                return lhs.id > rhs.id
+            }
+        guard let limit else { return runs }
+        return Array(runs.prefix(limit))
+    }
+
+    func toolEntries() -> [OpsCenterProjectionToolEntry] {
+        (tools?.tools ?? []).sorted { lhs, rhs in
+            let lhsDate = lhs.spans.first?.startedAt ?? lhs.anomalies.first?.occurredAt ?? .distantPast
+            let rhsDate = rhs.spans.first?.startedAt ?? rhs.anomalies.first?.occurredAt ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            return lhs.toolIdentifier.localizedCaseInsensitiveCompare(rhs.toolIdentifier) == .orderedAscending
+        }
+    }
+
+    func toolInvestigation(for toolIdentifier: String) -> OpsCenterToolInvestigation? {
+        toolEntries()
+            .first(where: { $0.toolIdentifier.caseInsensitiveCompare(toolIdentifier) == .orderedSame })
+            .map { $0.investigation() }
     }
 
     private func runtimeStatus(from rawValue: String) -> OpsCenterRuntimeStatus {
@@ -309,6 +577,21 @@ enum OpsCenterProjectionStore {
             from: fileSystem.analyticsNodeRuntimeProjectionURL(for: projectID, under: appSupportRootDirectory),
             decoder: decoder
         )
+        let threads: OpsCenterProjectionThreadsDocument? = decode(
+            OpsCenterProjectionThreadsDocument.self,
+            from: fileSystem.analyticsThreadProjectionURL(for: projectID, under: appSupportRootDirectory),
+            decoder: decoder
+        )
+        let cron: OpsCenterProjectionCronDocument? = decode(
+            OpsCenterProjectionCronDocument.self,
+            from: fileSystem.analyticsCronProjectionURL(for: projectID, under: appSupportRootDirectory),
+            decoder: decoder
+        )
+        let tools: OpsCenterProjectionToolsDocument? = decode(
+            OpsCenterProjectionToolsDocument.self,
+            from: fileSystem.analyticsToolProjectionURL(for: projectID, under: appSupportRootDirectory),
+            decoder: decoder
+        )
         let workflowHealth: OpsCenterProjectionWorkflowHealthDocument? = decode(
             OpsCenterProjectionWorkflowHealthDocument.self,
             from: fileSystem.analyticsWorkflowHealthProjectionURL(for: projectID, under: appSupportRootDirectory),
@@ -321,6 +604,9 @@ enum OpsCenterProjectionStore {
             || liveRun != nil
             || sessions != nil
             || nodesRuntime != nil
+            || threads != nil
+            || cron != nil
+            || tools != nil
             || workflowHealth != nil else {
             return nil
         }
@@ -334,6 +620,9 @@ enum OpsCenterProjectionStore {
             liveRun: liveRun,
             sessions: sessions,
             nodesRuntime: nodesRuntime,
+            threads: threads,
+            cron: cron,
+            tools: tools,
             workflowHealth: workflowHealth
         )
     }

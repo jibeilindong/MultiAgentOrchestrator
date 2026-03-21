@@ -1,6 +1,10 @@
 import path from "node:path";
 import os from "node:os";
+import * as net from "node:net";
+import * as tls from "node:tls";
 import { execFile } from "node:child_process";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign as signData } from "node:crypto";
+import type { JsonWebKey as NodeJsonWebKey } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
@@ -44,6 +48,11 @@ const RECENT_PROJECTS_FILE = "recent-projects.json";
 const APP_ID = "com.multiagentflow.desktop";
 const execFileAsync = promisify(execFile);
 const OPENCLAW_PROBE_SOURCE = "desktop-shell.probe.v1";
+const DESKTOP_GATEWAY_CLIENT_ID = "gateway-client";
+const DESKTOP_GATEWAY_CLIENT_MODE = "backend";
+const DESKTOP_GATEWAY_ROLE = "operator";
+const DESKTOP_GATEWAY_SCOPES = ["operator.admin"] as const;
+const DESKTOP_GATEWAY_DEVICE_FAMILY = "desktop";
 const OPENCLAW_LOCAL_PATH_CANDIDATES =
   process.platform === "win32"
     ? [
@@ -88,6 +97,22 @@ interface OpenClawActionResult {
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
   connectionState?: OpenClawConnectionStateSnapshot;
   probeReport?: OpenClawProbeReportSnapshot | null;
+}
+
+interface GatewayTransportProbeResult {
+  reachable: boolean;
+  authenticated: boolean;
+  latencyMs: number | null;
+  message: string;
+  warnings: string[];
+}
+
+interface DesktopGatewayDeviceIdentity {
+  version: number;
+  deviceID: string;
+  publicKeyBase64URL: string;
+  privateKeyJwk: NodeJsonWebKey;
+  createdAtMilliseconds: number;
 }
 
 interface OpenClawAgentExecutionRequest {
@@ -477,6 +502,11 @@ function buildOpenClawBaseUrl(config: OpenClawConfig): string {
   return `${scheme}://${config.host}:${config.port}`;
 }
 
+function buildOpenClawWebSocketUrl(config: OpenClawConfig): string {
+  const scheme = config.useSSL ? "wss" : "ws";
+  return `${scheme}://${config.host}:${config.port}/`;
+}
+
 function buildActiveAgentRecords(names: string[]): ProjectOpenClawAgentRecord[] {
   const timestamp = toSwiftDate();
   return names.map((name) => ({
@@ -535,6 +565,250 @@ function inferProbePhase(
   return report.capabilities.cliAvailable || report.capabilities.gatewayReachable || report.availableAgents.length > 0
     ? "degraded"
     : "failed";
+}
+
+function tryParseWebSocketTextFrame(
+  buffer: Buffer
+): { payload: string; remaining: Buffer; opcode: number } | null {
+  if (buffer.length < 2) {
+    return null;
+  }
+
+  const firstByte = buffer[0];
+  const secondByte = buffer[1];
+  const opcode = firstByte & 0x0f;
+  const masked = (secondByte & 0x80) !== 0;
+  let offset = 2;
+  let payloadLength = secondByte & 0x7f;
+
+  if (payloadLength === 126) {
+    if (buffer.length < offset + 2) {
+      return null;
+    }
+    payloadLength = buffer.readUInt16BE(offset);
+    offset += 2;
+  } else if (payloadLength === 127) {
+    if (buffer.length < offset + 8) {
+      return null;
+    }
+    const extendedLength = buffer.readBigUInt64BE(offset);
+    if (extendedLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error("Gateway websocket frame is too large to probe safely.");
+    }
+    payloadLength = Number(extendedLength);
+    offset += 8;
+  }
+
+  const maskLength = masked ? 4 : 0;
+  if (buffer.length < offset + maskLength + payloadLength) {
+    return null;
+  }
+
+  let payload = buffer.subarray(offset + maskLength, offset + maskLength + payloadLength);
+  if (masked) {
+    const mask = buffer.subarray(offset, offset + 4);
+    const unmasked = Buffer.alloc(payload.length);
+    for (let index = 0; index < payload.length; index += 1) {
+      unmasked[index] = payload[index] ^ mask[index % 4];
+    }
+    payload = unmasked;
+  }
+
+  return {
+    payload: payload.toString("utf8"),
+    remaining: buffer.subarray(offset + maskLength + payloadLength),
+    opcode
+  };
+}
+
+function createMaskedWebSocketTextFrame(payload: string): Buffer {
+  const payloadBuffer = Buffer.from(payload, "utf8");
+  const payloadLength = payloadBuffer.length;
+  const mask = randomBytes(4);
+  const header: number[] = [0x81];
+
+  if (payloadLength < 126) {
+    header.push(0x80 | payloadLength);
+  } else if (payloadLength <= 0xffff) {
+    header.push(0x80 | 126, (payloadLength >> 8) & 0xff, payloadLength & 0xff);
+  } else {
+    const high = Math.floor(payloadLength / 2 ** 32);
+    const low = payloadLength >>> 0;
+    header.push(
+      0x80 | 127,
+      (high >> 24) & 0xff,
+      (high >> 16) & 0xff,
+      (high >> 8) & 0xff,
+      high & 0xff,
+      (low >> 24) & 0xff,
+      (low >> 16) & 0xff,
+      (low >> 8) & 0xff,
+      low & 0xff
+    );
+  }
+
+  const maskedPayload = Buffer.alloc(payloadBuffer.length);
+  for (let index = 0; index < payloadBuffer.length; index += 1) {
+    maskedPayload[index] = payloadBuffer[index] ^ mask[index % 4];
+  }
+
+  return Buffer.concat([Buffer.from(header), mask, maskedPayload]);
+}
+
+function base64UrlEncode(value: Buffer): string {
+  return value
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function base64UrlDecode(value: string): Buffer {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(`${normalized}${padding}`, "base64");
+}
+
+function gatewayClientVersion(): string {
+  const version = trimmedString(app.getVersion?.());
+  return version || "0.1.0";
+}
+
+function gatewayDeviceIdentityPath(): string {
+  return path.join(app.getPath("userData"), "openclaw", "identity", "gateway-device-identity.json");
+}
+
+function normalizedGatewayMetadata(value: string): string {
+  return trimmedString(value).toLowerCase();
+}
+
+function buildGatewayDeviceAuthPayload(
+  identity: DesktopGatewayDeviceIdentity,
+  signedAtMilliseconds: number,
+  token: string | null,
+  nonce: string
+): string {
+  return [
+    "v3",
+    identity.deviceID,
+    DESKTOP_GATEWAY_CLIENT_ID,
+    DESKTOP_GATEWAY_CLIENT_MODE,
+    DESKTOP_GATEWAY_ROLE,
+    DESKTOP_GATEWAY_SCOPES.join(","),
+    String(signedAtMilliseconds),
+    token ?? "",
+    nonce,
+    normalizedGatewayMetadata(process.platform),
+    normalizedGatewayMetadata(DESKTOP_GATEWAY_DEVICE_FAMILY)
+  ].join("|");
+}
+
+function createDesktopGatewayDeviceIdentity(): DesktopGatewayDeviceIdentity {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const privateKeyJwk = privateKey.export({ format: "jwk" }) as NodeJsonWebKey;
+  const publicKeyJwk = createPublicKey(privateKey).export({ format: "jwk" }) as NodeJsonWebKey;
+  const publicKeyBase64URL = trimmedString(publicKeyJwk.x);
+  if (!publicKeyBase64URL) {
+    throw new Error("Unable to generate OpenClaw gateway public key.");
+  }
+
+  return {
+    version: 1,
+    deviceID: createHash("sha256").update(base64UrlDecode(publicKeyBase64URL)).digest("hex"),
+    publicKeyBase64URL,
+    privateKeyJwk,
+    createdAtMilliseconds: Date.now()
+  };
+}
+
+async function persistDesktopGatewayDeviceIdentity(identity: DesktopGatewayDeviceIdentity): Promise<void> {
+  const filePath = gatewayDeviceIdentityPath();
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(`${filePath}.tmp`, `${JSON.stringify(identity, null, 2)}\n`, "utf8");
+  await fs.rename(`${filePath}.tmp`, filePath);
+}
+
+async function loadOrCreateDesktopGatewayDeviceIdentity(): Promise<DesktopGatewayDeviceIdentity> {
+  const filePath = gatewayDeviceIdentityPath();
+
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<DesktopGatewayDeviceIdentity>;
+    const publicKeyBase64URL = trimmedString(parsed.publicKeyBase64URL ?? "");
+    const privateKeyJwk = parsed.privateKeyJwk;
+
+    if (publicKeyBase64URL && privateKeyJwk && typeof privateKeyJwk === "object") {
+      const deviceID = createHash("sha256").update(base64UrlDecode(publicKeyBase64URL)).digest("hex");
+      const identity: DesktopGatewayDeviceIdentity = {
+        version: typeof parsed.version === "number" ? parsed.version : 1,
+        deviceID,
+        publicKeyBase64URL,
+        privateKeyJwk,
+        createdAtMilliseconds:
+          typeof parsed.createdAtMilliseconds === "number" ? parsed.createdAtMilliseconds : Date.now()
+      };
+
+      if (identity.deviceID !== parsed.deviceID) {
+        await persistDesktopGatewayDeviceIdentity(identity);
+      }
+
+      return identity;
+    }
+  } catch {
+    // Regenerate below.
+  }
+
+  const identity = createDesktopGatewayDeviceIdentity();
+  await persistDesktopGatewayDeviceIdentity(identity);
+  return identity;
+}
+
+function buildGatewayConnectParams(
+  config: OpenClawConfig,
+  identity: DesktopGatewayDeviceIdentity,
+  challengePayload: Record<string, unknown> | null
+): Record<string, unknown> {
+  const token = trimmedString(config.apiKey) || null;
+  const version = gatewayClientVersion();
+  const nonce = typeof challengePayload?.nonce === "string" ? trimmedString(challengePayload.nonce) : "";
+  const signedAtMilliseconds = Date.now();
+  return {
+    minProtocol: 3,
+    maxProtocol: 3,
+    client: {
+      id: DESKTOP_GATEWAY_CLIENT_ID,
+      displayName: "Multi-Agent-Flow",
+      version,
+      platform: process.platform,
+      deviceFamily: DESKTOP_GATEWAY_DEVICE_FAMILY,
+      mode: DESKTOP_GATEWAY_CLIENT_MODE
+    },
+    role: DESKTOP_GATEWAY_ROLE,
+    scopes: [...DESKTOP_GATEWAY_SCOPES],
+    caps: [],
+    commands: [],
+    permissions: {},
+    locale: Intl.DateTimeFormat().resolvedOptions().locale || "en-US",
+    userAgent: `Multi-Agent-Flow/${version}`,
+    ...(token ? { auth: { token } } : {}),
+    ...(nonce
+      ? {
+          device: {
+            id: identity.deviceID,
+            publicKey: identity.publicKeyBase64URL,
+            signature: base64UrlEncode(
+              signData(
+                null,
+                Buffer.from(buildGatewayDeviceAuthPayload(identity, signedAtMilliseconds, token, nonce), "utf8"),
+                createPrivateKey({ key: identity.privateKeyJwk, format: "jwk" })
+              )
+            ),
+            signedAt: signedAtMilliseconds,
+            nonce
+          }
+        }
+      : {})
+  };
 }
 
 function trimmedString(value: unknown): string {
@@ -2081,52 +2355,264 @@ async function testLocalOpenClawConnection(config: OpenClawConfig): Promise<Open
   return connectOpenClaw(config);
 }
 
-async function probeGatewayEndpoint(config: OpenClawConfig): Promise<{
-  reachable: boolean;
-  authenticated: boolean;
-  latencyMs: number | null;
-  message: string;
-  warnings: string[];
-}> {
-  const endpoint = buildOpenClawBaseUrl(config);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(config.timeout, 5) * 1000);
+async function probeGatewayEndpoint(config: OpenClawConfig): Promise<GatewayTransportProbeResult> {
+  const endpoint = buildOpenClawWebSocketUrl(config);
+  const timeoutMs = Math.max(config.timeout, 5) * 1000;
   const startedAt = Date.now();
+  const deviceIdentity = await loadOrCreateDesktopGatewayDeviceIdentity();
 
-  try {
-    const response = await fetch(endpoint, {
-      headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : undefined,
-      signal: controller.signal
+  return new Promise<GatewayTransportProbeResult>((resolve) => {
+    const websocketURL = new URL(endpoint);
+    const websocketKey = randomBytes(16).toString("base64");
+    const expectedAccept = createHash("sha1")
+      .update(`${websocketKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    const socket = config.useSSL
+      ? tls.connect({
+          host: websocketURL.hostname,
+          port: Number(websocketURL.port || (config.useSSL ? 443 : 80)),
+          servername: websocketURL.hostname
+        })
+      : net.createConnection({
+          host: websocketURL.hostname,
+          port: Number(websocketURL.port || (config.useSSL ? 443 : 80))
+        });
+
+    let settled = false;
+    let headerBuffer = Buffer.alloc(0);
+    let frameBuffer = Buffer.alloc(0);
+    let headersParsed = false;
+    let awaitingConnectResponse = false;
+    const connectRequestId = crypto.randomUUID();
+
+    const finish = (result: GatewayTransportProbeResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(result);
+    };
+
+    const handshakeRequest = [
+      `GET ${websocketURL.pathname || "/"} HTTP/1.1`,
+      `Host: ${websocketURL.host}`,
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      `Sec-WebSocket-Key: ${websocketKey}`,
+      "Sec-WebSocket-Version: 13",
+      "User-Agent: Multi-Agent-Flow/desktop-probe",
+      ...(config.apiKey ? [`Authorization: Bearer ${config.apiKey}`] : []),
+      "\r\n"
+    ].join("\r\n");
+
+    socket.setTimeout(timeoutMs);
+
+    socket.once(config.useSSL ? "secureConnect" : "connect", () => {
+      socket.write(handshakeRequest);
     });
-    const latencyMs = Date.now() - startedAt;
-    const reachable = true;
-    const authenticated = response.ok;
-    const message = response.ok
-      ? `Gateway probe succeeded at ${endpoint}.`
-      : `Gateway responded with HTTP ${response.status} at ${endpoint}.`;
-    const warnings =
-      config.deploymentKind === "remoteServer"
-        ? ["Remote desktop probe currently verifies the HTTP gateway only and does not validate the websocket chat handshake yet."]
-        : [];
 
-    return {
-      reachable,
-      authenticated,
-      latencyMs,
-      message,
-      warnings
-    };
-  } catch (error) {
-    return {
-      reachable: false,
-      authenticated: false,
-      latencyMs: Date.now() - startedAt,
-      message: error instanceof Error ? error.message : String(error),
-      warnings: []
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+    socket.on("data", (chunk: Buffer) => {
+      if (!headersParsed) {
+        headerBuffer = Buffer.concat([headerBuffer, chunk]);
+        const headerBoundary = headerBuffer.indexOf("\r\n\r\n");
+        if (headerBoundary < 0) {
+          return;
+        }
+
+        const rawHeaders = headerBuffer.subarray(0, headerBoundary).toString("utf8");
+        frameBuffer = headerBuffer.subarray(headerBoundary + 4);
+        headerBuffer = Buffer.alloc(0);
+        headersParsed = true;
+
+        const headerLines = rawHeaders.split("\r\n");
+        const statusLine = headerLines.shift() ?? "";
+        const statusMatch = statusLine.match(/^HTTP\/1\.[01]\s+(\d{3})\b/);
+        const statusCode = statusMatch ? Number(statusMatch[1]) : 0;
+        const responseHeaders = Object.fromEntries(
+          headerLines.flatMap((line) => {
+            const separatorIndex = line.indexOf(":");
+            if (separatorIndex < 0) {
+              return [];
+            }
+            return [[line.slice(0, separatorIndex).trim().toLowerCase(), line.slice(separatorIndex + 1).trim()]];
+          })
+        );
+
+        if (statusCode !== 101) {
+          finish({
+            reachable: false,
+            authenticated: false,
+            latencyMs: Date.now() - startedAt,
+            message: statusCode > 0
+              ? `Gateway websocket upgrade failed with HTTP ${statusCode} at ${endpoint}.`
+              : `Gateway websocket upgrade failed at ${endpoint}.`,
+            warnings: []
+          });
+          return;
+        }
+
+        if (responseHeaders["sec-websocket-accept"] !== expectedAccept) {
+          finish({
+            reachable: false,
+            authenticated: false,
+            latencyMs: Date.now() - startedAt,
+            message: `Gateway websocket accept key validation failed at ${endpoint}.`,
+            warnings: []
+          });
+          return;
+        }
+      } else {
+        frameBuffer = Buffer.concat([frameBuffer, chunk]);
+      }
+
+      try {
+        while (true) {
+          const frame = tryParseWebSocketTextFrame(frameBuffer);
+          if (!frame) {
+            return;
+          }
+          frameBuffer = Buffer.from(frame.remaining);
+
+          if (frame.opcode === 0x8) {
+            finish({
+              reachable: true,
+              authenticated: false,
+              latencyMs: Date.now() - startedAt,
+              message: awaitingConnectResponse
+                ? `Gateway websocket closed before the connect response completed at ${endpoint}.`
+                : `Gateway websocket closed before probe challenge completed at ${endpoint}.`,
+              warnings: []
+            });
+            return;
+          }
+
+          if (frame.opcode !== 0x1) {
+            continue;
+          }
+
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(frame.payload) as Record<string, unknown>;
+          } catch {
+            finish({
+              reachable: true,
+              authenticated: false,
+              latencyMs: Date.now() - startedAt,
+              message: `Gateway websocket upgraded at ${endpoint}, but the probe could not parse a JSON frame.`,
+              warnings: []
+            });
+            return;
+          }
+
+          if (!awaitingConnectResponse) {
+            const isChallenge =
+              payload["type"] === "event" &&
+              payload["event"] === "connect.challenge" &&
+              typeof payload["payload"] === "object" &&
+              payload["payload"] !== null;
+            if (!isChallenge) {
+              finish({
+                reachable: true,
+                authenticated: false,
+                latencyMs: Date.now() - startedAt,
+                message: `Gateway websocket upgraded at ${endpoint}, but protocol challenge did not match the expected handshake.`,
+                warnings: []
+              });
+              return;
+            }
+
+            const connectFrame = {
+              type: "req",
+              id: connectRequestId,
+              method: "connect",
+              params: buildGatewayConnectParams(
+                config,
+                deviceIdentity,
+                payload["payload"] as Record<string, unknown>
+              )
+            };
+            socket.write(createMaskedWebSocketTextFrame(JSON.stringify(connectFrame)));
+            awaitingConnectResponse = true;
+            continue;
+          }
+
+          const isExpectedResponse =
+            payload["type"] === "res" &&
+            payload["id"] === connectRequestId;
+          if (!isExpectedResponse) {
+            continue;
+          }
+
+          const ok = payload["ok"] === true;
+          const errorPayload =
+            payload["error"] && typeof payload["error"] === "object" && !Array.isArray(payload["error"])
+              ? (payload["error"] as Record<string, unknown>)
+              : null;
+          const errorMessage =
+            typeof errorPayload?.message === "string" && errorPayload.message.trim().length > 0
+              ? errorPayload.message.trim()
+              : null;
+          const warnings =
+            config.deploymentKind === "remoteServer"
+              ? ["Desktop shell probe now validates websocket challenge plus RPC connect, but device-identity parity with the Swift gateway client is still pending."]
+              : [];
+
+          finish({
+            reachable: true,
+            authenticated: ok,
+            latencyMs: Date.now() - startedAt,
+            message: ok
+              ? `Gateway websocket challenge and connect succeeded at ${endpoint}.`
+              : errorMessage || `Gateway connect request was rejected at ${endpoint}.`,
+            warnings
+          });
+          return;
+        }
+      } catch (error) {
+        finish({
+          reachable: false,
+          authenticated: false,
+          latencyMs: Date.now() - startedAt,
+          message: error instanceof Error ? error.message : String(error),
+          warnings: []
+        });
+      }
+    });
+
+    socket.once("timeout", () => {
+      finish({
+        reachable: false,
+        authenticated: false,
+        latencyMs: Date.now() - startedAt,
+        message: `Gateway websocket probe timed out at ${endpoint}.`,
+        warnings: []
+      });
+    });
+
+    socket.once("error", (error) => {
+      finish({
+        reachable: false,
+        authenticated: false,
+        latencyMs: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+        warnings: []
+      });
+    });
+
+    socket.once("end", () => {
+      finish({
+        reachable: headersParsed,
+        authenticated: false,
+        latencyMs: Date.now() - startedAt,
+        message: headersParsed
+          ? `Gateway websocket closed before the probe completed at ${endpoint}.`
+          : `Gateway websocket closed before upgrade completed at ${endpoint}.`,
+        warnings: []
+      });
+    });
+  });
 }
 
 async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeReportSnapshot> {
@@ -2176,13 +2662,26 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
     }
   }
 
-  const gatewayProbe = await probeGatewayEndpoint(normalizedConfig);
-  warnings.push(...gatewayProbe.warnings);
-  capabilities.gatewayReachable = gatewayProbe.reachable;
-  capabilities.gatewayAuthenticated = gatewayProbe.authenticated;
-  capabilities.gatewayAgentAvailable = gatewayProbe.authenticated;
-  capabilities.gatewayChatAvailable = gatewayProbe.authenticated;
-  capabilities.sessionHistoryAvailable = gatewayProbe.authenticated;
+  let gatewayProbe: GatewayTransportProbeResult = {
+    reachable: false,
+    authenticated: false,
+    latencyMs: null,
+    message: "Gateway probe skipped.",
+    warnings: []
+  };
+
+  if (normalizedConfig.deploymentKind !== "container") {
+    gatewayProbe = await probeGatewayEndpoint(normalizedConfig);
+    warnings.push(...gatewayProbe.warnings);
+    capabilities.gatewayReachable = gatewayProbe.reachable;
+    capabilities.gatewayAuthenticated = gatewayProbe.authenticated;
+    capabilities.gatewayAgentAvailable = gatewayProbe.authenticated;
+    capabilities.gatewayChatAvailable = gatewayProbe.authenticated;
+    capabilities.sessionHistoryAvailable = gatewayProbe.authenticated;
+  } else {
+    warnings.push("Container desktop probe currently validates CLI and container-backed config discovery; host-side gateway handshake is not required.");
+  }
+
   capabilities.projectAttachmentSupported =
     normalizedConfig.deploymentKind !== "remoteServer" && capabilities.cliAvailable;
 
@@ -2198,17 +2697,21 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
   const success =
     normalizedConfig.deploymentKind === "remoteServer"
       ? capabilities.gatewayAuthenticated
-      : capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated;
+      : normalizedConfig.deploymentKind === "container"
+        ? capabilities.cliAvailable && capabilities.agentListingAvailable
+        : capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated;
 
   if (!success) {
     const reasons: string[] = [];
     if (normalizedConfig.deploymentKind !== "remoteServer" && !capabilities.cliAvailable) {
       reasons.push(cliFailureMessage || "OpenClaw CLI probe failed.");
     }
-    if (!capabilities.gatewayReachable) {
-      reasons.push(gatewayProbe.message || "OpenClaw gateway is unreachable.");
-    } else if (!capabilities.gatewayAuthenticated) {
-      reasons.push(gatewayProbe.message || "OpenClaw gateway authentication failed.");
+    if (normalizedConfig.deploymentKind !== "container") {
+      if (!capabilities.gatewayReachable) {
+        reasons.push(gatewayProbe.message || "OpenClaw gateway is unreachable.");
+      } else if (!capabilities.gatewayAuthenticated) {
+        reasons.push(gatewayProbe.message || "OpenClaw gateway authentication failed.");
+      }
     }
     nextHealth.degradationReason = reasons.join(" ").trim() || "OpenClaw probe failed.";
   }
@@ -2221,7 +2724,7 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
 
   const observedDefaultTransports = [
     ...(capabilities.cliAvailable ? ["cli"] : []),
-    ...(capabilities.gatewayReachable ? ["http"] : [])
+    ...(capabilities.gatewayReachable ? ["ws"] : [])
   ];
 
   return {

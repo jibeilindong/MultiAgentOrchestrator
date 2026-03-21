@@ -342,3 +342,5 @@ OpenClawDeploymentAdapter
 - 增加持久化的 `ConnectionState` / `ProbeReport` 初始骨架，让 probe 结果、能力状态和降级状态先具备正式兼容层
 - 开始把桌面端 `connect` / `detect` 收敛到统一的 `probe` 契约，并把 `ConnectionState` / `ProbeReport` 从 Electron 主进程贯通到项目快照持久化链路
 - 容器模式的 agent 发现优先改为读取容器内 `openclaw config file` 指向的真实配置，减少宿主机挂载路径猜测带来的偏差
+- Swift 侧 probe / CLI 与容器快照打包解包主链路切换到带双管道并发读取与超时终止的安全执行器，避免连接测试或归档过程因 Pipe 缓冲区写满而挂死
+- 桌面端 Gateway probe 从 HTTP `fetch()` 提升为 WebSocket upgrade + `connect.challenge` + `connect` RPC 校验，并补上持久化 device identity 签名载荷，远程/本地模式继续向 Swift Gateway 语义对齐

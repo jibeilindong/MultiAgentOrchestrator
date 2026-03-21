@@ -6,9 +6,120 @@
 import Foundation
 import Combine
 import CryptoKit
+import Darwin
 
 private let openClawSoulFileNames = ["SOUL.md", "soul.md"]
 private let openClawSoulNestedDirectories = ["", "agent", "private"]
+
+private func executeProcessAndCaptureOutput(
+    executableURL: URL,
+    arguments: [String],
+    standardInput: FileHandle? = nil,
+    timeoutSeconds: TimeInterval? = nil,
+    onStdoutChunk: ((Data) -> Void)? = nil
+) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
+    let process = Process()
+    process.executableURL = executableURL
+    process.arguments = arguments
+    process.standardInput = standardInput
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    let lock = NSLock()
+    var stdoutData = Data()
+    var stderrData = Data()
+    let terminationSemaphore = DispatchSemaphore(value: 0)
+
+    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+        let data = handle.availableData
+        guard !data.isEmpty else { return }
+        lock.lock()
+        stdoutData.append(data)
+        lock.unlock()
+        onStdoutChunk?(data)
+    }
+
+    stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+        let data = handle.availableData
+        guard !data.isEmpty else { return }
+        lock.lock()
+        stderrData.append(data)
+        lock.unlock()
+    }
+
+    process.terminationHandler = { _ in
+        terminationSemaphore.signal()
+    }
+
+    try process.run()
+
+    let waitResult: DispatchTimeoutResult
+    if let timeoutSeconds {
+        waitResult = terminationSemaphore.wait(timeout: .now() + max(timeoutSeconds, 1))
+    } else {
+        terminationSemaphore.wait()
+        waitResult = .success
+    }
+
+    if waitResult == .timedOut {
+        if process.isRunning {
+            process.terminate()
+            if terminationSemaphore.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                _ = terminationSemaphore.wait(timeout: .now() + 1)
+            }
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if !stdout.isEmpty {
+            lock.lock()
+            stdoutData.append(stdout)
+            lock.unlock()
+        }
+        if !stderr.isEmpty {
+            lock.lock()
+            stderrData.append(stderr)
+            lock.unlock()
+        }
+
+        throw NSError(
+            domain: "OpenClawManager",
+            code: 9801,
+            userInfo: [NSLocalizedDescriptionKey: "命令执行超时（\(Int(max(timeoutSeconds ?? 0, 1))) 秒）：\((arguments.first ?? executableURL.lastPathComponent))"]
+        )
+    }
+
+    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+    stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+    let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    if !remainingStdout.isEmpty {
+        lock.lock()
+        stdoutData.append(remainingStdout)
+        lock.unlock()
+        onStdoutChunk?(remainingStdout)
+    }
+
+    let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+    if !remainingStderr.isEmpty {
+        lock.lock()
+        stderrData.append(remainingStderr)
+        lock.unlock()
+    }
+
+    lock.lock()
+    let finalStdout = stdoutData
+    let finalStderr = stderrData
+    lock.unlock()
+
+    return (process.terminationStatus, finalStdout, finalStderr)
+}
 
 func openClawSoulCandidateURLs(in rootURL: URL, maxAncestorDepth: Int = 2) -> [URL] {
     var directories: [URL] = []
@@ -70,6 +181,7 @@ func preferredOpenClawSoulURL(
 class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
     private let fileManager = FileManager.default
+    private let notificationCenter: NotificationCenter
     private let gatewayClient = OpenClawGatewayClient()
     private var gatewayDisconnectObserver: NSObjectProtocol?
     
@@ -363,71 +475,30 @@ class OpenClawManager: ObservableObject {
             standardInput: FileHandle? = nil,
             onStdoutChunk: ((String) -> Void)? = nil
         ) throws -> AgentRuntimeCommandResult {
-            let process = Process()
-
+            let executableURL: URL
+            let commandArguments: [String]
             switch launchMode {
             case .executable(let url, let baseArguments):
-                process.executableURL = url
-                process.arguments = baseArguments + arguments
+                executableURL = url
+                commandArguments = baseArguments + arguments
             }
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-            process.standardInput = standardInput
-
-            let lock = NSLock()
-            var stdoutData = Data()
-            var stderrData = Data()
-
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                lock.lock()
-                stdoutData.append(data)
-                lock.unlock()
-                if let onStdoutChunk {
-                    onStdoutChunk(String(decoding: data, as: UTF8.self))
+            let result = try executeProcessAndCaptureOutput(
+                executableURL: executableURL,
+                arguments: commandArguments,
+                standardInput: standardInput,
+                onStdoutChunk: onStdoutChunk.map { callback in
+                    { data in
+                        callback(String(decoding: data, as: UTF8.self))
+                    }
                 }
-            }
-
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                lock.lock()
-                stderrData.append(data)
-                lock.unlock()
-            }
-
-            try process.run()
-            process.waitUntilExit()
-
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-
-            let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            if !remainingStdout.isEmpty {
-                lock.lock()
-                stdoutData.append(remainingStdout)
-                lock.unlock()
-                if let onStdoutChunk {
-                    onStdoutChunk(String(decoding: remainingStdout, as: UTF8.self))
-                }
-            }
-
-            let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            if !remainingStderr.isEmpty {
-                lock.lock()
-                stderrData.append(remainingStderr)
-                lock.unlock()
-            }
+            )
 
             let snapshot = markExecutionFinished()
             return AgentRuntimeCommandResult(
-                terminationStatus: process.terminationStatus,
-                standardOutput: stdoutData,
-                standardError: stderrData,
+                terminationStatus: result.terminationStatus,
+                standardOutput: result.standardOutput,
+                standardError: result.standardError,
                 channelKey: key,
                 executionCount: snapshot.executionCount,
                 createdAt: snapshot.createdAt,
@@ -461,14 +532,15 @@ class OpenClawManager: ObservableObject {
         "/usr/bin/openclaw"
     ]
     
-    private init() {
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
         // 创建备份目录
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
         connectionState = OpenClawConnectionStateSnapshot(
             phase: .idle,
             deploymentKind: config.deploymentKind
         )
-        gatewayDisconnectObserver = NotificationCenter.default.addObserver(
+        gatewayDisconnectObserver = notificationCenter.addObserver(
             forName: OpenClawGatewayClient.disconnectNotificationName,
             object: nil,
             queue: .main
@@ -477,6 +549,12 @@ class OpenClawManager: ObservableObject {
             let rawMessage = notification.userInfo?[OpenClawGatewayClient.disconnectMessageUserInfoKey] as? String
             let message = rawMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
             self.handleUnexpectedGatewayDisconnect(message: message)
+        }
+    }
+
+    deinit {
+        if let gatewayDisconnectObserver {
+            notificationCenter.removeObserver(gatewayDisconnectObserver)
         }
     }
     
@@ -2546,31 +2624,27 @@ class OpenClawManager: ObservableObject {
     private func runOpenClawCommand(
         using config: OpenClawConfig,
         arguments: [String],
-        standardInput: FileHandle? = nil
+        standardInput: FileHandle? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         switch config.deploymentKind {
         case .local:
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: resolveOpenClawPath(for: config))
-            process.arguments = arguments
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-            process.standardInput = standardInput
-
-            try process.run()
-            process.waitUntilExit()
-
-            let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            return (process.terminationStatus, stdout, stderr)
+            return try executeProcessAndCaptureOutput(
+                executableURL: URL(fileURLWithPath: resolveOpenClawPath(for: config)),
+                arguments: arguments,
+                standardInput: standardInput,
+                timeoutSeconds: timeoutSeconds
+            )
         case .container:
             guard let containerName = containerName(for: config) else {
                 throw NSError(domain: "OpenClawManager", code: 11, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
             }
-            return try runDeploymentCommand(using: config, arguments: ["exec", containerName, "openclaw"] + arguments, standardInput: standardInput)
+            return try runDeploymentCommand(
+                using: config,
+                arguments: ["exec", containerName, "openclaw"] + arguments,
+                standardInput: standardInput,
+                timeoutSeconds: timeoutSeconds
+            )
         case .remoteServer:
             throw NSError(domain: "OpenClawManager", code: 12, userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 OpenClaw CLI"])
         }
@@ -2579,31 +2653,27 @@ class OpenClawManager: ObservableObject {
     private func runClawHubCommand(
         using config: OpenClawConfig,
         arguments: [String],
-        standardInput: FileHandle? = nil
+        standardInput: FileHandle? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         switch config.deploymentKind {
         case .local:
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["clawhub"] + arguments
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-            process.standardInput = standardInput
-
-            try process.run()
-            process.waitUntilExit()
-
-            let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            return (process.terminationStatus, stdout, stderr)
+            return try executeProcessAndCaptureOutput(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["clawhub"] + arguments,
+                standardInput: standardInput,
+                timeoutSeconds: timeoutSeconds
+            )
         case .container:
             guard let containerName = containerName(for: config) else {
                 throw NSError(domain: "OpenClawManager", code: 13, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
             }
-            return try runDeploymentCommand(using: config, arguments: ["exec", containerName, "clawhub"] + arguments, standardInput: standardInput)
+            return try runDeploymentCommand(
+                using: config,
+                arguments: ["exec", containerName, "clawhub"] + arguments,
+                standardInput: standardInput,
+                timeoutSeconds: timeoutSeconds
+            )
         case .remoteServer:
             throw NSError(domain: "OpenClawManager", code: 14, userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 ClawHub CLI"])
         }
@@ -3486,6 +3556,16 @@ class OpenClawManager: ObservableObject {
                 continue
             }
 
+            do {
+                if try stageManagedWorkspaceDocuments(for: agent, in: project, mirrorSoulURL: soulURL) {
+                    result.updatedAgentCount += 1
+                    continue
+                }
+            } catch {
+                result.unresolvedAgentNames.append(agent.name)
+                continue
+            }
+
             let contentToStage: String
             switch stagePolicies[agent.id] ?? .projectContent {
             case .projectContent:
@@ -3514,6 +3594,69 @@ class OpenClawManager: ObservableObject {
         }
 
         return result
+    }
+
+    private func stageManagedWorkspaceDocuments(
+        for agent: Agent,
+        in project: MAProject,
+        mirrorSoulURL: URL
+    ) throws -> Bool {
+        guard let workspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project),
+              FileManager.default.fileExists(atPath: workspaceURL.path) else {
+            return false
+        }
+
+        let agentRootURL = mirrorSoulURL.deletingLastPathComponent()
+        let workspaceMirrorURL = agentRootURL.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceMirrorURL, withIntermediateDirectories: true)
+
+        var stagedAny = false
+        for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles {
+            let sourceURL = workspaceURL.appendingPathComponent(fileName, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
+
+            let content = try String(contentsOf: sourceURL, encoding: .utf8)
+            let targetURLs: [URL]
+            if fileName == "SOUL.md" {
+                targetURLs = [
+                    mirrorSoulURL,
+                    workspaceMirrorURL.appendingPathComponent(fileName, isDirectory: false)
+                ]
+            } else {
+                targetURLs = [workspaceMirrorURL.appendingPathComponent(fileName, isDirectory: false)]
+            }
+
+            for targetURL in targetURLs {
+                try FileManager.default.createDirectory(
+                    at: targetURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try content.write(to: targetURL, atomically: true, encoding: .utf8)
+            }
+            stagedAny = true
+        }
+
+        return stagedAny
+    }
+
+    private func managedNodeOpenClawWorkspaceURL(for agent: Agent, in project: MAProject) -> URL? {
+        guard let binding = nodeBinding(for: agent.id, in: project) else { return nil }
+
+        return ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+            for: binding.nodeID,
+            workflowID: binding.workflowID,
+            projectID: project.id,
+            under: ProjectManager.shared.appSupportRootDirectory
+        )
+    }
+
+    private func nodeBinding(for agentID: UUID, in project: MAProject) -> (workflowID: UUID, nodeID: UUID)? {
+        for workflow in project.workflows {
+            if let node = workflow.nodes.first(where: { $0.type == .agent && $0.agentID == agentID }) {
+                return (workflow.id, node.id)
+            }
+        }
+        return nil
     }
 
     private func applySessionMirrorToDeployment() throws {
@@ -4548,24 +4691,15 @@ class OpenClawManager: ObservableObject {
     private func runDeploymentCommand(
         using config: OpenClawConfig,
         arguments: [String],
-        standardInput: FileHandle? = nil
+        standardInput: FileHandle? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [containerEngine(for: config)] + arguments
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = standardInput
-
-        try process.run()
-        process.waitUntilExit()
-
-        let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        return (process.terminationStatus, stdout, stderr)
+        return try executeProcessAndCaptureOutput(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [containerEngine(for: config)] + arguments,
+            standardInput: standardInput,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 
     private func copyDeploymentContentsToLocal(
@@ -4598,11 +4732,11 @@ class OpenClawManager: ObservableObject {
             try result.standardOutput.write(to: archiveURL, options: .atomic)
             defer { try? FileManager.default.removeItem(at: archiveURL) }
 
-            let extract = Process()
-            extract.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            extract.arguments = ["tar", "-xf", archiveURL.path, "-C", localDestination.path]
-            try extract.run()
-            extract.waitUntilExit()
+            let extract = try executeProcessAndCaptureOutput(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["tar", "-xf", archiveURL.path, "-C", localDestination.path],
+                timeoutSeconds: 60
+            )
 
             guard extract.terminationStatus == 0 else {
                 let message = String(data: result.standardError, encoding: .utf8) ?? "容器快照同步失败"
@@ -4631,11 +4765,11 @@ class OpenClawManager: ObservableObject {
 
             let archiveURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("openclaw-upload-\(UUID().uuidString).tar", isDirectory: false)
-            let createArchive = Process()
-            createArchive.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            createArchive.arguments = ["tar", "-cf", archiveURL.path, "-C", localSource.path, "."]
-            try createArchive.run()
-            createArchive.waitUntilExit()
+            let createArchive = try executeProcessAndCaptureOutput(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["tar", "-cf", archiveURL.path, "-C", localSource.path, "."],
+                timeoutSeconds: 60
+            )
 
             guard createArchive.terminationStatus == 0 else {
                 try? FileManager.default.removeItem(at: archiveURL)
@@ -4708,22 +4842,18 @@ class OpenClawManager: ObservableObject {
                 return
             }
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: binaryPath)
-            process.arguments = ["agents", "list"]
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
             do {
-                try process.run()
-                process.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
+                let result = try executeProcessAndCaptureOutput(
+                    executableURL: URL(fileURLWithPath: binaryPath),
+                    arguments: ["agents", "list"],
+                    timeoutSeconds: TimeInterval(max(config.timeout, 5))
+                )
+                let output = String(
+                    data: result.standardOutput + result.standardError,
+                    encoding: .utf8
+                ) ?? ""
                 let agentNames = Self.parseAgentNames(from: output)
-                let success = process.terminationStatus == 0
+                let success = result.terminationStatus == 0
                 let message: String
 
                 if success {
@@ -4820,22 +4950,18 @@ class OpenClawManager: ObservableObject {
                 ? "docker"
                 : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [engine, "exec", containerName, "openclaw", "agents", "list"]
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
             do {
-                try process.run()
-                process.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
+                let result = try executeProcessAndCaptureOutput(
+                    executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                    arguments: [engine, "exec", containerName, "openclaw", "agents", "list"],
+                    timeoutSeconds: TimeInterval(max(config.timeout, 5))
+                )
+                let output = String(
+                    data: result.standardOutput + result.standardError,
+                    encoding: .utf8
+                ) ?? ""
                 let agentNames = Self.parseAgentNames(from: output)
-                let success = process.terminationStatus == 0
+                let success = result.terminationStatus == 0
                 let message: String
 
                 if success {

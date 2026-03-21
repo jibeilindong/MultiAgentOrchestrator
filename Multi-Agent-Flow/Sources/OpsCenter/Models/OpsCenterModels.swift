@@ -273,11 +273,57 @@ struct OpsCenterThreadInvestigation: Identifiable {
     let tasks: [OpsCenterTaskDigest]
 }
 
+struct OpsCenterCronInvestigation: Identifiable {
+    var id: String { cronName }
+    let cronName: String
+    let summary: OpsCronReliabilitySummary?
+    let historySeries: [OpsMetricHistorySeries]
+    let runs: [OpsCronRunRow]
+    let anomalies: [OpsAnomalyRow]
+}
+
+struct OpsCenterToolInvestigation: Identifiable {
+    var id: String { toolIdentifier }
+    let toolIdentifier: String
+    let historySeries: [OpsMetricHistorySeries]
+    let spans: [OpsToolSpanRow]
+    let anomalies: [OpsAnomalyRow]
+}
+
+struct OpsCenterArchiveProjectionDocumentDigest: Identifiable {
+    let id: String
+    let title: String
+    let generatedAt: Date?
+    let valueText: String
+    let detailText: String
+    let status: OpsHealthStatus
+}
+
+struct OpsCenterArchiveProjectionInvestigation: Identifiable {
+    let scopeID: String
+    let scopeTitle: String
+    let projectName: String
+    let freshestGeneratedAt: Date?
+    let loadedAt: Date
+    let documentDigests: [OpsCenterArchiveProjectionDocumentDigest]
+    let sessionCount: Int
+    let nodeCount: Int
+    let traceCount: Int
+    let anomalyCount: Int
+    let liveRunSummary: String?
+    let workflowHealthSummary: String?
+
+    var id: String { scopeID }
+}
+
 enum OpsCenterInvestigationTarget: Identifiable {
     case session(OpsCenterSessionInvestigation)
     case node(OpsCenterNodeInvestigation)
     case route(OpsCenterRouteInvestigation)
     case thread(OpsCenterThreadInvestigation)
+    case cron(OpsCenterCronInvestigation)
+    case tool(OpsCenterToolInvestigation)
+    case archiveProjection(OpsCenterArchiveProjectionInvestigation)
 
     var id: String {
         switch self {
@@ -289,6 +335,12 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "route-\(investigation.id.uuidString)"
         case let .thread(investigation):
             return "thread-\(investigation.id)"
+        case let .cron(investigation):
+            return "cron-\(investigation.id)"
+        case let .tool(investigation):
+            return "tool-\(investigation.id)"
+        case let .archiveProjection(investigation):
+            return "archive-\(investigation.id)"
         }
     }
 
@@ -302,6 +354,12 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "\(investigation.edge.fromTitle) -> \(investigation.edge.toTitle)"
         case let .thread(investigation):
             return investigation.threadID
+        case let .cron(investigation):
+            return investigation.cronName
+        case let .tool(investigation):
+            return investigation.toolIdentifier
+        case let .archiveProjection(investigation):
+            return investigation.scopeTitle
         }
     }
 
@@ -315,6 +373,12 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "\(investigation.workflowName) • Route Investigation"
         case let .thread(investigation):
             return "\(investigation.workflowName) • Thread Investigation"
+        case .cron:
+            return "Cron Investigation"
+        case .tool:
+            return "Tool Investigation"
+        case let .archiveProjection(investigation):
+            return "\(investigation.projectName) • Archive Projection Investigation"
         }
     }
 }
@@ -867,6 +931,175 @@ enum OpsCenterSnapshotBuilder {
         )
     }
 
+    static func buildArchiveProjectionInvestigation(
+        project: MAProject?,
+        workflow: Workflow?,
+        projections: OpsCenterProjectionBundle?
+    ) -> OpsCenterArchiveProjectionInvestigation? {
+        guard let projections else { return nil }
+
+        let scopedWorkflowID = workflow?.id
+        let scopedNodeIDs = Set(workflow?.nodes.map(\.id) ?? [])
+        let scopedSessions = projections.sessionSummaries(for: scopedWorkflowID)
+        let scopedNodes = projections.nodeSummaries(for: scopedWorkflowID)
+        let scopedTraceCount = (projections.traces?.traces ?? []).filter { entry in
+            guard scopedWorkflowID != nil else { return true }
+            return scopedNodeIDs.contains(entry.nodeID)
+        }.count
+        let scopedAnomalyCount = (projections.anomalies?.anomalies ?? []).filter { entry in
+            guard scopedWorkflowID != nil else { return true }
+            guard let nodeID = entry.nodeID else { return true }
+            return scopedNodeIDs.contains(nodeID)
+        }.count
+        let freshestGeneratedAt = projections.freshestGeneratedAt
+
+        let documentDigests = [
+            makeArchiveProjectionDocumentDigest(
+                id: "overview",
+                title: "Overview",
+                generatedAt: projections.overview?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: projections.overview.map { "\($0.executionResultCount) executions" } ?? "Missing",
+                detailText: projections.overview.map {
+                    "\($0.workflowCount) workflows, \($0.nodeCount) nodes, \($0.pendingApprovalCount) pending approvals"
+                } ?? "Project-wide posture document has not been loaded.",
+                isAvailable: projections.overview != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "live-run",
+                title: "Live Run",
+                generatedAt: projections.liveRun?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: projections.liveRun.map { "\($0.activeSessionCount) active sessions" } ?? "Missing",
+                detailText: projections.liveRun.map {
+                    "\($0.totalSessionCount) sessions, \($0.inflightDispatchCount) inflight dispatches, \($0.waitingApprovalCount) approval waits"
+                } ?? "No persisted live-run support is currently available.",
+                isAvailable: projections.liveRun != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "sessions",
+                title: "Sessions",
+                generatedAt: projections.sessions?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: "\(scopedSessions.count) scoped sessions",
+                detailText: projections.sessions.map {
+                    "\($0.sessions.count) persisted sessions retained across the current archive scope."
+                } ?? "No session projection document is loaded.",
+                isAvailable: projections.sessions != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "nodes-runtime",
+                title: "Nodes Runtime",
+                generatedAt: projections.nodesRuntime?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: "\(scopedNodes.count) scoped nodes",
+                detailText: projections.nodesRuntime.map {
+                    "\($0.nodes.count) projected runtime-node entries are available."
+                } ?? "No persisted node-runtime projection is loaded.",
+                isAvailable: projections.nodesRuntime != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "threads",
+                title: "Threads",
+                generatedAt: projections.threads?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: "\(projections.threadEntries(for: scopedWorkflowID).count) scoped threads",
+                detailText: projections.threads.map {
+                    "\($0.threads.count) persisted workbench-thread summaries are available for archive fallback."
+                } ?? "No thread projection document is loaded.",
+                isAvailable: projections.threads != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "cron",
+                title: "Cron",
+                generatedAt: projections.cron?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: projections.cronSummary.map {
+                    "\($0.successfulRuns + $0.failedRuns) retained runs"
+                } ?? (projections.cron != nil ? "\((projections.cron?.crons.count ?? 0)) cron scopes" : "Missing"),
+                detailText: projections.cronSummary.map {
+                    "\(Int($0.successRate.rounded()))% success across \($0.successfulRuns) ok and \($0.failedRuns) failed retained cron runs."
+                } ?? (projections.cron != nil
+                    ? "\((projections.cron?.crons.count ?? 0)) persisted cron investigation scopes are available."
+                    : "No cron projection document is loaded."),
+                isAvailable: projections.cron != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "tools",
+                title: "Tools",
+                generatedAt: projections.tools?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: "\(projections.toolEntries().count) retained tools",
+                detailText: projections.tools.map {
+                    "\($0.tools.count) persisted tool investigation scopes are available for archive fallback."
+                } ?? "No tool projection document is loaded.",
+                isAvailable: projections.tools != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "workflow-health",
+                title: "Workflow Health",
+                generatedAt: projections.workflowHealth?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: projections.workflowHealthEntry(for: scopedWorkflowID).map {
+                    "\($0.failedNodeCount) failed nodes"
+                } ?? (projections.workflowHealth != nil ? "Project scope" : "Missing"),
+                detailText: projections.workflowHealthEntry(for: scopedWorkflowID).map {
+                    "\($0.activeNodeCount) active, \($0.waitingApprovalNodeCount) approval-gated, \($0.pendingApprovalCount) pending approvals"
+                } ?? (projections.workflowHealth != nil
+                    ? "\((projections.workflowHealth?.workflows.count ?? 0)) workflow-health entries are available."
+                    : "No workflow-health document is loaded."),
+                isAvailable: projections.workflowHealth != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "traces",
+                title: "Traces",
+                generatedAt: projections.traces?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: "\(scopedTraceCount) scoped traces",
+                detailText: projections.traces.map {
+                    "\($0.traces.count) retained execution traces are available for drill-down."
+                } ?? "No trace archive document is loaded.",
+                isAvailable: projections.traces != nil
+            ),
+            makeArchiveProjectionDocumentDigest(
+                id: "anomalies",
+                title: "Anomalies",
+                generatedAt: projections.anomalies?.generatedAt,
+                freshestGeneratedAt: freshestGeneratedAt,
+                valueText: "\(scopedAnomalyCount) scoped anomalies",
+                detailText: projections.anomalies.map {
+                    "\($0.anomalies.count) retained anomaly records are available in archive support."
+                } ?? "No anomaly archive document is loaded.",
+                isAvailable: projections.anomalies != nil
+            )
+        ]
+
+        let liveRunSummary = projections.liveRunEntry(for: scopedWorkflowID).map {
+            "\($0.activeSessionCount) active of \($0.sessionCount) scoped sessions, \($0.activeNodeCount) active nodes, \($0.failedNodeCount) failed nodes."
+        } ?? projections.liveRun.map {
+            "\($0.activeSessionCount) active of \($0.totalSessionCount) project sessions, \($0.inflightDispatchCount) inflight dispatches."
+        }
+
+        let workflowHealthSummary = projections.workflowHealthEntry(for: scopedWorkflowID).map {
+            "\($0.nodeCount) nodes, \($0.edgeCount) edges, \($0.recentFailureCount) recent failures, \($0.pendingApprovalCount) pending approvals."
+        }
+
+        return OpsCenterArchiveProjectionInvestigation(
+            scopeID: workflow?.id.uuidString ?? projections.projectID.uuidString,
+            scopeTitle: workflow?.name ?? "Project Runtime",
+            projectName: project?.name ?? "Project",
+            freshestGeneratedAt: freshestGeneratedAt,
+            loadedAt: projections.loadedAt,
+            documentDigests: documentDigests,
+            sessionCount: scopedSessions.count,
+            nodeCount: scopedNodes.count,
+            traceCount: scopedTraceCount,
+            anomalyCount: scopedAnomalyCount,
+            liveRunSummary: liveRunSummary,
+            workflowHealthSummary: workflowHealthSummary
+        )
+    }
+
     private static func resolveStatus(
         node: WorkflowNode,
         relatedDispatches: [RuntimeDispatchRecord],
@@ -1138,6 +1371,35 @@ enum OpsCenterSnapshotBuilder {
             return "completed"
         }
         return messages.isEmpty ? "idle" : "active"
+    }
+
+    private static func makeArchiveProjectionDocumentDigest(
+        id: String,
+        title: String,
+        generatedAt: Date?,
+        freshestGeneratedAt: Date?,
+        valueText: String,
+        detailText: String,
+        isAvailable: Bool
+    ) -> OpsCenterArchiveProjectionDocumentDigest {
+        let status: OpsHealthStatus
+        if !isAvailable {
+            status = .warning
+        } else if let generatedAt, let freshestGeneratedAt,
+                  freshestGeneratedAt.timeIntervalSince(generatedAt) > 300 {
+            status = .warning
+        } else {
+            status = .healthy
+        }
+
+        return OpsCenterArchiveProjectionDocumentDigest(
+            id: id,
+            title: title,
+            generatedAt: generatedAt,
+            valueText: valueText,
+            detailText: detailText,
+            status: status
+        )
     }
 
     private static func agentName(for rawAgentID: String, using agentNamesByID: [UUID: String]) -> String {

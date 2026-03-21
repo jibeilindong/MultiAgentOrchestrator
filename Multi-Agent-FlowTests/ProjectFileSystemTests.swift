@@ -151,6 +151,20 @@ private struct AnalyticsAnomalyProjectionFixture: Decodable {
     var anomalies: [Entry]
 }
 
+private struct AnalyticsThreadProjectionFixture: Decodable {
+    struct Entry: Decodable {
+        var threadID: String
+        var workflowID: UUID?
+        var entryAgentName: String?
+        var status: String
+        var pendingApprovalCount: Int
+        var participantNames: [String]
+    }
+
+    var projectID: UUID
+    var threads: [Entry]
+}
+
 private func decodeNDJSON<T: Decodable>(_ type: T.Type, from url: URL) throws -> [T] {
     let data = try Data(contentsOf: url)
     guard let contents = String(data: data, encoding: .utf8), !contents.isEmpty else {
@@ -395,6 +409,52 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertTrue(toolsContents.contains(agent.openClawDefinition.modelIdentifier))
         XCTAssertEqual(importRecordJSON["agentIdentifier"] as? String, agent.openClawDefinition.agentIdentifier)
         XCTAssertEqual(importRecordJSON["memoryBackupPath"] as? String, agent.openClawDefinition.memoryBackupPath)
+    }
+
+    func testSynchronizeProjectPreservesExistingManagedWorkspaceMarkdownOverrides() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        var project = MAProject(name: "Preserve Overrides")
+        var agent = Agent(name: "preserve-agent-1")
+        agent.identity = "reviewer"
+        agent.description = "Initial description"
+        agent.soulMD = "# SOUL\nInitial soul"
+        project.agents = [agent]
+
+        var workflow = project.workflows[0]
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = agent.name
+        workflow.nodes = [node]
+        project.workflows = [workflow]
+
+        let fileSystem = ProjectFileSystem()
+        _ = try fileSystem.synchronizeProject(project, sourceProjectFileURL: nil, under: tempRoot)
+
+        let workspaceRootURL = fileSystem.nodeOpenClawWorkspaceDirectory(
+            for: node.id,
+            workflowID: workflow.id,
+            projectID: project.id,
+            under: tempRoot
+        )
+        let soulURL = workspaceRootURL.appendingPathComponent("SOUL.md", isDirectory: false)
+        let toolsURL = workspaceRootURL.appendingPathComponent("TOOLS.md", isDirectory: false)
+
+        try "# SOUL\nLocally overridden".write(to: soulURL, atomically: true, encoding: .utf8)
+        try "# TOOLS\nLocally overridden".write(to: toolsURL, atomically: true, encoding: .utf8)
+
+        project.agents[0].soulMD = "# SOUL\nProject model changed"
+        project.agents[0].description = "Updated description"
+
+        _ = try fileSystem.synchronizeProject(project, sourceProjectFileURL: nil, under: tempRoot)
+
+        let preservedSoul = try String(contentsOf: soulURL, encoding: .utf8)
+        let preservedTools = try String(contentsOf: toolsURL, encoding: .utf8)
+
+        XCTAssertEqual(preservedSoul, "# SOUL\nLocally overridden")
+        XCTAssertEqual(preservedTools, "# TOOLS\nLocally overridden")
     }
 
     func testSynchronizeProjectMirrorsOpenClawWorkspaceSkillsAndMemoryArtifacts() throws {
@@ -783,6 +843,7 @@ final class ProjectFileSystemTests: XCTestCase {
         let analyticsOverviewURL = projectRoot.appendingPathComponent("analytics/projections/overview.json", isDirectory: false)
         let analyticsTracesURL = projectRoot.appendingPathComponent("analytics/projections/traces.json", isDirectory: false)
         let analyticsAnomaliesURL = projectRoot.appendingPathComponent("analytics/projections/anomalies.json", isDirectory: false)
+        let analyticsThreadsURL = projectRoot.appendingPathComponent("analytics/projections/threads.json", isDirectory: false)
         let workflowIndexURL = projectRoot.appendingPathComponent("indexes/workflows.json", isDirectory: false)
         let nodeIndexURL = projectRoot.appendingPathComponent("indexes/nodes.json", isDirectory: false)
         let threadIndexURL = projectRoot.appendingPathComponent("indexes/threads.json", isDirectory: false)
@@ -807,6 +868,7 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsOverviewURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsTracesURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsAnomaliesURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: analyticsThreadsURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: workflowIndexURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: nodeIndexURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: threadIndexURL.path))
@@ -887,6 +949,10 @@ final class ProjectFileSystemTests: XCTestCase {
             AnalyticsAnomalyProjectionFixture.self,
             from: Data(contentsOf: analyticsAnomaliesURL)
         )
+        let analyticsThreads = try JSONDecoder().decode(
+            AnalyticsThreadProjectionFixture.self,
+            from: Data(contentsOf: analyticsThreadsURL)
+        )
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(logs.count, 1)
         XCTAssertEqual(persistedTasks.map(\.id), [task.id])
@@ -904,6 +970,13 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertEqual(analyticsTraces.traces.first?.executionID, result.id)
         XCTAssertEqual(analyticsAnomalies.projectID, project.id)
         XCTAssertTrue(analyticsAnomalies.anomalies.isEmpty)
+        XCTAssertEqual(analyticsThreads.projectID, project.id)
+        XCTAssertEqual(analyticsThreads.threads.first?.threadID, sessionID)
+        XCTAssertEqual(analyticsThreads.threads.first?.workflowID, workflow.id)
+        XCTAssertEqual(analyticsThreads.threads.first?.entryAgentName, agent.name)
+        XCTAssertEqual(analyticsThreads.threads.first?.status, "approval_pending")
+        XCTAssertEqual(analyticsThreads.threads.first?.pendingApprovalCount, 1)
+        XCTAssertEqual(analyticsThreads.threads.first?.participantNames, [agent.name])
 
         let workflowIndex = try JSONDecoder().decode([WorkflowIndexEntryFixture].self, from: Data(contentsOf: workflowIndexURL))
         let nodeIndex = try JSONDecoder().decode([NodeIndexEntryFixture].self, from: Data(contentsOf: nodeIndexURL))

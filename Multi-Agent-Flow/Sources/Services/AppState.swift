@@ -19,6 +19,12 @@ struct ProjectFileReference: Identifiable, Hashable {
     let url: URL
 }
 
+struct ManagedAgentWorkspaceDocumentReference: Identifiable, Hashable {
+    var id: String { fileName }
+    let fileName: String
+    let absolutePath: String
+}
+
 // 项目文件管理器
 class ProjectManager: ObservableObject {
     struct StorageDirectories {
@@ -1068,7 +1074,6 @@ class AppState: ObservableObject {
 
         do {
             currentProjectFileURL = try projectManager.saveProject(project, to: url)
-            appliedProjectSnapshot = project
             if !projectPendingConfirmation {
                 clearDraftFile(for: project.id, resetDraftStatus: true)
             }
@@ -1306,13 +1311,32 @@ class AppState: ObservableObject {
         return agents
     }
 
+    private func normalizedNodeTitle(
+        for node: WorkflowNode,
+        existingNodes: [WorkflowNode],
+        agentNamesByID: [UUID: String]
+    ) -> String {
+        if node.type == .agent,
+           let agentID = node.agentID,
+           let agentName = agentNamesByID[agentID]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !agentName.isEmpty {
+            return agentName
+        }
+
+        return WorkflowNode.normalizedTitle(
+            requestedTitle: node.title,
+            nodeType: node.type,
+            existingNodes: existingNodes,
+            excludingNodeID: node.id,
+            fallbackFunctionDescription: node.agentID.flatMap { agentNamesByID[$0] }
+        )
+    }
+
     private func normalizeProjectNaming(_ project: MAProject) -> MAProject {
         var normalizedProject = project
         var normalizedAgents: [Agent] = []
-        var previousAgentNamesByID: [UUID: String] = [:]
 
         for agent in project.agents {
-            previousAgentNamesByID[agent.id] = agent.name
             var normalizedAgent = agent
             normalizedAgent.name = Agent.normalizedName(
                 requestedName: agent.name,
@@ -1334,23 +1358,10 @@ class AppState: ObservableObject {
 
             for node in workflow.nodes {
                 var normalizedNode = node
-                let trimmedTitle = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                let fallbackFunctionDescription = node.agentID.flatMap { agentNameByID[$0] }
-                let previousAgentName = node.agentID.flatMap { previousAgentNamesByID[$0] }
-                let requestedTitle: String
-
-                if trimmedTitle.isEmpty || (previousAgentName != nil && trimmedTitle == previousAgentName!) {
-                    requestedTitle = fallbackFunctionDescription ?? trimmedTitle
-                } else {
-                    requestedTitle = trimmedTitle
-                }
-
-                normalizedNode.title = WorkflowNode.normalizedTitle(
-                    requestedTitle: requestedTitle,
-                    nodeType: node.type,
+                normalizedNode.title = normalizedNodeTitle(
+                    for: normalizedNode,
                     existingNodes: normalizedNodes,
-                    excludingNodeID: node.id,
-                    fallbackFunctionDescription: fallbackFunctionDescription
+                    agentNamesByID: agentNameByID
                 )
                 normalizedNodes.append(normalizedNode)
             }
@@ -1513,9 +1524,6 @@ class AppState: ObservableObject {
     }
 
     private func snapshotProjectForPersistence() -> MAProject? {
-        if projectPendingConfirmation {
-            return appliedProjectSnapshot
-        }
         return snapshotCurrentProject()
     }
 
@@ -2273,13 +2281,7 @@ class AppState: ObservableObject {
             var newNode = WorkflowNode(type: .agent)
             newNode.agentID = agentID
             newNode.position = suggestedPosition
-            newNode.title = WorkflowNode.normalizedTitle(
-                requestedTitle: agentName ?? "",
-                nodeType: .agent,
-                existingNodes: workflow.nodes,
-                excludingNodeID: newNode.id,
-                fallbackFunctionDescription: agentName
-            )
+            newNode.title = agentName ?? newNode.title
             createdNodeID = newNode.id
             workflow.nodes.append(newNode)
         }
@@ -2378,12 +2380,10 @@ class AppState: ObservableObject {
             guard let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
             updates(&workflow.nodes[index])
             let updatedNode = workflow.nodes[index]
-            workflow.nodes[index].title = WorkflowNode.normalizedTitle(
-                requestedTitle: updatedNode.title,
-                nodeType: updatedNode.type,
+            workflow.nodes[index].title = normalizedNodeTitle(
+                for: updatedNode,
                 existingNodes: workflow.nodes,
-                excludingNodeID: updatedNode.id,
-                fallbackFunctionDescription: updatedNode.agentID.flatMap { agentNamesByID[$0] }
+                agentNamesByID: agentNamesByID
             )
         }
     }
@@ -2393,12 +2393,10 @@ class AppState: ObservableObject {
         updateMainWorkflow { workflow in
             guard let index = workflow.nodes.firstIndex(where: { $0.id == updatedNode.id }) else { return }
             var normalizedNode = updatedNode
-            normalizedNode.title = WorkflowNode.normalizedTitle(
-                requestedTitle: updatedNode.title,
-                nodeType: updatedNode.type,
+            normalizedNode.title = normalizedNodeTitle(
+                for: normalizedNode,
                 existingNodes: workflow.nodes,
-                excludingNodeID: updatedNode.id,
-                fallbackFunctionDescription: updatedNode.agentID.flatMap { agentNamesByID[$0] }
+                agentNamesByID: agentNamesByID
             )
             workflow.nodes[index] = normalizedNode
         }
@@ -2529,7 +2527,6 @@ class AppState: ObservableObject {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == updatedAgent.id }) else { return }
 
-        let previousAgent = project.agents[index]
         var normalizedAgent = updatedAgent
         normalizedAgent.name = Agent.normalizedName(
             requestedName: updatedAgent.name,
@@ -2545,19 +2542,7 @@ class AppState: ObservableObject {
             for nodeIndex in project.workflows[workflowIndex].nodes.indices {
                 let node = project.workflows[workflowIndex].nodes[nodeIndex]
                 guard node.type == .agent, node.agentID == normalizedAgent.id else { continue }
-
-                let trimmedTitle = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedTitle.isEmpty, trimmedTitle != previousAgent.name {
-                    continue
-                }
-
-                project.workflows[workflowIndex].nodes[nodeIndex].title = WorkflowNode.normalizedTitle(
-                    requestedTitle: normalizedAgent.name,
-                    nodeType: node.type,
-                    existingNodes: project.workflows[workflowIndex].nodes,
-                    excludingNodeID: node.id,
-                    fallbackFunctionDescription: normalizedAgent.name
-                )
+                project.workflows[workflowIndex].nodes[nodeIndex].title = normalizedAgent.name
             }
         }
         markWorkflowConfigurationPending(in: &project)
@@ -2566,9 +2551,152 @@ class AppState: ObservableObject {
         objectWillChange.send()
     }
 
+    private struct ManagedAgentWorkspaceContext {
+        var project: MAProject
+        let agentIndex: Int
+        let workflowID: UUID
+        let nodeID: UUID
+        let workspaceURL: URL
+    }
+
+    private func managedNodeOpenClawWorkspaceURL(for agent: Agent, in project: MAProject) -> URL? {
+        guard let binding = nodeBinding(for: agent.id, in: project) else { return nil }
+
+        return ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+            for: binding.nodeID,
+            workflowID: binding.workflowID,
+            projectID: project.id,
+            under: projectManager.appSupportRootDirectory
+        )
+    }
+
+    private func managedAgentWorkspaceContext(for agentID: UUID) -> ManagedAgentWorkspaceContext? {
+        guard let project = currentProject,
+              let agentIndex = project.agents.firstIndex(where: { $0.id == agentID }),
+              let binding = nodeBinding(for: agentID, in: project) else {
+            return nil
+        }
+
+        return ManagedAgentWorkspaceContext(
+            project: project,
+            agentIndex: agentIndex,
+            workflowID: binding.workflowID,
+            nodeID: binding.nodeID,
+            workspaceURL: ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+                for: binding.nodeID,
+                workflowID: binding.workflowID,
+                projectID: project.id,
+                under: projectManager.appSupportRootDirectory
+            )
+        )
+    }
+
+    private func ensureManagedAgentWorkspaceDocument(
+        named fileName: String,
+        context: ManagedAgentWorkspaceContext
+    ) throws -> URL {
+        guard ProjectFileSystem.shared.isManagedOpenClawWorkspaceMarkdownFile(fileName) else {
+            throw NSError(
+                domain: "AppState.ManagedWorkspace",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Unsupported managed workspace document: \(fileName)"]
+            )
+        }
+
+        try FileManager.default.createDirectory(at: context.workspaceURL, withIntermediateDirectories: true)
+        let documentURL = context.workspaceURL.appendingPathComponent(fileName, isDirectory: false)
+
+        if !FileManager.default.fileExists(atPath: documentURL.path) {
+            let agent = context.project.agents[context.agentIndex]
+            let defaultContent = ProjectFileSystem.shared.defaultManagedOpenClawWorkspaceDocument(
+                named: fileName,
+                agent: agent,
+                nodeID: context.nodeID
+            ) ?? ""
+            try defaultContent.write(to: documentURL, atomically: true, encoding: .utf8)
+        }
+
+        return documentURL
+    }
+
+    func managedAgentWorkspaceDocuments(agentID: UUID) -> [ManagedAgentWorkspaceDocumentReference] {
+        guard let context = managedAgentWorkspaceContext(for: agentID) else { return [] }
+
+        return ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles.compactMap { fileName in
+            guard let documentURL = try? ensureManagedAgentWorkspaceDocument(named: fileName, context: context) else {
+                return nil
+            }
+            return ManagedAgentWorkspaceDocumentReference(
+                fileName: fileName,
+                absolutePath: documentURL.path
+            )
+        }
+    }
+
+    func loadManagedAgentWorkspaceDocument(
+        agentID: UUID,
+        fileName: String
+    ) -> (content: String, sourcePath: String?)? {
+        guard let context = managedAgentWorkspaceContext(for: agentID),
+              let documentURL = try? ensureManagedAgentWorkspaceDocument(named: fileName, context: context),
+              let content = try? String(contentsOf: documentURL, encoding: .utf8) else {
+            return nil
+        }
+
+        return (content, documentURL.path)
+    }
+
+    @discardableResult
+    func persistManagedAgentWorkspaceDocuments(
+        agentID: UUID,
+        documents: [String: String]
+    ) -> (success: Bool, message: String, paths: [String: String]) {
+        guard !documents.isEmpty else {
+            return (true, LocalizedString.text("workflow_apply_no_pending"), [:])
+        }
+
+        guard var context = managedAgentWorkspaceContext(for: agentID) else {
+            return (false, LocalizedString.text("agent_not_found"), [:])
+        }
+
+        var writtenPaths: [String: String] = [:]
+
+        do {
+            for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles where documents[fileName] != nil {
+                let content = documents[fileName] ?? ""
+                let documentURL = try ensureManagedAgentWorkspaceDocument(named: fileName, context: context)
+                try content.write(to: documentURL, atomically: true, encoding: .utf8)
+                writtenPaths[fileName] = documentURL.path
+
+                if fileName == "SOUL.md" {
+                    context.project.agents[context.agentIndex].soulMD = content
+                    context.project.agents[context.agentIndex].openClawDefinition.soulSourcePath = documentURL.path
+                }
+            }
+
+            context.project.agents[context.agentIndex].updatedAt = Date()
+            markWorkflowConfigurationPending(in: &context.project)
+            context.project.updatedAt = Date()
+            currentProject = context.project
+            objectWillChange.send()
+
+            return (true, LocalizedString.text("workflow_apply_pending"), writtenPaths)
+        } catch {
+            return (
+                false,
+                LocalizedString.format("write_project_mirror_failed", error.localizedDescription),
+                [:]
+            )
+        }
+    }
+
     func loadAgentSoulMDFromSource(agentID: UUID) -> (content: String, sourcePath: String?)? {
         guard let project = currentProject,
               let agent = project.agents.first(where: { $0.id == agentID }) else { return nil }
+
+        if let managedDocument = loadManagedAgentWorkspaceDocument(agentID: agentID, fileName: "SOUL.md") {
+            return managedDocument
+        }
 
         if let managedSoulURL = managedNodeOpenClawSoulURL(for: agent, in: project),
            FileManager.default.fileExists(atPath: managedSoulURL.path),
@@ -2593,19 +2721,11 @@ class AppState: ObservableObject {
     }
 
     func persistAgentSoulMDToSource(agentID: UUID, soulMD: String) -> (success: Bool, message: String) {
-        guard var project = currentProject,
-              let index = project.agents.firstIndex(where: { $0.id == agentID }) else {
-            return (false, LocalizedString.text("agent_not_found"))
-        }
-
-        project.agents[index].soulMD = soulMD
-        project.agents[index].updatedAt = Date()
-        markWorkflowConfigurationPending(in: &project)
-        project.updatedAt = Date()
-        currentProject = project
-        objectWillChange.send()
-
-        return (true, LocalizedString.text("workflow_apply_pending"))
+        let result = persistManagedAgentWorkspaceDocuments(
+            agentID: agentID,
+            documents: ["SOUL.md": soulMD]
+        )
+        return (result.success, result.message)
     }
 
     func refreshAgentSoulMDFromSource(agentID: UUID) -> (success: Bool, message: String) {
@@ -2642,6 +2762,10 @@ class AppState: ObservableObject {
     func agentWorkspaceURL(for agentID: UUID) -> URL? {
         guard let project = currentProject,
               let agent = project.agents.first(where: { $0.id == agentID }) else { return nil }
+
+        if let managedWorkspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project) {
+            return managedWorkspaceURL
+        }
 
         if let workspacePath = openClawManager.resolvedWorkspacePath(for: agent) {
             return URL(fileURLWithPath: workspacePath, isDirectory: true)
@@ -2800,17 +2924,6 @@ class AppState: ObservableObject {
 
     private func preferredSoulURL(in rootURL: URL) -> URL {
         preferredOpenClawSoulURL(in: rootURL, maxAncestorDepth: 3)
-    }
-
-    private func managedNodeOpenClawWorkspaceURL(for agent: Agent, in project: MAProject) -> URL? {
-        guard let binding = nodeBinding(for: agent.id, in: project) else { return nil }
-
-        return ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
-            for: binding.nodeID,
-            workflowID: binding.workflowID,
-            projectID: project.id,
-            under: projectManager.appSupportRootDirectory
-        )
     }
 
     private func managedNodeOpenClawSoulURL(for agent: Agent, in project: MAProject) -> URL? {

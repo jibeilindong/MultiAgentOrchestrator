@@ -46,6 +46,7 @@ struct WorkflowEditorView: View {
     @State private var agentCollectionRefreshToken = UUID()
     @State private var hasActivatedListView = false
     @State private var hasActivatedGridView = false
+    @State private var shouldPresentNewNodeProperties = false
     
     enum ConnectionType: String, CaseIterable {
         case unidirectional = "→"
@@ -177,6 +178,7 @@ struct WorkflowEditorView: View {
                     batchEdgeLabel: $batchEdgeLabel,
                     batchEdgeColorHex: $batchEdgeColorHex,
                     batchRequiresApproval: $batchRequiresApproval,
+                    shouldPresentSelectedNodeProperties: $shouldPresentNewNodeProperties,
                     onAssignBatchSources: assignBatchSourcesFromSelection,
                     onAssignBatchTargets: assignBatchTargetsFromSelection,
                     onPreviewBatchConnections: previewBatchConnections,
@@ -242,6 +244,33 @@ struct WorkflowEditorView: View {
             hasActivatedListView = true
             hasActivatedGridView = true
             refreshAgentCollectionSnapshot(immediate: true)
+        }
+        .onChange(of: selectedNodeID) { _, newValue in
+            appState.selectedNodeID = newValue
+
+            guard let workflow = appState.currentProject?.workflows.first,
+                  let nodeID = newValue,
+                  let node = workflow.nodes.first(where: { $0.id == nodeID }),
+                  let agentID = node.agentID else {
+                return
+            }
+
+            selectedAgentID = agentID
+        }
+        .onChange(of: selectedNodeIDs) { _, newValue in
+            if !newValue.isEmpty {
+                appState.selectedNodeID = nil
+            }
+        }
+        .onChange(of: selectedEdgeID) { _, newValue in
+            if newValue != nil {
+                appState.selectedNodeID = nil
+            }
+        }
+        .onChange(of: selectedBoundaryIDs) { _, newValue in
+            if !newValue.isEmpty {
+                appState.selectedNodeID = nil
+            }
         }
         .onChange(of: agentCollectionSignature) { _, _ in
             refreshAgentCollectionSnapshot()
@@ -525,11 +554,17 @@ struct WorkflowEditorView: View {
 
         let sourceAgentIDs = copiedNodes.compactMap(\.agentID)
         let duplicatedAgentIDs = appState.duplicateAgentsForWorkflowPaste(sourceAgentIDs)
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: (appState.currentProject?.agents ?? []).map { ($0.id, $0.name) })
 
         appState.updateMainWorkflow { workflow in
             var nodeIDMapping: [UUID: UUID] = [:]
 
             for sourceNode in copiedNodes {
+                if sourceNode.type == .start,
+                   workflow.nodes.contains(where: { $0.type == .start }) {
+                    continue
+                }
+
                 var newNode = WorkflowNode(type: sourceNode.type)
                 if sourceNode.type == .agent {
                     guard let sourceAgentID = sourceNode.agentID,
@@ -537,11 +572,12 @@ struct WorkflowEditorView: View {
                         continue
                     }
                     newNode.agentID = duplicatedAgentID
+                    newNode.title = agentNamesByID[duplicatedAgentID] ?? sourceNode.title
                 } else {
                     newNode.agentID = sourceNode.agentID
+                    newNode.title = sourceNode.title
                 }
                 newNode.position = CGPoint(x: sourceNode.position.x + 60, y: sourceNode.position.y + 60)
-                newNode.title = sourceNode.title
                 newNode.displayColorHex = sourceNode.displayColorHex
                 newNode.conditionExpression = sourceNode.conditionExpression
                 newNode.loopEnabled = sourceNode.loopEnabled
@@ -638,7 +674,18 @@ struct WorkflowEditorView: View {
     private func addNode(templateID: String? = nil) {
         let agent = appState.addNewAgent(templateID: templateID)
         guard let agent else { return }
-        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+        let nodeID = appState.focusAgentNode(
+            agentID: agent.id,
+            createIfMissing: true,
+            suggestedPosition: CGPoint(x: 300, y: 200)
+        )
+
+        selectedNodeID = nodeID
+        selectedNodeIDs.removeAll()
+        selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
+        selectedAgentID = agent.id
+        shouldPresentNewNodeProperties = nodeID != nil
     }
 
     private func addBoundaryFromSelection() {
@@ -1337,15 +1384,18 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
-                toolbarSaveStatusView
-                    .padding(.top, 8)
-            } else if appState.hasPendingWorkflowConfiguration {
-                workflowApplyStatusView
-                    .padding(.top, 8)
-            } else if let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
-                workflowAppliedStatusView(lastApplied)
-                    .padding(.top, 8)
+            if appState.isSavingDraft || appState.lastDraftSaveTime != nil || appState.hasPendingWorkflowConfiguration || appState.lastAppliedWorkflowConfigurationAt != nil {
+                HStack(spacing: 8) {
+                    if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
+                        toolbarSaveStatusView
+                    }
+                    if appState.hasPendingWorkflowConfiguration {
+                        workflowApplyStatusView
+                    } else if let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
+                        workflowAppliedStatusView(lastApplied)
+                    }
+                }
+                .padding(.top, 8)
             }
         }
         .padding(.horizontal, 16)
@@ -3423,6 +3473,7 @@ struct ArchitectureView: View {
     @Binding var batchEdgeLabel: String
     @Binding var batchEdgeColorHex: String?
     @Binding var batchRequiresApproval: Bool
+    @Binding var shouldPresentSelectedNodeProperties: Bool
     var onAssignBatchSources: () -> Void
     var onAssignBatchTargets: () -> Void
     var onPreviewBatchConnections: () -> Void
@@ -3519,6 +3570,18 @@ struct ArchitectureView: View {
                     .transition(.move(edge: .trailing))
                 }
             }
+        }
+        .onChange(of: selectedNodeID) { _, newValue in
+            guard shouldPresentSelectedNodeProperties else { return }
+            guard let workflow = appState.currentProject?.workflows.first,
+                  let nodeID = newValue,
+                  let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
+                shouldPresentSelectedNodeProperties = false
+                return
+            }
+
+            presentNodePropertyPanel(for: node)
+            shouldPresentSelectedNodeProperties = false
         }
     }
     
@@ -3931,13 +3994,15 @@ struct NodePropertyPanel: View {
     
     @State private var nodeTitle: String = ""
     @State private var agentDescription: String = ""
-    @State private var soulConfig: String = ""
     @State private var conditionExpression: String = ""
     @State private var loopEnabled: Bool = false
     @State private var maxIterations: Double = 1
     @State private var nodeDisplayColorHex: String?
     @State private var reloadStatus: String?
-    @State private var soulSourcePath: String?
+    @State private var managedConfigFiles: [ManagedAgentWorkspaceDocumentReference] = []
+    @State private var selectedConfigFileName: String = "SOUL.md"
+    @State private var selectedConfigFilePath: String?
+    @State private var managedConfigDrafts: [String: String] = [:]
     @State private var outgoingEdgeDrafts: [UUID: EdgeDraft] = [:]
     
     var body: some View {
@@ -4020,40 +4085,43 @@ struct NodePropertyPanel: View {
                        let agent = getAgent(id: agentID) {
                         GroupBox(LocalizedString.format("agent_section_title", agent.name)) {
                             VStack(alignment: .leading, spacing: 14) {
-                                TextField(LocalizedString.name, text: $nodeTitle)
-                                    .textFieldStyle(.roundedBorder)
-
-                                TextField(LocalizedString.description, text: $agentDescription)
-                                    .textFieldStyle(.roundedBorder)
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(LocalizedString.text("soul_source_path"))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-
-                                    if let soulSourcePath {
-                                        LabeledContent(LocalizedString.text("path_label")) {
-                                            Text(soulSourcePath)
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                                .multilineTextAlignment(.trailing)
-                                                .textSelection(.enabled)
-                                        }
-                                    } else {
-                                        Text(LocalizedString.text("no_soul_file_project_cache"))
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
+                                LabeledContent(LocalizedString.name) {
+                                    Text(agent.name)
+                                        .foregroundColor(.primary)
                                 }
 
-                                TextEditor(text: $soulConfig)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .frame(minHeight: 380, idealHeight: 440, maxHeight: 560)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                                    )
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack(spacing: 12) {
+                                        Picker("Config File", selection: $selectedConfigFileName) {
+                                            ForEach(managedConfigFiles, id: \.fileName) { file in
+                                                Text(file.fileName).tag(file.fileName)
+                                            }
+                                        }
+                                        .pickerStyle(.menu)
+                                        .frame(maxWidth: 220, alignment: .leading)
+                                        .onChange(of: selectedConfigFileName) { _, newValue in
+                                            loadManagedConfigDraft(agentID: agentID, fileName: newValue)
+                                        }
 
+                                        Spacer()
+                                    }
+
+                                    if let selectedConfigFilePath {
+                                        Text(selectedConfigFilePath)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .textSelection(.enabled)
+                                    }
+
+                                    TextEditor(text: managedConfigTextBinding)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(minHeight: 380, idealHeight: 440, maxHeight: 560)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                                        )
+                                }
+                                
                                 if let reloadStatus {
                                     Text(reloadStatus)
                                         .font(.caption)
@@ -4067,7 +4135,7 @@ struct NodePropertyPanel: View {
                 .padding()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            
+
             HStack {
                 Button(LocalizedString.cancel) {
                     isPresented = false
@@ -4078,8 +4146,7 @@ struct NodePropertyPanel: View {
                 Spacer()
                 
                 Button(LocalizedString.text("apply")) {
-                saveChanges()
-                isPresented = false
+                    saveChanges()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -4103,9 +4170,39 @@ struct NodePropertyPanel: View {
             loadNodeData()
         }
     }
-    
+
+    private var managedConfigTextBinding: Binding<String> {
+        Binding(
+            get: { managedConfigDrafts[selectedConfigFileName] ?? "" },
+            set: { managedConfigDrafts[selectedConfigFileName] = $0 }
+        )
+    }
+
     private func getAgent(id: UUID) -> Agent? {
         appState.currentProject?.agents.first { $0.id == id }
+    }
+
+    private func loadManagedConfigDraft(agentID: UUID, fileName: String) {
+        if let existingDraft = managedConfigDrafts[fileName], !existingDraft.isEmpty,
+           let file = managedConfigFiles.first(where: { $0.fileName == fileName }) {
+            selectedConfigFilePath = file.absolutePath
+            return
+        }
+
+        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agentID, fileName: fileName) {
+            managedConfigDrafts[fileName] = loaded.content
+            selectedConfigFilePath = loaded.sourcePath
+        } else {
+            managedConfigDrafts[fileName] = ""
+            selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
+        }
+    }
+
+    private func preferredConfigFileName() -> String {
+        if managedConfigFiles.contains(where: { $0.fileName == "SOUL.md" }) {
+            return "SOUL.md"
+        }
+        return managedConfigFiles.first?.fileName ?? "SOUL.md"
     }
 
     private func loadNodeData() {
@@ -4115,55 +4212,46 @@ struct NodePropertyPanel: View {
         loopEnabled = node.loopEnabled
         maxIterations = Double(max(1, node.maxIterations))
         nodeDisplayColorHex = CanvasStylePalette.normalizedHex(node.displayColorHex)
+        managedConfigFiles = []
+        managedConfigDrafts = [:]
+        selectedConfigFilePath = nil
+        reloadStatus = nil
 
         if let agentID = node.agentID,
            let agent = getAgent(id: agentID) {
-            if nodeTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                nodeTitle = agent.name
-            }
+            nodeTitle = agent.name
             agentDescription = agent.description
-            if let loaded = appState.loadAgentSoulMDFromSource(agentID: agentID) {
-                soulConfig = loaded.content
-                soulSourcePath = loaded.sourcePath
-            } else {
-                soulConfig = agent.soulMD
-                soulSourcePath = nil
-            }
+            managedConfigFiles = appState.managedAgentWorkspaceDocuments(agentID: agentID)
+            selectedConfigFileName = preferredConfigFileName()
+            loadManagedConfigDraft(agentID: agentID, fileName: selectedConfigFileName)
         }
     }
     
     private func saveChanges() {
-        let existingNodes = appState.currentProject?.workflows.first?.nodes ?? []
-        let normalizedTitle = WorkflowNode.normalizedTitle(
-            requestedTitle: nodeTitle,
-            nodeType: node.type,
-            existingNodes: existingNodes,
-            excludingNodeID: node.id
-        )
         var updatedNode = node
-        updatedNode.title = normalizedTitle
+        if node.type != .agent {
+            let existingNodes = appState.currentProject?.workflows.first?.nodes ?? []
+            updatedNode.title = WorkflowNode.normalizedTitle(
+                requestedTitle: nodeTitle,
+                nodeType: node.type,
+                existingNodes: existingNodes,
+                excludingNodeID: node.id
+            )
+        }
+        updatedNode.conditionExpression = conditionExpression
+        updatedNode.loopEnabled = loopEnabled
+        updatedNode.maxIterations = Int(maxIterations.rounded())
         updatedNode.displayColorHex = CanvasStylePalette.normalizedHex(nodeDisplayColorHex)
         appState.updateNode(updatedNode)
 
-        if let agentID = node.agentID,
-           var agent = getAgent(id: agentID) {
-            let fileResult = appState.persistAgentSoulMDToSource(agentID: agentID, soulMD: soulConfig)
-            if !fileResult.success {
-                reloadStatus = fileResult.message
-            } else {
-                soulSourcePath = appState.loadAgentSoulMDFromSource(agentID: agentID)?.sourcePath
-            }
-            agent.name = normalizedTitle
-            agent.description = agentDescription
-            agent.soulMD = soulConfig
-            agent.openClawDefinition.soulSourcePath = soulSourcePath ?? agent.openClawDefinition.soulSourcePath
-            agent.updatedAt = Date()
-            appState.updateAgent(agent, reload: true)
+        if let agentID = node.agentID {
+            let fileResult = appState.persistManagedAgentWorkspaceDocuments(
+                agentID: agentID,
+                documents: managedConfigDrafts
+            )
+            reloadStatus = fileResult.message
             if fileResult.success {
-                reloadStatus = LocalizedString.format(
-                    "reload_requested_at",
-                    Date.now.formatted(date: .omitted, time: .shortened)
-                )
+                selectedConfigFilePath = fileResult.paths[selectedConfigFileName] ?? selectedConfigFilePath
             }
         }
     }
@@ -4645,7 +4733,7 @@ struct AgentContextMenu: View {
         if let project = appState.currentProject,
            project.agents.contains(where: { $0.id == agent.id }) {
             // Show agent details in properties panel
-            appState.selectedNodeID = agent.id
+            _ = appState.focusAgentNode(agentID: agent.id, createIfMissing: true, suggestedPosition: .zero)
             showToastMessage(LocalizedString.format("opened_agent", agent.name), type: .info)
         }
     }
@@ -4752,10 +4840,10 @@ struct AgentEditSheet: View {
     @Binding var isPresented: Bool
     
     @State private var name: String = ""
-    @State private var description: String = ""
-    @State private var soulMD: String = ""
-    @State private var identity: String = ""
-    @State private var soulSourcePath: String?
+    @State private var managedConfigFiles: [ManagedAgentWorkspaceDocumentReference] = []
+    @State private var selectedConfigFileName: String = "SOUL.md"
+    @State private var selectedConfigFilePath: String?
+    @State private var managedConfigDrafts: [String: String] = [:]
     @State private var statusMessage: String?
     @State private var statusIsError = false
     
@@ -4765,7 +4853,7 @@ struct AgentEditSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(LocalizedString.format("agent_edit_title", agent.name))
                         .font(.headline)
-                    Text(LocalizedString.text("agent_editor_real_source_hint"))
+                    Text("Editing node-local managed config files for this agent.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -4785,42 +4873,38 @@ struct AgentEditSheet: View {
                         VStack(alignment: .leading, spacing: 12) {
                             TextField(LocalizedString.name, text: $name)
                                 .textFieldStyle(.roundedBorder)
-
-                            TextField(LocalizedString.text("identity"), text: $identity)
-                                .textFieldStyle(.roundedBorder)
-
-                            TextField(LocalizedString.description, text: $description)
-                                .textFieldStyle(.roundedBorder)
+                            Text("Node title follows the agent name and is not edited separately.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                         .padding(8)
                     }
 
-                    GroupBox(LocalizedString.text("soul_source")) {
+                    GroupBox("Managed Config") {
                         VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(soulSourcePath ?? LocalizedString.text("no_real_soul_detected"))
-                                        .font(.caption)
-                                        .foregroundColor(soulSourcePath == nil ? .orange : .secondary)
-                                        .textSelection(.enabled)
+                            HStack(spacing: 12) {
+                                Picker("Config File", selection: $selectedConfigFileName) {
+                                    ForEach(managedConfigFiles, id: \.fileName) { file in
+                                        Text(file.fileName).tag(file.fileName)
+                                    }
                                 }
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: 240, alignment: .leading)
+                                .onChange(of: selectedConfigFileName) { _, newValue in
+                                    loadManagedConfigDraft(fileName: newValue)
+                                }
+
                                 Spacer()
                             }
 
-                            HStack(spacing: 10) {
-                                Button(LocalizedString.text("reload_from_disk")) {
-                                    reloadFromSource()
-                                }
-                                .buttonStyle(.bordered)
-
-                                Button(LocalizedString.text("reveal_in_finder")) {
-                                    revealSource()
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(soulSourcePath == nil)
+                            if let selectedConfigFilePath {
+                                Text(selectedConfigFilePath)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
                             }
 
-                            TextEditor(text: $soulMD)
+                            TextEditor(text: managedConfigTextBinding)
                                 .font(.system(.body, design: .monospaced))
                                 .frame(minHeight: 320)
                                 .overlay(
@@ -4864,46 +4948,42 @@ struct AgentEditSheet: View {
             loadAgentData()
         }
     }
+
+    private var managedConfigTextBinding: Binding<String> {
+        Binding(
+            get: { managedConfigDrafts[selectedConfigFileName] ?? "" },
+            set: { managedConfigDrafts[selectedConfigFileName] = $0 }
+        )
+    }
     
     private func loadAgentData() {
         if let project = appState.currentProject,
            let a = project.agents.first(where: { $0.id == agent.id }) {
             name = a.name
-            identity = a.identity
-            description = a.description
-            if let loaded = appState.loadAgentSoulMDFromSource(agentID: a.id) {
-                soulMD = loaded.content
-                soulSourcePath = loaded.sourcePath
-                if loaded.sourcePath != nil {
-                    statusMessage = LocalizedString.text("loaded_real_soul_source")
-                    statusIsError = false
-                } else {
-                    statusMessage = LocalizedString.text("no_soul_source_found_editing_cache")
-                    statusIsError = true
-                }
-            } else {
-                soulMD = a.soulMD
-                soulSourcePath = nil
-                statusMessage = LocalizedString.text("failed_resolve_current_agent")
-                statusIsError = true
-            }
-        }
-    }
-    
-    private func reloadFromSource() {
-        let result = appState.refreshAgentSoulMDFromSource(agentID: agent.id)
-        statusMessage = result.message
-        statusIsError = !result.success
-
-        if result.success, let loaded = appState.loadAgentSoulMDFromSource(agentID: agent.id) {
-            soulMD = loaded.content
-            soulSourcePath = loaded.sourcePath
+            managedConfigFiles = appState.managedAgentWorkspaceDocuments(agentID: a.id)
+            selectedConfigFileName = managedConfigFiles.contains(where: { $0.fileName == "SOUL.md" })
+                ? "SOUL.md"
+                : (managedConfigFiles.first?.fileName ?? "SOUL.md")
+            loadManagedConfigDraft(fileName: selectedConfigFileName)
+            statusMessage = nil
+            statusIsError = false
         }
     }
 
-    private func revealSource() {
-        guard let soulSourcePath else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: soulSourcePath)])
+    private func loadManagedConfigDraft(fileName: String) {
+        if let existingDraft = managedConfigDrafts[fileName], !existingDraft.isEmpty,
+           let file = managedConfigFiles.first(where: { $0.fileName == fileName }) {
+            selectedConfigFilePath = file.absolutePath
+            return
+        }
+
+        if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agent.id, fileName: fileName) {
+            managedConfigDrafts[fileName] = loaded.content
+            selectedConfigFilePath = loaded.sourcePath
+        } else {
+            managedConfigDrafts[fileName] = ""
+            selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
+        }
     }
 
     private func saveChanges() {
@@ -4913,22 +4993,20 @@ struct AgentEditSheet: View {
             return
         }
 
-        let normalizedIdentity = identity.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.name = name
-        updatedAgent.identity = normalizedIdentity.isEmpty ? "generalist" : normalizedIdentity
-        updatedAgent.description = description
-        updatedAgent.soulMD = soulMD
+        updatedAgent.soulMD = managedConfigDrafts["SOUL.md"] ?? updatedAgent.soulMD
         updatedAgent.updatedAt = Date()
 
-        let fileResult = appState.persistAgentSoulMDToSource(agentID: updatedAgent.id, soulMD: soulMD)
+        let fileResult = appState.persistManagedAgentWorkspaceDocuments(
+            agentID: updatedAgent.id,
+            documents: managedConfigDrafts
+        )
         if fileResult.success {
-            let persistedPath = appState.loadAgentSoulMDFromSource(agentID: updatedAgent.id)?.sourcePath
-            updatedAgent.openClawDefinition.soulSourcePath = persistedPath
-            soulSourcePath = persistedPath
+            selectedConfigFilePath = fileResult.paths[selectedConfigFileName] ?? selectedConfigFilePath
         }
 
         appState.updateAgent(updatedAgent, reload: true)
-        statusMessage = fileResult.success ? LocalizedString.text("saved_agent_metadata_real_source") : fileResult.message
+        statusMessage = fileResult.success ? LocalizedString.text("workflow_apply_pending") : fileResult.message
         statusIsError = !fileResult.success
         if fileResult.success {
             isPresented = false

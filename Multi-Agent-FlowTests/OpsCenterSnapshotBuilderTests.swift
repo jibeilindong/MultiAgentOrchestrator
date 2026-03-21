@@ -129,6 +129,330 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
         XCTAssertTrue(investigation.relatedNodes.contains(where: { $0.id == reviewerNode.id }))
     }
 
+    func testBuildArchiveProjectionInvestigationScopesProjectionBundle() throws {
+        var project = MAProject(name: "Ops Center Projection Test")
+
+        let agent = Agent(name: "Archive Agent")
+        project.agents = [agent]
+
+        var workflow = project.workflows[0]
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = "Archive Node"
+        workflow.nodes = [node]
+        workflow.edges = []
+        project.workflows = [workflow]
+
+        let now = Date(timeIntervalSince1970: 1_710_300_000)
+        let executionID = UUID()
+        let sessionID = "projection-thread"
+
+        let bundle = OpsCenterProjectionBundle(
+            projectID: project.id,
+            loadedAt: now.addingTimeInterval(30),
+            overview: OpsCenterProjectionOverviewDocument(
+                projectID: project.id,
+                generatedAt: now,
+                workflowCount: 1,
+                nodeCount: 1,
+                agentCount: 1,
+                taskCount: 2,
+                messageCount: 3,
+                executionResultCount: 4,
+                completedExecutionCount: 3,
+                failedExecutionCount: 1,
+                warningLogCount: 1,
+                errorLogCount: 1,
+                pendingApprovalCount: 2
+            ),
+            traces: OpsCenterProjectionTraceDocument(
+                projectID: project.id,
+                generatedAt: now,
+                traces: [
+                    OpsCenterProjectionTraceEntry(
+                        executionID: executionID,
+                        nodeID: node.id,
+                        agentID: agent.id,
+                        sessionID: sessionID,
+                        status: .failed,
+                        outputType: .runtimeLog,
+                        startedAt: now.addingTimeInterval(-60),
+                        completedAt: now.addingTimeInterval(-30),
+                        duration: 30,
+                        protocolRepairCount: 1,
+                        previewText: "Projection trace preview"
+                    )
+                ]
+            ),
+            anomalies: OpsCenterProjectionAnomalyDocument(
+                projectID: project.id,
+                generatedAt: now,
+                anomalies: [
+                    OpsCenterProjectionAnomalyEntry(
+                        id: "projection-anomaly",
+                        source: "runtime",
+                        severity: "error",
+                        message: "Projection retained a runtime failure",
+                        nodeID: node.id,
+                        agentID: agent.id,
+                        sessionID: sessionID,
+                        timestamp: now.addingTimeInterval(-20)
+                    )
+                ]
+            ),
+            liveRun: OpsCenterProjectionLiveRunDocument(
+                projectID: project.id,
+                generatedAt: now,
+                runtimeSessionID: sessionID,
+                activeSessionCount: 1,
+                totalSessionCount: 1,
+                queuedDispatchCount: 0,
+                inflightDispatchCount: 1,
+                failedDispatchCount: 1,
+                waitingApprovalCount: 1,
+                latestErrorText: "Projection error text",
+                activeWorkflowCount: 1,
+                workflows: [
+                    OpsCenterProjectionWorkflowLiveRunEntry(
+                        workflowID: workflow.id,
+                        workflowName: workflow.name,
+                        sessionCount: 1,
+                        activeSessionCount: 1,
+                        activeNodeCount: 1,
+                        failedNodeCount: 1,
+                        waitingApprovalNodeCount: 1,
+                        lastUpdatedAt: now
+                    )
+                ]
+            ),
+            sessions: OpsCenterProjectionSessionsDocument(
+                projectID: project.id,
+                generatedAt: now,
+                sessions: [
+                    OpsCenterProjectionSessionEntry(
+                        sessionID: sessionID,
+                        workflowIDs: [workflow.id.uuidString],
+                        messageCount: 3,
+                        taskCount: 2,
+                        eventCount: 1,
+                        dispatchCount: 1,
+                        receiptCount: 1,
+                        queuedDispatchCount: 0,
+                        inflightDispatchCount: 1,
+                        completedDispatchCount: 0,
+                        failedDispatchCount: 1,
+                        latestFailureText: "Retained failure",
+                        lastUpdatedAt: now,
+                        isProjectRuntimeSession: true
+                    )
+                ]
+            ),
+            nodesRuntime: OpsCenterProjectionNodesRuntimeDocument(
+                projectID: project.id,
+                generatedAt: now,
+                nodes: [
+                    OpsCenterProjectionNodeRuntimeEntry(
+                        workflowID: workflow.id,
+                        workflowName: workflow.name,
+                        nodeID: node.id,
+                        title: node.title,
+                        agentID: agent.id,
+                        agentName: agent.name,
+                        status: "failed",
+                        incomingEdgeCount: 0,
+                        outgoingEdgeCount: 0,
+                        relatedSessionIDs: [sessionID],
+                        queuedDispatchCount: 0,
+                        inflightDispatchCount: 1,
+                        completedDispatchCount: 0,
+                        failedDispatchCount: 1,
+                        waitingApprovalCount: 1,
+                        receiptCount: 1,
+                        averageDuration: 30,
+                        lastUpdatedAt: now,
+                        latestDetail: "Projection node failed"
+                    )
+                ]
+            ),
+            threads: OpsCenterProjectionThreadsDocument(
+                projectID: project.id,
+                generatedAt: now,
+                threads: [
+                    OpsCenterProjectionThreadEntry(
+                        threadID: sessionID,
+                        sessionID: sessionID,
+                        workflowID: workflow.id,
+                        workflowName: workflow.name,
+                        entryAgentName: agent.name,
+                        participantNames: [agent.name],
+                        status: "approval_pending",
+                        startedAt: now.addingTimeInterval(-90),
+                        lastUpdatedAt: now,
+                        messageCount: 3,
+                        taskCount: 2,
+                        pendingApprovalCount: 1,
+                        blockedTaskCount: 0,
+                        activeTaskCount: 1,
+                        completedTaskCount: 1,
+                        failedMessageCount: 0
+                    )
+                ]
+            ),
+            cron: OpsCenterProjectionCronDocument(
+                projectID: project.id,
+                generatedAt: now,
+                summary: OpsCenterProjectionCronSummary(
+                    successRate: 50,
+                    successfulRuns: 1,
+                    failedRuns: 1,
+                    latestRunAt: now
+                ),
+                crons: [
+                    OpsCenterProjectionCronEntry(
+                        cronName: "nightly-sync",
+                        summary: OpsCenterProjectionCronSummary(
+                            successRate: 50,
+                            successfulRuns: 1,
+                            failedRuns: 1,
+                            latestRunAt: now
+                        ),
+                        historySeries: [
+                            OpsCenterProjectionMetricSeries(
+                                metricID: OpsHistoryMetric.cronReliability.rawValue,
+                                points: [
+                                    OpsCenterProjectionMetricPoint(date: now.addingTimeInterval(-86_400), value: 0),
+                                    OpsCenterProjectionMetricPoint(date: now, value: 100)
+                                ]
+                            )
+                        ],
+                        runs: [
+                            OpsCenterProjectionCronRunEntry(
+                                id: "cron-run-1",
+                                cronName: "nightly-sync",
+                                statusText: "Completed",
+                                runAt: now,
+                                duration: 42,
+                                deliveryStatus: "delivered",
+                                summaryText: "Projection cron completed",
+                                jobID: "job-1",
+                                runID: sessionID,
+                                sourcePath: "/tmp/cron.jsonl"
+                            )
+                        ],
+                        anomalies: [
+                            OpsCenterProjectionScopedAnomalyEntry(
+                                id: "cron-anomaly-1",
+                                title: "nightly-sync",
+                                sourceLabel: "Cron",
+                                detailText: "Projection cron timed out",
+                                fullDetailText: "Projection cron timed out while draining work.",
+                                occurredAt: now.addingTimeInterval(-30),
+                                status: OpsHealthStatus.warning.rawValue,
+                                statusText: "Timeout",
+                                sourceService: nil,
+                                linkedSpanID: nil,
+                                relatedRunID: sessionID,
+                                relatedJobID: "job-1",
+                                relatedSourcePath: "/tmp/cron.jsonl"
+                            )
+                        ]
+                    )
+                ]
+            ),
+            tools: OpsCenterProjectionToolsDocument(
+                projectID: project.id,
+                generatedAt: now,
+                tools: [
+                    OpsCenterProjectionToolEntry(
+                        toolIdentifier: "search.web",
+                        historySeries: [
+                            OpsCenterProjectionMetricSeries(
+                                metricID: OpsHistoryMetric.workflowReliability.rawValue,
+                                points: [
+                                    OpsCenterProjectionMetricPoint(date: now.addingTimeInterval(-86_400), value: 0),
+                                    OpsCenterProjectionMetricPoint(date: now, value: 100)
+                                ]
+                            )
+                        ],
+                        spans: [
+                            OpsCenterProjectionToolSpanEntry(
+                                id: executionID,
+                                title: "Search Tool",
+                                service: "openclaw.external-tool-result",
+                                statusText: "error",
+                                agentName: agent.name,
+                                startedAt: now.addingTimeInterval(-40),
+                                duration: 3,
+                                summaryText: "Search timed out"
+                            )
+                        ],
+                        anomalies: [
+                            OpsCenterProjectionScopedAnomalyEntry(
+                                id: "tool-anomaly-1",
+                                title: "Search Tool",
+                                sourceLabel: "Tool",
+                                detailText: "Search timed out",
+                                fullDetailText: "Search timed out against upstream provider.",
+                                occurredAt: now.addingTimeInterval(-35),
+                                status: OpsHealthStatus.critical.rawValue,
+                                statusText: "error",
+                                sourceService: "search.web",
+                                linkedSpanID: executionID,
+                                relatedRunID: nil,
+                                relatedJobID: nil,
+                                relatedSourcePath: nil
+                            )
+                        ]
+                    )
+                ]
+            ),
+            workflowHealth: OpsCenterProjectionWorkflowHealthDocument(
+                projectID: project.id,
+                generatedAt: now,
+                workflows: [
+                    OpsCenterProjectionWorkflowHealthEntry(
+                        workflowID: workflow.id,
+                        workflowName: workflow.name,
+                        nodeCount: 1,
+                        edgeCount: 0,
+                        sessionCount: 1,
+                        activeNodeCount: 1,
+                        failedNodeCount: 1,
+                        waitingApprovalNodeCount: 1,
+                        completedNodeCount: 0,
+                        idleNodeCount: 0,
+                        recentFailureCount: 1,
+                        pendingApprovalCount: 1,
+                        lastUpdatedAt: now
+                    )
+                ]
+            )
+        )
+
+        let investigation = try XCTUnwrap(
+            OpsCenterSnapshotBuilder.buildArchiveProjectionInvestigation(
+                project: project,
+                workflow: workflow,
+                projections: bundle
+            )
+        )
+
+        XCTAssertEqual(investigation.scopeTitle, workflow.name)
+        XCTAssertEqual(investigation.projectName, project.name)
+        XCTAssertEqual(investigation.sessionCount, 1)
+        XCTAssertEqual(investigation.nodeCount, 1)
+        XCTAssertEqual(investigation.traceCount, 1)
+        XCTAssertEqual(investigation.anomalyCount, 1)
+        XCTAssertEqual(investigation.documentDigests.count, 10)
+        XCTAssertTrue(investigation.documentDigests.contains(where: { $0.title == "Traces" && $0.valueText == "1 scoped traces" }))
+        XCTAssertTrue(investigation.documentDigests.contains(where: { $0.title == "Threads" && $0.valueText == "1 scoped threads" }))
+        XCTAssertTrue(investigation.documentDigests.contains(where: { $0.title == "Cron" && $0.valueText == "2 retained runs" }))
+        XCTAssertTrue(investigation.documentDigests.contains(where: { $0.title == "Tools" && $0.valueText == "1 retained tools" }))
+        XCTAssertEqual(investigation.freshestGeneratedAt, now)
+        XCTAssertTrue(investigation.liveRunSummary?.contains("1 active of 1 scoped sessions") == true)
+        XCTAssertTrue(investigation.workflowHealthSummary?.contains("1 recent failures") == true)
+    }
+
     func testBuildRouteInvestigationFocusesOnDirectRouteTraffic() throws {
         var project = MAProject(name: "Ops Center Route Test")
 
@@ -388,6 +712,116 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
             to: fileSystem.analyticsNodeRuntimeProjectionURL(for: projectID, under: tempRoot),
             encoder: encoder
         )
+        try writeJSON(
+            OpsCenterProjectionThreadsDocument(
+                projectID: projectID,
+                generatedAt: generatedAt.addingTimeInterval(15),
+                threads: [
+                    OpsCenterProjectionThreadEntry(
+                        threadID: "session-a",
+                        sessionID: "session-a",
+                        workflowID: workflowID,
+                        workflowName: "Main Workflow",
+                        entryAgentName: "Reviewer Agent",
+                        participantNames: ["Reviewer Agent"],
+                        status: "active",
+                        startedAt: generatedAt,
+                        lastUpdatedAt: generatedAt.addingTimeInterval(25),
+                        messageCount: 2,
+                        taskCount: 1,
+                        pendingApprovalCount: 0,
+                        blockedTaskCount: 0,
+                        activeTaskCount: 1,
+                        completedTaskCount: 0,
+                        failedMessageCount: 0
+                    )
+                ]
+            ),
+            to: fileSystem.analyticsThreadProjectionURL(for: projectID, under: tempRoot),
+            encoder: encoder
+        )
+        try writeJSON(
+            OpsCenterProjectionCronDocument(
+                projectID: projectID,
+                generatedAt: generatedAt.addingTimeInterval(18),
+                summary: OpsCenterProjectionCronSummary(
+                    successRate: 50,
+                    successfulRuns: 1,
+                    failedRuns: 1,
+                    latestRunAt: generatedAt.addingTimeInterval(18)
+                ),
+                crons: [
+                    OpsCenterProjectionCronEntry(
+                        cronName: "nightly-sync",
+                        summary: OpsCenterProjectionCronSummary(
+                            successRate: 50,
+                            successfulRuns: 1,
+                            failedRuns: 1,
+                            latestRunAt: generatedAt.addingTimeInterval(18)
+                        ),
+                        historySeries: [
+                            OpsCenterProjectionMetricSeries(
+                                metricID: OpsHistoryMetric.cronReliability.rawValue,
+                                points: [
+                                    OpsCenterProjectionMetricPoint(date: generatedAt, value: 50)
+                                ]
+                            )
+                        ],
+                        runs: [
+                            OpsCenterProjectionCronRunEntry(
+                                id: "cron-run-1",
+                                cronName: "nightly-sync",
+                                statusText: "Completed",
+                                runAt: generatedAt.addingTimeInterval(18),
+                                duration: 12,
+                                deliveryStatus: "delivered",
+                                summaryText: "Cron completed",
+                                jobID: "job-1",
+                                runID: "run-1",
+                                sourcePath: "/tmp/nightly.jsonl"
+                            )
+                        ],
+                        anomalies: []
+                    )
+                ]
+            ),
+            to: fileSystem.analyticsCronProjectionURL(for: projectID, under: tempRoot),
+            encoder: encoder
+        )
+        try writeJSON(
+            OpsCenterProjectionToolsDocument(
+                projectID: projectID,
+                generatedAt: generatedAt.addingTimeInterval(20),
+                tools: [
+                    OpsCenterProjectionToolEntry(
+                        toolIdentifier: "search.web",
+                        historySeries: [
+                            OpsCenterProjectionMetricSeries(
+                                metricID: OpsHistoryMetric.workflowReliability.rawValue,
+                                points: [
+                                    OpsCenterProjectionMetricPoint(date: generatedAt, value: 100)
+                                ]
+                            )
+                        ],
+                        spans: [
+                            OpsCenterProjectionToolSpanEntry(
+                                id: UUID(uuidString: "04000000-0000-0000-0000-000000000444")!,
+                                title: "Search Tool",
+                                service: "openclaw.external-tool-result",
+                                statusText: "ok",
+                                agentName: "Reviewer Agent",
+                                startedAt: generatedAt.addingTimeInterval(20),
+                                duration: 3,
+                                summaryText: "Search completed"
+                            )
+                        ],
+                        anomalies: []
+                    )
+                ]
+            ),
+            to: fileSystem.analyticsToolProjectionURL(for: projectID, under: tempRoot),
+            encoder: encoder
+        )
 
         let bundle = try XCTUnwrap(
             OpsCenterProjectionStore.load(projectID: projectID, appSupportRootDirectory: tempRoot)
@@ -395,11 +829,16 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
 
         XCTAssertEqual(bundle.projectID, projectID)
         XCTAssertEqual(bundle.overview?.taskCount, 2)
-        XCTAssertEqual(bundle.freshestGeneratedAt, generatedAt.addingTimeInterval(10))
+        XCTAssertEqual(bundle.freshestGeneratedAt, generatedAt.addingTimeInterval(20))
         XCTAssertEqual(bundle.sessionSummaries(for: workflowID).map(\.sessionID), ["session-a"])
         XCTAssertEqual(bundle.nodeSummaries(for: workflowID).first?.id, nodeID)
         XCTAssertEqual(bundle.nodeSummaries(for: workflowID).first?.status, .failed)
         XCTAssertEqual(bundle.nodeSummaries(for: workflowID).first?.latestDetail, "Failure retained.")
+        XCTAssertEqual(bundle.threadEntries(for: workflowID).map(\.threadID), ["session-a"])
+        XCTAssertEqual(bundle.threadEntries(for: workflowID).first?.entryAgentName, "Reviewer Agent")
+        XCTAssertEqual(bundle.cronSummary?.failedRuns, 1)
+        XCTAssertEqual(bundle.recentCronRuns().map(\.cronName), ["nightly-sync"])
+        XCTAssertEqual(bundle.toolEntries().map(\.toolIdentifier), ["search.web"])
     }
 
     private func writeJSON<T: Encodable>(
