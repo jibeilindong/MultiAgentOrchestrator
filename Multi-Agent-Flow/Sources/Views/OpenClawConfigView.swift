@@ -31,6 +31,7 @@ struct OpenClawConfigView: View {
                 }
 
                 statusBanner
+                attachmentStatusSection
 
                 GroupBox(LocalizedString.text("deployment")) {
                     VStack(alignment: .leading, spacing: 12) {
@@ -152,6 +153,12 @@ struct OpenClawConfigView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(isTesting || isSaving || !canTestConnection)
 
+                    Button(action: attachCurrentProject) {
+                        Text(LocalizedString.text("attach_current_project"))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isTesting || isSaving || isSyncingSession || !canAttachCurrentProject)
+
                     Button(action: syncCurrentSession) {
                         HStack(spacing: 8) {
                             if isSyncingSession {
@@ -170,11 +177,6 @@ struct OpenClawConfigView: View {
                         .foregroundColor(lastTestSucceeded ? .green : .red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Text(sessionLifecycleHint)
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 detectedAgentsSection
             }
@@ -224,23 +226,113 @@ struct OpenClawConfigView: View {
     }
 
     private var canSyncCurrentSession: Bool {
-        appState.openClawManager.isConnected
+        appState.currentProject != nil
+            && appState.isCurrentProjectAttachedToOpenClaw
+            && appState.openClawManager.canAttachProject
             && appState.openClawManager.config.deploymentKind != .remoteServer
-            && appState.openClawManager.sessionLifecycle.stage != .inactive
+    }
+
+    private var canAttachCurrentProject: Bool {
+        guard let currentProject = appState.currentProject else { return false }
+        return appState.openClawManager.canAttachProject
+            && appState.openClawManager.config.deploymentKind != .remoteServer
+            && (
+                !appState.openClawManager.hasAttachedProjectSession
+                || appState.openClawManager.attachedProjectID != currentProject.id
+            )
     }
 
     private var sessionLifecycleHint: String {
-        let lifecycle = appState.openClawManager.sessionLifecycle
+        appState.openClawAttachmentStatusDetail
+    }
 
-        switch lifecycle.stage {
-        case .inactive:
-            return "当前还没有项目级 OpenClaw 会话。先执行连接，系统会准备项目镜像。"
-        case .prepared:
-            return "当前项目镜像已准备完成，但尚未写回当前 OpenClaw 会话。"
-        case .pendingSync:
-            return "当前项目镜像存在待同步变更。确认连接无误后，请执行“同步当前会话”。"
-        case .synced:
-            return "当前项目镜像已写回本次 OpenClaw 会话。"
+    private var runtimeStatusTitle: String {
+        if appState.openClawManager.isConnected {
+            return LocalizedString.text("connected_status")
+        }
+        if appState.openClawManager.connectionState.isRunnableWithDegradedCapabilities {
+            return LocalizedString.text("degraded_status")
+        }
+        return LocalizedString.text("disconnected_status")
+    }
+
+    private var runtimeStatusColor: Color {
+        if appState.openClawManager.isConnected {
+            return .green
+        }
+        if appState.openClawManager.connectionState.isRunnableWithDegradedCapabilities {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private var attachmentStatusColor: Color {
+        switch appState.currentProjectOpenClawAttachmentState {
+        case .attachedCurrentProject:
+            return .green
+        case .attachedDifferentProject, .unattached:
+            return .orange
+        case .remoteConnectionOnly:
+            return .blue
+        case .noProject:
+            return .secondary
+        }
+    }
+
+    private var latestRuntimeSyncColor: Color {
+        switch appState.latestOpenClawRuntimeSyncReceipt?.status {
+        case .succeeded:
+            return .green
+        case .partial:
+            return .orange
+        case .failed:
+            return .red
+        case .none:
+            return .secondary
+        }
+    }
+
+    @ViewBuilder
+    private var attachmentStatusSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                statusPill(
+                    label: LocalizedString.text("status"),
+                    value: runtimeStatusTitle,
+                    color: runtimeStatusColor
+                )
+                statusPill(
+                    label: LocalizedString.text("openclaw_attachment_status_label"),
+                    value: appState.openClawAttachmentStatusTitle,
+                    color: attachmentStatusColor
+                )
+            }
+
+            Text(sessionLifecycleHint)
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let revisionSummary = appState.openClawRevisionSummary {
+                Text(revisionSummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
+                Text("\(LocalizedString.text("openclaw_runtime_sync_status_label")): \(runtimeSyncSummary)")
+                    .font(.caption)
+                    .foregroundColor(latestRuntimeSyncColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let runtimeSyncDetail = appState.openClawLatestRuntimeSyncDetail {
+                Text(runtimeSyncDetail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -265,6 +357,22 @@ struct OpenClawConfigView: View {
         .padding(14)
         .background(statusTone.color.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func statusPill(label: String, value: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .foregroundColor(.secondary)
+            Text(value)
+                .fontWeight(.semibold)
+        }
+        .font(.caption)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.12))
+        .foregroundColor(color)
+        .clipShape(Capsule())
     }
 
     private var statusTitle: String {
@@ -322,6 +430,16 @@ struct OpenClawConfigView: View {
         isSaving = true
         appState.connectOpenClaw(using: config) { success, message in
             isSaving = false
+            testResult = message
+            statusMessage = success ? message : LocalizedString.format("error_status", message)
+            statusTone = success ? .success : .error
+        }
+    }
+
+    private func attachCurrentProject() {
+        isSyncingSession = true
+        appState.attachCurrentProjectToOpenClaw { success, message in
+            isSyncingSession = false
             testResult = message
             statusMessage = success ? message : LocalizedString.format("error_status", message)
             statusTone = success ? .success : .error
@@ -408,7 +526,7 @@ struct OpenClawConfigView: View {
                             isPresentingImportSheet = true
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!appState.openClawManager.isConnected || detectedAgents.isEmpty)
+                        .disabled(!appState.openClawManager.canAttachProject || detectedAgents.isEmpty)
                     }
                 }
             }
@@ -434,7 +552,7 @@ struct OpenClawAgentManagementView: View {
     private var config: OpenClawConfig { appState.openClawManager.config }
 
     private var canManageOpenClawAgents: Bool {
-        appState.openClawManager.isConnected && config.deploymentKind != .remoteServer
+        appState.openClawManager.canAttachProject && config.deploymentKind != .remoteServer
     }
 
     private var selectedManagedAgent: OpenClawManager.ManagedAgentRecord? {
@@ -456,7 +574,7 @@ struct OpenClawAgentManagementView: View {
 
                 GroupBox(LocalizedString.text("agent_configuration")) {
                     VStack(alignment: .leading, spacing: 12) {
-                        if !appState.openClawManager.isConnected {
+                        if !appState.openClawManager.canAttachProject {
                             Text(LocalizedString.text("complete_connection_first"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)

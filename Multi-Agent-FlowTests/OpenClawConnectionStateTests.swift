@@ -32,6 +32,13 @@ final class OpenClawConnectionStateTests: XCTestCase {
         return directory
     }
 
+    private func makeExecutableScript(in directory: URL, named name: String = "openclaw", contents: String) throws -> URL {
+        let scriptURL = directory.appendingPathComponent(name, isDirectory: false)
+        try contents.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
     func testGatewayDisconnectNotificationDowngradesConnectedState() {
         let notificationCenter = NotificationCenter()
         let manager = OpenClawManager(notificationCenter: notificationCenter)
@@ -86,6 +93,51 @@ final class OpenClawConnectionStateTests: XCTestCase {
             return XCTFail("Expected status to be .error after gateway disconnect.")
         }
         XCTAssertTrue(message.contains("socket dropped"))
+    }
+
+    func testDegradedLocalCLIOnlyStateSupportsWorkflowAndConversationExecution() {
+        let state = OpenClawConnectionStateSnapshot(
+            phase: .degraded,
+            deploymentKind: .local,
+            capabilities: OpenClawConnectionCapabilitiesSnapshot(
+                cliAvailable: true,
+                gatewayReachable: false,
+                gatewayAuthenticated: false,
+                agentListingAvailable: true,
+                sessionHistoryAvailable: false,
+                gatewayAgentAvailable: false,
+                gatewayChatAvailable: false,
+                projectAttachmentSupported: true
+            )
+        )
+
+        XCTAssertTrue(state.canRunWorkflow)
+        XCTAssertTrue(state.canRunConversation)
+        XCTAssertTrue(state.canAttachProject)
+        XCTAssertFalse(state.canReadSessionHistory)
+        XCTAssertTrue(state.isRunnableWithDegradedCapabilities)
+    }
+
+    func testDetachedStateBlocksExecutionEvenWhenCLIIsAvailable() {
+        let state = OpenClawConnectionStateSnapshot(
+            phase: .detached,
+            deploymentKind: .local,
+            capabilities: OpenClawConnectionCapabilitiesSnapshot(
+                cliAvailable: true,
+                gatewayReachable: false,
+                gatewayAuthenticated: false,
+                agentListingAvailable: true,
+                sessionHistoryAvailable: false,
+                gatewayAgentAvailable: false,
+                gatewayChatAvailable: false,
+                projectAttachmentSupported: true
+            )
+        )
+
+        XCTAssertFalse(state.canRunWorkflow)
+        XCTAssertFalse(state.canRunConversation)
+        XCTAssertFalse(state.canAttachProject)
+        XCTAssertFalse(state.isRunnableWithDegradedCapabilities)
     }
 
     func testGatewayDisconnectNotificationDoesNotMutateIdleState() {
@@ -201,12 +253,15 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         XCTAssertTrue(snapshot.recoveryReports.isEmpty)
         XCTAssertEqual(snapshot.connectionState.phase, .idle)
+        XCTAssertEqual(snapshot.projectAttachment.state, .detached)
+        XCTAssertNil(snapshot.projectAttachment.projectID)
         XCTAssertEqual(snapshot.sessionLifecycle.stage, .inactive)
         XCTAssertFalse(snapshot.sessionLifecycle.hasPendingMirrorChanges)
     }
 
-    func testRestoreDowngradesSyncedSessionLifecycleToPrepared() {
+    func testRestoreDowngradesSyncedSessionLifecycleAndDetachesProjectAttachment() {
         let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let projectID = UUID()
         let snapshot = ProjectOpenClawSnapshot(
             config: .default,
             isConnected: false,
@@ -214,6 +269,11 @@ final class OpenClawConnectionStateTests: XCTestCase {
             activeAgents: [],
             detectedAgents: [],
             connectionState: OpenClawConnectionStateSnapshot(phase: .degraded, deploymentKind: .local),
+            projectAttachment: OpenClawProjectAttachmentSnapshot(
+                state: .attached,
+                projectID: projectID,
+                attachedAt: Date()
+            ),
             sessionLifecycle: OpenClawSessionLifecycleSnapshot(
                 stage: .synced,
                 hasPendingMirrorChanges: false,
@@ -231,11 +291,19 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         XCTAssertEqual(manager.sessionLifecycle.stage, .prepared)
         XCTAssertFalse(manager.sessionLifecycle.hasPendingMirrorChanges)
+        XCTAssertEqual(manager.projectAttachment.state, .detached)
+        XCTAssertNil(manager.projectAttachment.projectID)
+        XCTAssertNotNil(manager.projectAttachment.lastDetachedAt)
     }
 
     func testNoteProjectMirrorChangesPromotesPreparedSessionToPendingSync() {
         let manager = OpenClawManager(notificationCenter: NotificationCenter())
         manager.config = .default
+        manager.projectAttachment = OpenClawProjectAttachmentSnapshot(
+            state: .attached,
+            projectID: UUID(),
+            attachedAt: Date()
+        )
         manager.sessionLifecycle = OpenClawSessionLifecycleSnapshot(
             stage: .prepared,
             hasPendingMirrorChanges: false,
@@ -247,6 +315,23 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         XCTAssertEqual(manager.sessionLifecycle.stage, .pendingSync)
         XCTAssertTrue(manager.sessionLifecycle.hasPendingMirrorChanges)
+    }
+
+    func testNoteProjectMirrorChangesDoesNothingWhenProjectIsDetached() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        manager.config = .default
+        manager.projectAttachment = OpenClawProjectAttachmentSnapshot(state: .detached)
+        manager.sessionLifecycle = OpenClawSessionLifecycleSnapshot(
+            stage: .prepared,
+            hasPendingMirrorChanges: false,
+            preparedAt: Date(),
+            lastAppliedAt: nil
+        )
+
+        manager.noteProjectMirrorChangesPendingSync()
+
+        XCTAssertEqual(manager.sessionLifecycle.stage, .prepared)
+        XCTAssertFalse(manager.sessionLifecycle.hasPendingMirrorChanges)
     }
 
     func testGatewayConfigParsesLocalGatewayContractFromOpenClawRoot() throws {
@@ -320,11 +405,248 @@ final class OpenClawConnectionStateTests: XCTestCase {
         XCTAssertEqual(gatewayConfig?.useSSL, true)
     }
 
-    func testConnectFailureDoesNotPrepareSessionBeforeProbeSucceeds() {
+    func testResolveLocalOpenClawConfigURLPrefersCLIReportedPath() throws {
         let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let customRootURL = tempDirectory.appendingPathComponent("custom-openclaw", isDirectory: true)
+        try FileManager.default.createDirectory(at: customRootURL, withIntermediateDirectories: true)
+        let customConfigURL = customRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try "{}".write(to: customConfigURL, atomically: true, encoding: .utf8)
+
+        let executableURL = try makeExecutableScript(
+            in: tempDirectory,
+            contents: """
+            #!/bin/sh
+            if [ "$1" = "config" ] && [ "$2" = "file" ]; then
+              printf '%s\\n' "\(customConfigURL.path)"
+              exit 0
+            fi
+            exit 1
+            """
+        )
+
         var config = OpenClawConfig.default
         config.deploymentKind = .local
-        config.localBinaryPath = "/tmp/openclaw-missing-\(UUID().uuidString)"
+        config.localBinaryPath = executableURL.path
+
+        XCTAssertEqual(
+            manager.resolveLocalOpenClawConfigURL(using: config, allowFallback: false)?.path,
+            customConfigURL.path
+        )
+        XCTAssertEqual(
+            manager.localOpenClawRootURL(using: config).path,
+            customRootURL.path
+        )
+    }
+
+    func testPreferredGatewayConfigUsesCLIReportedLocalRoot() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let customRootURL = tempDirectory.appendingPathComponent("custom-openclaw", isDirectory: true)
+        try FileManager.default.createDirectory(at: customRootURL, withIntermediateDirectories: true)
+        try """
+        {
+          "gateway": {
+            "mode": "local",
+            "port": 23111,
+            "auth": {
+              "mode": "token",
+              "token": "custom-local-token"
+            }
+          }
+        }
+        """.write(
+            to: customRootURL.appendingPathComponent("openclaw.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let executableURL = try makeExecutableScript(
+            in: tempDirectory,
+            contents: """
+            #!/bin/sh
+            if [ "$1" = "config" ] && [ "$2" = "file" ]; then
+              printf '%s\\n' "\(customRootURL.appendingPathComponent("openclaw.json", isDirectory: false).path)"
+              exit 0
+            fi
+            exit 1
+            """
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.port = 18789
+        config.apiKey = "fallback-token"
+        manager.config = config
+
+        let gatewayConfig = manager.preferredGatewayConfig(using: config)
+
+        XCTAssertEqual(gatewayConfig?.deploymentKind, .remoteServer)
+        XCTAssertEqual(gatewayConfig?.host, "127.0.0.1")
+        XCTAssertEqual(gatewayConfig?.port, 23111)
+        XCTAssertEqual(gatewayConfig?.apiKey, "custom-local-token")
+    }
+
+    func testContainerOpenClawRootFallbackCandidatesPrioritizeHomeBeforeWorkspaceMount() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        var config = OpenClawConfig.default
+        config.deploymentKind = .container
+        config.container.workspaceMountPath = "/workspace/project"
+
+        let candidates = manager.containerOpenClawRootFallbackCandidates(
+            for: config,
+            homeDirectoryOverride: "/home/app"
+        )
+
+        XCTAssertEqual(
+            Array(candidates.prefix(4)),
+            [
+                "/home/app/.openclaw",
+                "/home/app/openclaw",
+                "/root/.openclaw",
+                "/home/node/.openclaw"
+            ]
+        )
+        XCTAssertTrue(candidates.contains("/workspace/project/.openclaw"))
+        XCTAssertTrue(candidates.contains("/workspace/project/openclaw"))
+        XCTAssertTrue(candidates.contains("/workspace/project"))
+    }
+
+    func testContainerOpenClawRootDiscoveryScriptScansRuntimeRootsBeforeWorkspaceFallback() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let script = manager.containerOpenClawRootDiscoveryScript(workspaceMountPath: "/srv/app'space")
+
+        XCTAssertTrue(script.contains("\"${OPENCLAW_ROOT:-}\""))
+        XCTAssertTrue(script.contains("\"$HOME/.openclaw\""))
+        XCTAssertTrue(script.contains("find \"$root\" -maxdepth 5 -type f -name openclaw.json"))
+        XCTAssertTrue(script.contains("probe_candidate '/srv/app'\\''space/.openclaw' && exit 0"))
+        XCTAssertTrue(script.contains("probe_candidate '/srv/app'\\''space/openclaw' && exit 0"))
+    }
+
+    func testFirstReachableOpenClawRootCandidateSkipsMissingEntries() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let resolved = manager.firstReachableOpenClawRootCandidate(
+            from: ["", "   ", "/missing/.openclaw", "/workspace/openclaw", "/fallback"]
+        ) { candidate in
+            candidate == "/workspace/openclaw"
+        }
+
+        XCTAssertEqual(resolved, "/workspace/openclaw")
+    }
+
+    func testFirstReachableOpenClawRootCandidateReturnsNilWhenAllCandidatesMissing() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let resolved = manager.firstReachableOpenClawRootCandidate(
+            from: ["/missing/.openclaw", "/missing/openclaw"]
+        ) { _ in
+            false
+        }
+
+        XCTAssertNil(resolved)
+    }
+
+    func testExecApprovalSnapshotTreatsCustomDefaultsOrAgentsAsCustomEntries() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+
+        let defaultsSnapshot = manager.execApprovalSnapshot(
+            fromApprovalFileRecord: [
+                "defaults": ["exec": "allow"],
+                "agents": [:]
+            ]
+        )
+        XCTAssertTrue(defaultsSnapshot.hasCustomEntries)
+
+        let agentsSnapshot = manager.execApprovalSnapshot(
+            fromApprovalFileRecord: [
+                "defaults": [:],
+                "agents": [
+                    "planner": ["exec": "deny"]
+                ]
+            ]
+        )
+        XCTAssertTrue(agentsSnapshot.hasCustomEntries)
+    }
+
+    func testExecApprovalSnapshotTreatsEmptyApprovalFileAsDefaultEntriesOnly() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let snapshot = manager.execApprovalSnapshot(
+            fromApprovalFileRecord: [
+                "defaults": [:],
+                "agents": [:]
+            ]
+        )
+
+        XCTAssertFalse(snapshot.hasCustomEntries)
+    }
+
+    func testResolveOpenClawGovernancePathsKeepsLocalRootWithoutInspectionSnapshot() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let paths = try manager.resolveOpenClawGovernancePaths(using: .default, requiresInspectionRoot: false)
+
+        let expectedRoot = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".openclaw", isDirectory: true)
+        XCTAssertEqual(paths.rootURL?.path, expectedRoot.path)
+        XCTAssertEqual(
+            paths.configURL?.path,
+            expectedRoot.appendingPathComponent("openclaw.json", isDirectory: false).path
+        )
+
+        if let approvalsURL = paths.approvalsURL {
+            XCTAssertEqual(
+                approvalsURL.path,
+                expectedRoot.appendingPathComponent("exec-approvals.json", isDirectory: false).path
+            )
+        }
+    }
+
+    func testResolveOpenClawGovernancePathsLeavesRemotePathsEmpty() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        var config = OpenClawConfig.default
+        config.deploymentKind = .remoteServer
+
+        let paths = try manager.resolveOpenClawGovernancePaths(using: config, requiresInspectionRoot: false)
+
+        XCTAssertNil(paths.rootURL)
+        XCTAssertNil(paths.configURL)
+        XCTAssertNil(paths.approvalsURL)
+    }
+
+    func testSnapshotPreservesProjectAttachmentState() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let projectID = UUID()
+        let attachedAt = Date()
+        manager.projectAttachment = OpenClawProjectAttachmentSnapshot(
+            state: .attached,
+            projectID: projectID,
+            attachedAt: attachedAt
+        )
+
+        let snapshot = manager.snapshot()
+
+        XCTAssertEqual(snapshot.projectAttachment.state, .attached)
+        XCTAssertEqual(snapshot.projectAttachment.projectID, projectID)
+        XCTAssertEqual(snapshot.projectAttachment.attachedAt, attachedAt)
+    }
+
+    func testConnectFailureDoesNotPrepareSessionBeforeProbeSucceeds() {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try! makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let executableURL = try! makeExecutableScript(
+            in: tempDirectory,
+            contents: """
+            #!/bin/sh
+            exit 1
+            """
+        )
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
         config.autoConnect = false
         manager.config = config
 
@@ -345,5 +667,61 @@ final class OpenClawConnectionStateTests: XCTestCase {
         XCTAssertEqual(manager.sessionLifecycle.stage, .inactive)
         XCTAssertNil(snapshot.sessionBackupPath)
         XCTAssertNil(snapshot.sessionMirrorPath)
+    }
+
+    func testSyncUsesActiveSessionDeploymentWhenCurrentConfigChanges() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeRootURL, withIntermediateDirectories: true)
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try "{}".write(to: configFileURL, atomically: true, encoding: .utf8)
+
+        let executableURL = try makeExecutableScript(
+            in: tempDirectory,
+            contents: """
+            #!/bin/sh
+            if [ "$1" = "config" ] && [ "$2" = "file" ]; then
+              printf '%s\\n' "\(configFileURL.path)"
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        var localConfig = OpenClawConfig.default
+        localConfig.deploymentKind = .local
+        localConfig.localBinaryPath = executableURL.path
+        localConfig.autoConnect = false
+        manager.config = localConfig
+
+        let project = MAProject(name: "Session Deployment Drift")
+        defer {
+            try? FileManager.default.removeItem(at: ProjectManager.shared.openClawProjectRoot(for: project.id))
+        }
+
+        try manager.beginSession(for: project.id)
+        manager.isConnected = true
+
+        var remoteConfig = localConfig
+        remoteConfig.deploymentKind = .remoteServer
+        remoteConfig.host = "example.com"
+        remoteConfig.port = 443
+        manager.config = remoteConfig
+
+        let completion = expectation(description: "session sync completed")
+        manager.syncProjectAgentsToActiveSession(project) { result in
+            XCTAssertEqual(result.deploymentStatus, .skippedNoPendingChanges)
+            XCTAssertNil(result.errorMessage)
+            XCTAssertFalse(result.message.contains("远程网关模式"))
+            completion.fulfill()
+        }
+
+        wait(for: [completion], timeout: 5.0)
+        drainMainQueue()
+        manager.disconnect()
+        XCTAssertEqual(manager.projectAttachment.state, .detached)
     }
 }

@@ -8,6 +8,53 @@ struct ContentView: View {
     @State private var isConnectingOpenClaw = false
     @State private var isPresentingOpenClawImportSheet = false
     @State private var selectedTemplateLibraryID: String = AgentTemplateCatalog.defaultTemplateID
+
+    private var isOpenClawRuntimeDegraded: Bool {
+        appState.openClawManager.connectionState.isRunnableWithDegradedCapabilities
+    }
+
+    private var openClawStatusBadgeTitle: String {
+        if appState.openClawManager.isConnected {
+            return LocalizedString.text("openclaw_connected")
+        }
+        if isOpenClawRuntimeDegraded {
+            return LocalizedString.text("openclaw_degraded")
+        }
+        return LocalizedString.text("openclaw_disconnected")
+    }
+
+    private var openClawStatusText: String {
+        if appState.openClawManager.isConnected {
+            return LocalizedString.text("connected_status")
+        }
+        if isOpenClawRuntimeDegraded {
+            return LocalizedString.text("degraded_status")
+        }
+        return LocalizedString.text("disconnected_status")
+    }
+
+    private var openClawStatusColor: Color {
+        if appState.openClawManager.isConnected {
+            return .green
+        }
+        if isOpenClawRuntimeDegraded {
+            return .orange
+        }
+        return .red
+    }
+
+    private var openClawAttachmentColor: Color {
+        switch appState.currentProjectOpenClawAttachmentState {
+        case .attachedCurrentProject:
+            return .green
+        case .attachedDifferentProject, .unattached:
+            return .orange
+        case .remoteConnectionOnly:
+            return .blue
+        case .noProject:
+            return .secondary
+        }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -196,14 +243,24 @@ struct ContentView: View {
         HStack(spacing: 12) {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
+                    .fill(openClawStatusColor)
                     .frame(width: 8, height: 8)
-                Text(appState.openClawManager.isConnected ? LocalizedString.text("openclaw_connected") : LocalizedString.text("openclaw_disconnected"))
+                Text(openClawStatusBadgeTitle)
                     .font(.caption)
                     .fontWeight(.medium)
                 Text(appState.openClawManager.config.deploymentSummary)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(openClawAttachmentColor)
+                    .frame(width: 8, height: 8)
+                Text(appState.openClawAttachmentStatusTitle)
+                    .font(.caption)
+                    .fontWeight(.medium)
                     .lineLimit(1)
             }
 
@@ -214,8 +271,22 @@ struct ContentView: View {
                     appState.disconnectOpenClaw()
                 }
 
+                if let currentProject = appState.currentProject,
+                   appState.openClawManager.canAttachProject,
+                   appState.openClawManager.config.deploymentKind != .remoteServer,
+                   (
+                    !appState.openClawManager.hasAttachedProjectSession
+                    || appState.openClawManager.attachedProjectID != currentProject.id
+                   ) {
+                    StatusBarButton(title: LocalizedString.text("attach_current_project"), icon: "link.badge.plus") {
+                        appState.attachCurrentProjectToOpenClaw { _, message in
+                            openClawMessage = message
+                        }
+                    }
+                }
+
                 if appState.openClawManager.config.deploymentKind != .remoteServer,
-                   appState.openClawManager.sessionLifecycle.stage != .inactive {
+                   appState.isCurrentProjectAttachedToOpenClaw {
                     StatusBarButton(title: "同步会话", icon: "arrow.triangle.merge") {
                         appState.syncOpenClawActiveSession { success, message in
                             openClawMessage = message
@@ -267,9 +338,9 @@ struct ContentView: View {
     private var statusBadge: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(appState.openClawManager.isConnected ? Color.green : Color.red)
+                .fill(openClawStatusColor)
                 .frame(width: 8, height: 8)
-            Text(appState.openClawManager.isConnected ? LocalizedString.text("connected_status") : LocalizedString.text("disconnected_status"))
+            Text(openClawStatusText)
         }
         .padding(.vertical, 4)
     }
@@ -305,37 +376,47 @@ private struct ProjectOnboardingView: View {
                 .font(.system(size: 64))
                 .foregroundColor(.accentColor)
 
-            Text(LocalizedString.text("setup_openclaw_title"))
+            Text(LocalizedString.text("onboarding_title"))
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text(LocalizedString.text("setup_openclaw_description"))
+            Text(LocalizedString.text("onboarding_description"))
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 620)
 
+            HStack(spacing: 10) {
+                onboardingBadge(
+                    icon: "square.grid.2x2",
+                    title: LocalizedString.text("onboarding_badge_design_first")
+                )
+                onboardingBadge(
+                    icon: "square.and.arrow.down.on.square",
+                    title: LocalizedString.text("onboarding_badge_save_apply")
+                )
+                onboardingBadge(
+                    icon: "link.badge.plus",
+                    title: LocalizedString.text("onboarding_badge_runtime_optional")
+                )
+            }
+
             VStack(alignment: .leading, spacing: 10) {
-                onboardingStep(index: 1, title: LocalizedString.text("setup_openclaw_step_1_title"), detail: LocalizedString.text("setup_openclaw_step_1_detail"))
-                onboardingStep(index: 2, title: LocalizedString.text("setup_openclaw_step_2_title"), detail: LocalizedString.text("setup_openclaw_step_2_detail"))
-                onboardingStep(index: 3, title: LocalizedString.text("setup_openclaw_step_3_title"), detail: LocalizedString.text("setup_openclaw_step_3_detail"))
-                onboardingStep(index: 4, title: LocalizedString.text("setup_openclaw_step_4_title"), detail: LocalizedString.text("setup_openclaw_step_4_detail"))
-                onboardingStep(index: 5, title: LocalizedString.text("setup_openclaw_step_5_title"), detail: LocalizedString.text("setup_openclaw_step_5_detail"))
+                onboardingStep(index: 1, title: LocalizedString.text("onboarding_step_1_title"), detail: LocalizedString.text("onboarding_step_1_detail"))
+                onboardingStep(index: 2, title: LocalizedString.text("onboarding_step_2_title"), detail: LocalizedString.text("onboarding_step_2_detail"))
+                onboardingStep(index: 3, title: LocalizedString.text("onboarding_step_3_title"), detail: LocalizedString.text("onboarding_step_3_detail"))
+                onboardingStep(index: 4, title: LocalizedString.text("onboarding_step_4_title"), detail: LocalizedString.text("onboarding_step_4_detail"))
+                onboardingStep(index: 5, title: LocalizedString.text("onboarding_step_5_title"), detail: LocalizedString.text("onboarding_step_5_detail"))
             }
             .padding(18)
             .background(Color(.controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             HStack(spacing: 12) {
-                Button(LocalizedString.text("configure_openclaw")) {
-                    NotificationCenter.default.post(name: .openSettings, object: nil)
-                }
-                .buttonStyle(.borderedProminent)
-
                 Button(LocalizedString.newProject) {
                     appState.createNewProject()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
 
                 Button(LocalizedString.openProject) {
                     appState.openProject()
@@ -346,7 +427,18 @@ private struct ProjectOnboardingView: View {
                     selectedTab = 3
                 }
                 .buttonStyle(.bordered)
+
+                Button(LocalizedString.text("configure_openclaw_optional")) {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }
+                .buttonStyle(.bordered)
             }
+
+            Text(LocalizedString.text("onboarding_runtime_hint"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 620)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(32)
@@ -372,6 +464,16 @@ private struct ProjectOnboardingView: View {
 
             Spacer()
         }
+    }
+
+    private func onboardingBadge(icon: String, title: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(Capsule())
     }
 }
 

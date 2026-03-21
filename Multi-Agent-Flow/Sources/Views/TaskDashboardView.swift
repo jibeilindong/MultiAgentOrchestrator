@@ -1541,6 +1541,74 @@ struct MonitoringDashboardView: View {
     private var idleAgentCount: Int {
         metrics.idleAgentCount
     }
+    private var isWorkflowRuntimeAvailable: Bool {
+        appState.openClawManager.canRunWorkflow
+    }
+    private var isOpenClawRuntimeDegraded: Bool {
+        appState.openClawManager.connectionState.isRunnableWithDegradedCapabilities
+    }
+    private var openClawStatusValueText: String {
+        if appState.openClawManager.isConnected {
+            return LocalizedString.text("connected_status")
+        }
+        if isOpenClawRuntimeDegraded {
+            return LocalizedString.text("degraded_status")
+        }
+        return LocalizedString.text("disconnected_status")
+    }
+    private var openClawStatusColor: Color {
+        if appState.openClawManager.isConnected {
+            return .green
+        }
+        if isOpenClawRuntimeDegraded {
+            return .orange
+        }
+        return .red
+    }
+    private var openClawAttachmentColor: Color {
+        switch appState.currentProjectOpenClawAttachmentState {
+        case .attachedCurrentProject:
+            return .green
+        case .attachedDifferentProject, .unattached:
+            return .orange
+        case .remoteConnectionOnly:
+            return .blue
+        case .noProject:
+            return .secondary
+        }
+    }
+    private var openClawLatestSyncColor: Color {
+        switch appState.latestOpenClawRuntimeSyncReceipt?.status {
+        case .succeeded:
+            return .green
+        case .partial:
+            return .orange
+        case .failed:
+            return .red
+        case .none:
+            return .secondary
+        }
+    }
+    private var openClawOverviewDetailText: String {
+        if let revisionSummary = appState.openClawRevisionSummary {
+            return "\(appState.openClawManager.config.deploymentSummary) • \(appState.openClawAttachmentStatusTitle) • \(revisionSummary)"
+        }
+        return "\(appState.openClawManager.config.deploymentSummary) • \(appState.openClawAttachmentStatusTitle)"
+    }
+    private var openClawOverviewCardColor: Color {
+        switch appState.currentProjectOpenClawAttachmentState {
+        case .attachedCurrentProject:
+            return openClawStatusColor
+        case .attachedDifferentProject, .unattached, .remoteConnectionOnly, .noProject:
+            return openClawAttachmentColor
+        }
+    }
+    private var blockedRuntimeMessage: String? {
+        let detail = appState.openClawManager.connectionState.health.lastMessage?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let detail, !detail.isEmpty else { return nil }
+        return detail
+    }
     private var sourceHistoricalSeries: [OpsMetricHistorySeries] {
         selectedHistoryFocusMode == .project ? opsSnapshot.historicalSeries : scopedHistoricalSeries
     }
@@ -1719,7 +1787,8 @@ struct MonitoringDashboardView: View {
             messageSignature,
             taskSignature,
             activeAgentSignature,
-            String(appState.openClawManager.isConnected)
+            appState.openClawManager.connectionState.phase.rawValue,
+            String(appState.openClawManager.canRunWorkflow)
         ].joined(separator: "::")
     }
 
@@ -1731,7 +1800,7 @@ struct MonitoringDashboardView: View {
                     systemImage: "gauge.with.dots.needle.33percent",
                     description: Text(LocalizedString.text("open_project_first_dashboard_desc"))
                 )
-            } else if !appState.openClawManager.isConnected {
+            } else if !isWorkflowRuntimeAvailable {
                 VStack(spacing: 16) {
                     Image(systemName: "cable.connector")
                         .font(.system(size: 44))
@@ -1746,6 +1815,14 @@ struct MonitoringDashboardView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
+
+                    if let blockedRuntimeMessage {
+                        Text(blockedRuntimeMessage)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 520)
+                    }
 
                     HStack(spacing: 12) {
                         Button(LocalizedString.text("connect_openclaw")) {
@@ -1853,9 +1930,9 @@ struct MonitoringDashboardView: View {
             HStack(spacing: 16) {
                 monitoringCard(
                     title: "OpenClaw",
-                    value: appState.openClawManager.isConnected ? LocalizedString.text("connected_status") : LocalizedString.text("disconnected_status"),
-                    detail: appState.openClawManager.config.deploymentSummary,
-                    color: appState.openClawManager.isConnected ? .green : .red
+                    value: openClawStatusValueText,
+                    detail: openClawOverviewDetailText,
+                    color: openClawOverviewCardColor
                 )
                 monitoringCard(
                     title: LocalizedString.tasks,
@@ -2915,6 +2992,25 @@ struct MonitoringDashboardView: View {
             Text(LocalizedString.text("intervention_actions"))
                 .font(.headline)
 
+            Text(appState.openClawAttachmentStatusDetail)
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
+                Text("\(LocalizedString.text("openclaw_runtime_sync_status_label")): \(runtimeSyncSummary)")
+                    .font(.footnote.weight(.medium))
+                    .foregroundColor(openClawLatestSyncColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let runtimeSyncDetail = appState.openClawLatestRuntimeSyncDetail {
+                Text(runtimeSyncDetail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(spacing: 10) {
                 Button(appState.openClawManager.isConnected ? LocalizedString.text("disconnect_openclaw") + " OpenClaw" : LocalizedString.text("connect_openclaw") + " OpenClaw") {
                     if appState.openClawManager.isConnected {
@@ -2925,9 +3021,22 @@ struct MonitoringDashboardView: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                if appState.openClawManager.isConnected,
+                if let currentProject = appState.currentProject,
+                   appState.openClawManager.canAttachProject,
                    appState.openClawManager.config.deploymentKind != .remoteServer,
-                   appState.openClawManager.sessionLifecycle.stage != .inactive {
+                   (
+                    !appState.openClawManager.hasAttachedProjectSession
+                    || appState.openClawManager.attachedProjectID != currentProject.id
+                   ) {
+                    Button(LocalizedString.text("attach_current_project")) {
+                        appState.attachCurrentProjectToOpenClaw()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if appState.openClawManager.canAttachProject,
+                   appState.openClawManager.config.deploymentKind != .remoteServer,
+                   appState.isCurrentProjectAttachedToOpenClaw {
                     Button("同步当前会话") {
                         appState.syncOpenClawActiveSession()
                     }
@@ -4054,7 +4163,7 @@ struct MonitoringDashboardView: View {
         let tasksSnapshot = appState.taskManager.tasks
         let messagesSnapshot = appState.messageManager.messages
         let activeAgentsSnapshot = appState.openClawManager.activeAgents
-        let isConnected = appState.openClawManager.isConnected
+        let isConnected = appState.openClawManager.canRunWorkflow
         let fileRootsByAgent = buildFileRootsByAgent(project: projectSnapshot, tasks: tasksSnapshot)
         let unknownModelLabel = LocalizedString.text("unknown_model")
 

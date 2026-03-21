@@ -111,6 +111,25 @@ function resolveProbeLayers(openClaw: ProjectOpenClawSnapshot): OpenClawProbeLay
   return deriveProbeLayers(openClaw.connectionState.deploymentKind, openClaw.connectionState.capabilities);
 }
 
+function isRunnablePhase(openClaw: ProjectOpenClawSnapshot): boolean {
+  return openClaw.connectionState.phase === "ready" || openClaw.connectionState.phase === "degraded";
+}
+
+function canRunLiveExecution(openClaw: ProjectOpenClawSnapshot): boolean {
+  if (!isRunnablePhase(openClaw)) {
+    return false;
+  }
+
+  const { deploymentKind, capabilities } = openClaw.connectionState;
+  switch (deploymentKind) {
+    case "remoteServer":
+      return capabilities.gatewayReachable && capabilities.gatewayAuthenticated && capabilities.gatewayAgentAvailable;
+    case "local":
+    case "container":
+      return capabilities.cliAvailable || (capabilities.gatewayReachable && capabilities.gatewayAuthenticated && capabilities.gatewayAgentAvailable);
+  }
+}
+
 function buildBlockingMessage(openClaw: ProjectOpenClawSnapshot, layers: OpenClawProbeLayersSnapshot | null): string | null {
   const lastMessage = openClaw.connectionState.health.lastMessage ?? openClaw.lastProbeReport?.message ?? null;
 
@@ -118,26 +137,27 @@ function buildBlockingMessage(openClaw: ProjectOpenClawSnapshot, layers: OpenCla
     return lastMessage ?? "OpenClaw session is detached. Reconnect before running live workflow execution.";
   }
 
-  if (!openClaw.isConnected) {
-    if (openClaw.connectionState.phase === "idle") {
-      return "Connect OpenClaw before running live workflow execution.";
-    }
-    return lastMessage ?? "OpenClaw is not connected. Reconnect before running live workflow execution.";
+  if (openClaw.connectionState.phase === "idle") {
+    return "Connect OpenClaw before running live workflow execution.";
+  }
+
+  if (!canRunLiveExecution(openClaw)) {
+    return lastMessage ?? "OpenClaw runtime is not runnable. Reconnect before running live workflow execution.";
   }
 
   if (!layers) {
     return null;
   }
 
-  if (layers.transport !== "ready") {
+  if (openClaw.connectionState.deploymentKind === "remoteServer" && layers.transport !== "ready") {
     return `OpenClaw transport is ${formatLayerState(layers.transport)}. Reconnect before starting high-speed live execution.`;
   }
 
-  if (layers.authentication !== "ready" && layers.authentication !== "not_required") {
+  if (openClaw.connectionState.deploymentKind === "remoteServer" && layers.authentication !== "ready" && layers.authentication !== "not_required") {
     return `OpenClaw authentication is ${formatLayerState(layers.authentication)}. Reconnect before starting live execution.`;
   }
 
-  if (layers.session !== "ready") {
+  if (openClaw.connectionState.deploymentKind === "remoteServer" && layers.session !== "ready") {
     return `OpenClaw session channel is ${formatLayerState(layers.session)}. Reconnect before starting live execution.`;
   }
 
@@ -160,7 +180,16 @@ function buildRecoveryActions(
     });
   }
 
-  if (!openClaw.isConnected || openClaw.connectionState.phase === "detached" || blockingMessage) {
+  const shouldRecommendReconnect =
+    !canRunLiveExecution(openClaw)
+    || openClaw.connectionState.phase === "detached"
+    || Boolean(blockingMessage)
+    || (
+      openClaw.connectionState.phase === "degraded"
+      && openClaw.connectionState.deploymentKind !== "remoteServer"
+    );
+
+  if (shouldRecommendReconnect) {
     actions.push({
       id: "reconnect-runtime",
       title: "Reconnect OpenClaw",

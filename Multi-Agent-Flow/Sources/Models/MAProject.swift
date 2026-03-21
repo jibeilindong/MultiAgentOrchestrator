@@ -103,8 +103,12 @@ struct RuntimeState: Codable {
     var agentStates: [String: String]
     var runtimeEvents: [OpenClawRuntimeEvent]
     var workflowConfigurationRevision: Int
-    var appliedWorkflowConfigurationRevision: Int
-    var lastAppliedWorkflowAt: Date?
+    var appliedToMirrorConfigurationRevision: Int
+    var syncedToRuntimeConfigurationRevision: Int
+    var latestRuntimeSyncReceipt: OpenClawRuntimeSyncReceipt?
+    var recentRuntimeSyncReceipts: [OpenClawRuntimeSyncReceipt]
+    var lastAppliedToMirrorAt: Date?
+    var lastSyncedToRuntimeAt: Date?
     var lastUpdated: Date
 
     enum CodingKeys: String, CodingKey {
@@ -117,6 +121,12 @@ struct RuntimeState: Codable {
         case agentStates
         case runtimeEvents
         case workflowConfigurationRevision
+        case appliedToMirrorConfigurationRevision
+        case syncedToRuntimeConfigurationRevision
+        case latestRuntimeSyncReceipt
+        case recentRuntimeSyncReceipts
+        case lastAppliedToMirrorAt
+        case lastSyncedToRuntimeAt
         case appliedWorkflowConfigurationRevision
         case lastAppliedWorkflowAt
         case lastUpdated
@@ -132,8 +142,12 @@ struct RuntimeState: Codable {
         self.agentStates = [:]
         self.runtimeEvents = []
         self.workflowConfigurationRevision = 0
-        self.appliedWorkflowConfigurationRevision = 0
-        self.lastAppliedWorkflowAt = nil
+        self.appliedToMirrorConfigurationRevision = 0
+        self.syncedToRuntimeConfigurationRevision = 0
+        self.latestRuntimeSyncReceipt = nil
+        self.recentRuntimeSyncReceipts = []
+        self.lastAppliedToMirrorAt = nil
+        self.lastSyncedToRuntimeAt = nil
         self.lastUpdated = Date()
     }
 
@@ -148,8 +162,14 @@ struct RuntimeState: Codable {
         agentStates = try container.decodeIfPresent([String: String].self, forKey: .agentStates) ?? [:]
         runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
         workflowConfigurationRevision = try container.decodeIfPresent(Int.self, forKey: .workflowConfigurationRevision) ?? 0
-        appliedWorkflowConfigurationRevision = try container.decodeIfPresent(Int.self, forKey: .appliedWorkflowConfigurationRevision) ?? 0
-        lastAppliedWorkflowAt = try container.decodeIfPresent(Date.self, forKey: .lastAppliedWorkflowAt)
+        let legacyAppliedRevision = try container.decodeIfPresent(Int.self, forKey: .appliedWorkflowConfigurationRevision) ?? 0
+        appliedToMirrorConfigurationRevision = try container.decodeIfPresent(Int.self, forKey: .appliedToMirrorConfigurationRevision) ?? legacyAppliedRevision
+        syncedToRuntimeConfigurationRevision = try container.decodeIfPresent(Int.self, forKey: .syncedToRuntimeConfigurationRevision) ?? 0
+        latestRuntimeSyncReceipt = try container.decodeIfPresent(OpenClawRuntimeSyncReceipt.self, forKey: .latestRuntimeSyncReceipt)
+        recentRuntimeSyncReceipts = try container.decodeIfPresent([OpenClawRuntimeSyncReceipt].self, forKey: .recentRuntimeSyncReceipts) ?? []
+        let legacyLastAppliedAt = try container.decodeIfPresent(Date.self, forKey: .lastAppliedWorkflowAt)
+        lastAppliedToMirrorAt = try container.decodeIfPresent(Date.self, forKey: .lastAppliedToMirrorAt) ?? legacyLastAppliedAt
+        lastSyncedToRuntimeAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedToRuntimeAt)
         lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? Date()
     }
 
@@ -164,9 +184,110 @@ struct RuntimeState: Codable {
         try container.encode(agentStates, forKey: .agentStates)
         try container.encode(runtimeEvents, forKey: .runtimeEvents)
         try container.encode(workflowConfigurationRevision, forKey: .workflowConfigurationRevision)
-        try container.encode(appliedWorkflowConfigurationRevision, forKey: .appliedWorkflowConfigurationRevision)
-        try container.encodeIfPresent(lastAppliedWorkflowAt, forKey: .lastAppliedWorkflowAt)
+        try container.encode(appliedToMirrorConfigurationRevision, forKey: .appliedToMirrorConfigurationRevision)
+        try container.encode(syncedToRuntimeConfigurationRevision, forKey: .syncedToRuntimeConfigurationRevision)
+        try container.encodeIfPresent(latestRuntimeSyncReceipt, forKey: .latestRuntimeSyncReceipt)
+        try container.encode(recentRuntimeSyncReceipts, forKey: .recentRuntimeSyncReceipts)
+        try container.encodeIfPresent(lastAppliedToMirrorAt, forKey: .lastAppliedToMirrorAt)
+        try container.encodeIfPresent(lastSyncedToRuntimeAt, forKey: .lastSyncedToRuntimeAt)
         try container.encode(lastUpdated, forKey: .lastUpdated)
+    }
+}
+
+enum OpenClawRuntimeSyncReceiptStatus: String, Codable, Hashable {
+    case succeeded
+    case partial
+    case failed
+}
+
+enum OpenClawRuntimeSyncStep: String, Codable, Hashable {
+    case stageProjectMirror
+    case writeRuntimeSession
+    case syncCommunicationAllowList
+}
+
+enum OpenClawRuntimeSyncStepStatus: String, Codable, Hashable {
+    case succeeded
+    case partial
+    case failed
+    case skipped
+}
+
+struct OpenClawRuntimeSyncStepReceipt: Codable, Hashable {
+    var step: OpenClawRuntimeSyncStep
+    var status: OpenClawRuntimeSyncStepStatus
+    var message: String
+    var startedAt: Date
+    var completedAt: Date
+
+    init(
+        step: OpenClawRuntimeSyncStep,
+        status: OpenClawRuntimeSyncStepStatus,
+        message: String,
+        startedAt: Date = Date(),
+        completedAt: Date = Date()
+    ) {
+        self.step = step
+        self.status = status
+        self.message = message
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+    }
+}
+
+struct OpenClawRuntimeSyncReceipt: Codable, Identifiable, Hashable {
+    var id: UUID
+    var projectID: UUID
+    var attachmentProjectID: UUID?
+    var requestedMirrorRevision: Int
+    var appliedRuntimeRevision: Int
+    var startedAt: Date
+    var completedAt: Date
+    var status: OpenClawRuntimeSyncReceiptStatus
+    var steps: [OpenClawRuntimeSyncStepReceipt]
+    var warnings: [String]
+    var errorMessage: String?
+
+    init(
+        id: UUID = UUID(),
+        projectID: UUID,
+        attachmentProjectID: UUID? = nil,
+        requestedMirrorRevision: Int,
+        appliedRuntimeRevision: Int,
+        startedAt: Date = Date(),
+        completedAt: Date = Date(),
+        status: OpenClawRuntimeSyncReceiptStatus,
+        steps: [OpenClawRuntimeSyncStepReceipt] = [],
+        warnings: [String] = [],
+        errorMessage: String? = nil
+    ) {
+        self.id = id
+        self.projectID = projectID
+        self.attachmentProjectID = attachmentProjectID
+        self.requestedMirrorRevision = requestedMirrorRevision
+        self.appliedRuntimeRevision = appliedRuntimeRevision
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.status = status
+        self.steps = steps
+        self.warnings = warnings
+        self.errorMessage = errorMessage
+    }
+
+    var primaryIssueMessage: String? {
+        if let failedStep = steps.first(where: { $0.status == .failed }) {
+            return failedStep.message
+        }
+        if let partialStep = steps.first(where: { $0.status == .partial }) {
+            return partialStep.message
+        }
+        if let errorMessage, !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return errorMessage
+        }
+        if let firstWarning = warnings.first, !firstWarning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return firstWarning
+        }
+        return nil
     }
 }
 
@@ -288,6 +409,45 @@ struct OpenClawConnectionCapabilitiesSnapshot: Codable {
     }
 }
 
+extension OpenClawConnectionCapabilitiesSnapshot {
+    var hasGatewayAgentExecution: Bool {
+        gatewayReachable && gatewayAuthenticated && gatewayAgentAvailable
+    }
+
+    var hasGatewayConversationExecution: Bool {
+        gatewayReachable && gatewayAuthenticated && gatewayChatAvailable
+    }
+
+    func supportsWorkflowExecution(on deploymentKind: OpenClawDeploymentKind) -> Bool {
+        switch deploymentKind {
+        case .remoteServer:
+            return hasGatewayAgentExecution
+        case .local, .container:
+            return hasGatewayAgentExecution || cliAvailable
+        }
+    }
+
+    func supportsConversationExecution(on deploymentKind: OpenClawDeploymentKind) -> Bool {
+        switch deploymentKind {
+        case .remoteServer:
+            return hasGatewayConversationExecution
+        case .local, .container:
+            return hasGatewayConversationExecution || cliAvailable
+        }
+    }
+
+    func supportsProjectAttachment(on deploymentKind: OpenClawDeploymentKind) -> Bool {
+        guard projectAttachmentSupported else { return false }
+
+        switch deploymentKind {
+        case .remoteServer:
+            return false
+        case .local, .container:
+            return cliAvailable || gatewayReachable || gatewayAuthenticated || agentListingAvailable
+        }
+    }
+}
+
 struct OpenClawConnectionHealthSnapshot: Codable {
     var lastProbeAt: Date?
     var lastHeartbeatAt: Date?
@@ -326,6 +486,40 @@ struct OpenClawConnectionStateSnapshot: Codable {
         self.deploymentKind = deploymentKind
         self.capabilities = capabilities
         self.health = health
+    }
+}
+
+extension OpenClawConnectionStateSnapshot {
+    private var isRunnablePhase: Bool {
+        switch phase {
+        case .ready, .degraded:
+            return true
+        case .idle, .discovering, .probed, .detached, .failed:
+            return false
+        }
+    }
+
+    var canRunWorkflow: Bool {
+        isRunnablePhase && capabilities.supportsWorkflowExecution(on: deploymentKind)
+    }
+
+    var canRunConversation: Bool {
+        isRunnablePhase && capabilities.supportsConversationExecution(on: deploymentKind)
+    }
+
+    var canAttachProject: Bool {
+        isRunnablePhase && capabilities.supportsProjectAttachment(on: deploymentKind)
+    }
+
+    var canReadSessionHistory: Bool {
+        isRunnablePhase
+            && capabilities.gatewayReachable
+            && capabilities.gatewayAuthenticated
+            && capabilities.sessionHistoryAvailable
+    }
+
+    var isRunnableWithDegradedCapabilities: Bool {
+        phase == .degraded && (canRunWorkflow || canRunConversation || canAttachProject)
     }
 }
 
@@ -448,6 +642,30 @@ enum OpenClawSessionLifecycleStage: String, Codable {
     case synced
 }
 
+enum OpenClawProjectAttachmentState: String, Codable {
+    case detached
+    case attached
+}
+
+struct OpenClawProjectAttachmentSnapshot: Codable {
+    var state: OpenClawProjectAttachmentState
+    var projectID: UUID?
+    var attachedAt: Date?
+    var lastDetachedAt: Date?
+
+    init(
+        state: OpenClawProjectAttachmentState = .detached,
+        projectID: UUID? = nil,
+        attachedAt: Date? = nil,
+        lastDetachedAt: Date? = nil
+    ) {
+        self.state = state
+        self.projectID = projectID
+        self.attachedAt = attachedAt
+        self.lastDetachedAt = lastDetachedAt
+    }
+}
+
 struct OpenClawSessionLifecycleSnapshot: Codable {
     var stage: OpenClawSessionLifecycleStage
     var hasPendingMirrorChanges: Bool
@@ -528,6 +746,7 @@ struct ProjectOpenClawSnapshot: Codable {
     var activeAgents: [ProjectOpenClawAgentRecord]
     var detectedAgents: [ProjectOpenClawDetectedAgentRecord]
     var connectionState: OpenClawConnectionStateSnapshot
+    var projectAttachment: OpenClawProjectAttachmentSnapshot
     var sessionLifecycle: OpenClawSessionLifecycleSnapshot
     var lastProbeReport: OpenClawProbeReportSnapshot?
     var recoveryReports: [OpenClawRecoveryReportSnapshot]
@@ -542,6 +761,7 @@ struct ProjectOpenClawSnapshot: Codable {
         case activeAgents
         case detectedAgents
         case connectionState
+        case projectAttachment
         case sessionLifecycle
         case lastProbeReport
         case recoveryReports
@@ -557,6 +777,7 @@ struct ProjectOpenClawSnapshot: Codable {
         activeAgents: [ProjectOpenClawAgentRecord] = [],
         detectedAgents: [ProjectOpenClawDetectedAgentRecord] = [],
         connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot(),
+        projectAttachment: OpenClawProjectAttachmentSnapshot = OpenClawProjectAttachmentSnapshot(),
         sessionLifecycle: OpenClawSessionLifecycleSnapshot = OpenClawSessionLifecycleSnapshot(),
         lastProbeReport: OpenClawProbeReportSnapshot? = nil,
         recoveryReports: [OpenClawRecoveryReportSnapshot] = [],
@@ -570,6 +791,7 @@ struct ProjectOpenClawSnapshot: Codable {
         self.activeAgents = activeAgents
         self.detectedAgents = detectedAgents
         self.connectionState = connectionState
+        self.projectAttachment = projectAttachment
         self.sessionLifecycle = sessionLifecycle
         self.lastProbeReport = lastProbeReport
         self.recoveryReports = recoveryReports
@@ -590,6 +812,8 @@ struct ProjectOpenClawSnapshot: Codable {
                 phase: isConnected ? .ready : .idle,
                 deploymentKind: config.deploymentKind
             )
+        projectAttachment = try container.decodeIfPresent(OpenClawProjectAttachmentSnapshot.self, forKey: .projectAttachment)
+            ?? OpenClawProjectAttachmentSnapshot()
         sessionLifecycle = try container.decodeIfPresent(OpenClawSessionLifecycleSnapshot.self, forKey: .sessionLifecycle)
             ?? OpenClawSessionLifecycleSnapshot()
         lastProbeReport = try container.decodeIfPresent(OpenClawProbeReportSnapshot.self, forKey: .lastProbeReport)
@@ -607,6 +831,7 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(activeAgents, forKey: .activeAgents)
         try container.encode(detectedAgents, forKey: .detectedAgents)
         try container.encode(connectionState, forKey: .connectionState)
+        try container.encode(projectAttachment, forKey: .projectAttachment)
         try container.encode(sessionLifecycle, forKey: .sessionLifecycle)
         try container.encodeIfPresent(lastProbeReport, forKey: .lastProbeReport)
         try container.encode(recoveryReports, forKey: .recoveryReports)

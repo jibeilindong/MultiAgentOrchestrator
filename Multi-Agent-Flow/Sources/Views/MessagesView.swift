@@ -34,8 +34,28 @@ struct WorkbenchConversationView: View {
         return workflows.first
     }
 
-    private var isOpenClawConnected: Bool {
-        appState.openClawManager.isConnected
+    private var isWorkbenchRuntimeAvailable: Bool {
+        appState.openClawManager.canRunConversation
+    }
+
+    private var openClawRuntimeBadgeTitle: String {
+        if appState.openClawManager.isConnected {
+            return LocalizedString.text("openclaw_connected")
+        }
+        if appState.openClawManager.connectionState.isRunnableWithDegradedCapabilities {
+            return LocalizedString.text("openclaw_degraded")
+        }
+        return LocalizedString.text("openclaw_disconnected")
+    }
+
+    private var openClawRuntimeBadgeColor: Color {
+        if appState.openClawManager.isConnected {
+            return .green
+        }
+        if appState.openClawManager.connectionState.isRunnableWithDegradedCapabilities {
+            return .orange
+        }
+        return .red
     }
 
     private var workbenchMessages: [Message] {
@@ -157,7 +177,7 @@ struct WorkbenchConversationView: View {
                     secondaryTitle: LocalizedString.newProject,
                     secondaryAction: { appState.createNewProject() }
                 )
-            } else if !isOpenClawConnected {
+            } else if !isWorkbenchRuntimeAvailable {
                 WorkbenchEmptyState(
                     title: LocalizedString.text("workbench_empty_connect_title"),
                     description: LocalizedString.text("workbench_empty_connect_desc"),
@@ -204,8 +224,8 @@ struct WorkbenchConversationView: View {
         .onChange(of: selectedWorkflowID) { _, newValue in
             appState.refreshWorkbenchHistory(for: newValue)
         }
-        .onChange(of: appState.openClawManager.isConnected) { _, isConnected in
-            guard isConnected else { return }
+        .onChange(of: appState.openClawManager.canReadSessionHistory) { _, canReadSessionHistory in
+            guard canReadSessionHistory else { return }
             appState.refreshWorkbenchHistory(for: selectedWorkflowID)
         }
         .onChange(of: dashboardLayout) { _, newValue in
@@ -276,7 +296,7 @@ struct WorkbenchConversationView: View {
                     .disabled(dashboardLayout == .dashboardOnly)
                 }
 
-                statusBadge(title: LocalizedString.text("openclaw_connected"), color: .green)
+                statusBadge(title: openClawRuntimeBadgeTitle, color: openClawRuntimeBadgeColor)
                 statusBadge(
                     title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
                     color: appState.openClawService.isExecuting ? .orange : .secondary
@@ -622,7 +642,7 @@ struct WorkbenchConversationView: View {
             return
         }
 
-        guard isOpenClawConnected else {
+        guard isWorkbenchRuntimeAvailable else {
             errorText = LocalizedString.text("workbench_error_connect_openclaw")
             return
         }

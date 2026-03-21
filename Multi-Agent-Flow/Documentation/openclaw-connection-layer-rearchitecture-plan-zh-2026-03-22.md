@@ -21,12 +21,20 @@
 - Electron 侧 container probe 已升级为 CLI + gateway 双阶段探测，桌面端 `buildOpenClawProbeContract` 不再把 container 视为“无需 gateway handshake”的特例
 - Electron 侧新增可测试的 `openclaw-discovery` helper，container 模式在拿不到 CLI config path 时会优先尝试容器内 root 发现，再回退到显式候选顺序，开始减少对 `workspaceMountPath` 猜测路径的依赖
 - Electron 侧 probe root、inventory discovery、governance path 现已开始复用统一的 `resolveOpenClawDiscoveryPaths` 入口，减少 `main.ts` 内部分叉的 root/config 解析逻辑
+- Swift 侧现已新增统一的 `resolveOpenClawDiscoveryContext` 入口，开始复用同一 discovery context 处理 local/container 的 inspection root、container snapshot 与 gateway 配置解析
+- Swift 侧 container root fallback 已从“直接取第一个猜测路径”升级为“优先取容器内真实存在的候选路径”，并把 snapshot 复用绑定到 discovery scope，减少跨容器或跨 root 误用旧快照的风险
+- Swift 侧现已补上共享 `openclaw.json` 读取 helper，agent inventory、workspace map 与 gateway 配置解析开始复用同一套 config 解析路径，并在 inventory 检查时直接消费 discovery context 提供的 config URL
+- Swift 侧现已新增 `resolveOpenClawGovernancePaths`，让 governance root / config / approvals path 也开始复用同一 discovery context
+- Swift 侧 `inspectExecApprovalSnapshot` 在 `openclaw approvals get --json` 不可用或失败时，已可回退读取 `exec-approvals.json`，降低 runtime security 检查对单一 CLI 子命令可用性的依赖
+- Swift 本地 discovery 现已优先采用 `openclaw config file` 作为 root/config source-of-truth；local gateway config、workspace map、discovery scope 与连接期 mirror 流程不再默认硬编码 `~/.openclaw`
+- Swift 活动会话现已开始持有稳定的 deployment descriptor；当连接后用户切换 local/container/remote 配置时，session 的 sync / restore / detach 不再直接跟随当前全局 `config` 漂移
 
 当前进行中：
 
 - 将“统一连接契约”继续下沉到 Electron/Swift 的发现与探测入口，进一步收敛 local、container、remote 的连接定义与 inventory source-of-truth
 - 继续把“只读 probe / attach”与“prepare session / runtime commit”拆得更干净，并统一会话准备失败时的收口语义
-- 继续为 container/remote 模式补齐统一的 inventory source-of-truth 与 runtime handshake，并把 discovery helper 进一步下沉为可复用契约
+- 继续把 session descriptor 外溢到 snapshot / restore / diagnostics，明确展示“当前 project mirror 绑定的是哪一个 deployment”
+- 继续把 Swift 侧 remote/container 的剩余 governance / inventory 分叉点收敛到统一 source-of-truth，并与 Electron 对齐降级与探测语义
 
 ## 目的
 
@@ -342,6 +350,7 @@ OpenClawDeploymentAdapter
 - 把 probe、attach、sync、detach 拆成显式动作
 - 让 baseline snapshot 与 mirror commit 成为显式步骤
 - 在 sync 前增加 safe diff 与冲突处理
+- attach 后的 session 必须绑定稳定的 deployment descriptor，避免 connect 之后切换 deployment 配置时把 restore 或 runtime sync 写向错误目标
 
 ## 验收标准
 
@@ -367,7 +376,13 @@ OpenClawDeploymentAdapter
 - 增加持久化的 `ConnectionState` / `ProbeReport` 初始骨架，让 probe 结果、能力状态和降级状态先具备正式兼容层
 - 开始把桌面端 `connect` / `detect` 收敛到统一的 `probe` 契约，并把 `ConnectionState` / `ProbeReport` 从 Electron 主进程贯通到项目快照持久化链路
 - 容器模式的 agent 发现优先改为读取容器内 `openclaw config file` 指向的真实配置，减少宿主机挂载路径猜测带来的偏差
+- Swift 侧现已开始通过统一的 `resolveOpenClawDiscoveryContext` 收敛 local/container 的 inspection root、snapshot 复用与 gateway 配置解析，减少 connect、inventory 与 gateway probe 各自解析 root/config 的分叉实现
+- Swift 侧 container root fallback 已改为优先校验容器内真实存在的候选路径，并把 snapshot 复用绑定到 discovery scope，降低容器切换后误复用旧 inspection snapshot 的风险
+- Swift 侧现已新增共享 `openclaw.json` 解析 helper，让 inventory、workspace map 与 gateway config 开始复用同一条配置读取链路，并优先消费 discovery context 暴露的 config URL
+- Swift 本地 discovery 现已优先走 `openclaw config file`，让 local root/config、gateway config、workspace map 与 discovery scope 开始共享同一份 CLI 真值来源，而不是继续固定假设 `~/.openclaw`
+- Swift 侧现已开始通过 `resolveOpenClawGovernancePaths` 收敛 governance root / config / approvals path，并让 `inspectExecApprovalSnapshot` 在 CLI approvals 探测失败时回退读取 `exec-approvals.json`
 - Swift 侧 probe / CLI 与容器快照打包解包主链路切换到带双管道并发读取与超时终止的安全执行器，避免连接测试或归档过程因 Pipe 缓冲区写满而挂死
+- Swift 活动 session 现已开始持有稳定的 deployment descriptor；session mirror sync、runtime restore 与相关路径翻译不再直接依赖可变的全局 `config`，开始修复 deployment 切换后“旧会话写回新目标”的结构性风险
 - 桌面端 Gateway probe 从 HTTP `fetch()` 提升为 WebSocket upgrade + `connect.challenge` + `connect` RPC 校验，并补上持久化 device identity 签名载荷，远程/本地模式继续向 Swift Gateway 语义对齐
 - 桌面端已抽出纯 `connection-state` 判定 helper，并补齐 `ready / degraded / detached / failed` 回归测试，开始把连接状态机从实现细节升级为可验证契约
 - 桌面端 `connection-state` helper 已继续细化为 `transport / authentication / session / inventory` 四层状态判断，并覆盖本地、容器、远程、彻底失败四类回归场景

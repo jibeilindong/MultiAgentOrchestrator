@@ -21,12 +21,20 @@ Completed:
 - upgraded the Electron container probe to the same CLI + gateway contract, and removed the special-case assumption that container mode can skip gateway handshake
 - added a testable Electron `openclaw-discovery` helper so container mode now prefers in-container root discovery before falling back to explicit candidates, reducing reliance on `workspaceMountPath` guesswork
 - Electron probe roots, inventory discovery, and governance path resolution now begin converging on one `resolveOpenClawDiscoveryPaths` entry point, reducing duplicated root/config parsing inside `main.ts`
+- added a unified Swift `resolveOpenClawDiscoveryContext` entry point so local/container inspection roots, container snapshots, and gateway config parsing now start converging on one discovery context
+- upgraded the Swift container root fallback from “take the first guessed path” to “prefer the first candidate that actually exists inside the container”, and keyed snapshot reuse by discovery scope to reduce stale cross-container reuse
+- added shared Swift `openclaw.json` parsing helpers so agent inventory, workspace-map reads, and gateway config parsing now reuse one config-read path and inventory can directly consume the config URL exposed by discovery context
+- added Swift `resolveOpenClawGovernancePaths` so governance root/config/approvals resolution now also starts from the same discovery context
+- taught Swift `inspectExecApprovalSnapshot` to fall back to `exec-approvals.json` when `openclaw approvals get --json` is unavailable or fails, reducing runtime-security dependence on a single CLI subcommand
+- switched Swift local discovery to prefer `openclaw config file` as the canonical root/config source; local gateway config, workspace-map reads, discovery scope, and connect-time mirror flows no longer assume `~/.openclaw`
+- started binding active Swift sessions to a stable deployment descriptor so sync / restore / detach no longer drift with the mutable global `config` after a deployment switch
 
 In progress:
 
 - pushing the canonical connection contract further down into the Electron/Swift discovery and probe entry points so local, container, and remote share one definition of "connected" and one inventory source of truth
 - continuing to split read-only probe/attach from session preparation and runtime commit, while aligning the cleanup semantics for session-preparation failures
-- continuing to unify container and remote inventory discovery around one source of truth and one runtime handshake path, with discovery helpers being pulled into reusable contracts
+- continuing to surface the session descriptor into snapshot / restore / diagnostics flows so the UI can show which deployment a project mirror is actually attached to
+- continuing to close the remaining remote/container governance and inventory split points so Electron and Swift share one source-of-truth story and one degraded-probe contract
 
 ## Purpose
 
@@ -342,6 +350,7 @@ These events should feed:
 - split probe, attach, sync, detach
 - make baseline snapshots and mirror commits explicit
 - add safe diff and conflict handling before sync
+- require each attached session to carry a stable deployment descriptor so post-connect deployment changes cannot redirect restore or runtime sync into the wrong target
 
 ## Acceptance Criteria
 
@@ -367,7 +376,13 @@ Initial implementation slice:
 - add initial persisted `ConnectionState` / `ProbeReport` snapshots so probe outcomes, capabilities, and degraded states have a formal compatibility layer
 - start converging desktop `connect` / `detect` onto one shared `probe` contract and carry `ConnectionState` / `ProbeReport` from the Electron main process into persisted project snapshots
 - prefer container-side `openclaw config file` discovery for agent inventory so container mode no longer depends only on host mount-path guesses
+- start routing Swift local/container inspection roots, container snapshots, and gateway config parsing through one `resolveOpenClawDiscoveryContext`, reducing split root/config resolution across connect, inventory, and gateway probing
+- change Swift container root fallback to validate candidates against real in-container state before accepting them, and bind snapshot reuse to discovery scope so inspection state does not drift across containers or roots
+- add shared Swift `openclaw.json` parsing helpers so inventory, workspace-map reads, and gateway config resolution start reusing one config-read pipeline, with inventory preferring the config URL surfaced by discovery context
+- switch Swift local discovery to prefer `openclaw config file`, so local root/config, gateway config, workspace-map reads, and discovery scope now share one CLI-backed source of truth instead of assuming `~/.openclaw`
+- start routing Swift governance root/config/approvals resolution through `resolveOpenClawGovernancePaths`, and let runtime approval inspection fall back to `exec-approvals.json` when CLI approval probing is unavailable
 - move the Swift probe / CLI and container snapshot archive hot paths onto a safe process executor with concurrent stdout/stderr draining and timeout-based termination to avoid pipe-buffer deadlocks
+- start binding active Swift sessions to a stable deployment descriptor so mirror sync, runtime restore, and related path translation no longer depend on the mutable live `config`, reducing the risk of writing an old session into a newly selected deployment
 - upgrade desktop gateway probing from HTTP `fetch()` to websocket upgrade plus `connect.challenge`, `connect` RPC validation, and persisted device-identity signing so local and remote modes continue converging toward Swift gateway semantics
 - extract a pure desktop `connection-state` helper and add regression coverage for `ready / degraded / detached / failed`, turning the probe state machine into a testable contract instead of hidden implementation detail
 - extend the desktop `connection-state` helper with explicit `transport / authentication / session / inventory` layer assessment and cover local, container, remote, and total-failure regressions

@@ -207,9 +207,9 @@ test("runtime readiness blocks detached sessions before live execution", () => {
   assert.deepEqual(readiness.recoveryActions.map((action) => action.command), ["connect"]);
 });
 
-test("runtime readiness blocks connected sessions when transport is degraded", () => {
+test("runtime readiness keeps local CLI-only execution degraded but runnable", () => {
   const openClaw = createOpenClawSnapshot({
-    isConnected: true,
+    isConnected: false,
     connectionState: {
       phase: "degraded",
       deploymentKind: "local",
@@ -231,8 +231,9 @@ test("runtime readiness blocks connected sessions when transport is degraded", (
 
   const readiness = assessOpenClawRuntimeReadiness(openClaw);
 
-  assert.equal(readiness.label, "Blocked");
-  assert.match(readiness.blockingMessage ?? "", /transport is degraded/i);
+  assert.equal(readiness.label, "Degraded");
+  assert.equal(readiness.blockingMessage, null);
+  assert.match(readiness.summary, /gateway probe failed/i);
   assert.equal(readiness.recoveryActions[0]?.command, "connect");
 });
 

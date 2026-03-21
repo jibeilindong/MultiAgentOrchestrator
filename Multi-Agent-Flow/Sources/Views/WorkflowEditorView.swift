@@ -1011,7 +1011,7 @@ struct EditorToolbar: View {
         }
 
         if appState.hasPendingOpenClawSessionSync {
-            if !appState.openClawManager.isConnected {
+            if !appState.openClawManager.canAttachProject {
                 return LocalizedString.text("sync_current_session_connect_required_tooltip")
             }
 
@@ -1315,7 +1315,7 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isSavingDraft || appState.lastDraftSaveTime != nil || appState.hasPendingWorkflowConfiguration || shouldShowWorkflowSyncStatus || appState.lastAppliedWorkflowConfigurationAt != nil {
+            if appState.isSavingDraft || appState.lastDraftSaveTime != nil || appState.hasPendingWorkflowConfiguration || shouldShowWorkflowSyncStatus || appState.lastAppliedWorkflowConfigurationAt != nil || appState.openClawRevisionSummary != nil || appState.openClawLatestRuntimeSyncSummary != nil {
                 HStack(spacing: 8) {
                     if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
                         toolbarSaveStatusView
@@ -1327,6 +1327,12 @@ struct EditorToolbar: View {
                         workflowSessionSyncStatusView
                     } else if !appState.hasPendingWorkflowConfiguration, let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
                         workflowAppliedStatusView(lastApplied)
+                    }
+                    if let revisionSummary = appState.openClawRevisionSummary {
+                        workflowRevisionStatusView(revisionSummary)
+                    }
+                    if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
+                        workflowRuntimeSyncReceiptStatusView(runtimeSyncSummary)
                     }
                 }
                 .padding(.top, 8)
@@ -1734,6 +1740,66 @@ struct EditorToolbar: View {
             Image(systemName: "checkmark.seal.fill")
                 .foregroundColor(.green)
             Text(LocalizedString.format("workflow_applied_at", lastApplied.formatted(date: .omitted, time: .shortened)))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.82))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func workflowRevisionStatusView(_ summary: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .foregroundColor(.blue)
+            Text(summary)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.82))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func workflowRuntimeSyncReceiptStatusView(_ summary: String) -> some View {
+        let iconColor: Color
+        let iconName: String
+
+        switch appState.latestOpenClawRuntimeSyncReceipt?.status {
+        case .succeeded:
+            iconColor = .green
+            iconName = "checkmark.circle.fill"
+        case .partial:
+            iconColor = .orange
+            iconName = "exclamationmark.triangle.fill"
+        case .failed:
+            iconColor = .red
+            iconName = "xmark.circle.fill"
+        case .none:
+            iconColor = .secondary
+            iconName = "clock.badge.questionmark"
+        }
+
+        return HStack(spacing: 6) {
+            Image(systemName: iconName)
+                .foregroundColor(iconColor)
+            Text(summary)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundColor(.secondary)
                 .lineLimit(1)

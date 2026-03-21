@@ -26,6 +26,14 @@ struct ManagedAgentWorkspaceDocumentReference: Identifiable, Hashable {
     let absolutePath: String
 }
 
+enum OpenClawCurrentProjectAttachmentState: Equatable {
+    case noProject
+    case remoteConnectionOnly
+    case unattached
+    case attachedCurrentProject
+    case attachedDifferentProject
+}
+
 // 项目文件管理器
 class ProjectManager: ObservableObject {
     struct StorageDirectories {
@@ -576,7 +584,7 @@ class AppState: ObservableObject {
         }
         didSet {
             if let project = currentProject,
-               project.runtimeState.workflowConfigurationRevision == project.runtimeState.appliedWorkflowConfigurationRevision {
+               project.runtimeState.workflowConfigurationRevision == project.runtimeState.appliedToMirrorConfigurationRevision {
                 appliedProjectSnapshot = project
             }
             refreshOpsAnalytics()
@@ -645,17 +653,148 @@ class AppState: ObservableObject {
         Self.pendingWorkflowConfigurationRevisionDelta(currentProject?.runtimeState)
     }
 
+    var mirroredWorkflowConfigurationRevision: Int {
+        currentProject?.runtimeState.appliedToMirrorConfigurationRevision ?? 0
+    }
+
+    var syncedOpenClawRuntimeConfigurationRevision: Int {
+        currentProject?.runtimeState.syncedToRuntimeConfigurationRevision ?? 0
+    }
+
+    var pendingOpenClawRuntimeSyncRevisionDelta: Int {
+        Self.pendingOpenClawRuntimeSyncRevisionDelta(currentProject?.runtimeState)
+    }
+
     var lastAppliedWorkflowConfigurationAt: Date? {
-        currentProject?.runtimeState.lastAppliedWorkflowAt
+        currentProject?.runtimeState.lastAppliedToMirrorAt
+    }
+
+    var lastSyncedOpenClawRuntimeAt: Date? {
+        currentProject?.runtimeState.lastSyncedToRuntimeAt
+    }
+
+    var openClawRevisionSummary: String? {
+        guard let runtimeState = currentProject?.runtimeState else { return nil }
+        guard
+            runtimeState.workflowConfigurationRevision > 0
+                || runtimeState.appliedToMirrorConfigurationRevision > 0
+                || runtimeState.syncedToRuntimeConfigurationRevision > 0
+        else {
+            return nil
+        }
+
+        return LocalizedString.format(
+            "openclaw_revision_summary",
+            runtimeState.workflowConfigurationRevision,
+            runtimeState.appliedToMirrorConfigurationRevision,
+            runtimeState.syncedToRuntimeConfigurationRevision
+        )
+    }
+
+    var latestOpenClawRuntimeSyncReceipt: OpenClawRuntimeSyncReceipt? {
+        currentProject?.runtimeState.latestRuntimeSyncReceipt
+    }
+
+    var openClawLatestRuntimeSyncSummary: String? {
+        guard let receipt = latestOpenClawRuntimeSyncReceipt else { return nil }
+
+        switch receipt.status {
+        case .succeeded:
+            return LocalizedString.format(
+                "openclaw_runtime_sync_receipt_succeeded",
+                receipt.requestedMirrorRevision,
+                receipt.appliedRuntimeRevision
+            )
+        case .partial:
+            return LocalizedString.format(
+                "openclaw_runtime_sync_receipt_partial",
+                receipt.requestedMirrorRevision,
+                receipt.appliedRuntimeRevision
+            )
+        case .failed:
+            return LocalizedString.format(
+                "openclaw_runtime_sync_receipt_failed",
+                receipt.requestedMirrorRevision,
+                receipt.appliedRuntimeRevision
+            )
+        }
+    }
+
+    var openClawLatestRuntimeSyncDetail: String? {
+        latestOpenClawRuntimeSyncReceipt?.primaryIssueMessage
+    }
+
+    var isCurrentProjectAttachedToOpenClaw: Bool {
+        guard let projectID = currentProject?.id else { return false }
+        return openClawManager.hasAttachedProjectSession && openClawManager.attachedProjectID == projectID
+    }
+
+    var currentProjectOpenClawAttachmentState: OpenClawCurrentProjectAttachmentState {
+        guard currentProject != nil else { return .noProject }
+
+        if openClawManager.config.deploymentKind == .remoteServer {
+            return .remoteConnectionOnly
+        }
+
+        guard openClawManager.hasAttachedProjectSession else {
+            return .unattached
+        }
+
+        return isCurrentProjectAttachedToOpenClaw ? .attachedCurrentProject : .attachedDifferentProject
+    }
+
+    var openClawAttachmentStatusTitle: String {
+        switch currentProjectOpenClawAttachmentState {
+        case .noProject:
+            return LocalizedString.text("openclaw_attachment_no_project")
+        case .remoteConnectionOnly:
+            return LocalizedString.text("openclaw_attachment_remote_only")
+        case .unattached:
+            return LocalizedString.text("openclaw_attachment_unattached")
+        case .attachedCurrentProject:
+            return LocalizedString.text("openclaw_attachment_attached_current")
+        case .attachedDifferentProject:
+            return LocalizedString.text("openclaw_attachment_attached_other")
+        }
+    }
+
+    var openClawAttachmentStatusDetail: String {
+        switch currentProjectOpenClawAttachmentState {
+        case .noProject:
+            return LocalizedString.text("openclaw_attachment_no_project_hint")
+        case .remoteConnectionOnly:
+            return LocalizedString.text("remote_gateway_attach_unsupported")
+        case .unattached:
+            return LocalizedString.text("project_not_attached_hint")
+        case .attachedDifferentProject:
+            return LocalizedString.text("openclaw_attachment_other_project_hint")
+        case .attachedCurrentProject:
+            if pendingOpenClawRuntimeSyncRevisionDelta > 0 {
+                return "当前项目镜像存在待同步变更。确认连接无误后，请执行“同步当前会话”。"
+            }
+            if mirroredWorkflowConfigurationRevision > 0,
+               syncedOpenClawRuntimeConfigurationRevision >= mirroredWorkflowConfigurationRevision {
+                return "当前项目镜像已写回本次 OpenClaw 会话。"
+            }
+            switch openClawManager.sessionLifecycle.stage {
+            case .inactive:
+                return LocalizedString.text("project_not_attached_hint")
+            case .prepared, .pendingSync:
+                return "当前项目镜像已准备完成，但尚未写回当前 OpenClaw 会话。"
+            case .synced:
+                return "当前项目镜像已写回本次 OpenClaw 会话。"
+            }
+        }
     }
 
     var hasPendingOpenClawSessionSync: Bool {
-        openClawManager.sessionLifecycle.stage == .pendingSync && openClawManager.sessionLifecycle.hasPendingMirrorChanges
+        isCurrentProjectAttachedToOpenClaw
+            && pendingOpenClawRuntimeSyncRevisionDelta > 0
     }
 
     var canSyncOpenClawSessionFromWorkflow: Bool {
         hasPendingOpenClawSessionSync
-            && openClawManager.isConnected
+            && openClawManager.canAttachProject
             && openClawManager.config.deploymentKind != .remoteServer
             && !isApplyingWorkflowConfiguration
             && !isSyncingOpenClawSession
@@ -667,12 +806,17 @@ class AppState: ObservableObject {
 
     static func hasPendingWorkflowConfiguration(_ runtimeState: RuntimeState?) -> Bool {
         guard let runtimeState else { return false }
-        return runtimeState.workflowConfigurationRevision > runtimeState.appliedWorkflowConfigurationRevision
+        return runtimeState.workflowConfigurationRevision > runtimeState.appliedToMirrorConfigurationRevision
     }
 
     static func pendingWorkflowConfigurationRevisionDelta(_ runtimeState: RuntimeState?) -> Int {
         guard let runtimeState else { return 0 }
-        return max(0, runtimeState.workflowConfigurationRevision - runtimeState.appliedWorkflowConfigurationRevision)
+        return max(0, runtimeState.workflowConfigurationRevision - runtimeState.appliedToMirrorConfigurationRevision)
+    }
+
+    static func pendingOpenClawRuntimeSyncRevisionDelta(_ runtimeState: RuntimeState?) -> Int {
+        guard let runtimeState else { return 0 }
+        return max(0, runtimeState.appliedToMirrorConfigurationRevision - runtimeState.syncedToRuntimeConfigurationRevision)
     }
     
     init() {
@@ -813,6 +957,13 @@ class AppState: ObservableObject {
             confirmedProject.runtimeState.failedDispatches = project.runtimeState.failedDispatches
             confirmedProject.runtimeState.agentStates = project.runtimeState.agentStates
             confirmedProject.runtimeState.runtimeEvents = project.runtimeState.runtimeEvents
+            confirmedProject.runtimeState.workflowConfigurationRevision = project.runtimeState.workflowConfigurationRevision
+            confirmedProject.runtimeState.appliedToMirrorConfigurationRevision = project.runtimeState.appliedToMirrorConfigurationRevision
+            confirmedProject.runtimeState.syncedToRuntimeConfigurationRevision = project.runtimeState.syncedToRuntimeConfigurationRevision
+            confirmedProject.runtimeState.latestRuntimeSyncReceipt = project.runtimeState.latestRuntimeSyncReceipt
+            confirmedProject.runtimeState.recentRuntimeSyncReceipts = project.runtimeState.recentRuntimeSyncReceipts
+            confirmedProject.runtimeState.lastAppliedToMirrorAt = project.runtimeState.lastAppliedToMirrorAt
+            confirmedProject.runtimeState.lastSyncedToRuntimeAt = project.runtimeState.lastSyncedToRuntimeAt
             confirmedProject.runtimeState.lastUpdated = project.runtimeState.lastUpdated
             confirmedProject.updatedAt = project.updatedAt
             appliedProjectSnapshot = confirmedProject
@@ -826,7 +977,7 @@ class AppState: ObservableObject {
             executionResults: openClawService.executionResults,
             executionLogs: openClawService.executionLogs,
             activeAgents: openClawManager.activeAgents,
-            isConnected: openClawManager.isConnected
+            isConnected: openClawManager.canRunWorkflow
         )
     }
 
@@ -868,6 +1019,12 @@ class AppState: ObservableObject {
     }
 
     private func decorateOpenClawConnectionMessage(_ message: String) -> String {
+        guard currentProject != nil else { return message }
+
+        guard isCurrentProjectAttachedToOpenClaw else {
+            return "\(message) 当前运行时已连接，但当前项目尚未附着；如需同步项目镜像，请执行“附着当前项目”。"
+        }
+
         switch openClawManager.sessionLifecycle.stage {
         case .pendingSync:
             return "\(message) 当前项目镜像已准备完成，但仍有待同步变更；如需写回运行时，请执行“同步当前会话”。"
@@ -1284,7 +1441,7 @@ class AppState: ObservableObject {
         if let draftURL = url.flatMap({ _ in projectManager.draftURL(for: hydratedProject.id) }),
            FileManager.default.fileExists(atPath: draftURL.path),
            projectManager.modificationDate(for: draftURL) >= projectManager.modificationDate(for: url ?? draftURL),
-           hydratedProject.runtimeState.workflowConfigurationRevision != hydratedProject.runtimeState.appliedWorkflowConfigurationRevision {
+           hydratedProject.runtimeState.workflowConfigurationRevision != hydratedProject.runtimeState.appliedToMirrorConfigurationRevision {
             lastDraftSaveTime = projectManager.modificationDate(for: draftURL)
             lastDraftSaveKind = .restored
             openClawService.addLog(
@@ -1470,18 +1627,16 @@ class AppState: ObservableObject {
     }
 
     func connectOpenClaw(using config: OpenClawConfig? = nil, completion: ((Bool, String) -> Void)? = nil) {
-        guard let project = snapshotCurrentProject() else {
-            completion?(false, "请先创建或打开项目，再确认连接 OpenClaw。")
-            return
-        }
-
         if let config {
             openClawManager.config = config
             openClawManager.config.save()
         }
 
-        currentProject = project
-        openClawManager.connect(for: project) { [weak self] success, message in
+        if let project = snapshotCurrentProject() {
+            currentProject = project
+        }
+
+        openClawManager.connect { [weak self] success, message in
             guard let self else { return }
             DispatchQueue.main.async(execute: {
                 self.syncCurrentProjectFromManagers()
@@ -1513,6 +1668,47 @@ class AppState: ObservableObject {
         }
     }
 
+    func attachCurrentProjectToOpenClaw(completion: ((Bool, String) -> Void)? = nil) {
+        guard let project = snapshotCurrentProject() else {
+            completion?(false, "请先创建或打开项目，再附着到 OpenClaw。")
+            return
+        }
+
+        guard openClawManager.config.deploymentKind != .remoteServer else {
+            completion?(false, "远程网关模式当前不支持项目附着。")
+            return
+        }
+
+        currentProject = project
+        openClawManager.attachProjectSession(for: project) { [weak self] success, message in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.syncCurrentProjectFromManagers()
+                if success {
+                    if var refreshedProject = self.currentProject,
+                       let soulReport = self.openClawManager.applyPendingSoulReconcileResult(to: &refreshedProject) {
+                        self.currentProject = refreshedProject
+                        self.objectWillChange.send()
+
+                        if let summary = soulReport.summaryText {
+                            let logLevel = soulReport.conflictCount > 0 || soulReport.missingSourceCount > 0
+                                ? ExecutionLogEntry.LogLevel.warning
+                                : ExecutionLogEntry.LogLevel.info
+                            self.openClawService.addLog(logLevel, summary)
+                        }
+
+                        for agentReport in soulReport.agentReports where agentReport.status == .conflict || agentReport.status == .missingSource {
+                            let detail = "SOUL \(agentReport.agentName): \(agentReport.message)"
+                            self.openClawService.addLog(.warning, detail)
+                        }
+                    }
+                    self.persistCurrentProjectSilently()
+                }
+                completion?(success, message)
+            }
+        }
+    }
+
     func syncOpenClawActiveSession(completion: ((Bool, String) -> Void)? = nil) {
         guard !isSyncingOpenClawSession else {
             completion?(false, "当前 OpenClaw 会话正在同步中，请稍候。")
@@ -1529,34 +1725,33 @@ class AppState: ObservableObject {
             return
         }
 
-        guard openClawManager.isConnected else {
-            completion?(false, "请先连接 OpenClaw，再同步当前会话。")
+        guard openClawManager.canAttachProject else {
+            let detail = openClawManager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail?.isEmpty == false
+                ? "当前 OpenClaw 运行态不具备会话同步能力：\(detail!)"
+                : "当前 OpenClaw 运行态不具备会话同步能力，请先恢复可附着状态。"
+            completion?(false, message)
             return
         }
 
-        currentProject = project
-        isSyncingOpenClawSession = true
-        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] success, message in
-            guard let self else { return }
-            DispatchQueue.main.async {
-                self.syncCurrentProjectFromManagers()
+        if !openClawManager.hasAttachedProjectSession || openClawManager.attachedProjectID != project.id {
+            attachCurrentProjectToOpenClaw { [weak self] success, message in
+                guard let self else { return }
                 guard success else {
-                    self.isSyncingOpenClawSession = false
                     completion?(false, message)
                     return
                 }
 
-                self.syncOpenClawCommunicationAllowListIfNeeded(project: project, reason: "manual_sync") { allowListSuccess, allowListMessage in
-                    let combinedMessage = "\(message) \(allowListMessage)".trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.syncCurrentProjectFromManagers()
-                    self.isSyncingOpenClawSession = false
-                    if allowListSuccess {
-                        self.persistCurrentProjectSilently()
-                    }
-                    completion?(allowListSuccess, combinedMessage)
-                }
+                self.performOpenClawSessionSync(
+                    for: project,
+                    attachmentMessage: message,
+                    completion: completion
+                )
             }
+            return
         }
+
+        performOpenClawSessionSync(for: project, completion: completion)
     }
 
     func disconnectOpenClaw(completion: ((Bool, String) -> Void)? = nil) {
@@ -1566,6 +1761,116 @@ class AppState: ObservableObject {
             persistCurrentProjectSilently()
         }
         completion?(true, "OpenClaw 已断开，当前会话已结束，项目镜像仍保留在项目中。")
+    }
+
+    private func performOpenClawSessionSync(
+        for project: MAProject,
+        attachmentMessage: String? = nil,
+        completion: ((Bool, String) -> Void)? = nil
+    ) {
+        currentProject = project
+        isSyncingOpenClawSession = true
+        let requestedMirrorRevision = project.runtimeState.appliedToMirrorConfigurationRevision
+        let syncStartedAt = Date()
+
+        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] syncResult in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.syncCurrentProjectFromManagers()
+                let baseSteps = self.openClawRuntimeSyncSteps(
+                    from: syncResult,
+                    startedAt: syncStartedAt,
+                    completedAt: Date()
+                )
+                let baseWarnings = self.openClawRuntimeSyncWarnings(from: syncResult)
+                let baseMessage = syncResult.message
+
+                guard syncResult.didCompleteRuntimeWrite else {
+                    let combinedMessage = [attachmentMessage, baseMessage]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+                    let appliedRuntimeRevision = self.currentProject?.runtimeState.syncedToRuntimeConfigurationRevision ?? 0
+                    let receipt = OpenClawRuntimeSyncReceipt(
+                        projectID: project.id,
+                        attachmentProjectID: self.openClawManager.attachedProjectID,
+                        requestedMirrorRevision: requestedMirrorRevision,
+                        appliedRuntimeRevision: appliedRuntimeRevision,
+                        startedAt: syncStartedAt,
+                        completedAt: Date(),
+                        status: self.openClawRuntimeSyncReceiptStatus(
+                            deploymentStatus: syncResult.deploymentStatus,
+                            allowListSuccess: nil,
+                            hasWarnings: !baseWarnings.isEmpty
+                        ),
+                        steps: baseSteps + [
+                            OpenClawRuntimeSyncStepReceipt(
+                                step: .syncCommunicationAllowList,
+                                status: .skipped,
+                                message: "运行时写回未完成，已跳过通信 allow list 同步。",
+                                startedAt: syncStartedAt,
+                                completedAt: Date()
+                            )
+                        ],
+                        warnings: baseWarnings,
+                        errorMessage: syncResult.errorMessage
+                    )
+                    self.recordOpenClawRuntimeSyncReceipt(receipt, syncedRuntimeRevision: nil)
+                    self.isSyncingOpenClawSession = false
+                    self.persistCurrentProjectSilently()
+                    completion?(false, combinedMessage.isEmpty ? baseMessage : combinedMessage)
+                    return
+                }
+
+                self.syncOpenClawCommunicationAllowListIfNeeded(project: project, reason: "manual_sync") { allowListSuccess, allowListMessage in
+                    let completedAt = Date()
+                    let allowListStep = OpenClawRuntimeSyncStepReceipt(
+                        step: .syncCommunicationAllowList,
+                        status: allowListSuccess ? .succeeded : .failed,
+                        message: allowListMessage,
+                        startedAt: syncStartedAt,
+                        completedAt: completedAt
+                    )
+                    let canAdvanceRuntimeRevision = allowListSuccess && syncResult.unresolvedAgentNames.isEmpty
+                    let appliedRuntimeRevision = canAdvanceRuntimeRevision
+                        ? max(
+                            self.currentProject?.runtimeState.syncedToRuntimeConfigurationRevision ?? 0,
+                            requestedMirrorRevision
+                        )
+                        : (self.currentProject?.runtimeState.syncedToRuntimeConfigurationRevision ?? 0)
+                    let receipt = OpenClawRuntimeSyncReceipt(
+                        projectID: project.id,
+                        attachmentProjectID: self.openClawManager.attachedProjectID,
+                        requestedMirrorRevision: requestedMirrorRevision,
+                        appliedRuntimeRevision: appliedRuntimeRevision,
+                        startedAt: syncStartedAt,
+                        completedAt: completedAt,
+                        status: self.openClawRuntimeSyncReceiptStatus(
+                            deploymentStatus: syncResult.deploymentStatus,
+                            allowListSuccess: allowListSuccess,
+                            hasWarnings: !baseWarnings.isEmpty
+                        ),
+                        steps: baseSteps + [allowListStep],
+                        warnings: baseWarnings,
+                        errorMessage: allowListSuccess ? nil : allowListMessage
+                    )
+
+                    self.recordOpenClawRuntimeSyncReceipt(
+                        receipt,
+                        syncedRuntimeRevision: canAdvanceRuntimeRevision ? appliedRuntimeRevision : nil
+                    )
+                    self.syncCurrentProjectFromManagers()
+                    self.isSyncingOpenClawSession = false
+                    self.persistCurrentProjectSilently()
+
+                    let combinedMessage = [attachmentMessage, baseMessage, allowListMessage]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+                    completion?(allowListSuccess, combinedMessage)
+                }
+            }
+        }
     }
 
     @discardableResult
@@ -3264,7 +3569,7 @@ class AppState: ObservableObject {
         }
 
         let requestedRevision = project.runtimeState.workflowConfigurationRevision
-        guard requestedRevision != project.runtimeState.appliedWorkflowConfigurationRevision else {
+        guard requestedRevision != project.runtimeState.appliedToMirrorConfigurationRevision else {
             completion?(true, LocalizedString.text("workflow_apply_no_pending"))
             return
         }
@@ -3289,8 +3594,8 @@ class AppState: ObservableObject {
            refreshedProject.id == project.id,
            refreshedProject.runtimeState.workflowConfigurationRevision == requestedRevision {
             refreshedProject.permissions = conversationPermissions(for: refreshedProject.workflows)
-            refreshedProject.runtimeState.appliedWorkflowConfigurationRevision = requestedRevision
-            refreshedProject.runtimeState.lastAppliedWorkflowAt = Date()
+            refreshedProject.runtimeState.appliedToMirrorConfigurationRevision = requestedRevision
+            refreshedProject.runtimeState.lastAppliedToMirrorAt = Date()
             refreshedProject.updatedAt = Date()
             currentProject = refreshedProject
             appliedProjectSnapshot = refreshedProject
@@ -3305,12 +3610,18 @@ class AppState: ObservableObject {
     private func workflowApplyCompletionMessage(baseMessage: String) -> String {
         let pendingSyncHint = LocalizedString.text("workflow_apply_sync_current_session_hint")
         let localOnlyHint = LocalizedString.text("workflow_apply_local_only_hint")
+        let attachProjectHint = LocalizedString.text("project_not_attached_hint")
+
+        guard openClawManager.config.deploymentKind != .remoteServer else {
+            return "\(baseMessage) \(localOnlyHint)".trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard isCurrentProjectAttachedToOpenClaw else {
+            return "\(baseMessage) \(attachProjectHint)".trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         switch openClawManager.sessionLifecycle.stage {
         case .pendingSync, .prepared, .synced:
-            guard openClawManager.config.deploymentKind != .remoteServer else {
-                return "\(baseMessage) \(localOnlyHint)".trimmingCharacters(in: .whitespacesAndNewlines)
-            }
             return "\(baseMessage) \(pendingSyncHint)".trimmingCharacters(in: .whitespacesAndNewlines)
         case .inactive:
             return "\(baseMessage) \(localOnlyHint)".trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3334,6 +3645,125 @@ class AppState: ObservableObject {
             let level: ExecutionLogEntry.LogLevel = success ? .info : .warning
             self.openClawService.addLog(level, "[\(reason)] \(message)")
             completion?(success, message)
+        }
+    }
+
+    private func openClawRuntimeSyncSteps(
+        from result: OpenClawManager.ActiveSessionProjectSyncResult,
+        startedAt: Date,
+        completedAt: Date
+    ) -> [OpenClawRuntimeSyncStepReceipt] {
+        let stageStatus: OpenClawRuntimeSyncStepStatus = result.unresolvedAgentNames.isEmpty ? .succeeded : .partial
+        let stageSummary: String
+        if result.updatedAgentCount > 0 {
+            stageSummary = "已更新 \(result.updatedAgentCount) 个 agent 的项目镜像"
+        } else {
+            stageSummary = "项目镜像已是最新"
+        }
+        let stageMessage: String
+        if result.unresolvedAgentNames.isEmpty {
+            stageMessage = "\(stageSummary)。"
+        } else {
+            let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
+            stageMessage = "\(stageSummary)；未能定位这些 agent 的 SOUL 路径：\(names)"
+        }
+
+        let deploymentStatus: OpenClawRuntimeSyncStepStatus
+        let deploymentMessage: String
+        switch result.deploymentStatus {
+        case .appliedToRuntime:
+            deploymentStatus = .succeeded
+            deploymentMessage = result.message
+        case .skippedNoPendingChanges:
+            deploymentStatus = .succeeded
+            deploymentMessage = result.message
+        case .deferredNoActiveSession:
+            deploymentStatus = .partial
+            deploymentMessage = result.message
+        case .blockedStageIncomplete:
+            deploymentStatus = .skipped
+            deploymentMessage = "项目镜像 staging 不完整，已阻止本次运行时写回。"
+        case .unsupportedRemote, .failed:
+            deploymentStatus = .failed
+            deploymentMessage = result.errorMessage ?? result.message
+        }
+
+        return [
+            OpenClawRuntimeSyncStepReceipt(
+                step: .stageProjectMirror,
+                status: stageStatus,
+                message: stageMessage,
+                startedAt: startedAt,
+                completedAt: completedAt
+            ),
+            OpenClawRuntimeSyncStepReceipt(
+                step: .writeRuntimeSession,
+                status: deploymentStatus,
+                message: deploymentMessage,
+                startedAt: startedAt,
+                completedAt: completedAt
+            )
+        ]
+    }
+
+    private func openClawRuntimeSyncWarnings(
+        from result: OpenClawManager.ActiveSessionProjectSyncResult
+    ) -> [String] {
+        guard !result.unresolvedAgentNames.isEmpty else { return [] }
+        let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
+        return ["以下 agent 的 SOUL 路径未能解析，运行时未接受本次完整写回：\(names)"]
+    }
+
+    private func openClawRuntimeSyncReceiptStatus(
+        deploymentStatus: OpenClawManager.ActiveSessionProjectSyncDeploymentStatus,
+        allowListSuccess: Bool?,
+        hasWarnings: Bool
+    ) -> OpenClawRuntimeSyncReceiptStatus {
+        switch deploymentStatus {
+        case .failed, .unsupportedRemote:
+            return .failed
+        case .blockedStageIncomplete, .deferredNoActiveSession:
+            return .partial
+        case .appliedToRuntime, .skippedNoPendingChanges:
+            if let allowListSuccess {
+                if allowListSuccess {
+                    return hasWarnings ? .partial : .succeeded
+                }
+                return .partial
+            }
+            return hasWarnings ? .partial : .succeeded
+        }
+    }
+
+    private func recordOpenClawRuntimeSyncReceipt(
+        _ receipt: OpenClawRuntimeSyncReceipt,
+        syncedRuntimeRevision: Int?
+    ) {
+        guard var refreshedProject = currentProject else { return }
+
+        refreshedProject.runtimeState.latestRuntimeSyncReceipt = receipt
+        refreshedProject.runtimeState.recentRuntimeSyncReceipts = Array(
+            ([receipt] + refreshedProject.runtimeState.recentRuntimeSyncReceipts)
+                .reduce(into: [OpenClawRuntimeSyncReceipt]()) { partial, item in
+                    guard partial.contains(where: { $0.id == item.id }) == false else { return }
+                    partial.append(item)
+                }
+                .prefix(10)
+        )
+
+        if let syncedRuntimeRevision {
+            refreshedProject.runtimeState.syncedToRuntimeConfigurationRevision = max(
+                refreshedProject.runtimeState.syncedToRuntimeConfigurationRevision,
+                syncedRuntimeRevision
+            )
+            refreshedProject.runtimeState.lastSyncedToRuntimeAt = receipt.completedAt
+        }
+
+        refreshedProject.runtimeState.lastUpdated = receipt.completedAt
+        refreshedProject.updatedAt = receipt.completedAt
+        currentProject = refreshedProject
+        if refreshedProject.runtimeState.workflowConfigurationRevision == refreshedProject.runtimeState.appliedToMirrorConfigurationRevision {
+            appliedProjectSnapshot = refreshedProject
         }
     }
 
@@ -3583,8 +4013,12 @@ class AppState: ObservableObject {
         var failures: [String] = []
         var warnings: [String] = []
 
-        if !openClawManager.isConnected {
-            failures.append("OpenClaw 当前未连接，无法执行启动验证。")
+        if !openClawManager.canRunWorkflow {
+            let detail = openClawManager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail?.isEmpty == false
+                ? "OpenClaw 当前不具备工作流执行能力：\(detail!)"
+                : "OpenClaw 当前不具备工作流执行能力，无法执行启动验证。"
+            failures.append(message)
         }
 
         let entryNodes = entryConnectedAgentNodes(in: workflow)
@@ -3764,10 +4198,14 @@ class AppState: ObservableObject {
             return false
         }
 
-        guard openClawManager.isConnected else {
+        guard openClawManager.canRunConversation else {
+            let detail = openClawManager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail?.isEmpty == false
+                ? "Workbench publish failed: \(detail!)"
+                : "Workbench publish failed: OpenClaw runtime is not runnable for workbench conversation."
             openClawService.addLog(
                 .error,
-                "Workbench publish failed: OpenClaw is not connected."
+                message
             )
             return false
         }
@@ -4216,7 +4654,7 @@ class AppState: ObservableObject {
     }
 
     func refreshWorkbenchHistory(for workflowID: UUID? = nil) {
-        guard openClawManager.isConnected else { return }
+        guard openClawManager.canReadSessionHistory else { return }
 
         let connectionConfig = openClawManager.config
         guard let gatewayConfig = openClawManager.preferredGatewayConfig(using: connectionConfig) else { return }

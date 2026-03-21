@@ -929,16 +929,19 @@ class OpenClawService: ObservableObject {
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
-        // 检查连接状态
-        let managerConnected = OpenClawManager.shared.isConnected
-        guard managerConnected else {
-            lastError = "Not connected to OpenClaw Gateway"
-            addLog(.error, "Cannot execute: Not connected to OpenClaw Gateway")
+        let manager = OpenClawManager.shared
+        guard manager.canRunWorkflow else {
+            let healthMessage = manager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let failureMessage = healthMessage?.isEmpty == false
+                ? healthMessage!
+                : "OpenClaw runtime is not runnable under the current capability state."
+            lastError = failureMessage
+            addLog(.error, "Cannot execute workflow: \(failureMessage)")
             completion([])
             return
         }
 
-        let isolationAssessment = OpenClawManager.shared.runtimeIsolationAssessment(for: workflow, agents: agents)
+        let isolationAssessment = manager.runtimeIsolationAssessment(for: workflow, agents: agents)
         if !isolationAssessment.advisoryMessages.isEmpty {
             let message = isolationAssessment.advisoryMessages.joined(separator: " | ")
             addLog(.warning, "Runtime isolation advisory: \(message)")
