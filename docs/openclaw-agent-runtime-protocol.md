@@ -391,6 +391,227 @@ Current sanitization behavior:
 
 This means natural-language answers may describe intent, but only sanitized protocol output can actually drive downstream execution.
 
+## Agent Protocol Memory And Dispatch Capsule
+
+The current OpenClaw workflow runtime now gives every agent two protocol inputs on every dispatch:
+
+- long-term protocol memory persisted on the agent definition
+- a per-dispatch execution capsule synthesized from the current workflow guardrails
+
+### Long-Term Protocol Memory
+
+Files:
+
+- `Multi-Agent-Flow/Sources/Models/Agent.swift`
+- `packages/domain/src/agent.ts`
+
+Current stored fields:
+
+- `protocolVersion`
+- `stableRules`
+- `recentCorrections`
+- `repeatOffenses`
+- `lastSessionDigest`
+- `lastUpdatedAt`
+
+Purpose:
+
+- agents keep protocol memory across runs instead of relearning the rules from scratch
+- repeated mistakes become stable rules, not only transient hints
+- the orchestrator remains the sole authority that writes corrective protocol memory
+
+Default stable rules currently include:
+
+- machine-readable workflow coordination must use the runtime protocol
+- the final routing JSON line is mandatory whenever a machine tail is required
+- downstream targets must come from the allowed candidate list
+- write scope, tool scope, and approval scope must be respected
+- when uncertain, emit the smallest valid safe result
+
+### Per-Dispatch Execution Capsule
+
+File:
+
+- `Multi-Agent-Flow/Sources/Services/OpenClawService.swift`
+
+The dispatch capsule is intentionally small and dynamic. It carries only the execution facts that can change per node/run:
+
+- `protocolVersion`
+- `allowedActions`
+- `allowedTargets`
+- `approvalTargets`
+- `writeScope`
+- `toolScope`
+- `fallbackPolicy`
+- `requiredOutputContract`
+- `selfCheckRule`
+- `feedbackHints`
+
+In the current Swift hot path, capsule data is flattened into `task.dispatch.payload` and dispatch constraints/control fields using compact strings so the transport stays cheap.
+
+### Session Protocol Digest
+
+Each dispatch also includes a compact `sessionProtocolDigest`.
+
+Current digest summarizes:
+
+- agent identity
+- protocol version
+- entry/worker role
+- active transport kind
+- fallback policy
+- whether approval-gated downstream targets exist
+
+Purpose:
+
+- gives the agent a cheap session-scoped reminder of the current execution contract
+- gives the orchestrator a short value to persist back into protocol memory after the run
+
+## Deterministic Repair Layer
+
+File:
+
+- `Multi-Agent-Flow/Sources/Services/OpenClawService.swift`
+
+The current runtime is execution-first. It does not immediately fail the workflow on protocol formatting mistakes if the intent can be repaired safely.
+
+Current repair pipeline:
+
+1. parse the requested routing directive from the machine tail
+2. sanitize requested targets against direct and approval-gated downstream descriptors
+3. apply deterministic repair rules only when the repair is locally safe
+4. persist both requested and sanitized route metadata for observability
+
+Current repair cases:
+
+- `missing_route_auto_selected`
+- `invalid_targets_auto_selected`
+- `route_missing_approval_blocked`
+
+Current guarantees:
+
+- repaired routing is what drives downstream execution
+- the originally requested route is still preserved for trace/debug purposes
+- approval-gated targets are never executed directly
+- no extra LLM correction turn is added on the hot path today
+
+ExecutionResult now persists both protocol intent and repair outcome:
+
+- `requestedRoutingAction`
+- `requestedRoutingTargets`
+- `requestedRoutingReason`
+- `routingAction`
+- `routingTargets`
+- `routingReason`
+- `protocolRepairCount`
+- `protocolRepairTypes`
+- `protocolSafeDegradeApplied`
+
+## Orchestrator Feedback Loop
+
+File:
+
+- `Multi-Agent-Flow/Sources/Services/AppState.swift`
+
+Protocol feedback is currently orchestrator-owned. Agents do not grade or rewrite each other.
+
+Current feedback timing:
+
+- after execution results are persisted back into project/runtime state
+- before the updated project snapshot becomes the next run's source of truth
+
+Current behavior:
+
+- read `sessionProtocolDigest` from the dispatch runtime event
+- normalize repair types from the completed `ExecutionResult`
+- update `recentCorrections`
+- promote repeated mistakes into `repeatOffenses` once they recur enough times
+- append a stronger stable rule when a repeat offense crosses threshold
+- trim correction memory to bounded small lists
+
+This makes protocol learning continuous without interrupting the current run. The repair happens immediately on the hot path, while the lesson is delivered on the next dispatch through memory plus capsule hints.
+
+## UI And Analytics Consumption
+
+The protocol is no longer only an execution-layer detail. It now feeds UI and analytics directly.
+
+### UI Surfaces
+
+Current event-first UI reads include:
+
+- execution result summary rendering
+- execution result runtime event cards
+- workbench message role/kind inference
+- task dashboard trace summaries
+- task dashboard trace detail event sections
+- trace detail cards for repair count and safe degrade
+- trace detail sections for requested route, sanitized route, and repair types
+
+### Analytics Persistence
+
+File:
+
+- `Multi-Agent-Flow/Sources/Services/OpsAnalyticsStore.swift`
+
+Current persisted protocol-derived trace attributes:
+
+- `preview_text`
+- `output_text`
+- `events`
+- `protocol_event_count`
+- `protocol_ref_count`
+- `protocol_event_types`
+- `requested_routing_action`
+- `requested_routing_targets`
+- `requested_routing_reason`
+- `protocol_repair_count`
+- `protocol_repair_types`
+- `protocol_requested_route`
+- `protocol_sanitized_route`
+- `protocol_safe_degrade_applied`
+
+Current behavior:
+
+- root execution spans store protocol-derived preview/output/event summaries
+- trace summary rows fall back to `events` when `preview_text` is absent
+- trace detail falls back to `events` when `preview_text` and `output_text` are absent
+- repair metadata is stored alongside routing metadata so requested-vs-sanitized behavior is inspectable later
+
+### Dashboard Health Metrics
+
+File:
+
+- `Multi-Agent-Flow/Sources/Services/OpsAnalyticsService.swift`
+
+Protocol governance now appears in the dashboard as long-lived health cards:
+
+- `Protocol Conformance`
+- `Auto Repair`
+- `Safe Degrade`
+- `Hard Interrupts`
+
+It also includes supporting protocol views built on the same persisted telemetry:
+
+- protocol trend cards that jump into historical analytics
+- repair distribution buckets for the dominant repair rules
+- agent protocol pressure profiles ranked by repair and interrupt risk
+- trace drill-down filters that bind protocol cards and agent profiles back to runtime traces
+
+Current meanings:
+
+- conformance: runs that completed without any runtime repair
+- auto repair: repaired runs that still completed
+- safe degrade: degraded runs that still completed safely
+- hard interrupts: repaired-but-unrecoverable protocol failures
+
+These metrics are derived from persisted execution results, so they are suitable for ongoing monitoring rather than one-off debug output.
+
+Scope note:
+
+- protocol governance views are intentionally scoped to `Runtime` trace rows
+- `OpenClaw` external-session traces remain visible in generic trace exploration
+- external-session rows do not contribute to protocol repair pressure, repair distribution, or agent risk ranking
+
 ## Runtime Mailbox State
 
 Project runtime state now includes a structured mailbox model.
@@ -501,43 +722,6 @@ Examples:
 - `Message.inferredAgentName`
 - `Message.inferredOutputType`
 
-## UI And Analytics Consumption
-
-The protocol is no longer only an execution-layer detail. It now feeds UI and analytics directly.
-
-### UI Surfaces
-
-Current event-first UI reads include:
-
-- execution result summary rendering
-- execution result runtime event cards
-- workbench message role/kind inference
-- task dashboard trace summaries
-- task dashboard trace detail event sections
-
-### Analytics Persistence
-
-File:
-
-- `Multi-Agent-Flow/Sources/Services/OpsAnalyticsStore.swift`
-
-Current persisted protocol-derived trace attributes:
-
-- `preview_text`
-- `output_text`
-- `events`
-- `protocol_event_count`
-- `protocol_ref_count`
-- `protocol_event_types`
-
-Current behavior:
-
-- root execution spans store protocol-derived preview/output/event summaries
-- trace summary rows fall back to `events` when `preview_text` is absent
-- trace detail falls back to `events` when `preview_text` and `output_text` are absent
-
-This keeps legacy trace views functional while making protocol events the preferred observability source.
-
 ## Validation And Acceptance
 
 Run the end-to-end acceptance command from the repository root:
@@ -549,7 +733,9 @@ npm run validate:openclaw-runtime
 Current coverage includes:
 
 - TypeScript `.maoproj` compatibility validation for runtime protocol fixtures
-- Swift acceptance for runtime event persistence on `ExecutionResult`
+- Swift acceptance for runtime event persistence plus repair metadata on `ExecutionResult`
+- Swift acceptance for orchestrator feedback promotion into agent protocol memory
+- Swift acceptance for dashboard protocol health goal cards
 - Swift acceptance for trace/detail fallback when only `events` are present
 - Swift acceptance for external OpenClaw session backup ingestion into trace detail
 
@@ -569,18 +755,22 @@ Landed:
 - shared TS schema and event factory
 - shared Swift runtime model
 - workflow hot-path event emission
+- agent protocol memory persisted in project state
+- per-dispatch execution capsule and session digest injection
+- deterministic routing repair on the workflow hot path
+- orchestrator-owned protocol feedback loop
 - Electron direct execution bridge emission
 - project/runtime state storage
 - runtime mailbox buckets and timeout synthesis
 - event-first UI helpers
-- analytics persistence and trace fallback
+- analytics persistence, repair traces, and protocol health cards
 - end-to-end automated acceptance
 
 Still additive or reserved:
 
 - richer approval lifecycle handling around `task.approved`
 - broader production use of `session.sync`
-- more explicit protocol-violation enforcement metrics
+- optional micro-correction turn above deterministic repair when needed
 - optional export/import tooling for full protocol traces
 
 ## Rules For Future Changes

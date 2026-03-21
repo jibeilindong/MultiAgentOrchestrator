@@ -5,12 +5,21 @@ import { existsSync, promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import {
+  buildOpenClawGovernanceAuditReport,
+  assessOpenClawSandboxSecurityFromText,
   createEmptyProject,
+  parseOpenClawApprovalsSnapshotFromText,
   parseProject,
   prepareProjectForSave,
   projectFileName,
   serializeProject,
-  toSwiftDate
+  toSwiftDate,
+  type OpenClawGovernanceAction,
+  type OpenClawGovernanceAuditReport,
+  type OpenClawGovernanceFinding,
+  type OpenClawGovernanceRemediationResult,
+  type OpenClawRuntimeSecurityFinding,
+  type OpenClawRuntimeSecurityInspectionResult
 } from "@multi-agent-flow/core";
 import type {
   ExecutionOutputType,
@@ -104,30 +113,23 @@ interface OpenClawAgentExecutionResult {
   primaryRuntimeEvent: OpenClawRuntimeEvent | null;
 }
 
-interface OpenClawRuntimeSecurityFinding {
-  agentIdentifier: string;
-  sandboxMode: string;
-  sessionIsSandboxed: boolean;
-  allowedDangerousTools: string[];
-  execToolAllowed: boolean;
-  processToolAllowed: boolean;
-  elevatedAllowedByConfig: boolean;
-  elevatedAlwaysAllowedByConfig: boolean;
-  blockingIssues: string[];
-}
-
-interface OpenClawRuntimeSecurityInspectionResult {
-  blockingIssues: string[];
-  findings: OpenClawRuntimeSecurityFinding[];
-  approvalsHaveCustomEntries: boolean;
-}
-
 interface DirectoryInspection {
   name: string;
   path: string;
   workspacePath: string | null;
   statePath: string | null;
   hasSoulFile: boolean;
+}
+
+interface OpenClawGovernancePaths {
+  rootPath: string | null;
+  configPath: string | null;
+  approvalsPath: string | null;
+}
+
+interface OpenClawGovernanceRemediationRequest {
+  config: OpenClawConfig;
+  actionIds?: string[] | null;
 }
 
 function runtimeTimestamp(): string {
@@ -738,6 +740,10 @@ async function runCommand(command: string, args: string[], options?: { timeoutMs
   });
 }
 
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
 async function runOpenClawDeploymentCommand(
   config: OpenClawConfig,
   args: string[],
@@ -756,6 +762,27 @@ async function runOpenClawDeploymentCommand(
     }
     case "remoteServer":
       throw new Error("Remote server mode does not support direct OpenClaw CLI execution yet.");
+  }
+}
+
+async function runOpenClawDeploymentShell(
+  config: OpenClawConfig,
+  script: string,
+  options?: { timeoutMs?: number }
+) {
+  switch (config.deploymentKind) {
+    case "local":
+      return runCommand("/bin/sh", ["-lc", script], options);
+    case "container": {
+      const engine = config.container.engine.trim() || "docker";
+      const containerName = config.container.containerName.trim();
+      if (!containerName) {
+        throw new Error("Container name is required.");
+      }
+      return runCommand(engine, ["exec", containerName, "sh", "-lc", script], options);
+    }
+    case "remoteServer":
+      throw new Error("Remote server mode does not support shell-based OpenClaw file management yet.");
   }
 }
 
@@ -866,25 +893,149 @@ function extractJSONPayloads(text: string): string[] {
   return payloads;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
+function jsonRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-function parseLastJSONObject(text: string): Record<string, unknown> | null {
-  const payloads = extractJSONPayloads(text);
-  for (let index = payloads.length - 1; index >= 0; index -= 1) {
-    try {
-      const parsed = JSON.parse(payloads[index]) as unknown;
-      const record = asRecord(parsed);
-      if (record) {
-        return record;
+async function readJSONRecord(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return jsonRecord(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+async function pathExistsForConfig(config: OpenClawConfig, candidatePath: string): Promise<boolean> {
+  switch (config.deploymentKind) {
+    case "local":
+      return existsSync(candidatePath);
+    case "container":
+      try {
+        await runOpenClawDeploymentShell(config, `test -e ${shellSingleQuote(candidatePath)}`, {
+          timeoutMs: Math.max(config.timeout, 5) * 1000
+        });
+        return true;
+      } catch {
+        return false;
       }
-    } catch {
-      continue;
+    case "remoteServer":
+      return false;
+  }
+}
+
+async function firstExistingChildPathForConfig(
+  config: OpenClawConfig,
+  directoryPath: string,
+  candidates: string[]
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    const resolved = path.join(directoryPath, candidate);
+    if (await pathExistsForConfig(config, resolved)) {
+      return resolved;
     }
   }
 
   return null;
+}
+
+async function readFileForConfig(config: OpenClawConfig, filePath: string): Promise<string | null> {
+  switch (config.deploymentKind) {
+    case "local":
+      try {
+        return await fs.readFile(filePath, "utf8");
+      } catch {
+        return null;
+      }
+    case "container":
+      try {
+        const { stdout } = await runOpenClawDeploymentShell(config, `cat ${shellSingleQuote(filePath)}`, {
+          timeoutMs: Math.max(config.timeout, 5) * 1000
+        });
+        return stdout ?? "";
+      } catch {
+        return null;
+      }
+    case "remoteServer":
+      return null;
+  }
+}
+
+async function readJSONRecordForConfig(config: OpenClawConfig, filePath: string): Promise<Record<string, unknown> | null> {
+  const raw = await readFileForConfig(config, filePath);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return jsonRecord(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+async function writeJSONFileForConfig(config: OpenClawConfig, filePath: string, value: unknown): Promise<void> {
+  const rendered = `${JSON.stringify(value, null, 2)}\n`;
+  switch (config.deploymentKind) {
+    case "local":
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, rendered, "utf8");
+      return;
+    case "container": {
+      const delimiter = `__MAF_JSON_${crypto.randomUUID().replace(/-/g, "_")}__`;
+      const script = [
+        `mkdir -p "$(dirname ${shellSingleQuote(filePath)})"`,
+        `cat <<'${delimiter}' > ${shellSingleQuote(filePath)}`,
+        rendered,
+        delimiter
+      ].join("\n");
+      await runOpenClawDeploymentShell(config, script, {
+        timeoutMs: Math.max(config.timeout, 10) * 1000
+      });
+      return;
+    }
+    case "remoteServer":
+      throw new Error("Remote server mode does not support writable OpenClaw governance files.");
+  }
+}
+
+async function ensureDirectoryForConfig(config: OpenClawConfig, directoryPath: string): Promise<void> {
+  switch (config.deploymentKind) {
+    case "local":
+      await fs.mkdir(directoryPath, { recursive: true });
+      return;
+    case "container":
+      await runOpenClawDeploymentShell(config, `mkdir -p ${shellSingleQuote(directoryPath)}`, {
+        timeoutMs: Math.max(config.timeout, 10) * 1000
+      });
+      return;
+    case "remoteServer":
+      throw new Error("Remote server mode does not support writable OpenClaw governance directories.");
+  }
+}
+
+async function backupGovernanceFileForConfig(config: OpenClawConfig, filePath: string): Promise<string> {
+  const backupDirectory = path.join(path.dirname(filePath), "backups", "multi-agent-flow-governance");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(backupDirectory, `${timestamp}-${path.basename(filePath)}`);
+
+  switch (config.deploymentKind) {
+    case "local":
+      await fs.mkdir(backupDirectory, { recursive: true });
+      await fs.copyFile(filePath, backupPath);
+      return backupPath;
+    case "container":
+      await runOpenClawDeploymentShell(
+        config,
+        `mkdir -p ${shellSingleQuote(backupDirectory)} && cp ${shellSingleQuote(filePath)} ${shellSingleQuote(backupPath)}`,
+        {
+          timeoutMs: Math.max(config.timeout, 10) * 1000
+        }
+      );
+      return backupPath;
+    case "remoteServer":
+      throw new Error("Remote server mode does not support OpenClaw governance backups.");
+  }
 }
 
 function blockingErrorMessage(error: unknown, fallback: string): string {
@@ -896,18 +1047,7 @@ async function inspectOpenClawExecApprovalSnapshot(config: OpenClawConfig): Prom
   const { stdout, stderr } = await runOpenClawDeploymentCommand(config, ["approvals", "get", "--json"], {
     timeoutMs: Math.max(config.timeout, 5) * 1000
   });
-  const payload = parseLastJSONObject(`${stdout ?? ""}\n${stderr ?? ""}`);
-  if (!payload) {
-    throw new Error("Failed to parse `openclaw approvals get --json` output.");
-  }
-
-  const fileRecord = asRecord(payload.file) ?? {};
-  const defaults = asRecord(fileRecord.defaults);
-  const agents = asRecord(fileRecord.agents);
-
-  return {
-    hasCustomEntries: Boolean((defaults && Object.keys(defaults).length > 0) || (agents && Object.keys(agents).length > 0))
-  };
+  return parseOpenClawApprovalsSnapshotFromText(`${stdout ?? ""}\n${stderr ?? ""}`);
 }
 
 async function inspectOpenClawSandboxSecurity(
@@ -922,63 +1062,11 @@ async function inspectOpenClawSandboxSecurity(
       timeoutMs: Math.max(config.timeout, 5) * 1000
     }
   );
-  const payload = parseLastJSONObject(`${stdout ?? ""}\n${stderr ?? ""}`);
-  if (!payload) {
-    throw new Error("Failed to parse `openclaw sandbox explain --json` output.");
-  }
-
-  const sandbox = asRecord(payload.sandbox) ?? {};
-  const tools = asRecord(sandbox.tools) ?? {};
-  const elevated = asRecord(payload.elevated) ?? {};
-  const allowedTools = new Set(stringArray(tools.allow).map((tool) => tool.toLowerCase()));
-  const allowedDangerousTools = ["subagents", "sessions_send", "sessions_spawn"].filter((tool) =>
-    allowedTools.has(tool)
-  );
-  const sandboxMode = trimmedString(typeof sandbox.mode === "string" ? sandbox.mode : "unknown") || "unknown";
-  const sessionIsSandboxed = sandbox.sessionIsSandboxed === true;
-  const execToolAllowed = allowedTools.has("exec");
-  const processToolAllowed = allowedTools.has("process");
-  const elevatedAllowedByConfig = elevated.allowedByConfig === true;
-  const elevatedAlwaysAllowedByConfig = elevated.alwaysAllowedByConfig === true;
-  const blockingIssues: string[] = [];
-
-  if (sandboxMode.toLowerCase() === "off" || !sessionIsSandboxed) {
-    blockingIssues.push(
-      `agent ${agentIdentifier} is not running inside an enforced OpenClaw sandbox, so the app cannot prevent it from creating side-channel sessions during execution.`
-    );
-  }
-
-  if (allowedDangerousTools.length > 0) {
-    blockingIssues.push(
-      `agent ${agentIdentifier} is allowed high-risk session tools: ${allowedDangerousTools.join(", ")}. Disable them in the OpenClaw sandbox before running a multi-agent workflow.`
-    );
-  }
-
-  if (approvalsHaveCustomEntries && (execToolAllowed || processToolAllowed)) {
-    blockingIssues.push(
-      `OpenClaw exec approvals contain custom allow rules while agent ${agentIdentifier} can still use ${
-        execToolAllowed && processToolAllowed ? "exec/process" : execToolAllowed ? "exec" : "process"
-      }; the app cannot prove it will not start extra agent/session processes on its own.`
-    );
-  }
-
-  if (elevatedAllowedByConfig || elevatedAlwaysAllowedByConfig) {
-    blockingIssues.push(
-      `agent ${agentIdentifier} is allowed to use OpenClaw elevated execution, which can bypass app-layer orchestration constraints.`
-    );
-  }
-
-  return {
+  return assessOpenClawSandboxSecurityFromText(
+    `${stdout ?? ""}\n${stderr ?? ""}`,
     agentIdentifier,
-    sandboxMode,
-    sessionIsSandboxed,
-    allowedDangerousTools,
-    execToolAllowed,
-    processToolAllowed,
-    elevatedAllowedByConfig,
-    elevatedAlwaysAllowedByConfig,
-    blockingIssues
-  };
+    approvalsHaveCustomEntries
+  );
 }
 
 async function inspectOpenClawRuntimeSecurity(
@@ -1051,6 +1139,511 @@ async function inspectOpenClawRuntimeSecurity(
     blockingIssues: Array.from(new Set(blockingIssues)).sort((left, right) => left.localeCompare(right)),
     findings,
     approvalsHaveCustomEntries
+  };
+}
+
+async function resolveOpenClawGovernancePaths(config: OpenClawConfig): Promise<OpenClawGovernancePaths> {
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  for (const candidate of openClawRootCandidatesForConfig(normalizedConfig)) {
+    if (!candidate || !(await pathExistsForConfig(normalizedConfig, candidate))) {
+      continue;
+    }
+
+    return {
+      rootPath: candidate,
+      configPath: await firstExistingChildPathForConfig(normalizedConfig, candidate, ["openclaw.json"]),
+      approvalsPath: await firstExistingChildPathForConfig(normalizedConfig, candidate, ["exec-approvals.json"])
+    };
+  }
+
+  return {
+    rootPath: null,
+    configPath: null,
+    approvalsPath: null
+  };
+}
+
+function extractConfiguredAgentBindings(configRecord: Record<string, unknown> | null) {
+  const agents = jsonRecord(configRecord?.agents);
+  const list = Array.isArray(agents?.list) ? agents.list : [];
+  return list.flatMap((entry) => {
+    const record = jsonRecord(entry);
+    if (!record) {
+      return [];
+    }
+
+    const agentIdentifier = firstNonEmptyString(record, ["id", "agentId", "name", "identifier"]);
+    if (!agentIdentifier) {
+      return [];
+    }
+
+    const subagents = jsonRecord(record.subagents);
+    return [
+      {
+        agentIdentifier,
+        allowAgents: stringArray(subagents?.allowAgents)
+      }
+    ];
+  });
+}
+
+function extractConfiguredAgentIdentifiers(configRecord: Record<string, unknown> | null): string[] {
+  return extractConfiguredAgentBindings(configRecord).map((binding) => binding.agentIdentifier);
+}
+
+function extractConfiguredAgentWorkspaces(configRecord: Record<string, unknown> | null) {
+  const agents = jsonRecord(configRecord?.agents);
+  const list = Array.isArray(agents?.list) ? agents.list : [];
+  return list.flatMap((entry) => {
+    const record = jsonRecord(entry);
+    if (!record) {
+      return [];
+    }
+
+    const agentIdentifier = firstNonEmptyString(record, ["id", "agentId", "name", "identifier"]);
+    if (!agentIdentifier) {
+      return [];
+    }
+
+    const workspacePath = firstNonEmptyString(record, ["workspace", "workspacePath", "workdir"]);
+    return [
+      {
+        agentIdentifier,
+        workspacePath
+      }
+    ];
+  });
+}
+
+async function resolveConfiguredAgentWorkspaces(
+  config: OpenClawConfig,
+  configRecord: Record<string, unknown> | null
+): Promise<Array<{ agentIdentifier: string; workspacePath: string | null; existsOnDisk: boolean }>> {
+  const bindings = extractConfiguredAgentWorkspaces(configRecord);
+  const resolved: Array<{ agentIdentifier: string; workspacePath: string | null; existsOnDisk: boolean }> = [];
+
+  for (const binding of bindings) {
+    const workspacePath = binding.workspacePath?.trim() || null;
+    resolved.push({
+      agentIdentifier: binding.agentIdentifier,
+      workspacePath,
+      existsOnDisk: workspacePath ? await pathExistsForConfig(config, workspacePath) : false
+    });
+  }
+
+  return resolved;
+}
+
+async function listOpenClawAgentIdentifiers(config: OpenClawConfig): Promise<string[]> {
+  try {
+    const { stdout, stderr } = await runOpenClawDeploymentCommand(config, ["agents", "list"], {
+      timeoutMs: Math.max(config.timeout, 5) * 1000
+    });
+    return parseAgentNamesFromOutput(`${stdout ?? ""}\n${stderr ?? ""}`);
+  } catch {
+    return [];
+  }
+}
+
+function ensureObjectProperty(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const existing = jsonRecord(record[key]);
+  if (existing) {
+    return existing;
+  }
+
+  const next: Record<string, unknown> = {};
+  record[key] = next;
+  return next;
+}
+
+function ensureArrayProperty(record: Record<string, unknown>, key: string): unknown[] {
+  const existing = record[key];
+  if (Array.isArray(existing)) {
+    return existing;
+  }
+
+  const next: unknown[] = [];
+  record[key] = next;
+  return next;
+}
+
+function normalizedToolList(value: unknown): string[] {
+  return stringArray(value).map((item) => item.toLowerCase());
+}
+
+function workspacePathKey(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "").toLowerCase();
+}
+
+function safeWorkspaceSlug(agentIdentifier: string): string {
+  const normalized = agentIdentifier.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "agent";
+}
+
+function mergeToolList(existing: string[], additions: string[]): string[] {
+  return Array.from(new Set([...existing.map((item) => item.toLowerCase()), ...additions.map((item) => item.toLowerCase())])).sort(
+    (left, right) => left.localeCompare(right)
+  );
+}
+
+function removeTools(existing: string[], removals: string[]): string[] {
+  const removalSet = new Set(removals.map((item) => item.toLowerCase()));
+  return existing.filter((item) => !removalSet.has(item.toLowerCase()));
+}
+
+function applyHighRiskToolRemediation(configRecord: Record<string, unknown>): boolean {
+  const dangerousTools = ["subagents", "sessions_send", "sessions_spawn"];
+  let changed = false;
+
+  const tools = ensureObjectProperty(configRecord, "tools");
+  const sandbox = ensureObjectProperty(tools, "sandbox");
+  const sandboxTools = ensureObjectProperty(sandbox, "tools");
+  const globalAllow = normalizedToolList(sandboxTools.allow);
+  const globalDeny = normalizedToolList(sandboxTools.deny);
+  const nextGlobalAllow = removeTools(globalAllow, dangerousTools);
+  const nextGlobalDeny = mergeToolList(globalDeny, dangerousTools);
+  if (JSON.stringify(globalAllow) !== JSON.stringify(nextGlobalAllow)) {
+    sandboxTools.allow = nextGlobalAllow;
+    changed = true;
+  }
+  if (JSON.stringify(globalDeny) !== JSON.stringify(nextGlobalDeny)) {
+    sandboxTools.deny = nextGlobalDeny;
+    changed = true;
+  }
+
+  const agents = ensureObjectProperty(configRecord, "agents");
+  const list = ensureArrayProperty(agents, "list");
+  for (const entry of list) {
+    const agentRecord = jsonRecord(entry);
+    if (!agentRecord) {
+      continue;
+    }
+    const agentTools = ensureObjectProperty(ensureObjectProperty(agentRecord, "tools"), "sandbox");
+    const agentSandboxTools = ensureObjectProperty(agentTools, "tools");
+    const agentAllow = normalizedToolList(agentSandboxTools.allow);
+    const agentDeny = normalizedToolList(agentSandboxTools.deny);
+    const nextAgentAllow = removeTools(agentAllow, dangerousTools);
+    const nextAgentDeny = mergeToolList(agentDeny, dangerousTools);
+    if (JSON.stringify(agentAllow) !== JSON.stringify(nextAgentAllow)) {
+      agentSandboxTools.allow = nextAgentAllow;
+      changed = true;
+    }
+    if (JSON.stringify(agentDeny) !== JSON.stringify(nextAgentDeny)) {
+      agentSandboxTools.deny = nextAgentDeny;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function applySubagentAllowlistRemediation(configRecord: Record<string, unknown>): boolean {
+  let changed = false;
+  const agents = ensureObjectProperty(configRecord, "agents");
+  const list = ensureArrayProperty(agents, "list");
+  for (const entry of list) {
+    const agentRecord = jsonRecord(entry);
+    if (!agentRecord) {
+      continue;
+    }
+    const subagents = ensureObjectProperty(agentRecord, "subagents");
+    const allowAgents = stringArray(subagents.allowAgents);
+    if (allowAgents.length > 0 || !Array.isArray(subagents.allowAgents)) {
+      subagents.allowAgents = [];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function applyWorkspaceIsolationRemediation(configRecord: Record<string, unknown>, rootPath: string): { changed: boolean; workspacePaths: string[] } {
+  const agents = ensureObjectProperty(configRecord, "agents");
+  const list = ensureArrayProperty(agents, "list");
+  const seenWorkspaceKeys = new Map<string, number>();
+  const workspacePathsToCreate = new Set<string>();
+  let changed = false;
+
+  for (const entry of list) {
+    const agentRecord = jsonRecord(entry);
+    if (!agentRecord) {
+      continue;
+    }
+    const agentIdentifier = firstNonEmptyString(agentRecord, ["id", "agentId", "name", "identifier"]);
+    if (!agentIdentifier) {
+      continue;
+    }
+
+    const currentWorkspace = firstNonEmptyString(agentRecord, ["workspace", "workspacePath", "workdir"]);
+    const currentWorkspaceKey = currentWorkspace ? workspacePathKey(currentWorkspace) : "";
+    const isDuplicate = currentWorkspaceKey ? (seenWorkspaceKeys.get(currentWorkspaceKey) ?? 0) > 0 : false;
+    const needsReplacement = !currentWorkspace || !existsSync(currentWorkspace) || isDuplicate;
+    if (!needsReplacement) {
+      seenWorkspaceKeys.set(currentWorkspaceKey, (seenWorkspaceKeys.get(currentWorkspaceKey) ?? 0) + 1);
+      workspacePathsToCreate.add(currentWorkspace);
+      continue;
+    }
+
+    let nextWorkspace = path.join(rootPath, `workspace-${safeWorkspaceSlug(agentIdentifier)}`);
+    let suffix = 2;
+    while (seenWorkspaceKeys.has(workspacePathKey(nextWorkspace))) {
+      nextWorkspace = path.join(rootPath, `workspace-${safeWorkspaceSlug(agentIdentifier)}-${suffix}`);
+      suffix += 1;
+    }
+
+    if (currentWorkspace !== nextWorkspace) {
+      agentRecord.workspace = nextWorkspace;
+      changed = true;
+    }
+    const nextKey = workspacePathKey(nextWorkspace);
+    seenWorkspaceKeys.set(nextKey, (seenWorkspaceKeys.get(nextKey) ?? 0) + 1);
+    workspacePathsToCreate.add(nextWorkspace);
+  }
+
+  return {
+    changed,
+    workspacePaths: Array.from(workspacePathsToCreate).sort((left, right) => left.localeCompare(right))
+  };
+}
+
+function applyElevatedExecutionRemediation(configRecord: Record<string, unknown>): boolean {
+  const tools = ensureObjectProperty(configRecord, "tools");
+  const elevated = ensureObjectProperty(tools, "elevated");
+  if (elevated.enabled === false) {
+    return false;
+  }
+
+  elevated.enabled = false;
+  return true;
+}
+
+function applyExecApprovalsRemediation(approvalsRecord: Record<string, unknown>): boolean {
+  const defaults = jsonRecord(approvalsRecord.defaults);
+  const agents = jsonRecord(approvalsRecord.agents);
+  const hasChanges = Boolean((defaults && Object.keys(defaults).length > 0) || (agents && Object.keys(agents).length > 0));
+  approvalsRecord.version = typeof approvalsRecord.version === "number" ? approvalsRecord.version : 1;
+  approvalsRecord.defaults = {};
+  approvalsRecord.agents = {};
+  return hasChanges;
+}
+
+async function auditOpenClawRuntimeGovernance(config: OpenClawConfig): Promise<OpenClawGovernanceAuditReport> {
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  const governancePaths = await resolveOpenClawGovernancePaths(normalizedConfig);
+  const configRecord = governancePaths.configPath ? await readJSONRecordForConfig(normalizedConfig, governancePaths.configPath) : null;
+  const configuredAgentBindings = extractConfiguredAgentBindings(configRecord);
+  const configuredWorkspaceBindings = await resolveConfiguredAgentWorkspaces(normalizedConfig, configRecord);
+  const cliAgentIdentifiers = await listOpenClawAgentIdentifiers(normalizedConfig);
+  const detectedAgents = await inspectOpenClawAgents(normalizedConfig, cliAgentIdentifiers);
+  const agentIdentifiers = Array.from(
+    new Set(
+      [
+        ...cliAgentIdentifiers,
+        ...extractConfiguredAgentIdentifiers(configRecord),
+        ...detectedAgents.map((record) => record.name)
+      ]
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  );
+  const runtimeSecurity = await inspectOpenClawRuntimeSecurity(normalizedConfig, agentIdentifiers);
+
+  return buildOpenClawGovernanceAuditReport({
+    auditedAt: new Date().toISOString(),
+    deploymentKind: normalizedConfig.deploymentKind,
+    rootPath: governancePaths.rootPath,
+    configPath: governancePaths.configPath,
+    approvalsPath: governancePaths.approvalsPath,
+    agentIdentifiers,
+    subagentBindings: configuredAgentBindings,
+    workspaceBindings: configuredWorkspaceBindings,
+    runtimeSecurity
+  });
+}
+
+async function remediateOpenClawRuntimeGovernance(
+  request: OpenClawGovernanceRemediationRequest
+): Promise<OpenClawGovernanceRemediationResult> {
+  const normalizedConfig = normalizeOpenClawConfig(request.config);
+  const initialReport = await auditOpenClawRuntimeGovernance(normalizedConfig);
+  const safeActionIds = new Set(
+    initialReport.proposedActions.filter((action) => action.safeToAutoApply).map((action) => action.id)
+  );
+  const requestedActionIds = Array.isArray(request.actionIds)
+    ? Array.from(new Set(request.actionIds.map((actionId) => actionId.trim()).filter(Boolean)))
+    : [];
+  const selectedActionIds =
+    requestedActionIds.length > 0
+      ? requestedActionIds.filter((actionId) => safeActionIds.has(actionId))
+      : Array.from(safeActionIds);
+  const selectedActionSet = new Set(selectedActionIds);
+  const selectedActionsBeforeDependencies = initialReport.proposedActions.filter((action) => selectedActionSet.has(action.id));
+  const shouldAutoIncludeSandboxRecreate =
+    selectedActionsBeforeDependencies.some((action) => action.requiresSandboxRecreate) &&
+    safeActionIds.has("recreate-sandbox-containers");
+  if (shouldAutoIncludeSandboxRecreate) {
+    selectedActionSet.add("recreate-sandbox-containers");
+  }
+  const safeActions = initialReport.proposedActions.filter((action) => selectedActionSet.has(action.id));
+
+  if (safeActionIds.size === 0) {
+    return {
+      report: initialReport,
+      appliedActionIds: [],
+      skippedActionIds: initialReport.proposedActions.map((action) => action.id),
+      notes: ["No safe auto-remediation actions are available for the current OpenClaw deployment."],
+      backupPaths: []
+    };
+  }
+
+  if (selectedActionIds.length === 0) {
+    return {
+      report: initialReport,
+      appliedActionIds: [],
+      skippedActionIds: initialReport.proposedActions.map((action) => action.id),
+      notes: ["No remediation actions were selected for this run."],
+      backupPaths: []
+    };
+  }
+
+  const governancePaths = await resolveOpenClawGovernancePaths(normalizedConfig);
+  const configRecord = governancePaths.configPath
+    ? await readJSONRecordForConfig(normalizedConfig, governancePaths.configPath)
+    : null;
+  const approvalsRecord = governancePaths.approvalsPath
+    ? await readJSONRecordForConfig(normalizedConfig, governancePaths.approvalsPath)
+    : null;
+  const appliedActionIds: string[] = [];
+  const skippedActionIds = initialReport.proposedActions
+    .map((action) => action.id)
+    .filter((actionId) => !selectedActionSet.has(actionId));
+  const notes: string[] = [];
+  const backupPaths: string[] = [];
+  let configModified = false;
+  let approvalsModified = false;
+  let shouldRecreateSandbox = false;
+  const workspacePathsToCreate = new Set<string>();
+
+  if (shouldAutoIncludeSandboxRecreate && !selectedActionIds.includes("recreate-sandbox-containers")) {
+    notes.push("Automatically included sandbox recreation because one or more selected config fixes require it before they fully take effect.");
+  }
+
+  for (const action of safeActions) {
+    switch (action.id) {
+      case "disable-high-risk-session-tools":
+        if (!configRecord || !governancePaths.configPath) {
+          skippedActionIds.push(action.id);
+          notes.push("Skipped high-risk tool remediation because `openclaw.json` could not be loaded.");
+          continue;
+        }
+        if (applyHighRiskToolRemediation(configRecord)) {
+          configModified = true;
+        }
+        appliedActionIds.push(action.id);
+        shouldRecreateSandbox = true;
+        break;
+      case "clear-subagent-allowlists":
+        if (!configRecord || !governancePaths.configPath) {
+          skippedActionIds.push(action.id);
+          notes.push("Skipped subagent allowlist remediation because `openclaw.json` could not be loaded.");
+          continue;
+        }
+        if (applySubagentAllowlistRemediation(configRecord)) {
+          configModified = true;
+        }
+        appliedActionIds.push(action.id);
+        break;
+      case "disable-elevated-execution":
+        if (!configRecord || !governancePaths.configPath) {
+          skippedActionIds.push(action.id);
+          notes.push("Skipped elevated execution remediation because `openclaw.json` could not be loaded.");
+          continue;
+        }
+        if (applyElevatedExecutionRemediation(configRecord)) {
+          configModified = true;
+        }
+        appliedActionIds.push(action.id);
+        shouldRecreateSandbox = true;
+        break;
+      case "repair-agent-workspaces":
+        if (!configRecord || !governancePaths.configPath || !governancePaths.rootPath) {
+          skippedActionIds.push(action.id);
+          notes.push("Skipped workspace remediation because the OpenClaw root or `openclaw.json` could not be loaded.");
+          continue;
+        }
+        {
+          const workspaceResult = applyWorkspaceIsolationRemediation(configRecord, governancePaths.rootPath);
+          if (workspaceResult.changed) {
+            configModified = true;
+          }
+          for (const workspacePath of workspaceResult.workspacePaths) {
+            workspacePathsToCreate.add(workspacePath);
+          }
+        }
+        appliedActionIds.push(action.id);
+        break;
+      case "clear-exec-approvals":
+        if (!approvalsRecord || !governancePaths.approvalsPath) {
+          skippedActionIds.push(action.id);
+          notes.push("Skipped exec approvals remediation because `exec-approvals.json` could not be loaded.");
+          continue;
+        }
+        if (applyExecApprovalsRemediation(approvalsRecord)) {
+          approvalsModified = true;
+        }
+        appliedActionIds.push(action.id);
+        break;
+      case "recreate-sandbox-containers":
+        shouldRecreateSandbox = true;
+        break;
+      default:
+        skippedActionIds.push(action.id);
+        notes.push(`Skipped unsupported remediation action: ${action.id}`);
+    }
+  }
+
+  if (configModified && governancePaths.configPath && configRecord) {
+    backupPaths.push(await backupGovernanceFileForConfig(normalizedConfig, governancePaths.configPath));
+    await writeJSONFileForConfig(normalizedConfig, governancePaths.configPath, configRecord);
+  }
+
+  if (workspacePathsToCreate.size > 0) {
+    for (const workspacePath of workspacePathsToCreate) {
+      await ensureDirectoryForConfig(normalizedConfig, workspacePath);
+    }
+    notes.push(`Ensured ${workspacePathsToCreate.size} OpenClaw workspace director${workspacePathsToCreate.size === 1 ? "y" : "ies"} exist on disk.`);
+  }
+
+  if (approvalsModified && governancePaths.approvalsPath && approvalsRecord) {
+    backupPaths.push(await backupGovernanceFileForConfig(normalizedConfig, governancePaths.approvalsPath));
+    await writeJSONFileForConfig(normalizedConfig, governancePaths.approvalsPath, approvalsRecord);
+  }
+
+  const recreateAction = safeActions.find((action) => action.id === "recreate-sandbox-containers");
+  if (shouldRecreateSandbox && recreateAction) {
+    try {
+      await runOpenClawDeploymentCommand(normalizedConfig, ["sandbox", "recreate", "--all", "--force"], {
+        timeoutMs: Math.max(normalizedConfig.timeout, 15) * 1000
+      });
+      appliedActionIds.push(recreateAction.id);
+      notes.push("Recreated OpenClaw sandbox containers so updated sandbox settings can take effect on the next run.");
+    } catch (error) {
+      skippedActionIds.push(recreateAction.id);
+      notes.push(
+        `OpenClaw config files were updated, but sandbox recreation did not complete automatically: ${blockingErrorMessage(
+          error,
+          "OpenClaw sandbox recreation failed."
+        )}`
+      );
+    }
+  }
+
+  const report = await auditOpenClawRuntimeGovernance(normalizedConfig);
+  return {
+    report,
+    appliedActionIds: Array.from(new Set(appliedActionIds)),
+    skippedActionIds: Array.from(new Set(skippedActionIds)),
+    notes,
+    backupPaths
   };
 }
 
@@ -1579,6 +2172,17 @@ function registerProjectIpcHandlers() {
       payload: { config: OpenClawConfig; agentIdentifiers: string[] }
     ): Promise<OpenClawRuntimeSecurityInspectionResult> => {
       return inspectOpenClawRuntimeSecurity(payload.config, payload.agentIdentifiers);
+    }
+  );
+
+  ipcMain.handle("openClaw:auditRuntimeGovernance", async (_event, config: OpenClawConfig): Promise<OpenClawGovernanceAuditReport> => {
+    return auditOpenClawRuntimeGovernance(config);
+  });
+
+  ipcMain.handle(
+    "openClaw:remediateRuntimeGovernance",
+    async (_event, request: OpenClawGovernanceRemediationRequest): Promise<OpenClawGovernanceRemediationResult> => {
+      return remediateOpenClawRuntimeGovernance(request);
     }
   );
 }

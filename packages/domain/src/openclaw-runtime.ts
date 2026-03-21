@@ -129,6 +129,27 @@ export interface OpenClawTaskDispatchPayload {
   inputRefIds: string[];
   expectedOutput: string;
   visibleToUser?: boolean;
+  protocolVersion?: OpenClawRuntimeProtocolVersion | string;
+  allowedActions?: OpenClawRuntimeRouteAction[] | string;
+  allowedTargets?: string[] | string;
+  approvalTargets?: string[] | string;
+  requiredOutputContract?: string;
+  selfCheckRule?: string;
+  protocolFeedbackHints?: string[] | string;
+  sessionProtocolDigest?: string;
+}
+
+export interface OpenClawProtocolDispatchCapsule {
+  protocolVersion: OpenClawRuntimeProtocolVersion | string;
+  allowedActions: OpenClawRuntimeRouteAction[];
+  allowedTargets: string[];
+  approvalTargets: string[];
+  writeScope: string[];
+  toolScope: string[];
+  fallbackPolicy: string;
+  requiredOutputContract: string;
+  selfCheckRule: string;
+  feedbackHints: string[];
 }
 
 export interface OpenClawTaskAcceptedPayload {

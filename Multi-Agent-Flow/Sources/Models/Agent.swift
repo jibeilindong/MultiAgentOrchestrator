@@ -8,6 +8,59 @@
 import Foundation
 import CoreGraphics
 
+struct OpenClawProtocolCorrectionRecord: Codable, Hashable, Identifiable {
+    var id: String
+    var kind: String
+    var message: String
+    var count: Int
+    var lastSeenAt: Date
+
+    init(
+        id: String = UUID().uuidString,
+        kind: String,
+        message: String,
+        count: Int = 1,
+        lastSeenAt: Date = Date()
+    ) {
+        self.id = id
+        self.kind = kind
+        self.message = message
+        self.count = count
+        self.lastSeenAt = lastSeenAt
+    }
+}
+
+struct OpenClawAgentProtocolMemory: Codable, Hashable {
+    var protocolVersion: String
+    var stableRules: [String]
+    var recentCorrections: [OpenClawProtocolCorrectionRecord]
+    var repeatOffenses: [OpenClawProtocolCorrectionRecord]
+    var lastSessionDigest: String?
+    var lastUpdatedAt: Date
+
+    init(
+        protocolVersion: String = "openclaw.runtime.v1",
+        stableRules: [String] = [
+            "Machine-readable workflow coordination must use the runtime protocol.",
+            "Always end with exactly one valid routing JSON line when a machine tail is required.",
+            "Only choose downstream targets from the allowed candidate list.",
+            "Do not exceed the provided write scope, tool scope, or approval rules.",
+            "If uncertain, emit the smallest valid safe result instead of guessing."
+        ],
+        recentCorrections: [OpenClawProtocolCorrectionRecord] = [],
+        repeatOffenses: [OpenClawProtocolCorrectionRecord] = [],
+        lastSessionDigest: String? = nil,
+        lastUpdatedAt: Date = Date()
+    ) {
+        self.protocolVersion = protocolVersion
+        self.stableRules = stableRules
+        self.recentCorrections = recentCorrections
+        self.repeatOffenses = repeatOffenses
+        self.lastSessionDigest = lastSessionDigest
+        self.lastUpdatedAt = lastUpdatedAt
+    }
+}
+
 struct OpenClawAgentDefinition: Codable, Hashable {
     var agentIdentifier: String
     var modelIdentifier: String
@@ -18,6 +71,7 @@ struct OpenClawAgentDefinition: Codable, Hashable {
     var lastImportedSoulPath: String?
     var lastImportedAt: Date?
     var environment: [String: String]
+    var protocolMemory: OpenClawAgentProtocolMemory
 
     init(
         agentIdentifier: String = "",
@@ -28,7 +82,8 @@ struct OpenClawAgentDefinition: Codable, Hashable {
         lastImportedSoulHash: String? = nil,
         lastImportedSoulPath: String? = nil,
         lastImportedAt: Date? = nil,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        protocolMemory: OpenClawAgentProtocolMemory = OpenClawAgentProtocolMemory()
     ) {
         self.agentIdentifier = agentIdentifier
         self.modelIdentifier = modelIdentifier
@@ -39,6 +94,7 @@ struct OpenClawAgentDefinition: Codable, Hashable {
         self.lastImportedSoulPath = lastImportedSoulPath
         self.lastImportedAt = lastImportedAt
         self.environment = environment
+        self.protocolMemory = protocolMemory
     }
 }
 

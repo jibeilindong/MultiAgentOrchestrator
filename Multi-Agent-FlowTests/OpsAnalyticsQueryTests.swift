@@ -561,7 +561,15 @@ final class OpsAnalyticsQueryTests: XCTestCase {
             transport: OpenClawRuntimeTransport(kind: .gatewayAgent, deploymentKind: "container"),
             payload: [
                 "summary": "Drafted execution request",
-                "intent": "respond"
+                "intent": "respond",
+                "protocolVersion": "openclaw.runtime.v1",
+                "allowedActions": "stop,selected,all",
+                "allowedTargets": "Reviewer [agent_id: reviewer, node: node-reviewer]",
+                "approvalTargets": "Security Lead [agent_id: security, node: node-security]",
+                "requiredOutputContract": #"{"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}"#,
+                "selfCheckRule": "Validate the last non-empty line before sending.",
+                "protocolFeedbackHints": "End with one valid routing JSON line. | Choose only allowed targets.",
+                "sessionProtocolDigest": "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | approval_targets_present"
             ]
         )
 
@@ -625,6 +633,12 @@ final class OpsAnalyticsQueryTests: XCTestCase {
             routingAction: "selected",
             routingTargets: ["Reviewer"],
             routingReason: "Escalate for verification",
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Ghost Reviewer"],
+            requestedRoutingReason: "Escalate for verification",
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["invalid_targets_auto_selected"],
+            protocolSafeDegradeApplied: true,
             runtimeEvents: [dispatchEvent, resultEvent, routeEvent],
             primaryRuntimeEvent: resultEvent,
             startedAt: startedAt,
@@ -662,12 +676,245 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         XCTAssertEqual(detail.attributes["protocol_event_count"], "3")
         XCTAssertEqual(detail.attributes["protocol_ref_count"], "1")
         XCTAssertEqual(detail.attributes["protocol_event_types"], "task.dispatch, task.result, task.route")
+        XCTAssertEqual(detail.attributes["requested_routing_action"], "selected")
+        XCTAssertEqual(detail.attributes["requested_routing_targets"], "Ghost Reviewer")
+        XCTAssertEqual(detail.attributes["requested_routing_reason"], "Escalate for verification")
+        XCTAssertEqual(detail.attributes["protocol_repair_count"], "1")
+        XCTAssertEqual(detail.attributes["protocol_repair_types"], "invalid_targets_auto_selected")
+        XCTAssertEqual(
+            detail.attributes["protocol_requested_route"],
+            "selected | Ghost Reviewer | Escalate for verification"
+        )
+        XCTAssertEqual(
+            detail.attributes["protocol_sanitized_route"],
+            "selected | Reviewer | Escalate for verification"
+        )
+        XCTAssertEqual(detail.attributes["protocol_safe_degrade_applied"], "true")
         XCTAssertEqual(detail.attributes["transport_kind"], "gateway_agent")
         XCTAssertEqual(detail.attributes["session_id"], "runtime-acceptance-session")
         XCTAssertEqual(detail.eventsText?.components(separatedBy: "\n").count, 3)
         XCTAssertTrue(detail.eventsText?.contains("task.dispatch | User -> Planner | Drafted execution request") == true)
         XCTAssertTrue(detail.eventsText?.contains("task.result | Planner -> Orchestrator | Prepared runtime summary | refs: workspace_file: \(artifactPath)") == true)
         XCTAssertTrue(detail.eventsText?.contains("task.route | Planner -> Reviewer | Escalate for verification") == true)
+    }
+
+    func testProtocolOutcomeFeedbackPromotesRepeatedRepairsIntoAgentMemory() throws {
+        var project = makeProject(name: "Protocol Feedback Memory")
+        let agent = Agent(name: "Planner")
+        project.agents = [agent]
+
+        let digest = "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | no_approval_targets"
+        let startedAt = Date().addingTimeInterval(-30)
+        let dispatchEvent = OpenClawRuntimeEvent(
+            eventType: .taskDispatch,
+            timestamp: startedAt,
+            projectId: project.id.uuidString,
+            workflowId: project.workflows[0].id.uuidString,
+            nodeId: UUID().uuidString,
+            runId: "protocol-feedback-run",
+            sessionKey: "session:protocol-feedback",
+            source: OpenClawRuntimeActor(kind: .orchestrator, agentId: "workflow.executor", agentName: "Orchestrator"),
+            target: OpenClawRuntimeActor(kind: .agent, agentId: agent.id.uuidString, agentName: agent.name),
+            transport: OpenClawRuntimeTransport(kind: .gatewayAgent, deploymentKind: "container"),
+            payload: [
+                "summary": "Continue work",
+                "sessionProtocolDigest": digest
+            ]
+        )
+        let result = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .completed,
+            output: "Completed",
+            outputType: .agentFinalResponse,
+            sessionID: "protocol-feedback-session",
+            transportKind: "gateway_agent",
+            routingAction: "selected",
+            routingTargets: ["Reviewer"],
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Unknown Agent"],
+            requestedRoutingReason: "Need review",
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["missing_route_auto_selected"],
+            protocolSafeDegradeApplied: true,
+            runtimeEvents: [dispatchEvent],
+            primaryRuntimeEvent: dispatchEvent,
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(1)
+        )
+
+        for index in 0..<3 {
+            AppState.recordProtocolOutcome(
+                result,
+                in: &project,
+                at: startedAt.addingTimeInterval(TimeInterval(index))
+            )
+        }
+
+        let memory = try XCTUnwrap(project.agents.first?.openClawDefinition.protocolMemory)
+        XCTAssertEqual(memory.lastSessionDigest, digest)
+        XCTAssertEqual(memory.recentCorrections.count, 1)
+        XCTAssertEqual(memory.recentCorrections.first?.kind, "missing_route_auto_selected")
+        XCTAssertEqual(memory.recentCorrections.first?.count, 3)
+        XCTAssertEqual(memory.repeatOffenses.count, 1)
+        XCTAssertEqual(memory.repeatOffenses.first?.kind, "missing_route_auto_selected")
+        XCTAssertEqual(memory.repeatOffenses.first?.count, 1)
+        XCTAssertTrue(
+            memory.stableRules.contains(
+                "Never omit the final routing JSON line when the protocol requires a machine tail."
+            )
+        )
+    }
+
+    func testRefreshPublishesProtocolHealthGoalCards() throws {
+        var project = makeProject(name: "Protocol Goal Cards")
+        let agent = Agent(name: "Planner")
+        project.agents = [agent]
+
+        let startedAt = Date().addingTimeInterval(-120)
+        let conformingResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .completed,
+            output: "Conforming",
+            outputType: .agentFinalResponse,
+            sessionID: "workflow-conforming",
+            transportKind: "gateway_agent",
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(1)
+        )
+        let repairedResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .completed,
+            output: "Repaired",
+            outputType: .agentFinalResponse,
+            sessionID: "workflow-repaired",
+            transportKind: "gateway_agent",
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Unknown Agent"],
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["invalid_targets_auto_selected"],
+            protocolSafeDegradeApplied: true,
+            startedAt: startedAt.addingTimeInterval(5),
+            completedAt: startedAt.addingTimeInterval(6)
+        )
+        let interruptedResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .failed,
+            output: "Interrupted",
+            outputType: .errorSummary,
+            sessionID: "workflow-interrupted",
+            transportKind: "gateway_agent",
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Blocked Agent"],
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["route_missing_approval_blocked"],
+            protocolSafeDegradeApplied: false,
+            startedAt: startedAt.addingTimeInterval(10),
+            completedAt: startedAt.addingTimeInterval(11)
+        )
+
+        service.refresh(
+            project: project,
+            tasks: [],
+            executionResults: [conformingResult, repairedResult, interruptedResult],
+            executionLogs: [],
+            activeAgents: [
+                agent.id: OpenClawManager.ActiveAgentRuntime(
+                    agentID: agent.id,
+                    name: agent.name,
+                    status: "active",
+                    lastReloadedAt: startedAt
+                )
+            ],
+            isConnected: true
+        )
+
+        let cardsByID = Dictionary(uniqueKeysWithValues: service.snapshot.goalCards.map { ($0.id, $0) })
+        XCTAssertEqual(cardsByID["protocol_conformance"]?.valueText, "33%")
+        XCTAssertEqual(cardsByID["protocol_conformance"]?.detailText, "1 of 3 runs executed without runtime repair")
+        XCTAssertEqual(cardsByID["protocol_auto_repair"]?.valueText, "50%")
+        XCTAssertEqual(cardsByID["protocol_auto_repair"]?.detailText, "1 of 2 repaired runs still completed")
+        XCTAssertEqual(cardsByID["protocol_safe_degrade"]?.valueText, "100%")
+        XCTAssertEqual(cardsByID["protocol_safe_degrade"]?.detailText, "1 of 1 safe-degrade runs still completed")
+        XCTAssertEqual(cardsByID["protocol_interrupts"]?.valueText, "33%")
+        XCTAssertEqual(cardsByID["protocol_interrupts"]?.detailText, "1 runs ended in unrecoverable protocol interruption")
+    }
+
+    func testRefreshPersistsProtocolGovernanceHistorySeries() throws {
+        var project = makeProject(name: "Protocol History")
+        try prepareEmptyAnalyticsDatabase(for: project.id)
+
+        let agent = Agent(name: "Planner")
+        project.agents = [agent]
+
+        let startedAt = Date().addingTimeInterval(-180)
+        let conformingResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .completed,
+            output: "Conforming",
+            outputType: .agentFinalResponse,
+            sessionID: "workflow-history-conforming",
+            transportKind: "gateway_agent",
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(1)
+        )
+        let repairedResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .completed,
+            output: "Repaired",
+            outputType: .agentFinalResponse,
+            sessionID: "workflow-history-repaired",
+            transportKind: "gateway_agent",
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Unknown Agent"],
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["invalid_targets_auto_selected"],
+            protocolSafeDegradeApplied: true,
+            startedAt: startedAt.addingTimeInterval(5),
+            completedAt: startedAt.addingTimeInterval(6)
+        )
+        let interruptedResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: agent.id,
+            status: .failed,
+            output: "Interrupted",
+            outputType: .errorSummary,
+            sessionID: "workflow-history-interrupted",
+            transportKind: "gateway_agent",
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Blocked Agent"],
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["route_missing_approval_blocked"],
+            protocolSafeDegradeApplied: false,
+            startedAt: startedAt.addingTimeInterval(10),
+            completedAt: startedAt.addingTimeInterval(11)
+        )
+
+        service.refresh(
+            project: project,
+            tasks: [],
+            executionResults: [conformingResult, repairedResult, interruptedResult],
+            executionLogs: [],
+            activeAgents: [:],
+            isConnected: true
+        )
+
+        let conformance = try XCTUnwrap(series(service.snapshot.historicalSeries, metric: .protocolConformance))
+        XCTAssertEqual(try XCTUnwrap(conformance.latestPoint).value, 100.0 / 3.0, accuracy: 0.001)
+
+        let autoRepair = try XCTUnwrap(series(service.snapshot.historicalSeries, metric: .protocolAutoRepair))
+        XCTAssertEqual(try XCTUnwrap(autoRepair.latestPoint).value, 50, accuracy: 0.001)
+
+        let safeDegrade = try XCTUnwrap(series(service.snapshot.historicalSeries, metric: .protocolSafeDegrade))
+        XCTAssertEqual(try XCTUnwrap(safeDegrade.latestPoint).value, 100, accuracy: 0.001)
+
+        let hardInterrupts = try XCTUnwrap(series(service.snapshot.historicalSeries, metric: .protocolHardInterrupts))
+        XCTAssertEqual(try XCTUnwrap(hardInterrupts.latestPoint).value, 100.0 / 3.0, accuracy: 0.001)
     }
 
     func testTraceDetailFallsBackToEventsWhenPreviewAndOutputAreMissing() throws {
@@ -1170,7 +1417,7 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         XCTAssertEqual(traceDetail.agentName, "Scout")
         XCTAssertEqual(traceDetail.statusText, "error")
         XCTAssertEqual(traceDetail.previewText, "search.web: Provider unavailable")
-        XCTAssertEqual(traceDetail.outputText, "")
+        XCTAssertEqual(traceDetail.outputText, "Provider unavailable\n\n{\"retryable\":true,\"status\":503}")
         XCTAssertEqual(traceDetail.eventsText, "Provider unavailable\n\n{\"retryable\":true,\"status\":503}")
         XCTAssertEqual(traceDetail.attributes["tool_name"], "search.web")
         XCTAssertEqual(traceDetail.relatedSpans.map(\.name), ["Scout", "Assistant Turn", "Tool Call"])
@@ -1761,6 +2008,174 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         XCTAssertEqual(cards.map(\.id), ["mem-tracked", "mem-gap", "mem-total"])
         XCTAssertEqual(cards.map(\.value), ["1", "1", "50%"])
         XCTAssertEqual(cards.map(\.tone), [.green, .orange, .blue])
+    }
+
+    func testProtocolAgentInsightBuilderRanksProfilesByRiskAndDominantRepair() throws {
+        let now = Date()
+        let profiles = OpsProtocolAgentInsightBuilder.profiles(
+            from: [
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .failed,
+                    startedAt: now,
+                    sourceLabel: "Runtime",
+                    previewText: "Approval blocked",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["route_missing_approval_blocked"],
+                    protocolSafeDegradeApplied: false
+                ),
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .completed,
+                    startedAt: now.addingTimeInterval(-60),
+                    sourceLabel: "Runtime",
+                    previewText: "Recovered with safe degrade",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["invalid_targets_auto_selected"],
+                    protocolSafeDegradeApplied: true
+                ),
+                makeTraceRow(
+                    agentName: "Scout",
+                    status: .completed,
+                    startedAt: now.addingTimeInterval(-30),
+                    sourceLabel: "Runtime",
+                    previewText: "Missing route fixed",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["missing_route_auto_selected"],
+                    protocolSafeDegradeApplied: true
+                ),
+                makeTraceRow(
+                    agentName: "Reviewer",
+                    status: .completed,
+                    startedAt: now.addingTimeInterval(-10),
+                    sourceLabel: "OpenClaw",
+                    previewText: "External trace should be ignored",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["invalid_targets_auto_selected"],
+                    protocolSafeDegradeApplied: true
+                )
+            ]
+        )
+
+        XCTAssertEqual(profiles.map(\.agentName), ["Planner", "Scout"])
+
+        let planner = try XCTUnwrap(profiles.first)
+        XCTAssertEqual(planner.riskScore, 8)
+        XCTAssertEqual(planner.hardInterruptCount, 1)
+        XCTAssertEqual(planner.safeDegradeCount, 1)
+        XCTAssertEqual(planner.repairedTraceCount, 2)
+        XCTAssertEqual(planner.dominantRepairLabel, "Approval Blocked")
+        XCTAssertEqual(planner.recommendedFilter, .hardInterrupt)
+
+        let scout = try XCTUnwrap(profiles.last)
+        XCTAssertEqual(scout.totalTraceCount, 1)
+        XCTAssertEqual(scout.dominantRepairLabel, "Missing Route")
+        XCTAssertEqual(scout.recommendedFilter, .missingRoute)
+    }
+
+    func testProtocolRepairDistributionBuilderCountsRuntimeRowsOnly() {
+        let now = Date()
+        let items = OpsProtocolRepairDistributionBuilder.items(
+            from: [
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .completed,
+                    startedAt: now,
+                    sourceLabel: "Runtime",
+                    previewText: "Invalid target repaired",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["invalid_targets_auto_selected"],
+                    protocolSafeDegradeApplied: true
+                ),
+                makeTraceRow(
+                    agentName: "Scout",
+                    status: .completed,
+                    startedAt: now.addingTimeInterval(-20),
+                    sourceLabel: "Runtime",
+                    previewText: "Invalid target repaired again",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["invalid_targets_auto_selected"],
+                    protocolSafeDegradeApplied: true
+                ),
+                makeTraceRow(
+                    agentName: "Planner",
+                    status: .failed,
+                    startedAt: now.addingTimeInterval(-40),
+                    sourceLabel: "Runtime",
+                    previewText: "Approval blocked",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["route_missing_approval_blocked"],
+                    protocolSafeDegradeApplied: false
+                ),
+                makeTraceRow(
+                    agentName: "Reviewer",
+                    status: .completed,
+                    startedAt: now.addingTimeInterval(-10),
+                    sourceLabel: "OpenClaw",
+                    previewText: "External session missing route",
+                    protocolRepairCount: 1,
+                    protocolRepairTypes: ["missing_route_auto_selected"],
+                    protocolSafeDegradeApplied: true
+                )
+            ]
+        )
+
+        XCTAssertEqual(items.map(\.title), ["Invalid Target", "Approval Blocked"])
+        XCTAssertEqual(items.map(\.count), [2, 1])
+        XCTAssertEqual(items.map(\.filter), [.invalidTarget, .approvalBlocked])
+    }
+
+    func testHistoryInsightBuilderUsesRuntimeRowsOnlyForProtocolMetrics() {
+        let now = Date()
+        let runtimeRepaired = makeTraceRow(
+            agentName: "Planner",
+            status: .completed,
+            startedAt: now.addingTimeInterval(-60),
+            sourceLabel: "Runtime",
+            previewText: "Recovered with safe degrade",
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["invalid_targets_auto_selected"],
+            protocolSafeDegradeApplied: true
+        )
+        let runtimeConforming = makeTraceRow(
+            agentName: "Scout",
+            status: .completed,
+            startedAt: now.addingTimeInterval(-90),
+            sourceLabel: "Runtime",
+            previewText: "Conforming run"
+        )
+        let externalRepair = makeTraceRow(
+            agentName: "Reviewer",
+            status: .completed,
+            startedAt: now,
+            sourceLabel: "OpenClaw",
+            previewText: "External repaired trace should be ignored",
+            protocolRepairCount: 1,
+            protocolRepairTypes: ["missing_route_auto_selected"],
+            protocolSafeDegradeApplied: true
+        )
+
+        let cards = OpsHistoryInsightBuilder.contextCards(
+            metric: .protocolConformance,
+            focusTitle: "Project",
+            totalAgents: 3,
+            traceRows: [runtimeRepaired, runtimeConforming, externalRepair],
+            anomalyRows: [],
+            agentRows: [],
+            cronRuns: []
+        )
+        XCTAssertEqual(cards.map(\.value), ["1", "1", "1"])
+
+        let rows = OpsHistoryInsightBuilder.signalRows(
+            metric: .protocolAutoRepair,
+            anomalyRows: [],
+            traceRows: [runtimeRepaired, externalRepair],
+            agentRows: [],
+            cronRuns: []
+        )
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.title, "Planner")
+        XCTAssertEqual(rows.first?.badge, "Invalid Target")
     }
 
     func testHistoryInsightBuilderBuildsCronSignalRowsWithLinkedAnomalyAndFormattedDuration() throws {
@@ -2442,7 +2857,10 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         status: ExecutionStatus,
         startedAt: Date,
         sourceLabel: String,
-        previewText: String
+        previewText: String,
+        protocolRepairCount: Int = 0,
+        protocolRepairTypes: [String] = [],
+        protocolSafeDegradeApplied: Bool = false
     ) -> OpsTraceSummaryRow {
         OpsTraceSummaryRow(
             id: id,
@@ -2453,7 +2871,10 @@ final class OpsAnalyticsQueryTests: XCTestCase {
             routingAction: nil,
             outputType: .agentFinalResponse,
             sourceLabel: sourceLabel,
-            previewText: previewText
+            previewText: previewText,
+            protocolRepairCount: protocolRepairCount,
+            protocolRepairTypes: protocolRepairTypes,
+            protocolSafeDegradeApplied: protocolSafeDegradeApplied
         )
     }
 

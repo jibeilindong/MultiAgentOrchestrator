@@ -232,6 +232,170 @@ enum OpsAnomalyClusterBuilder {
     }
 }
 
+struct OpsProtocolAgentProfile: Identifiable {
+    let agentName: String
+    let totalTraceCount: Int
+    let repairedTraceCount: Int
+    let safeDegradeCount: Int
+    let hardInterruptCount: Int
+    let latestActivityAt: Date
+    let dominantRepairLabel: String?
+    let recommendedFilter: OpsProtocolTraceFilter
+
+    var id: String { agentName.lowercased() }
+    nonisolated var riskScore: Int { (hardInterruptCount * 4) + (safeDegradeCount * 2) + repairedTraceCount }
+}
+
+struct OpsProtocolRepairDistributionItem: Identifiable {
+    let filter: OpsProtocolTraceFilter
+    let title: String
+    let count: Int
+
+    var id: OpsProtocolTraceFilter { filter }
+}
+
+enum OpsProtocolRepairDistributionBuilder {
+    nonisolated static func items(from traceRows: [OpsTraceSummaryRow]) -> [OpsProtocolRepairDistributionItem] {
+        let runtimeRows = traceRows.filter { $0.sourceLabel == "Runtime" }
+        return [
+            OpsProtocolRepairDistributionItem(
+                filter: .missingRoute,
+                title: "Missing Route",
+                count: runtimeRows.filter { $0.protocolRepairTypes.contains("missing_route_auto_selected") }.count
+            ),
+            OpsProtocolRepairDistributionItem(
+                filter: .invalidTarget,
+                title: "Invalid Target",
+                count: runtimeRows.filter { $0.protocolRepairTypes.contains("invalid_targets_auto_selected") }.count
+            ),
+            OpsProtocolRepairDistributionItem(
+                filter: .approvalBlocked,
+                title: "Approval Blocked",
+                count: runtimeRows.filter { $0.protocolRepairTypes.contains("route_missing_approval_blocked") }.count
+            )
+        ]
+        .filter { $0.count > 0 }
+        .sorted { lhs, rhs in
+            if lhs.count != rhs.count {
+                return lhs.count > rhs.count
+            }
+            return lhs.title < rhs.title
+        }
+    }
+}
+
+enum OpsProtocolAgentInsightBuilder {
+    nonisolated static func profiles(
+        from traceRows: [OpsTraceSummaryRow],
+        limit: Int = 6
+    ) -> [OpsProtocolAgentProfile] {
+        let runtimeRows = traceRows.filter { $0.sourceLabel == "Runtime" }
+        let grouped = Dictionary(grouping: runtimeRows, by: \.agentName)
+
+        return grouped.compactMap { agentName, rows in
+            guard let latestActivityAt = rows.map(\.startedAt).max() else { return nil }
+
+            let repairedTraceCount = rows.filter { $0.protocolRepairCount > 0 }.count
+            let safeDegradeCount = rows.filter(\.protocolSafeDegradeApplied).count
+            let hardInterruptCount = rows.filter {
+                $0.status == .failed && $0.protocolRepairCount > 0 && !$0.protocolSafeDegradeApplied
+            }.count
+            guard repairedTraceCount > 0 || safeDegradeCount > 0 || hardInterruptCount > 0 else {
+                return nil
+            }
+
+            let repairTypeCounts = rows
+                .flatMap(\.protocolRepairTypes)
+                .reduce(into: [String: Int]()) { counts, kind in
+                    counts[kind, default: 0] += 1
+                }
+            let dominantRepairType = repairTypeCounts.max { lhs, rhs in
+                if lhs.value != rhs.value {
+                    return lhs.value < rhs.value
+                }
+                return repairPriority(for: lhs.key) < repairPriority(for: rhs.key)
+            }?.key
+
+            return OpsProtocolAgentProfile(
+                agentName: agentName,
+                totalTraceCount: rows.count,
+                repairedTraceCount: repairedTraceCount,
+                safeDegradeCount: safeDegradeCount,
+                hardInterruptCount: hardInterruptCount,
+                latestActivityAt: latestActivityAt,
+                dominantRepairLabel: dominantRepairType.map(repairDisplayLabel(for:)),
+                recommendedFilter: recommendedFilter(
+                    hardInterruptCount: hardInterruptCount,
+                    repairTypeCounts: repairTypeCounts,
+                    safeDegradeCount: safeDegradeCount
+                )
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.riskScore != rhs.riskScore {
+                return lhs.riskScore > rhs.riskScore
+            }
+            if lhs.latestActivityAt != rhs.latestActivityAt {
+                return lhs.latestActivityAt > rhs.latestActivityAt
+            }
+            return lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName) == .orderedAscending
+        }
+        .prefix(limit)
+        .map { $0 }
+    }
+
+    nonisolated private static func recommendedFilter(
+        hardInterruptCount: Int,
+        repairTypeCounts: [String: Int],
+        safeDegradeCount: Int
+    ) -> OpsProtocolTraceFilter {
+        if hardInterruptCount > 0 {
+            return .hardInterrupt
+        }
+        if (repairTypeCounts["route_missing_approval_blocked"] ?? 0) > 0 {
+            return .approvalBlocked
+        }
+        if (repairTypeCounts["invalid_targets_auto_selected"] ?? 0) > 0 {
+            return .invalidTarget
+        }
+        if (repairTypeCounts["missing_route_auto_selected"] ?? 0) > 0 {
+            return .missingRoute
+        }
+        if safeDegradeCount > 0 {
+            return .safeDegrade
+        }
+        return .repaired
+    }
+
+    nonisolated private static func repairDisplayLabel(for repairType: String) -> String {
+        switch repairType {
+        case "missing_route_auto_selected":
+            return "Missing Route"
+        case "invalid_targets_auto_selected":
+            return "Invalid Target"
+        case "route_missing_approval_blocked":
+            return "Approval Blocked"
+        default:
+            return repairType
+                .replacingOccurrences(of: "_", with: " ")
+                .localizedCapitalized
+        }
+    }
+
+    nonisolated private static func repairPriority(for repairType: String) -> Int {
+        switch repairType {
+        case "route_missing_approval_blocked":
+            return 3
+        case "invalid_targets_auto_selected":
+            return 2
+        case "missing_route_auto_selected":
+            return 1
+        default:
+            return 0
+        }
+    }
+}
+
 enum OpsHistoryInsightBuilder {
     nonisolated static func contextCards(
         metric: OpsHistoryMetric,
@@ -383,6 +547,124 @@ enum OpsHistoryInsightBuilder {
                     tone: .blue
                 )
             ]
+        case .protocolConformance:
+            let runtimeTraceRows = runtimeProtocolTraceRows(traceRows)
+            let repairedRuns = runtimeTraceRows.filter { $0.protocolRepairCount > 0 }.count
+            let conformingRuns = runtimeTraceRows.count - repairedRuns
+            let safeDegradeRuns = runtimeTraceRows.filter(\.protocolSafeDegradeApplied).count
+            return [
+                OpsContextCard(
+                    id: "protocol-conforming",
+                    title: "Conforming",
+                    value: "\(max(conformingRuns, 0))",
+                    detail: "Recent traces without runtime repair",
+                    tone: repairedRuns == 0 ? .green : .blue
+                ),
+                OpsContextCard(
+                    id: "protocol-repaired",
+                    title: "Repaired",
+                    value: "\(repairedRuns)",
+                    detail: "Recent traces that needed protocol repair",
+                    tone: repairedRuns == 0 ? .green : .orange
+                ),
+                OpsContextCard(
+                    id: "protocol-safe",
+                    title: "Safe Degrade",
+                    value: "\(safeDegradeRuns)",
+                    detail: "Recent traces completed through safe degrade",
+                    tone: safeDegradeRuns == 0 ? .secondary : .teal
+                )
+            ]
+        case .protocolAutoRepair:
+            let repairedRows = runtimeProtocolTraceRows(traceRows).filter { $0.protocolRepairCount > 0 }
+            let successfulRepairs = repairedRows.filter { $0.status == .completed }.count
+            let invalidTargetRepairs = repairedRows.filter {
+                $0.protocolRepairTypes.contains("invalid_targets_auto_selected")
+            }.count
+            return [
+                OpsContextCard(
+                    id: "auto-repair-total",
+                    title: "Repaired Traces",
+                    value: "\(repairedRows.count)",
+                    detail: "Recent traces that needed any repair",
+                    tone: repairedRows.isEmpty ? .secondary : .orange
+                ),
+                OpsContextCard(
+                    id: "auto-repair-success",
+                    title: "Recovered",
+                    value: "\(successfulRepairs)",
+                    detail: "Repaired traces that still completed",
+                    tone: successfulRepairs == repairedRows.count && !repairedRows.isEmpty ? .green : .teal
+                ),
+                OpsContextCard(
+                    id: "auto-repair-invalid",
+                    title: "Invalid Targets",
+                    value: "\(invalidTargetRepairs)",
+                    detail: "Repairs caused by invalid routing targets",
+                    tone: invalidTargetRepairs == 0 ? .green : .orange
+                )
+            ]
+        case .protocolSafeDegrade:
+            let safeDegradeRows = runtimeProtocolTraceRows(traceRows).filter(\.protocolSafeDegradeApplied)
+            let completedSafeDegrade = safeDegradeRows.filter { $0.status == .completed }.count
+            let missingRouteRepairs = safeDegradeRows.filter {
+                $0.protocolRepairTypes.contains("missing_route_auto_selected")
+            }.count
+            return [
+                OpsContextCard(
+                    id: "safe-degrade-total",
+                    title: "Safe Degrade",
+                    value: "\(safeDegradeRows.count)",
+                    detail: "Recent traces that fell back to safe degrade",
+                    tone: safeDegradeRows.isEmpty ? .secondary : .teal
+                ),
+                OpsContextCard(
+                    id: "safe-degrade-complete",
+                    title: "Completed",
+                    value: "\(completedSafeDegrade)",
+                    detail: "Safe-degrade traces that still completed",
+                    tone: completedSafeDegrade == safeDegradeRows.count && !safeDegradeRows.isEmpty ? .green : .orange
+                ),
+                OpsContextCard(
+                    id: "safe-degrade-missing-route",
+                    title: "Missing Route",
+                    value: "\(missingRouteRepairs)",
+                    detail: "Safe-degrade traces triggered by missing routes",
+                    tone: missingRouteRepairs == 0 ? .green : .orange
+                )
+            ]
+        case .protocolHardInterrupts:
+            let runtimeTraceRows = runtimeProtocolTraceRows(traceRows)
+            let hardInterruptRows = runtimeTraceRows.filter {
+                $0.status == .failed && $0.protocolRepairCount > 0 && !$0.protocolSafeDegradeApplied
+            }
+            let approvalBlocked = hardInterruptRows.filter {
+                $0.protocolRepairTypes.contains("route_missing_approval_blocked")
+            }.count
+            let totalRepaired = runtimeTraceRows.filter { $0.protocolRepairCount > 0 }.count
+            return [
+                OpsContextCard(
+                    id: "interrupt-total",
+                    title: "Hard Interrupts",
+                    value: "\(hardInterruptRows.count)",
+                    detail: "Recent traces that could not be safely repaired",
+                    tone: hardInterruptRows.isEmpty ? .green : .red
+                ),
+                OpsContextCard(
+                    id: "interrupt-approval",
+                    title: "Approval Blocked",
+                    value: "\(approvalBlocked)",
+                    detail: "Interrupts caused by missing approval targets",
+                    tone: approvalBlocked == 0 ? .green : .red
+                ),
+                OpsContextCard(
+                    id: "interrupt-repaired",
+                    title: "Repair Pressure",
+                    value: "\(totalRepaired)",
+                    detail: "Recent traces that entered the repair layer",
+                    tone: totalRepaired == 0 ? .green : .orange
+                )
+            ]
         }
     }
 
@@ -513,7 +795,83 @@ enum OpsHistoryInsightBuilder {
                     )
                 }
                 .sorted { ($0.occurredAt ?? .distantPast) > ($1.occurredAt ?? .distantPast) }
+        case .protocolConformance:
+            return runtimeProtocolTraceRows(traceRows)
+                .filter { $0.protocolRepairCount > 0 || $0.protocolSafeDegradeApplied }
+                .sorted { $0.startedAt > $1.startedAt }
+                .prefix(6)
+                .map { trace in
+                    OpsHistorySignalRow(
+                        id: "protocol-conformance-\(trace.id.uuidString)",
+                        title: trace.agentName,
+                        badge: trace.protocolSafeDegradeApplied ? "Safe Degrade" : "Repaired",
+                        detail: trace.previewText,
+                        occurredAt: trace.startedAt,
+                        tone: trace.protocolSafeDegradeApplied ? .teal : .orange,
+                        anomaly: nil,
+                        trace: trace,
+                        cronRun: nil
+                    )
+                }
+        case .protocolAutoRepair:
+            return runtimeProtocolTraceRows(traceRows)
+                .filter { $0.protocolRepairCount > 0 }
+                .sorted { $0.startedAt > $1.startedAt }
+                .prefix(6)
+                .map { trace in
+                    OpsHistorySignalRow(
+                        id: "protocol-repair-\(trace.id.uuidString)",
+                        title: trace.agentName,
+                        badge: trace.protocolRepairTypes.first.map(protocolBadge(for:)) ?? "Repair",
+                        detail: trace.previewText,
+                        occurredAt: trace.startedAt,
+                        tone: trace.status == .completed ? .green : .orange,
+                        anomaly: nil,
+                        trace: trace,
+                        cronRun: nil
+                    )
+                }
+        case .protocolSafeDegrade:
+            return runtimeProtocolTraceRows(traceRows)
+                .filter(\.protocolSafeDegradeApplied)
+                .sorted { $0.startedAt > $1.startedAt }
+                .prefix(6)
+                .map { trace in
+                    OpsHistorySignalRow(
+                        id: "protocol-safe-\(trace.id.uuidString)",
+                        title: trace.agentName,
+                        badge: "Safe Degrade",
+                        detail: trace.previewText,
+                        occurredAt: trace.startedAt,
+                        tone: trace.status == .completed ? .teal : .orange,
+                        anomaly: nil,
+                        trace: trace,
+                        cronRun: nil
+                    )
+                }
+        case .protocolHardInterrupts:
+            return runtimeProtocolTraceRows(traceRows)
+                .filter { $0.status == .failed && $0.protocolRepairCount > 0 && !$0.protocolSafeDegradeApplied }
+                .sorted { $0.startedAt > $1.startedAt }
+                .prefix(6)
+                .map { trace in
+                    OpsHistorySignalRow(
+                        id: "protocol-interrupt-\(trace.id.uuidString)",
+                        title: trace.agentName,
+                        badge: trace.protocolRepairTypes.first.map(protocolBadge(for:)) ?? "Interrupt",
+                        detail: trace.previewText,
+                        occurredAt: trace.startedAt,
+                        tone: .red,
+                        anomaly: nil,
+                        trace: trace,
+                        cronRun: nil
+                    )
+                }
         }
+    }
+
+    nonisolated private static func runtimeProtocolTraceRows(_ traceRows: [OpsTraceSummaryRow]) -> [OpsTraceSummaryRow] {
+        traceRows.filter { $0.sourceLabel == "Runtime" }
     }
 
     nonisolated static func daySummaryCards(
@@ -620,6 +978,27 @@ enum OpsHistoryInsightBuilder {
             return .red
         case .cronReliability:
             return .teal
+        case .protocolConformance:
+            return .green
+        case .protocolAutoRepair:
+            return .orange
+        case .protocolSafeDegrade:
+            return .teal
+        case .protocolHardInterrupts:
+            return .red
+        }
+    }
+
+    nonisolated private static func protocolBadge(for repairType: String) -> String {
+        switch repairType {
+        case "missing_route_auto_selected":
+            return "Missing Route"
+        case "invalid_targets_auto_selected":
+            return "Invalid Target"
+        case "route_missing_approval_blocked":
+            return "Approval Blocked"
+        default:
+            return "Repair"
         }
     }
 }
@@ -662,6 +1041,14 @@ enum OpsHistoryNarrativeBuilder {
             return "\(focusText) error budget is currently \(latestText). \(deltaText), so the rows below focus on the newest failure, timeout, and escalation signals."
         case .cronReliability:
             return "\(focusText) cron reliability is currently \(latestText). \(deltaText), and the related signals below show the latest scheduled runs feeding this trend."
+        case .protocolConformance:
+            return "\(focusText) protocol conformance is currently \(latestText). \(deltaText), and the rows below highlight recent traces that required repair or safe degrade."
+        case .protocolAutoRepair:
+            return "\(focusText) protocol auto repair is currently \(latestText). \(deltaText), with the latest repaired traces listed below for route-level follow-up."
+        case .protocolSafeDegrade:
+            return "\(focusText) protocol safe degrade is currently \(latestText). \(deltaText), and the signal rows show which traces completed through degraded routing."
+        case .protocolHardInterrupts:
+            return "\(focusText) protocol hard interrupts are currently \(latestText). \(deltaText), so the rows below focus on unrecoverable protocol stops that need rule or approval fixes."
         }
     }
 }
@@ -907,6 +1294,49 @@ private enum OpsTraceSourceFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum OpsProtocolTraceFilter: String, CaseIterable, Identifiable {
+    case all
+    case repaired
+    case safeDegrade
+    case hardInterrupt
+    case missingRoute
+    case invalidTarget
+    case approvalBlocked
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "All Protocol"
+        case .repaired: return "Repaired"
+        case .safeDegrade: return "Safe Degrade"
+        case .hardInterrupt: return "Hard Interrupt"
+        case .missingRoute: return "Missing Route"
+        case .invalidTarget: return "Invalid Target"
+        case .approvalBlocked: return "Approval Blocked"
+        }
+    }
+
+    func matches(_ row: OpsTraceSummaryRow) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .repaired:
+            return row.protocolRepairCount > 0
+        case .safeDegrade:
+            return row.protocolSafeDegradeApplied
+        case .hardInterrupt:
+            return row.status == .failed && row.protocolRepairCount > 0 && !row.protocolSafeDegradeApplied
+        case .missingRoute:
+            return row.protocolRepairTypes.contains("missing_route_auto_selected")
+        case .invalidTarget:
+            return row.protocolRepairTypes.contains("invalid_targets_auto_selected")
+        case .approvalBlocked:
+            return row.protocolRepairTypes.contains("route_missing_approval_blocked")
+        }
+    }
+}
+
 private enum OpsTraceSpanFilter: String, CaseIterable, Identifiable {
     case all
     case conversation
@@ -1072,6 +1502,8 @@ struct MonitoringDashboardView: View {
     @State private var selectedHistoryDateID: String = ""
     @State private var scopedHistoricalSeries: [OpsMetricHistorySeries] = []
     @State private var selectedTraceSourceFilter: OpsTraceSourceFilter = .all
+    @State private var selectedProtocolTraceFilter: OpsProtocolTraceFilter = .all
+    @State private var selectedProtocolAgentFilter: String?
     @State private var traceSearchText: String = ""
     @State private var selectedTracePanel: OpsTracePanelModel?
     @State private var selectedAnomalyPanel: OpsAnomalyPanelModel?
@@ -1196,11 +1628,56 @@ struct MonitoringDashboardView: View {
     private var hotAnomalyClusters: [OpsAnomalyCluster] {
         Array(anomalyClusters.prefix(6))
     }
+    private var primaryOpsGoalCards: [OpsGoalCard] {
+        opsSnapshot.goalCards.filter { !$0.id.hasPrefix("protocol_") }
+    }
+    private var protocolGoalCards: [OpsGoalCard] {
+        opsSnapshot.goalCards.filter { $0.id.hasPrefix("protocol_") }
+    }
+    private var protocolHistoricalSeries: [OpsMetricHistorySeries] {
+        opsSnapshot.historicalSeries.filter {
+            [
+                OpsHistoryMetric.protocolConformance,
+                .protocolAutoRepair,
+                .protocolSafeDegrade,
+                .protocolHardInterrupts
+            ].contains($0.metric) && !$0.points.isEmpty
+        }
+    }
+    private var protocolRepairDistribution: [OpsProtocolRepairDistributionItem] {
+        OpsProtocolRepairDistributionBuilder.items(from: opsSnapshot.traceRows)
+    }
+    private var protocolAgentProfiles: [OpsProtocolAgentProfile] {
+        OpsProtocolAgentInsightBuilder.profiles(from: opsSnapshot.traceRows)
+    }
+    private var activeProtocolTraceFilterTitle: String? {
+        selectedProtocolTraceFilter == .all ? nil : selectedProtocolTraceFilter.title
+    }
+    private var activeProtocolAgentFilterTitle: String? {
+        selectedProtocolAgentFilter
+    }
+    private var activeProtocolDrillDownSummary: String? {
+        switch (activeProtocolTraceFilterTitle, activeProtocolAgentFilterTitle) {
+        case let (trace?, agent?):
+            return "\(trace) • \(agent)"
+        case let (trace?, nil):
+            return trace
+        case let (nil, agent?):
+            return agent
+        default:
+            return nil
+        }
+    }
     private var filteredTraceRows: [OpsTraceSummaryRow] {
         let normalizedSearch = traceSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         return opsSnapshot.traceRows.filter { row in
             guard selectedTraceSourceFilter.matches(row) else { return false }
+            guard selectedProtocolTraceFilter.matches(row) else { return false }
+            if let selectedProtocolAgentFilter,
+               row.agentName.localizedCaseInsensitiveCompare(selectedProtocolAgentFilter) != .orderedSame {
+                return false
+            }
             guard !normalizedSearch.isEmpty else { return true }
 
             let haystack = [
@@ -1208,7 +1685,8 @@ struct MonitoringDashboardView: View {
                 row.previewText,
                 row.routingAction ?? "",
                 row.outputType.rawValue,
-                row.sourceLabel
+                row.sourceLabel,
+                row.protocolRepairTypes.joined(separator: " ")
             ]
             .joined(separator: " ")
             .lowercased()
@@ -1289,6 +1767,7 @@ struct MonitoringDashboardView: View {
                         opsCenterHeaderSection
                         if selectedOpsCenterPage == .liveOverview {
                             opsOverviewSection
+                            opsProtocolGovernanceSection
                             opsAnomalyOverviewSection
                             opsAnomalyExplorerSection
                             opsDailyActivitySection
@@ -1429,13 +1908,13 @@ struct MonitoringDashboardView: View {
             Text(LocalizedString.text("current_posture"))
                 .font(.headline)
 
-            if opsSnapshot.goalCards.isEmpty {
+            if primaryOpsGoalCards.isEmpty {
                 Text(LocalizedString.text("ops_analytics_after_project_loaded"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
-                    ForEach(opsSnapshot.goalCards) { card in
+                    ForEach(primaryOpsGoalCards) { card in
                         monitoringCard(
                             title: card.title,
                             value: card.valueText,
@@ -1443,6 +1922,143 @@ struct MonitoringDashboardView: View {
                             color: opsColor(for: card.status)
                         )
                     }
+                }
+            }
+        }
+    }
+
+    private var opsProtocolGovernanceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Protocol Governance")
+                        .font(.headline)
+                    Text("Track conformance, repair quality, and interruption pressure across recent agent runs.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if let drillDownSummary = activeProtocolDrillDownSummary {
+                    Text("Trace drill-down: \(drillDownSummary)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if protocolGoalCards.isEmpty && protocolRepairDistribution.isEmpty {
+                Text("Protocol governance metrics will appear after runtime traces are ingested.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                if !protocolGoalCards.isEmpty {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
+                        ForEach(protocolGoalCards) { card in
+                            Button {
+                                applyProtocolDrillDown(for: card)
+                            } label: {
+                                monitoringCard(
+                                    title: card.title,
+                                    value: card.valueText,
+                                    detail: card.detailText,
+                                    color: opsColor(for: card.status)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                if !protocolHistoricalSeries.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Protocol Trends")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("Click to open historical view")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16)], spacing: 16) {
+                            ForEach(protocolHistoricalSeries) { series in
+                                Button {
+                                    selectedOpsCenterPage = .projectHistory
+                                    selectedHistoryCategory = .runtime
+                                    selectedHistoryMetric = series.metric
+                                } label: {
+                                    historyMetricCard(
+                                        series: series,
+                                        isSelected: selectedOpsCenterPage == .projectHistory
+                                            && effectiveSelectedHistoryMetric == series.metric
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                if !protocolRepairDistribution.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Repair Distribution")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("Recent traces")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+                            ForEach(protocolRepairDistribution) { item in
+                                Button {
+                                    applyProtocolTraceFilter(item.filter)
+                                } label: {
+                                    monitoringCard(
+                                        title: item.title,
+                                        value: "\(item.count)",
+                                        detail: "Recent traces repaired by this protocol rule",
+                                        color: selectedProtocolTraceFilter == item.filter ? .teal : .orange
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                if !protocolAgentProfiles.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Agent Profiles")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("Highest protocol pressure first")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        VStack(spacing: 8) {
+                            ForEach(protocolAgentProfiles) { profile in
+                                protocolAgentProfileButton(profile)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
         }
@@ -2022,10 +2638,35 @@ struct MonitoringDashboardView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 220)
+
+                Picker("Protocol", selection: $selectedProtocolTraceFilter) {
+                    ForEach(OpsProtocolTraceFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
             }
 
             TextField(LocalizedString.text("trace_search_placeholder"), text: $traceSearchText)
                 .textFieldStyle(.roundedBorder)
+
+            if let drillDownSummary = activeProtocolDrillDownSummary {
+                HStack {
+                    Text("Protocol filter: \(drillDownSummary)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Clear") {
+                        selectedProtocolTraceFilter = .all
+                        selectedProtocolAgentFilter = nil
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.teal.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
 
             VStack(spacing: 8) {
                 if filteredTraceRows.isEmpty {
@@ -2064,10 +2705,26 @@ struct MonitoringDashboardView: View {
                                     .foregroundColor(.secondary)
                                     .frame(width: 116, alignment: .leading)
 
-                                Text(row.previewText)
-                                    .font(.caption)
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.leading)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(row.previewText)
+                                        .font(.caption)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+
+                                    if row.protocolRepairCount > 0 || row.protocolSafeDegradeApplied {
+                                        HStack(spacing: 6) {
+                                            if row.protocolRepairCount > 0 {
+                                                monitoringPill(
+                                                    title: "\(row.protocolRepairCount)x repair",
+                                                    color: .orange
+                                                )
+                                            }
+                                            if row.protocolSafeDegradeApplied {
+                                                monitoringPill(title: "Safe Degrade", color: .teal)
+                                            }
+                                        }
+                                    }
+                                }
 
                                 Spacer()
 
@@ -2892,6 +3549,99 @@ struct MonitoringDashboardView: View {
         }
     }
 
+    private func protocolAgentProfileButton(_ profile: OpsProtocolAgentProfile) -> some View {
+        Button {
+            applyProtocolAgentDrillDown(profile)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(profile.agentName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.primary)
+
+                        monitoringPill(
+                            title: "Risk \(profile.riskScore)",
+                            color: profile.hardInterruptCount > 0 ? .red : .orange
+                        )
+                    }
+
+                    HStack(spacing: 6) {
+                        if profile.repairedTraceCount > 0 {
+                            monitoringPill(title: "Repair \(profile.repairedTraceCount)", color: .orange)
+                        }
+                        if profile.safeDegradeCount > 0 {
+                            monitoringPill(title: "Safe \(profile.safeDegradeCount)", color: .teal)
+                        }
+                        if profile.hardInterruptCount > 0 {
+                            monitoringPill(title: "Interrupt \(profile.hardInterruptCount)", color: .red)
+                        }
+                    }
+
+                    Text(
+                        [
+                            "Runtime traces \(profile.totalTraceCount)",
+                            profile.dominantRepairLabel.map { "Dominant \($0)" },
+                            "Latest \(profile.latestActivityAt.formatted(date: .abbreviated, time: .shortened))"
+                        ]
+                        .compactMap { $0 }
+                        .joined(separator: " • ")
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.leading)
+                }
+
+                Spacer()
+
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.4))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func applyProtocolDrillDown(for card: OpsGoalCard) {
+        switch card.id {
+        case "protocol_conformance":
+            applyProtocolTraceFilter(.repaired)
+        case "protocol_auto_repair":
+            applyProtocolTraceFilter(.repaired)
+        case "protocol_safe_degrade":
+            applyProtocolTraceFilter(.safeDegrade)
+        case "protocol_interrupts":
+            applyProtocolTraceFilter(.hardInterrupt)
+        default:
+            applyProtocolTraceFilter(.all)
+        }
+    }
+
+    private func applyProtocolTraceFilter(_ filter: OpsProtocolTraceFilter) {
+        selectedProtocolTraceFilter = filter
+        selectedProtocolAgentFilter = nil
+        if filter != .all {
+            selectedTraceSourceFilter = .runtime
+        }
+    }
+
+    private func applyProtocolAgentDrillDown(_ profile: OpsProtocolAgentProfile) {
+        applyProtocolTraceFilter(profile.recommendedFilter)
+        selectedProtocolAgentFilter = profile.agentName
+        selectedHistoryFocusMode = .agent
+        selectedHistoryMetric = profile.hardInterruptCount > 0 ? .protocolHardInterrupts : .protocolAutoRepair
+
+        let focusID = "agent:\(profile.agentName.lowercased())"
+        if historyFocusOptions(for: .agent).contains(where: { $0.id == focusID }) {
+            selectedHistoryFocusID = focusID
+        }
+    }
+
     private func anomalyRowButton(_ row: OpsAnomalyRow) -> some View {
         Button {
             openAnomalyDetail(for: row)
@@ -3076,6 +3826,10 @@ struct MonitoringDashboardView: View {
         case .memoryDiscipline: return .orange
         case .errorBudget: return .red
         case .cronReliability: return .teal
+        case .protocolConformance: return .green
+        case .protocolAutoRepair: return .orange
+        case .protocolSafeDegrade: return .teal
+        case .protocolHardInterrupts: return .red
         }
     }
 
@@ -3639,7 +4393,18 @@ private struct OpsTraceDetailSheet: View {
     private var visibleAttributeKeys: [String] {
         detail.attributes.keys
             .filter { key in
-                !["output_text", "preview_text", "protocol_event_count", "protocol_ref_count", "protocol_event_types"].contains(key)
+                ![
+                    "output_text",
+                    "preview_text",
+                    "protocol_event_count",
+                    "protocol_ref_count",
+                    "protocol_event_types",
+                    "protocol_repair_count",
+                    "protocol_repair_types",
+                    "protocol_requested_route",
+                    "protocol_sanitized_route",
+                    "protocol_safe_degrade_applied"
+                ].contains(key)
             }
             .sorted()
     }
@@ -3657,6 +4422,38 @@ private struct OpsTraceDetailSheet: View {
     private var protocolEventTypes: String? {
         let value = detail.attributes["protocol_event_types"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (value?.isEmpty == false) ? value : nil
+    }
+
+    private var protocolRepairCount: Int? {
+        detail.attributes["protocol_repair_count"].flatMap(Int.init)
+    }
+
+    private var protocolRepairTypes: String? {
+        let value = detail.attributes["protocol_repair_types"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    private var requestedProtocolRoute: String? {
+        let value = detail.attributes["protocol_requested_route"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    private var sanitizedProtocolRoute: String? {
+        let value = detail.attributes["protocol_sanitized_route"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    private var protocolSafeDegradeApplied: Bool? {
+        detail.attributes["protocol_safe_degrade_applied"].flatMap { value in
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes":
+                return true
+            case "false", "0", "no":
+                return false
+            default:
+                return nil
+            }
+        }
     }
 
     private var filteredTimelineEntries: [OpsTraceTimelineEntry] {
@@ -3758,6 +4555,12 @@ private struct OpsTraceDetailSheet: View {
                     }
                     if let protocolRefCount, protocolRefCount > 0 {
                         detailCard(title: "Protocol Refs", value: String(protocolRefCount))
+                    }
+                    if let protocolRepairCount, protocolRepairCount > 0 {
+                        detailCard(title: "Protocol Repairs", value: String(protocolRepairCount))
+                    }
+                    if let protocolSafeDegradeApplied {
+                        detailCard(title: "Safe Degrade", value: protocolSafeDegradeApplied ? "Applied" : "Not applied")
                     }
                 }
 
@@ -3957,6 +4760,18 @@ private struct OpsTraceDetailSheet: View {
 
                 if let protocolEventTypes {
                     detailSection(title: "Protocol Event Types", text: protocolEventTypes)
+                }
+
+                if let protocolRepairTypes {
+                    detailSection(title: "Protocol Repair Types", text: protocolRepairTypes)
+                }
+
+                if let requestedProtocolRoute {
+                    detailSection(title: "Requested Route", text: requestedProtocolRoute)
+                }
+
+                if let sanitizedProtocolRoute {
+                    detailSection(title: "Sanitized Route", text: sanitizedProtocolRoute)
                 }
 
                 if !panel.relatedLogs.isEmpty {

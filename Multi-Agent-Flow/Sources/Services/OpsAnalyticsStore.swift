@@ -589,6 +589,18 @@ final class OpsAnalyticsStore {
         let averageCompletionLatency = completionLatencies.isEmpty
             ? nil
             : completionLatencies.reduce(0, +) / Double(completionLatencies.count)
+        let protocolConformingExecutions = executionResults.filter { $0.protocolRepairCount == 0 }
+        let repairedExecutions = executionResults.filter { $0.protocolRepairCount > 0 }
+        let safeDegradeExecutions = executionResults.filter(\.protocolSafeDegradeApplied)
+        let hardInterruptExecutions = executionResults.filter {
+            $0.status == .failed && $0.protocolRepairCount > 0 && !$0.protocolSafeDegradeApplied
+        }
+        let protocolConformanceRate = totalExecutions > 0
+            ? (Double(protocolConformingExecutions.count) / Double(totalExecutions)) * 100.0
+            : 0.0
+        let protocolHardInterruptRate = totalExecutions > 0
+            ? (Double(hardInterruptExecutions.count) / Double(totalExecutions)) * 100.0
+            : 0.0
 
         upsertGoalMetric(
             db: db,
@@ -745,6 +757,78 @@ final class OpsAnalyticsStore {
                 breakdown: ["sample_count": "\(completionLatencies.count)"]
             )
         }
+        upsertGoalMetric(
+            db: db,
+            projectID: projectID,
+            date: dateString,
+            goal: "protocol_governance",
+            metric: "conformance_rate",
+            value: protocolConformanceRate,
+            unit: "%",
+            breakdown: [
+                "conforming_runs": "\(protocolConformingExecutions.count)",
+                "total_runs": "\(totalExecutions)"
+            ]
+        )
+        if !repairedExecutions.isEmpty {
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: dateString,
+                goal: "protocol_governance",
+                metric: "auto_repair_rate",
+                value: (Double(repairedExecutions.filter { $0.status == .completed }.count) / Double(repairedExecutions.count)) * 100.0,
+                unit: "%",
+                breakdown: [
+                    "completed_repaired_runs": "\(repairedExecutions.filter { $0.status == .completed }.count)",
+                    "repaired_runs": "\(repairedExecutions.count)"
+                ]
+            )
+        } else {
+            deleteGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: dateString,
+                goal: "protocol_governance",
+                metric: "auto_repair_rate"
+            )
+        }
+        if !safeDegradeExecutions.isEmpty {
+            upsertGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: dateString,
+                goal: "protocol_governance",
+                metric: "safe_degrade_rate",
+                value: (Double(safeDegradeExecutions.filter { $0.status == .completed }.count) / Double(safeDegradeExecutions.count)) * 100.0,
+                unit: "%",
+                breakdown: [
+                    "completed_safe_degrade_runs": "\(safeDegradeExecutions.filter { $0.status == .completed }.count)",
+                    "safe_degrade_runs": "\(safeDegradeExecutions.count)"
+                ]
+            )
+        } else {
+            deleteGoalMetric(
+                db: db,
+                projectID: projectID,
+                date: dateString,
+                goal: "protocol_governance",
+                metric: "safe_degrade_rate"
+            )
+        }
+        upsertGoalMetric(
+            db: db,
+            projectID: projectID,
+            date: dateString,
+            goal: "protocol_governance",
+            metric: "hard_interrupt_rate",
+            value: protocolHardInterruptRate,
+            unit: "%",
+            breakdown: [
+                "hard_interrupt_runs": "\(hardInterruptExecutions.count)",
+                "total_runs": "\(totalExecutions)"
+            ]
+        )
 
         for row in agentRows {
             upsertDailyAgentActivity(
@@ -778,9 +862,31 @@ final class OpsAnalyticsStore {
                 "routing_action": result.routingAction ?? "",
                 "routing_reason": result.routingReason ?? "",
                 "routing_targets": result.routingTargets.joined(separator: ", "),
+                "requested_routing_action": result.requestedRoutingAction ?? "",
+                "requested_routing_targets": result.requestedRoutingTargets.joined(separator: ", "),
+                "requested_routing_reason": result.requestedRoutingReason ?? "",
                 "protocol_event_count": String(result.runtimeEvents.count),
                 "protocol_ref_count": String(result.runtimeRefCount),
                 "protocol_event_types": result.runtimeEventTypesSummary,
+                "protocol_repair_count": String(result.protocolRepairCount),
+                "protocol_repair_types": result.protocolRepairTypes.joined(separator: ", "),
+                "protocol_requested_route": [
+                    result.requestedRoutingAction,
+                    result.requestedRoutingTargets.isEmpty ? nil : result.requestedRoutingTargets.joined(separator: ", "),
+                    result.requestedRoutingReason
+                ]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " | "),
+                "protocol_sanitized_route": [
+                    result.routingAction,
+                    result.routingTargets.isEmpty ? nil : result.routingTargets.joined(separator: ", "),
+                    result.routingReason
+                ]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " | "),
+                "protocol_safe_degrade_applied": result.protocolSafeDegradeApplied ? "true" : "false",
                 "workflow_hot_path_expected": expectsWorkflowHotPath ? "true" : "false",
                 "workflow_hot_path_matched": matchedWorkflowHotPath ? "true" : "false",
                 "output_text": result.renderedOutputText,
@@ -915,6 +1021,29 @@ final class OpsAnalyticsStore {
         defer { sqlite3_finalize(statement) }
 
         bindText(traceID, to: 1, in: statement)
+        sqlite3_step(statement)
+    }
+
+    private func deleteGoalMetric(
+        db: OpaquePointer,
+        projectID: String,
+        date: String,
+        goal: String,
+        metric: String
+    ) {
+        let sql = """
+        DELETE FROM goal_metrics
+        WHERE project_id = ? AND date = ? AND goal = ? AND metric = ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return }
+        defer { sqlite3_finalize(statement) }
+
+        bindText(projectID, to: 1, in: statement)
+        bindText(date, to: 2, in: statement)
+        bindText(goal, to: 3, in: statement)
+        bindText(metric, to: 4, in: statement)
         sqlite3_step(statement)
     }
 
@@ -1302,6 +1431,19 @@ final class OpsAnalyticsStore {
             let previewText = emptyToNil(attributes["preview_text"])
                 ?? emptyToNil(eventsText?.compactSingleLinePreview(limit: 160))
                 ?? "No output"
+            let protocolRepairCount = Int(attributes["protocol_repair_count"] ?? "") ?? 0
+            let protocolRepairTypes = emptyToNil(attributes["protocol_repair_types"])?
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty } ?? []
+            let protocolSafeDegradeApplied = {
+                switch attributes["protocol_safe_degrade_applied"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "true", "1", "yes":
+                    return true
+                default:
+                    return false
+                }
+            }()
 
             rows.append(
                 OpsTraceSummaryRow(
@@ -1313,7 +1455,10 @@ final class OpsAnalyticsStore {
                     routingAction: emptyToNil(attributes["routing_action"]),
                     outputType: outputType,
                     sourceLabel: service == "openclaw.external-session" ? "OpenClaw" : "Runtime",
-                    previewText: previewText
+                    previewText: previewText,
+                    protocolRepairCount: protocolRepairCount,
+                    protocolRepairTypes: protocolRepairTypes,
+                    protocolSafeDegradeApplied: protocolSafeDegradeApplied
                 )
             )
         }
@@ -1336,6 +1481,10 @@ final class OpsAnalyticsStore {
             OR (goal = 'memory_discipline' AND metric = 'tracked_rate')
             OR (goal = 'error_budget' AND metric = 'error_count')
             OR (goal = 'cron_reliability' AND metric = 'success_rate')
+            OR (goal = 'protocol_governance' AND metric = 'conformance_rate')
+            OR (goal = 'protocol_governance' AND metric = 'auto_repair_rate')
+            OR (goal = 'protocol_governance' AND metric = 'safe_degrade_rate')
+            OR (goal = 'protocol_governance' AND metric = 'hard_interrupt_rate')
           )
         ORDER BY date ASC;
         """

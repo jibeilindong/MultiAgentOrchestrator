@@ -1,5 +1,7 @@
 export * from "./json";
 export * from "./launch-verification";
+export * from "./openclaw-runtime-governance";
+export * from "./openclaw-runtime-security";
 export * from "./project-factory";
 export * from "./project-mutators";
 export * from "./project-repository";

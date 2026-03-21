@@ -22,7 +22,37 @@
         "agentIdentifier": "planner",
         "modelIdentifier": "gpt-5.4",
         "runtimeProfile": "default",
-        "environment": {}
+        "environment": {},
+        "protocolMemory": {
+          "protocolVersion": "openclaw.runtime.v1",
+          "stableRules": [
+            "Machine-readable workflow coordination must use the runtime protocol.",
+            "Always end with exactly one valid routing JSON line when a machine tail is required.",
+            "Only choose downstream targets from the allowed candidate list.",
+            "Do not exceed the provided write scope, tool scope, or approval rules.",
+            "If uncertain, emit the smallest valid safe result instead of guessing."
+          ],
+          "recentCorrections": [
+            {
+              "id": "correction-invalid-targets",
+              "kind": "invalid_targets_auto_selected",
+              "message": "Choose only from the allowed candidate list.",
+              "count": 2,
+              "lastSeenAt": 175351680
+            }
+          ],
+          "repeatOffenses": [
+            {
+              "id": "correction-missing-route",
+              "kind": "missing_route_auto_selected",
+              "message": "End with exactly one valid routing JSON line.",
+              "count": 1,
+              "lastSeenAt": 175351620
+            }
+          ],
+          "lastSessionDigest": "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | approval_targets_present",
+          "lastUpdatedAt": 175351680
+        }
       }
     }
   ],
@@ -121,7 +151,15 @@
         "payload": {
           "intent": "respond",
           "summary": "Investigate runtime protocol coverage.",
-          "expectedOutput": "agent_final_response"
+          "expectedOutput": "agent_final_response",
+          "protocolVersion": "openclaw.runtime.v1",
+          "allowedActions": "stop,selected,all",
+          "allowedTargets": "Reviewer [agent_id: reviewer, node: node-reviewer]",
+          "approvalTargets": "Lead Reviewer [agent_id: lead-reviewer, node: node-approval]",
+          "requiredOutputContract": "{\"workflow_route\":{\"action\":\"stop\",\"targets\":[],\"reason\":\"short reason\"}}",
+          "selfCheckRule": "Validate the last non-empty line before sending.",
+          "protocolFeedbackHints": "End with one valid routing JSON line. | Choose only allowed targets.",
+          "sessionProtocolDigest": "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | approval_targets_present"
         },
         "refs": [
           {
@@ -152,6 +190,16 @@
         "Reviewer"
       ],
       "routingReason": "Escalate for verification",
+      "requestedRoutingAction": "selected",
+      "requestedRoutingTargets": [
+        "Ghost Reviewer"
+      ],
+      "requestedRoutingReason": "Escalate for verification",
+      "protocolRepairCount": 1,
+      "protocolRepairTypes": [
+        "invalid_targets_auto_selected"
+      ],
+      "protocolSafeDegradeApplied": true,
       "runtimeEvents": [
         {
           "version": "openclaw.runtime.v1",
@@ -180,7 +228,15 @@
           "payload": {
             "intent": "respond",
             "summary": "Investigate runtime protocol coverage.",
-            "expectedOutput": "agent_final_response"
+            "expectedOutput": "agent_final_response",
+            "protocolVersion": "openclaw.runtime.v1",
+            "allowedActions": "stop,selected,all",
+            "allowedTargets": "Reviewer [agent_id: reviewer, node: node-reviewer]",
+            "approvalTargets": "Lead Reviewer [agent_id: lead-reviewer, node: node-approval]",
+            "requiredOutputContract": "{\"workflow_route\":{\"action\":\"stop\",\"targets\":[],\"reason\":\"short reason\"}}",
+            "selfCheckRule": "Validate the last non-empty line before sending.",
+            "protocolFeedbackHints": "End with one valid routing JSON line. | Choose only allowed targets.",
+            "sessionProtocolDigest": "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | approval_targets_present"
           },
           "refs": [],
           "constraints": {},

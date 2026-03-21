@@ -3085,6 +3085,7 @@ class AppState: ObservableObject {
 
                     for result in results {
                         mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
+                        self.recordProtocolOutcome(for: result, in: &mutableProject)
                     }
                     let completedAt = Date()
                     let terminalDispatches = results
@@ -4195,6 +4196,119 @@ class AppState: ObservableObject {
             return true
         case "false", "0", "no", "n":
             return false
+        default:
+            return nil
+        }
+    }
+
+    static func recordProtocolOutcome(_ result: ExecutionResult, in project: inout MAProject, at timestamp: Date = Date()) {
+        guard let agentIndex = project.agents.firstIndex(where: { $0.id == result.agentID }) else { return }
+
+        var protocolMemory = project.agents[agentIndex].openClawDefinition.protocolMemory
+        if let dispatchDigest = result.runtimeEvents.first(where: { $0.eventType == .taskDispatch })?.payload["sessionProtocolDigest"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !dispatchDigest.isEmpty {
+            protocolMemory.lastSessionDigest = dispatchDigest
+        }
+
+        let normalizedRepairTypes = Array(
+            Set(
+                result.protocolRepairTypes.map {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                }
+            )
+        )
+        .filter { !$0.isEmpty }
+        .sorted()
+
+        for repairType in normalizedRepairTypes {
+            let correctionMessage = protocolCorrectionMessage(for: repairType)
+            upsertProtocolCorrection(
+                kind: repairType,
+                message: correctionMessage,
+                in: &protocolMemory.recentCorrections,
+                at: timestamp
+            )
+
+            let recentCount = protocolMemory.recentCorrections.first(where: { $0.kind == repairType })?.count ?? 0
+            if recentCount >= 3 {
+                upsertProtocolCorrection(
+                    kind: repairType,
+                    message: correctionMessage,
+                    in: &protocolMemory.repeatOffenses,
+                    at: timestamp
+                )
+
+                if let stableRule = protocolStableRule(for: repairType),
+                   !protocolMemory.stableRules.contains(stableRule) {
+                    protocolMemory.stableRules.append(stableRule)
+                }
+            }
+        }
+
+        protocolMemory.recentCorrections = protocolMemory.recentCorrections
+            .sorted { $0.lastSeenAt > $1.lastSeenAt }
+            .prefix(5)
+            .map { $0 }
+        protocolMemory.repeatOffenses = protocolMemory.repeatOffenses
+            .sorted { $0.lastSeenAt > $1.lastSeenAt }
+            .prefix(5)
+            .map { $0 }
+        if protocolMemory.stableRules.count > 8 {
+            protocolMemory.stableRules = Array(protocolMemory.stableRules.suffix(8))
+        }
+        protocolMemory.lastUpdatedAt = timestamp
+        project.agents[agentIndex].openClawDefinition.protocolMemory = protocolMemory
+    }
+
+    private func recordProtocolOutcome(for result: ExecutionResult, in project: inout MAProject) {
+        Self.recordProtocolOutcome(result, in: &project)
+    }
+
+    private static func upsertProtocolCorrection(
+        kind: String,
+        message: String,
+        in corrections: inout [OpenClawProtocolCorrectionRecord],
+        at timestamp: Date
+    ) {
+        if let existingIndex = corrections.firstIndex(where: { $0.kind == kind }) {
+            corrections[existingIndex].count += 1
+            corrections[existingIndex].message = message
+            corrections[existingIndex].lastSeenAt = timestamp
+            return
+        }
+
+        corrections.append(
+            OpenClawProtocolCorrectionRecord(
+                kind: kind,
+                message: message,
+                count: 1,
+                lastSeenAt: timestamp
+            )
+        )
+    }
+
+    private static func protocolCorrectionMessage(for kind: String) -> String {
+        switch kind {
+        case "missing_route_auto_selected":
+            return "Last time you omitted the routing directive. End with exactly one valid routing JSON line."
+        case "invalid_targets_auto_selected":
+            return "Last time you referenced unsupported downstream targets. Choose only from the allowed candidate list."
+        case "route_missing_approval_blocked":
+            return "Last time only approval-gated routes were available. Request approval explicitly instead of assuming continuation."
+        default:
+            return "Last time the runtime repaired your machine tail. Re-check the last non-empty line before sending."
+        }
+    }
+
+    private static func protocolStableRule(for kind: String) -> String? {
+        switch kind {
+        case "missing_route_auto_selected":
+            return "Never omit the final routing JSON line when the protocol requires a machine tail."
+        case "invalid_targets_auto_selected":
+            return "Only reference downstream targets that appear in the allowed candidate list."
+        case "route_missing_approval_blocked":
+            return "When only approval-gated targets are available, keep the current result and request approval explicitly."
         default:
             return nil
         }

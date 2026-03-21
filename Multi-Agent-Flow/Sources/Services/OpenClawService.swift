@@ -88,6 +88,12 @@ struct ExecutionResult: Codable, Identifiable {
     let routingAction: String?
     let routingTargets: [String]
     let routingReason: String?
+    let requestedRoutingAction: String?
+    let requestedRoutingTargets: [String]
+    let requestedRoutingReason: String?
+    let protocolRepairCount: Int
+    let protocolRepairTypes: [String]
+    let protocolSafeDegradeApplied: Bool
     let runtimeEvents: [OpenClawRuntimeEvent]
     let primaryRuntimeEvent: OpenClawRuntimeEvent?
     let startedAt: Date
@@ -108,6 +114,12 @@ struct ExecutionResult: Codable, Identifiable {
         case routingAction
         case routingTargets
         case routingReason
+        case requestedRoutingAction
+        case requestedRoutingTargets
+        case requestedRoutingReason
+        case protocolRepairCount
+        case protocolRepairTypes
+        case protocolSafeDegradeApplied
         case runtimeEvents
         case primaryRuntimeEvent
         case startedAt
@@ -128,6 +140,12 @@ struct ExecutionResult: Codable, Identifiable {
         routingAction: String? = nil,
         routingTargets: [String] = [],
         routingReason: String? = nil,
+        requestedRoutingAction: String? = nil,
+        requestedRoutingTargets: [String] = [],
+        requestedRoutingReason: String? = nil,
+        protocolRepairCount: Int = 0,
+        protocolRepairTypes: [String] = [],
+        protocolSafeDegradeApplied: Bool = false,
         runtimeEvents: [OpenClawRuntimeEvent] = [],
         primaryRuntimeEvent: OpenClawRuntimeEvent? = nil,
         startedAt: Date = Date(),
@@ -146,6 +164,12 @@ struct ExecutionResult: Codable, Identifiable {
         self.routingAction = routingAction
         self.routingTargets = routingTargets
         self.routingReason = routingReason
+        self.requestedRoutingAction = requestedRoutingAction
+        self.requestedRoutingTargets = requestedRoutingTargets
+        self.requestedRoutingReason = requestedRoutingReason
+        self.protocolRepairCount = protocolRepairCount
+        self.protocolRepairTypes = protocolRepairTypes
+        self.protocolSafeDegradeApplied = protocolSafeDegradeApplied
         self.runtimeEvents = runtimeEvents
         self.primaryRuntimeEvent = primaryRuntimeEvent
         self.startedAt = startedAt
@@ -169,6 +193,12 @@ struct ExecutionResult: Codable, Identifiable {
         routingAction = try container.decodeIfPresent(String.self, forKey: .routingAction)
         routingTargets = try container.decodeIfPresent([String].self, forKey: .routingTargets) ?? []
         routingReason = try container.decodeIfPresent(String.self, forKey: .routingReason)
+        requestedRoutingAction = try container.decodeIfPresent(String.self, forKey: .requestedRoutingAction)
+        requestedRoutingTargets = try container.decodeIfPresent([String].self, forKey: .requestedRoutingTargets) ?? []
+        requestedRoutingReason = try container.decodeIfPresent(String.self, forKey: .requestedRoutingReason)
+        protocolRepairCount = try container.decodeIfPresent(Int.self, forKey: .protocolRepairCount) ?? 0
+        protocolRepairTypes = try container.decodeIfPresent([String].self, forKey: .protocolRepairTypes) ?? []
+        protocolSafeDegradeApplied = try container.decodeIfPresent(Bool.self, forKey: .protocolSafeDegradeApplied) ?? false
         runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
         primaryRuntimeEvent = try container.decodeIfPresent(OpenClawRuntimeEvent.self, forKey: .primaryRuntimeEvent)
         startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date()
@@ -191,6 +221,12 @@ struct ExecutionResult: Codable, Identifiable {
         try container.encodeIfPresent(routingAction, forKey: .routingAction)
         try container.encode(routingTargets, forKey: .routingTargets)
         try container.encodeIfPresent(routingReason, forKey: .routingReason)
+        try container.encodeIfPresent(requestedRoutingAction, forKey: .requestedRoutingAction)
+        try container.encode(requestedRoutingTargets, forKey: .requestedRoutingTargets)
+        try container.encodeIfPresent(requestedRoutingReason, forKey: .requestedRoutingReason)
+        try container.encode(protocolRepairCount, forKey: .protocolRepairCount)
+        try container.encode(protocolRepairTypes, forKey: .protocolRepairTypes)
+        try container.encode(protocolSafeDegradeApplied, forKey: .protocolSafeDegradeApplied)
         try container.encode(runtimeEvents, forKey: .runtimeEvents)
         try container.encodeIfPresent(primaryRuntimeEvent, forKey: .primaryRuntimeEvent)
         try container.encode(startedAt, forKey: .startedAt)
@@ -523,7 +559,7 @@ class OpenClawService: ObservableObject {
     private var loggedCapabilityKeys: Set<String> = []
 
     private struct WorkflowRoutingDecision {
-        enum Action: String {
+        enum Action: String, CaseIterable {
             case stop
             case all
             case selected
@@ -591,10 +627,32 @@ class OpenClawService: ObservableObject {
         }
     }
 
+    private struct ProtocolDispatchCapsule {
+        let protocolVersion: String
+        let allowedActions: [String]
+        let allowedTargets: [String]
+        let approvalTargets: [String]
+        let writeScope: [String]
+        let toolScope: [String]
+        let fallbackPolicy: String
+        let requiredOutputContract: String
+        let selfCheckRule: String
+        let feedbackHints: [String]
+    }
+
     private struct RoutingDecisionValidation {
         let sanitizedDecision: WorkflowRoutingDecision?
         let approvalRequiredTargets: [RoutingTargetDescriptor]
         let rejectedTargets: [String]
+    }
+
+    private struct RoutingDecisionRepair {
+        let requestedDecision: WorkflowRoutingDecision?
+        let sanitizedDecision: WorkflowRoutingDecision?
+        let approvalRequiredTargets: [RoutingTargetDescriptor]
+        let rejectedTargets: [String]
+        let repairTypes: [String]
+        let safeDegradeApplied: Bool
     }
     
     // 初始化时检测连接状态
@@ -1376,6 +1434,17 @@ class OpenClawService: ObservableObject {
             toolScope: runtimeToolScope(for: agent, directTargets: downstreamTargets, approvalTargets: []),
             fallbackRoutingPolicy: .stop
         )
+        let protocolMemory = resolvedProtocolMemory(for: agent)
+        let dispatchCapsule = makeProtocolDispatchCapsule(
+            for: agent,
+            guardrails: effectiveGuardrails
+        )
+        let sessionProtocolDigest = makeSessionProtocolDigest(
+            for: agent,
+            capsule: dispatchCapsule,
+            transportKind: resolvedTransportKind,
+            isEntryNode: isEntryNode
+        )
         let serializedWriteScope = effectiveGuardrails.writeScope.joined(separator: "|")
         let serializedToolScope = effectiveGuardrails.toolScope.joined(separator: "|")
         let dispatchEvent = makeRuntimeEvent(
@@ -1394,7 +1463,15 @@ class OpenClawService: ObservableObject {
                     ? prompt!.trimmingCharacters(in: .whitespacesAndNewlines)
                     : "execute workflow node"),
                 "expectedOutput": outputMode == .structuredJSON ? "structured_result" : "plain_response",
-                "visibleToUser": isEntryNode ? "true" : "false"
+                "visibleToUser": isEntryNode ? "true" : "false",
+                "protocolVersion": dispatchCapsule.protocolVersion,
+                "allowedActions": dispatchCapsule.allowedActions.joined(separator: ","),
+                "allowedTargets": dispatchCapsule.allowedTargets.joined(separator: " | "),
+                "approvalTargets": dispatchCapsule.approvalTargets.joined(separator: " | "),
+                "requiredOutputContract": dispatchCapsule.requiredOutputContract,
+                "selfCheckRule": dispatchCapsule.selfCheckRule,
+                "protocolFeedbackHints": dispatchCapsule.feedbackHints.joined(separator: " | "),
+                "sessionProtocolDigest": sessionProtocolDigest
             ],
             constraints: [
                 "timeoutSeconds": String(max(1, agentConfig.timeout)),
@@ -1419,6 +1496,9 @@ class OpenClawService: ObservableObject {
             isEntryNode: isEntryNode,
             downstreamTargets: downstreamTargets,
             guardrails: effectiveGuardrails,
+            protocolMemory: protocolMemory,
+            protocolCapsule: dispatchCapsule,
+            sessionProtocolDigest: sessionProtocolDigest,
             style: instructionStyle
         )
 
@@ -1519,11 +1599,13 @@ class OpenClawService: ObservableObject {
                 return
             }
 
-            let routingValidation = self.validateRoutingDecision(
+            let routingRepair = self.repairRoutingDecision(
                 parsedOutput.routingDecision,
                 directTargets: effectiveGuardrails.directTargets,
                 approvalTargets: effectiveGuardrails.approvalRequiredTargets,
-                node: node
+                node: node,
+                outputType: parsedOutput.type,
+                fallbackPolicy: effectiveGuardrails.fallbackRoutingPolicy
             )
             let status: ExecutionStatus = success ? .completed : .failed
             let completedAt = Date()
@@ -1575,7 +1657,7 @@ class OpenClawService: ObservableObject {
                     ]
                 )
             }
-            let approvalEvents = routingValidation.approvalRequiredTargets.map { target in
+            let approvalEvents = routingRepair.approvalRequiredTargets.map { target in
                 self.makeRuntimeEvent(
                     eventType: .taskApprovalRequired,
                     source: self.runtimeAgentActor(id: targetAgentID, name: agent.name),
@@ -1610,15 +1692,21 @@ class OpenClawService: ObservableObject {
                 transportKind: parsedOutput.transportKind,
                 firstChunkLatencyMs: parsedOutput.firstChunkLatencyMs,
                 completionLatencyMs: parsedOutput.completionLatencyMs,
-                routingAction: routingValidation.sanitizedDecision?.action.rawValue,
-                routingTargets: routingValidation.sanitizedDecision?.targets ?? [],
-                routingReason: routingValidation.sanitizedDecision?.reason ?? parsedOutput.routingDecision?.reason,
+                routingAction: routingRepair.sanitizedDecision?.action.rawValue,
+                routingTargets: routingRepair.sanitizedDecision?.targets ?? [],
+                routingReason: routingRepair.sanitizedDecision?.reason ?? parsedOutput.routingDecision?.reason,
+                requestedRoutingAction: parsedOutput.routingDecision?.action.rawValue,
+                requestedRoutingTargets: parsedOutput.routingDecision?.targets ?? [],
+                requestedRoutingReason: parsedOutput.routingDecision?.reason,
+                protocolRepairCount: routingRepair.repairTypes.count,
+                protocolRepairTypes: routingRepair.repairTypes,
+                protocolSafeDegradeApplied: routingRepair.safeDegradeApplied,
                 runtimeEvents: runtimeEvents,
                 primaryRuntimeEvent: approvalEvents.last ?? routeEvent ?? resultEvent,
                 startedAt: nodeStartedAt,
                 completedAt: completedAt
             )
-            completion(result, routingValidation.sanitizedDecision)
+            completion(result, routingRepair.sanitizedDecision)
         }
     }
 
@@ -1681,6 +1769,9 @@ class OpenClawService: ObservableObject {
         isEntryNode: Bool,
         downstreamTargets: [RoutingTargetDescriptor],
         guardrails: RuntimeDispatchGuardrails,
+        protocolMemory: OpenClawAgentProtocolMemory,
+        protocolCapsule: ProtocolDispatchCapsule,
+        sessionProtocolDigest: String,
         style: WorkflowInstructionStyle
     ) -> String {
         let normalizedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1707,6 +1798,19 @@ class OpenClawService: ObservableObject {
         }
         let writeScopeText = guardrails.writeScope.isEmpty ? "- No explicit write scope resolved." : guardrails.writeScope.map { "- \($0)" }.joined(separator: "\n")
         let toolScopeText = guardrails.toolScope.isEmpty ? "- No explicit tool scope resolved." : guardrails.toolScope.map { "- \($0)" }.joined(separator: "\n")
+        let stableRulesText = protocolMemory.stableRules.isEmpty
+            ? "- Follow the runtime protocol."
+            : protocolMemory.stableRules.map { "- \($0)" }.joined(separator: "\n")
+        let feedbackHintsText = protocolCapsule.feedbackHints.isEmpty
+            ? "- None."
+            : protocolCapsule.feedbackHints.map { "- \($0)" }.joined(separator: "\n")
+        let allowedActionsText = protocolCapsule.allowedActions.joined(separator: ", ")
+        let approvalTargetsText = protocolCapsule.approvalTargets.isEmpty
+            ? "- None."
+            : protocolCapsule.approvalTargets.map { "- \($0)" }.joined(separator: "\n")
+        let allowedTargetsText = protocolCapsule.allowedTargets.isEmpty
+            ? "- None."
+            : protocolCapsule.allowedTargets.map { "- \($0)" }.joined(separator: "\n")
 
         switch style {
         case .standard:
@@ -1733,6 +1837,28 @@ class OpenClawService: ObservableObject {
             }
 
             instruction += """
+
+            Long-Term Protocol Memory:
+            \(stableRulesText)
+
+            Session Protocol Digest:
+            - \(sessionProtocolDigest)
+
+            Recent Protocol Corrections:
+            \(feedbackHintsText)
+
+            Execution Capsule:
+            - Protocol version: \(protocolCapsule.protocolVersion)
+            - Allowed actions: \(allowedActionsText)
+            - Fallback policy: \(protocolCapsule.fallbackPolicy)
+            - Required output contract: \(protocolCapsule.requiredOutputContract)
+            - Self-check rule: \(protocolCapsule.selfCheckRule)
+
+            Allowed Downstream Targets:
+            \(allowedTargetsText)
+
+            Approval Targets:
+            \(approvalTargetsText)
 
             Workflow Routing Policy:
             - Downstream routing is opt-in, never automatic.
@@ -1764,6 +1890,8 @@ class OpenClawService: ObservableObject {
               - "all": trigger every available downstream agent.
             - Keep the JSON line separate from the user-facing answer.
             - Do not wrap the JSON in Markdown code fences.
+            - Before sending your final answer, self-check the machine tail. If it is invalid, rewrite only the machine tail so it becomes valid.
+            - If no downstream collaboration is needed, emit the smallest valid safe result with action "stop".
             """
 
             return instruction
@@ -1778,6 +1906,23 @@ class OpenClawService: ObservableObject {
             - Keep the visible reply concise and high-signal.
             - If you can finish the task yourself, do not route further.
             - Only choose downstream agents from the list below when they are truly needed.
+            - Follow protocol version \(protocolCapsule.protocolVersion).
+            - Self-check the last line before sending. If invalid, rewrite only the machine tail.
+            - If uncertain, emit the smallest valid safe result instead of guessing.
+
+            Long-Term Protocol Memory:
+            \(stableRulesText)
+
+            Session Protocol Digest:
+            - \(sessionProtocolDigest)
+
+            Recent Protocol Corrections:
+            \(feedbackHintsText)
+
+            Execution Capsule:
+            - Allowed actions: \(allowedActionsText)
+            - Fallback policy: \(protocolCapsule.fallbackPolicy)
+            - Required output contract: \(protocolCapsule.requiredOutputContract)
 
             Downstream Candidates:
             \(candidateLines.joined(separator: "\n"))
@@ -1798,6 +1943,72 @@ class OpenClawService: ObservableObject {
             Keep the JSON on its own line with no Markdown fence.
             """
         }
+    }
+
+    private func resolvedProtocolMemory(for agent: Agent) -> OpenClawAgentProtocolMemory {
+        agent.openClawDefinition.protocolMemory
+    }
+
+    private func makeProtocolDispatchCapsule(
+        for agent: Agent,
+        guardrails: RuntimeDispatchGuardrails
+    ) -> ProtocolDispatchCapsule {
+        let allowedTargets = guardrails.directTargets.map { target in
+            "\(target.agent.name) [agent_id: \(target.resolvedIdentifier), node: \(target.node.id.uuidString)]"
+        }
+        let approvalTargets = guardrails.approvalRequiredTargets.map { target in
+            "\(target.agent.name) [agent_id: \(target.resolvedIdentifier), node: \(target.node.id.uuidString)]"
+        }
+
+        return ProtocolDispatchCapsule(
+            protocolVersion: agent.openClawDefinition.protocolMemory.protocolVersion,
+            allowedActions: WorkflowRoutingDecision.Action.allCases.map(\.rawValue),
+            allowedTargets: allowedTargets,
+            approvalTargets: approvalTargets,
+            writeScope: guardrails.writeScope,
+            toolScope: guardrails.toolScope,
+            fallbackPolicy: guardrails.fallbackRoutingPolicy.rawValue,
+            requiredOutputContract: #"{"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}"#,
+            selfCheckRule: "Before sending the final answer, validate the last non-empty line. If the machine tail is invalid, rewrite only the machine tail so it becomes valid.",
+            feedbackHints: protocolFeedbackHints(for: agent)
+        )
+    }
+
+    private func makeSessionProtocolDigest(
+        for agent: Agent,
+        capsule: ProtocolDispatchCapsule,
+        transportKind: String,
+        isEntryNode: Bool
+    ) -> String {
+        let role = isEntryNode ? "entry" : "worker"
+        let approvalMode = capsule.approvalTargets.isEmpty ? "no_approval_targets" : "approval_targets_present"
+        return [
+            "agent=\(agent.name)",
+            "protocol=\(capsule.protocolVersion)",
+            "role=\(role)",
+            "transport=\(transportKind)",
+            "fallback=\(capsule.fallbackPolicy)",
+            approvalMode
+        ].joined(separator: " | ")
+    }
+
+    private func protocolFeedbackHints(for agent: Agent) -> [String] {
+        let protocolMemory = agent.openClawDefinition.protocolMemory
+        let prioritized = protocolMemory.repeatOffenses + protocolMemory.recentCorrections
+        var seen = Set<String>()
+        var hints: [String] = []
+
+        for item in prioritized {
+            let message = item.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty else { continue }
+            guard seen.insert(message).inserted else { continue }
+            hints.append(message)
+            if hints.count == 2 {
+                break
+            }
+        }
+
+        return hints
     }
 
     private func runtimeDispatchGuardrails(
@@ -1951,6 +2162,86 @@ class OpenClawService: ObservableObject {
                 rejectedTargets: rejectedTargets
             )
         }
+    }
+
+    private func repairRoutingDecision(
+        _ decision: WorkflowRoutingDecision?,
+        directTargets: [RoutingTargetDescriptor],
+        approvalTargets: [RoutingTargetDescriptor],
+        node: WorkflowNode,
+        outputType: ExecutionOutputType,
+        fallbackPolicy: WorkflowFallbackRoutingPolicy
+    ) -> RoutingDecisionRepair {
+        let validation = validateRoutingDecision(
+            decision,
+            directTargets: directTargets,
+            approvalTargets: approvalTargets,
+            node: node
+        )
+
+        var repairTypes: [String] = []
+        var safeDegradeApplied = false
+        var sanitizedDecision = validation.sanitizedDecision
+        let requestedDecision = decision
+
+        if decision == nil,
+           outputType != .runtimeLog,
+           directTargets.count == 1,
+           approvalTargets.isEmpty {
+            let fallbackTarget = directTargets[0]
+            sanitizedDecision = WorkflowRoutingDecision(
+                action: .selected,
+                targets: [fallbackTarget.resolvedIdentifier],
+                reason: "auto-repaired from missing routing directive"
+            )
+            repairTypes.append("missing_route_auto_selected")
+            safeDegradeApplied = true
+            addLog(
+                .info,
+                "Protocol repair selected the only safe downstream target \(fallbackTarget.agent.name) after the agent omitted a routing directive.",
+                nodeID: node.id
+            )
+        } else if let decision,
+                  decision.action == .selected,
+                  (validation.sanitizedDecision?.targets ?? []).isEmpty,
+                  directTargets.count == 1,
+                  approvalTargets.isEmpty,
+                  !validation.rejectedTargets.isEmpty {
+            let fallbackTarget = directTargets[0]
+            sanitizedDecision = WorkflowRoutingDecision(
+                action: .selected,
+                targets: [fallbackTarget.resolvedIdentifier],
+                reason: decision.reason ?? "auto-repaired from invalid routing targets"
+            )
+            repairTypes.append("invalid_targets_auto_selected")
+            safeDegradeApplied = true
+            addLog(
+                .info,
+                "Protocol repair replaced invalid routing targets with the only safe downstream target \(fallbackTarget.agent.name).",
+                nodeID: node.id
+            )
+        } else if decision == nil,
+                  outputType != .runtimeLog,
+                  directTargets.isEmpty,
+                  !approvalTargets.isEmpty,
+                  fallbackPolicy != .stop {
+            repairTypes.append("route_missing_approval_blocked")
+            safeDegradeApplied = true
+            addLog(
+                .info,
+                "Protocol repair kept the current node result and blocked downstream continuation because only approval-gated targets were available.",
+                nodeID: node.id
+            )
+        }
+
+        return RoutingDecisionRepair(
+            requestedDecision: requestedDecision,
+            sanitizedDecision: sanitizedDecision,
+            approvalRequiredTargets: validation.approvalRequiredTargets,
+            rejectedTargets: validation.rejectedTargets,
+            repairTypes: Array(Set(repairTypes)).sorted(),
+            safeDegradeApplied: safeDegradeApplied
+        )
     }
 
     private func routingTargetBuckets(

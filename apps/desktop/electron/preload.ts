@@ -86,6 +86,54 @@ interface OpenClawRuntimeSecurityInspectionResult {
   approvalsHaveCustomEntries: boolean;
 }
 
+interface OpenClawGovernanceFinding {
+  id: string;
+  title: string;
+  status: "pass" | "fail" | "unknown";
+  severity: "info" | "warning" | "error";
+  summary: string;
+  evidence: string[];
+  remediable: boolean;
+  remediationActionIds: string[];
+}
+
+interface OpenClawGovernanceAction {
+  id: string;
+  title: string;
+  description: string;
+  kind: "edit_openclaw_config" | "edit_exec_approvals" | "recreate_sandbox" | "manual_follow_up";
+  targetPath: string | null;
+  safeToAutoApply: boolean;
+  requiresSandboxRecreate: boolean;
+}
+
+interface OpenClawGovernanceAuditReport {
+  auditedAt: string;
+  deploymentKind: string;
+  findings: OpenClawGovernanceFinding[];
+  proposedActions: OpenClawGovernanceAction[];
+  residualRisks: string[];
+  summary: {
+    pass: number;
+    fail: number;
+    unknown: number;
+    remediableFailCount: number;
+  };
+}
+
+interface OpenClawGovernanceRemediationResult {
+  report: OpenClawGovernanceAuditReport;
+  appliedActionIds: string[];
+  skippedActionIds: string[];
+  notes: string[];
+  backupPaths: string[];
+}
+
+interface OpenClawGovernanceRemediationRequest {
+  config: OpenClawConfig;
+  actionIds?: string[] | null;
+}
+
 contextBridge.exposeInMainWorld("desktopApi", {
   platform: process.platform,
   versions: {
@@ -134,5 +182,18 @@ contextBridge.exposeInMainWorld("desktopApi", {
     agentIdentifiers: string[]
   ): Promise<OpenClawRuntimeSecurityInspectionResult> {
     return ipcRenderer.invoke("openClaw:inspectRuntimeSecurity", { config, agentIdentifiers });
+  },
+  auditOpenClawRuntimeGovernance(config: OpenClawConfig): Promise<OpenClawGovernanceAuditReport> {
+    return ipcRenderer.invoke("openClaw:auditRuntimeGovernance", config);
+  },
+  remediateOpenClawRuntimeGovernance(
+    config: OpenClawConfig,
+    actionIds?: string[] | null
+  ): Promise<OpenClawGovernanceRemediationResult> {
+    const request: OpenClawGovernanceRemediationRequest = {
+      config,
+      actionIds: Array.isArray(actionIds) ? actionIds : null
+    };
+    return ipcRenderer.invoke("openClaw:remediateRuntimeGovernance", request);
   }
 });

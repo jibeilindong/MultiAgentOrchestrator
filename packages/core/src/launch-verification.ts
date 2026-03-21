@@ -176,7 +176,7 @@ function staticVerificationFindings(project: MAProject, workflow: Workflow): {
   }
 
   const runtimeIsolation = assessWorkflowRuntimeIsolation(project, workflow);
-  failures.push(...runtimeIsolation.blockingFindings);
+  warnings.push(...runtimeIsolation.blockingFindings);
 
   const reachable = reachableAgentNodeIds(workflow);
   const unreachableAgents = agentNodes.filter((node) => !reachable.has(node.id));

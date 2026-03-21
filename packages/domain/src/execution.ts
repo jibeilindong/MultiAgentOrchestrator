@@ -25,6 +25,12 @@ export interface ExecutionResult {
   routingAction?: string | null;
   routingTargets: string[];
   routingReason?: string | null;
+  requestedRoutingAction?: string | null;
+  requestedRoutingTargets?: string[];
+  requestedRoutingReason?: string | null;
+  protocolRepairCount?: number;
+  protocolRepairTypes?: string[];
+  protocolSafeDegradeApplied?: boolean;
   runtimeEvents?: OpenClawRuntimeEvent[];
   primaryRuntimeEvent?: OpenClawRuntimeEvent | null;
   startedAt: SwiftDate;

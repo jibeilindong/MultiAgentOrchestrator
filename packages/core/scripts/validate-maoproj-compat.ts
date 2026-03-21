@@ -134,11 +134,23 @@ async function validateFixture(filePath: string) {
   }
 
   if (fileName === "runtime-protocol.maoproj") {
+    assert.equal(parsed.agents[0]?.openClawDefinition.protocolMemory?.protocolVersion, "openclaw.runtime.v1");
+    assert.equal(parsed.agents[0]?.openClawDefinition.protocolMemory?.stableRules.length, 5);
+    assert.equal(parsed.agents[0]?.openClawDefinition.protocolMemory?.recentCorrections[0]?.kind, "invalid_targets_auto_selected");
+    assert.equal(parsed.agents[0]?.openClawDefinition.protocolMemory?.repeatOffenses[0]?.kind, "missing_route_auto_selected");
+    assert.equal(
+      parsed.agents[0]?.openClawDefinition.protocolMemory?.lastSessionDigest,
+      "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | approval_targets_present"
+    );
     assert.equal(parsed.messages.length, 1, "runtime-protocol.maoproj should preserve messages");
     assert.equal(parsed.executionResults.length, 1, "runtime-protocol.maoproj should preserve execution results");
     assert.equal(parsed.runtimeState.runtimeEvents.length, 1, "runtime-protocol.maoproj should preserve runtime state events");
     assert.equal(parsed.messages[0]?.runtimeEvent?.eventType, "task.dispatch");
     assert.equal(parsed.messages[0]?.runtimeEvent?.refs[0]?.kind, "workspace_file");
+    assert.equal(
+      (parsed.messages[0]?.runtimeEvent?.payload as { sessionProtocolDigest?: string } | undefined)?.sessionProtocolDigest,
+      "agent=Planner | protocol=openclaw.runtime.v1 | role=worker | transport=gateway_agent | fallback=stop | approval_targets_present"
+    );
     assert.equal(parsed.executionResults[0]?.runtimeEvents?.length, 2);
     assert.equal(parsed.executionResults[0]?.primaryRuntimeEvent?.eventType, "task.result");
     assert.equal(
@@ -148,6 +160,12 @@ async function validateFixture(filePath: string) {
     assert.equal(parsed.executionResults[0]?.routingAction, "selected");
     assert.deepEqual(parsed.executionResults[0]?.routingTargets, ["Reviewer"]);
     assert.equal(parsed.executionResults[0]?.routingReason, "Escalate for verification");
+    assert.equal(parsed.executionResults[0]?.requestedRoutingAction, "selected");
+    assert.deepEqual(parsed.executionResults[0]?.requestedRoutingTargets, ["Ghost Reviewer"]);
+    assert.equal(parsed.executionResults[0]?.requestedRoutingReason, "Escalate for verification");
+    assert.equal(parsed.executionResults[0]?.protocolRepairCount, 1);
+    assert.deepEqual(parsed.executionResults[0]?.protocolRepairTypes, ["invalid_targets_auto_selected"]);
+    assert.equal(parsed.executionResults[0]?.protocolSafeDegradeApplied, true);
     assert.equal(parsed.runtimeState.runtimeEvents[0]?.eventType, "session.sync");
   }
 

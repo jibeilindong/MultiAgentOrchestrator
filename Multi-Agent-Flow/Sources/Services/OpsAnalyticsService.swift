@@ -47,6 +47,9 @@ struct OpsTraceSummaryRow: Identifiable {
     let outputType: ExecutionOutputType
     let sourceLabel: String
     let previewText: String
+    let protocolRepairCount: Int
+    let protocolRepairTypes: [String]
+    let protocolSafeDegradeApplied: Bool
 }
 
 enum OpsHistoryCategory: String, CaseIterable, Identifiable {
@@ -81,6 +84,10 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
     case memoryDiscipline
     case errorBudget
     case cronReliability
+    case protocolConformance
+    case protocolAutoRepair
+    case protocolSafeDegrade
+    case protocolHardInterrupts
 
     var id: String { rawValue }
 
@@ -91,6 +98,10 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .memoryDiscipline: return "Memory Discipline"
         case .errorBudget: return "Error Budget"
         case .cronReliability: return "Cron Reliability"
+        case .protocolConformance: return "Protocol Conformance"
+        case .protocolAutoRepair: return "Protocol Auto Repair"
+        case .protocolSafeDegrade: return "Protocol Safe Degrade"
+        case .protocolHardInterrupts: return "Protocol Hard Interrupts"
         }
     }
 
@@ -101,6 +112,8 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .memoryDiscipline: return "memory_discipline"
         case .errorBudget: return "error_budget"
         case .cronReliability: return "cron_reliability"
+        case .protocolConformance, .protocolAutoRepair, .protocolSafeDegrade, .protocolHardInterrupts:
+            return "protocol_governance"
         }
     }
 
@@ -111,6 +124,10 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .memoryDiscipline: return "tracked_rate"
         case .errorBudget: return "error_count"
         case .cronReliability: return "success_rate"
+        case .protocolConformance: return "conformance_rate"
+        case .protocolAutoRepair: return "auto_repair_rate"
+        case .protocolSafeDegrade: return "safe_degrade_rate"
+        case .protocolHardInterrupts: return "hard_interrupt_rate"
         }
     }
 
@@ -118,7 +135,14 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         switch self {
         case .cronReliability:
             return .cron
-        case .workflowReliability, .agentEngagement, .memoryDiscipline, .errorBudget:
+        case .workflowReliability,
+             .agentEngagement,
+             .memoryDiscipline,
+             .errorBudget,
+             .protocolConformance,
+             .protocolAutoRepair,
+             .protocolSafeDegrade,
+             .protocolHardInterrupts:
             return .runtime
         }
     }
@@ -130,12 +154,23 @@ enum OpsHistoryMetric: String, CaseIterable, Identifiable {
         case .memoryDiscipline: return "Share of agents with tracked memory coverage"
         case .errorBudget: return "Errors recorded in recent runtime activity"
         case .cronReliability: return "Successful scheduled runs as a percentage of total cron executions"
+        case .protocolConformance: return "Runs that executed without requiring any runtime protocol repair"
+        case .protocolAutoRepair: return "Repaired runs that still completed successfully after repair"
+        case .protocolSafeDegrade: return "Safe-degrade runs that still completed successfully"
+        case .protocolHardInterrupts: return "Runs that ended in unrecoverable protocol interruption"
         }
     }
 
     nonisolated func formattedValue(_ value: Double) -> String {
         switch self {
-        case .workflowReliability, .agentEngagement, .memoryDiscipline, .cronReliability:
+        case .workflowReliability,
+             .agentEngagement,
+             .memoryDiscipline,
+             .cronReliability,
+             .protocolConformance,
+             .protocolAutoRepair,
+             .protocolSafeDegrade,
+             .protocolHardInterrupts:
             return "\(Int(value.rounded()))%"
         case .errorBudget:
             return "\(Int(value.rounded()))"
@@ -439,7 +474,10 @@ final class OpsAnalyticsService: ObservableObject {
                     routingAction: result.routingAction,
                     outputType: result.outputType,
                     sourceLabel: "Runtime",
-                    previewText: runtimePreviewText(for: result)
+                    previewText: runtimePreviewText(for: result),
+                    protocolRepairCount: result.protocolRepairCount,
+                    protocolRepairTypes: result.protocolRepairTypes,
+                    protocolSafeDegradeApplied: result.protocolSafeDegradeApplied
                 )
             }
 
@@ -583,6 +621,24 @@ final class OpsAnalyticsService: ObservableObject {
         let averageFirstChunkLatencyMs = firstChunkLatencies.isEmpty
             ? nil
             : firstChunkLatencies.reduce(0, +) / Double(firstChunkLatencies.count)
+        let protocolConformingExecutions = executionResults.filter { $0.protocolRepairCount == 0 }
+        let protocolConformanceRate = totalExecutions > 0
+            ? Double(protocolConformingExecutions.count) / Double(totalExecutions)
+            : nil
+        let repairedExecutions = executionResults.filter { $0.protocolRepairCount > 0 }
+        let protocolAutoRepairRate = repairedExecutions.isEmpty
+            ? nil
+            : Double(repairedExecutions.filter { $0.status == .completed }.count) / Double(repairedExecutions.count)
+        let safeDegradeExecutions = executionResults.filter(\.protocolSafeDegradeApplied)
+        let protocolSafeDegradeRate = safeDegradeExecutions.isEmpty
+            ? nil
+            : Double(safeDegradeExecutions.filter { $0.status == .completed }.count) / Double(safeDegradeExecutions.count)
+        let hardInterruptExecutions = executionResults.filter {
+            $0.status == .failed && $0.protocolRepairCount > 0 && !$0.protocolSafeDegradeApplied
+        }
+        let protocolHardInterruptRate = totalExecutions > 0
+            ? Double(hardInterruptExecutions.count) / Double(totalExecutions)
+            : nil
 
         var cards = [
             OpsGoalCard(
@@ -646,6 +702,38 @@ final class OpsAnalyticsService: ObservableObject {
                     ? "No streamed runs captured yet"
                     : "Average across \(firstChunkLatencies.count) streamed runs",
                 status: makeLatencyStatus(milliseconds: averageFirstChunkLatencyMs, healthyUpperBound: 1200, warningUpperBound: 3000)
+            ),
+            OpsGoalCard(
+                id: "protocol_conformance",
+                title: "Protocol Conformance",
+                valueText: protocolConformanceRate.map { "\($0.percentageString)" } ?? "No data",
+                detailText: "\(protocolConformingExecutions.count) of \(totalExecutions) runs executed without runtime repair",
+                status: makeRateStatus(protocolConformanceRate, healthy: 0.75, warning: 0.5)
+            ),
+            OpsGoalCard(
+                id: "protocol_auto_repair",
+                title: "Auto Repair",
+                valueText: protocolAutoRepairRate.map { "\($0.percentageString)" } ?? "No data",
+                detailText: repairedExecutions.isEmpty
+                    ? "No repaired runs recorded yet"
+                    : "\(repairedExecutions.filter { $0.status == .completed }.count) of \(repairedExecutions.count) repaired runs still completed",
+                status: makeRateStatus(protocolAutoRepairRate, healthy: 0.8, warning: 0.6)
+            ),
+            OpsGoalCard(
+                id: "protocol_safe_degrade",
+                title: "Safe Degrade",
+                valueText: protocolSafeDegradeRate.map { "\($0.percentageString)" } ?? "No data",
+                detailText: safeDegradeExecutions.isEmpty
+                    ? "No safe-degrade runs recorded yet"
+                    : "\(safeDegradeExecutions.filter { $0.status == .completed }.count) of \(safeDegradeExecutions.count) safe-degrade runs still completed",
+                status: makeRateStatus(protocolSafeDegradeRate, healthy: 0.75, warning: 0.5)
+            ),
+            OpsGoalCard(
+                id: "protocol_interrupts",
+                title: "Hard Interrupts",
+                valueText: protocolHardInterruptRate.map { "\($0.percentageString)" } ?? "No data",
+                detailText: "\(hardInterruptExecutions.count) runs ended in unrecoverable protocol interruption",
+                status: makeInverseRateStatus(protocolHardInterruptRate, healthyUpperBound: 0.05, warningUpperBound: 0.15)
             )
         ]
 
@@ -779,6 +867,17 @@ final class OpsAnalyticsService: ObservableObject {
         guard let milliseconds else { return .neutral }
         if milliseconds <= healthyUpperBound { return .healthy }
         if milliseconds <= warningUpperBound { return .warning }
+        return .critical
+    }
+
+    private func makeInverseRateStatus(
+        _ rate: Double?,
+        healthyUpperBound: Double,
+        warningUpperBound: Double
+    ) -> OpsHealthStatus {
+        guard let rate else { return .neutral }
+        if rate <= healthyUpperBound { return .healthy }
+        if rate <= warningUpperBound { return .warning }
         return .critical
     }
 

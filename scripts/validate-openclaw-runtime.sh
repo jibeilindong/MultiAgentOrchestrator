@@ -18,6 +18,8 @@ xcodebuild \
   -destination "platform=macOS" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   -only-testing:Multi-Agent-FlowTests/OpsAnalyticsQueryTests/testRefreshPersistsRuntimeProtocolMetadataForExecutionResults \
+  -only-testing:Multi-Agent-FlowTests/OpsAnalyticsQueryTests/testProtocolOutcomeFeedbackPromotesRepeatedRepairsIntoAgentMemory \
+  -only-testing:Multi-Agent-FlowTests/OpsAnalyticsQueryTests/testRefreshPublishesProtocolHealthGoalCards \
   -only-testing:Multi-Agent-FlowTests/OpsAnalyticsQueryTests/testTraceDetailFallsBackToEventsWhenPreviewAndOutputAreMissing \
   -only-testing:Multi-Agent-FlowTests/OpsAnalyticsQueryTests/testRefreshIngestsExternalSessionBackupIntoTraceDetail \
   test

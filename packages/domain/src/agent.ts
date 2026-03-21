@@ -1,5 +1,22 @@
 import type { Point, SwiftDate } from "./types";
 
+export interface OpenClawProtocolCorrectionRecord {
+  id: string;
+  kind: string;
+  message: string;
+  count: number;
+  lastSeenAt: SwiftDate;
+}
+
+export interface OpenClawAgentProtocolMemory {
+  protocolVersion: string;
+  stableRules: string[];
+  recentCorrections: OpenClawProtocolCorrectionRecord[];
+  repeatOffenses: OpenClawProtocolCorrectionRecord[];
+  lastSessionDigest?: string | null;
+  lastUpdatedAt: SwiftDate;
+}
+
 export interface OpenClawAgentDefinition {
   agentIdentifier: string;
   modelIdentifier: string;
@@ -7,6 +24,7 @@ export interface OpenClawAgentDefinition {
   memoryBackupPath?: string | null;
   soulSourcePath?: string | null;
   environment: Record<string, string>;
+  protocolMemory?: OpenClawAgentProtocolMemory;
 }
 
 export interface Agent {

@@ -1,6 +1,7 @@
 import type {
   Agent,
   MAProject,
+  OpenClawAgentProtocolMemory,
   OpenClawCLILogLevel,
   OpenClawDeploymentKind,
   Task,
@@ -43,6 +44,23 @@ function normalizeAgentKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function createDefaultProtocolMemory(now: number): OpenClawAgentProtocolMemory {
+  return {
+    protocolVersion: "openclaw.runtime.v1",
+    stableRules: [
+      "Machine-readable workflow coordination must use the runtime protocol.",
+      "Always end with exactly one valid routing JSON line when a machine tail is required.",
+      "Only choose downstream targets from the allowed candidate list.",
+      "Do not exceed the provided write scope, tool scope, or approval rules.",
+      "If uncertain, emit the smallest valid safe result instead of guessing."
+    ],
+    recentCorrections: [],
+    repeatOffenses: [],
+    lastSessionDigest: null,
+    lastUpdatedAt: now
+  };
+}
+
 function createAgent(name: string, index: number): Agent {
   const now = toSwiftDate();
 
@@ -66,7 +84,8 @@ function createAgent(name: string, index: number): Agent {
       runtimeProfile: "default",
       memoryBackupPath: null,
       soulSourcePath: null,
-      environment: {}
+      environment: {},
+      protocolMemory: createDefaultProtocolMemory(now)
     }
   };
 }

@@ -293,15 +293,31 @@ function resolveDetectedWorkspacePaths(project: MAProject, agentId: string): str
 interface LiveExecutionPreflightResult {
   blocked: boolean;
   message: string | null;
+  advisoryMessage: string | null;
+  governanceReport: OpenClawGovernanceAuditReport | null;
+}
+
+interface OpenClawGovernanceRemediationSummary {
+  appliedActionTitles: string[];
+  skippedActionTitles: string[];
+  fixedFindingTitles: string[];
+  remainingFailTitles: string[];
+  remainingUnknownTitles: string[];
+}
+
+interface LiveWorkflowExecutionResult {
+  liveExecutions: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3];
+  approvalCheckpoints: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4];
+  errorMessage: string | null;
+  blocked: boolean;
+  advisoryMessage: string | null;
 }
 
 async function evaluateLiveExecutionPreflight(project: MAProject, workflow: Workflow): Promise<LiveExecutionPreflightResult> {
   const assessment = assessWorkflowRuntimeIsolation(project, workflow);
+  const advisories: string[] = [];
   if (assessment.blockingFindings.length > 0) {
-    return {
-      blocked: true,
-      message: assessment.blockingFindings.join(" ")
-    };
+    advisories.push(assessment.blockingFindings.join(" "));
   }
 
   const workflowAgentIdentifiers = Array.from(
@@ -318,15 +334,29 @@ async function evaluateLiveExecutionPreflight(project: MAProject, workflow: Work
     workflowAgentIdentifiers
   );
   if (runtimeSecurity.blockingIssues.length > 0) {
-    return {
-      blocked: true,
-      message: runtimeSecurity.blockingIssues.join(" ")
-    };
+    advisories.push(runtimeSecurity.blockingIssues.join(" "));
+  }
+
+  let governanceReport: OpenClawGovernanceAuditReport | null = null;
+  try {
+    governanceReport = await requireDesktopApi().auditOpenClawRuntimeGovernance(project.openClaw.config);
+    const governanceAdvisory = summarizeOpenClawGovernancePreflight(governanceReport);
+    if (governanceAdvisory) {
+      advisories.push(governanceAdvisory);
+    }
+  } catch (actionError) {
+    advisories.push(
+      `Unable to refresh the OpenClaw governance audit during startup preflight: ${
+        actionError instanceof Error ? actionError.message : String(actionError)
+      }`
+    );
   }
 
   return {
     blocked: false,
-    message: null
+    message: null,
+    advisoryMessage: advisories.length > 0 ? advisories.join(" ") : null,
+    governanceReport
   };
 }
 
@@ -477,6 +507,62 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function arraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
+}
+
+function summarizeOpenClawGovernanceRemediation(
+  previousReport: OpenClawGovernanceAuditReport | null,
+  nextReport: OpenClawGovernanceAuditReport,
+  appliedActionIds: string[],
+  skippedActionIds: string[]
+): OpenClawGovernanceRemediationSummary {
+  const actionTitleById = new Map(
+    [...(previousReport?.proposedActions ?? []), ...nextReport.proposedActions].map((action) => [action.id, action.title] as const)
+  );
+  const previousStatusById = new Map((previousReport?.findings ?? []).map((finding) => [finding.id, finding.status] as const));
+
+  return {
+    appliedActionTitles: appliedActionIds.map((actionId) => actionTitleById.get(actionId) ?? actionId),
+    skippedActionTitles: skippedActionIds.map((actionId) => actionTitleById.get(actionId) ?? actionId),
+    fixedFindingTitles: nextReport.findings
+      .filter((finding) => previousStatusById.get(finding.id) !== "pass" && finding.status === "pass")
+      .map((finding) => finding.title),
+    remainingFailTitles: nextReport.findings.filter((finding) => finding.status === "fail").map((finding) => finding.title),
+    remainingUnknownTitles: nextReport.findings.filter((finding) => finding.status === "unknown").map((finding) => finding.title)
+  };
+}
+
+function summarizeOpenClawGovernancePreflight(report: OpenClawGovernanceAuditReport): string | null {
+  const failingTitles = report.findings.filter((finding) => finding.status === "fail").map((finding) => finding.title);
+  const unknownTitles = report.findings.filter((finding) => finding.status === "unknown").map((finding) => finding.title);
+  const safeFixCount = report.proposedActions.filter((action) => action.safeToAutoApply).length;
+
+  if (failingTitles.length === 0 && unknownTitles.length === 0 && report.residualRisks.length === 0) {
+    return null;
+  }
+
+  const parts = [`Governance audit reports ${report.summary.fail} fail and ${report.summary.unknown} unknown finding(s).`];
+  if (failingTitles.length > 0) {
+    parts.push(`Failing checks: ${failingTitles.join(", ")}.`);
+  }
+  if (unknownTitles.length > 0) {
+    parts.push(`Unknown checks: ${unknownTitles.join(", ")}.`);
+  }
+  if (safeFixCount > 0) {
+    parts.push(`${safeFixCount} safe remediation action(s) are available.`);
+  }
+  if (report.residualRisks.length > 0) {
+    parts.push(`Residual risks: ${report.residualRisks.join(" ")}`);
+  }
+
+  return parts.join(" ");
+}
+
 function formatRelativeDate(value?: number | null): string {
   if (value == null) {
     return "No recent activity";
@@ -616,6 +702,13 @@ export function App() {
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const [workbenchAction, setWorkbenchAction] = useState<"publish" | `approval:${string}` | null>(null);
   const [openClawAction, setOpenClawAction] = useState<"detect" | "connect" | "disconnect" | "import" | null>(null);
+  const [openClawGovernanceAction, setOpenClawGovernanceAction] = useState<"audit" | "remediate" | null>(null);
+  const [openClawGovernanceReport, setOpenClawGovernanceReport] = useState<OpenClawGovernanceAuditReport | null>(null);
+  const [openClawGovernanceNotes, setOpenClawGovernanceNotes] = useState<string[]>([]);
+  const [openClawGovernanceBackupPaths, setOpenClawGovernanceBackupPaths] = useState<string[]>([]);
+  const [openClawGovernanceSelectedActionIds, setOpenClawGovernanceSelectedActionIds] = useState<string[]>([]);
+  const [openClawGovernanceLastRemediation, setOpenClawGovernanceLastRemediation] =
+    useState<OpenClawGovernanceRemediationSummary | null>(null);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -704,6 +797,21 @@ export function App() {
       setActiveWorkflowId(project.workflows[0]?.id ?? null);
     }
   }, [activeWorkflowId, project]);
+
+  useEffect(() => {
+    const safeActionIds = (openClawGovernanceReport?.proposedActions ?? [])
+      .filter((action) => action.safeToAutoApply)
+      .map((action) => action.id)
+      .sort((left, right) => left.localeCompare(right));
+
+    setOpenClawGovernanceSelectedActionIds((current) => {
+      const retained = current
+        .filter((actionId) => safeActionIds.includes(actionId))
+        .sort((left, right) => left.localeCompare(right));
+      const nextSelection = retained.length > 0 ? retained : safeActionIds;
+      return arraysEqual(current, nextSelection) ? current : nextSelection;
+    });
+  }, [openClawGovernanceReport]);
 
   useEffect(() => {
     if (!activeWorkflow) {
@@ -911,14 +1019,16 @@ export function App() {
     prompt: string,
     initialRoutes: Array<{ edge: WorkflowEdge | null; targetNodeId: string }>,
     seedVisitCounts?: Map<string, number>
-  ) {
+  ): Promise<LiveWorkflowExecutionResult> {
     const preflight = await evaluateLiveExecutionPreflight(currentProject, workflow);
+    applyOpenClawGovernancePreflightReport(preflight.governanceReport);
     if (preflight.blocked) {
       return {
         liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
         approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
         errorMessage: preflight.message,
-        blocked: true
+        blocked: true,
+        advisoryMessage: preflight.advisoryMessage
       };
     }
 
@@ -1008,18 +1118,25 @@ export function App() {
       liveExecutions,
       approvalCheckpoints,
       errorMessage: null,
-      blocked: false
+      blocked: false,
+      advisoryMessage: preflight.advisoryMessage
     };
   }
 
-  async function runLiveWorkflowCase(currentProject: MAProject, workflow: Workflow, prompt: string) {
+  async function runLiveWorkflowCase(
+    currentProject: MAProject,
+    workflow: Workflow,
+    prompt: string
+  ): Promise<LiveWorkflowExecutionResult> {
     const preflight = await evaluateLiveExecutionPreflight(currentProject, workflow);
+    applyOpenClawGovernancePreflightReport(preflight.governanceReport);
     if (preflight.blocked) {
       return {
         liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
         approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
         errorMessage: preflight.message,
-        blocked: true
+        blocked: true,
+        advisoryMessage: preflight.advisoryMessage
       };
     }
 
@@ -1033,7 +1150,8 @@ export function App() {
         liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
         approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
         errorMessage: "No executable entry agent was resolved for this workflow.",
-        blocked: false
+        blocked: false,
+        advisoryMessage: preflight.advisoryMessage
       };
     }
 
@@ -1074,7 +1192,8 @@ export function App() {
         liveExecutions: [initialExecution],
         approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
         errorMessage: liveExecution.message,
-        blocked: false
+        blocked: false,
+        advisoryMessage: preflight.advisoryMessage
       };
     }
 
@@ -1095,7 +1214,8 @@ export function App() {
       liveExecutions: [initialExecution, ...downstreamWork.liveExecutions],
       approvalCheckpoints: downstreamWork.approvalCheckpoints,
       errorMessage: downstreamWork.errorMessage,
-      blocked: downstreamWork.blocked
+      blocked: downstreamWork.blocked,
+      advisoryMessage: [preflight.advisoryMessage, downstreamWork.advisoryMessage].filter(Boolean).join(" ") || null
     };
   }
 
@@ -1398,12 +1518,25 @@ export function App() {
         return;
       }
 
+      let governancePreflightFinding: string | null = null;
+      try {
+        const governanceReport = await requireDesktopApi().auditOpenClawRuntimeGovernance(
+          verificationProject.openClaw.config
+        );
+        applyOpenClawGovernancePreflightReport(governanceReport);
+        governancePreflightFinding = summarizeOpenClawGovernancePreflight(governanceReport);
+      } catch (actionError) {
+        governancePreflightFinding = `Unable to refresh OpenClaw governance during launch verification: ${
+          actionError instanceof Error ? actionError.message : String(actionError)
+        }`;
+      }
+
       const testCases = resolveWorkflowLaunchTestCases(verificationProject, verificationWorkflow.id);
       if (testCases.length === 0) {
         const finalized = finalizeWorkflowLaunchVerification(
           verificationProject,
           verificationWorkflow.id,
-          [],
+          governancePreflightFinding ? [governancePreflightFinding] : [],
           []
         );
         commitProject(finalized.project, "Launch verification completed with static checks only.", {
@@ -1413,7 +1546,7 @@ export function App() {
       }
 
       const caseReports: ReturnType<typeof evaluateWorkflowLaunchTestCase>[] = [];
-      const runtimeFindings: string[] = [];
+      const runtimeFindings: string[] = governancePreflightFinding ? [governancePreflightFinding] : [];
 
       for (const testCase of testCases) {
         const liveCase = await runLiveWorkflowCase(verificationProject, verificationWorkflow, testCase.prompt);
@@ -1429,6 +1562,9 @@ export function App() {
         const caseRuntimeFindings: string[] = [];
         if (liveCase.errorMessage) {
           caseRuntimeFindings.push(`${testCase.name}: ${liveCase.errorMessage}`);
+        }
+        if (liveCase.advisoryMessage) {
+          caseRuntimeFindings.push(`${testCase.name}: advisory - ${liveCase.advisoryMessage}`);
         }
         if (approvalCheckpoints.length > 0) {
           caseRuntimeFindings.push(
@@ -1966,6 +2102,11 @@ export function App() {
   }
 
   function handleOpenClawConfigChange(patch: Parameters<typeof updateOpenClawConfig>[1], nextStatus: string) {
+    setOpenClawGovernanceReport(null);
+    setOpenClawGovernanceNotes([]);
+    setOpenClawGovernanceBackupPaths([]);
+    setOpenClawGovernanceSelectedActionIds([]);
+    setOpenClawGovernanceLastRemediation(null);
     updateProject((current) => updateOpenClawConfig(current, patch), nextStatus);
   }
 
@@ -1973,7 +2114,104 @@ export function App() {
     patch: Parameters<typeof updateOpenClawSessionPaths>[1],
     nextStatus: string
   ) {
+    setOpenClawGovernanceReport(null);
+    setOpenClawGovernanceNotes([]);
+    setOpenClawGovernanceBackupPaths([]);
+    setOpenClawGovernanceSelectedActionIds([]);
+    setOpenClawGovernanceLastRemediation(null);
     updateProject((current) => updateOpenClawSessionPaths(current, patch), nextStatus);
+  }
+
+  function handleToggleOpenClawGovernanceAction(actionId: string, checked: boolean) {
+    setOpenClawGovernanceSelectedActionIds((current) => {
+      const next = checked ? [...current, actionId] : current.filter((value) => value !== actionId);
+      return Array.from(new Set(next)).sort((left, right) => left.localeCompare(right));
+    });
+  }
+
+  function handleSelectAllOpenClawGovernanceActions() {
+    if (!openClawGovernanceReport) {
+      return;
+    }
+
+    setOpenClawGovernanceSelectedActionIds(
+      openClawGovernanceReport.proposedActions
+        .filter((action) => action.safeToAutoApply)
+        .map((action) => action.id)
+        .sort((left, right) => left.localeCompare(right))
+    );
+  }
+
+  function handleClearOpenClawGovernanceActions() {
+    setOpenClawGovernanceSelectedActionIds([]);
+  }
+
+  function applyOpenClawGovernancePreflightReport(report: OpenClawGovernanceAuditReport | null) {
+    if (!report) {
+      return;
+    }
+
+    setOpenClawGovernanceReport(report);
+    setOpenClawGovernanceNotes([]);
+    setOpenClawGovernanceBackupPaths([]);
+  }
+
+  async function handleAuditOpenClawRuntimeGovernance() {
+    if (!project) {
+      return;
+    }
+
+    setOpenClawGovernanceAction("audit");
+    setOpenClawGovernanceNotes([]);
+    setOpenClawGovernanceBackupPaths([]);
+    try {
+      const report = await requireDesktopApi().auditOpenClawRuntimeGovernance(project.openClaw.config);
+      applyOpenClawGovernancePreflightReport(report);
+      setStatus(
+        report.summary.fail > 0
+          ? `OpenClaw runtime audit found ${report.summary.fail} failing finding(s) and ${report.summary.unknown} unknown finding(s).`
+          : "OpenClaw runtime audit completed without failing findings."
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setOpenClawGovernanceAction(null);
+    }
+  }
+
+  async function handleRemediateOpenClawRuntimeGovernance() {
+    if (!project) {
+      return;
+    }
+
+    const previousReport = openClawGovernanceReport;
+    setOpenClawGovernanceAction("remediate");
+    try {
+      const result = await requireDesktopApi().remediateOpenClawRuntimeGovernance(
+        project.openClaw.config,
+        openClawGovernanceSelectedActionIds
+      );
+      setOpenClawGovernanceReport(result.report);
+      setOpenClawGovernanceNotes(result.notes);
+      setOpenClawGovernanceBackupPaths(result.backupPaths);
+      setOpenClawGovernanceLastRemediation(
+        summarizeOpenClawGovernanceRemediation(
+          previousReport,
+          result.report,
+          result.appliedActionIds,
+          result.skippedActionIds
+        )
+      );
+      setStatus(
+        result.appliedActionIds.length > 0
+          ? `Applied ${result.appliedActionIds.length} OpenClaw remediation action(s). ${result.report.summary.fail} failing finding(s) remain.`
+          : `No OpenClaw remediations were applied. ${result.report.summary.fail} failing finding(s) remain.`
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setOpenClawGovernanceAction(null);
+    }
   }
 
   async function handleDetectOpenClawAgents() {
@@ -2086,7 +2324,9 @@ export function App() {
     try {
       const liveCase = await runLiveWorkflowCase(project, activeWorkflow, trimmedPrompt);
       if (liveCase.blocked) {
-        setWorkbenchError(liveCase.errorMessage ?? "Live execution was blocked by runtime isolation guardrails.");
+        const message = liveCase.errorMessage ?? "Live execution was blocked by runtime isolation guardrails.";
+        setWorkbenchError(message);
+        setStatus(`Blocked live OpenClaw execution: ${message}`);
         return;
       }
       if (liveCase.liveExecutions.length > 0 && liveCase.liveExecutions[0]?.success) {
@@ -2106,8 +2346,8 @@ export function App() {
         commitProject(
           liveResult.project,
           liveResult.pendingApprovalCount > 0
-            ? `Published workbench task with ${liveResult.completedNodeCount} real execution receipt(s) and ${liveResult.pendingApprovalCount} approval checkpoint(s).`
-            : `Published workbench task with ${liveResult.completedNodeCount} real OpenClaw execution receipt(s).`
+            ? `${liveCase.advisoryMessage ? `Advisory: ${liveCase.advisoryMessage} ` : ""}Published workbench task with ${liveResult.completedNodeCount} real execution receipt(s) and ${liveResult.pendingApprovalCount} approval checkpoint(s).`
+            : `${liveCase.advisoryMessage ? `Advisory: ${liveCase.advisoryMessage} ` : ""}Published workbench task with ${liveResult.completedNodeCount} real OpenClaw execution receipt(s).`
         );
         setWorkbenchPrompt("");
         setSelectedTaskId(liveResult.taskId);
@@ -2115,7 +2355,9 @@ export function App() {
       }
 
       if (liveCase.errorMessage) {
-        setStatus(`Live OpenClaw execution was unavailable. Falling back to synthetic receipt: ${liveCase.errorMessage}`);
+        setStatus(
+          `${liveCase.advisoryMessage ? `Advisory: ${liveCase.advisoryMessage} ` : ""}Live OpenClaw execution was unavailable. Falling back to synthetic receipt: ${liveCase.errorMessage}`
+        );
       }
 
       const result = publishWorkbenchPrompt(project, activeWorkflow.id, trimmedPrompt);
@@ -2127,8 +2369,8 @@ export function App() {
       commitProject(
         result.project,
         result.pendingApprovalCount > 0
-          ? `Published workbench task with ${result.pendingApprovalCount} approval checkpoint(s).`
-          : `Published workbench task and recorded ${result.completedNodeCount} execution receipt(s).`
+          ? `${liveCase.advisoryMessage ? `Advisory: ${liveCase.advisoryMessage} ` : ""}Published workbench task with ${result.pendingApprovalCount} approval checkpoint(s).`
+          : `${liveCase.advisoryMessage ? `Advisory: ${liveCase.advisoryMessage} ` : ""}Published workbench task and recorded ${result.completedNodeCount} execution receipt(s).`
       );
       setWorkbenchPrompt("");
       setSelectedTaskId(result.taskId);
@@ -2171,7 +2413,10 @@ export function App() {
           visitCounts
         );
         if (downstreamWork.blocked) {
-          setWorkbenchError(downstreamWork.errorMessage ?? "Approval could not continue because runtime isolation checks failed.");
+          const message =
+            downstreamWork.errorMessage ?? "Approval could not continue because runtime isolation checks failed.";
+          setWorkbenchError(message);
+          setStatus(`Blocked downstream OpenClaw execution: ${message}`);
           return;
         }
         const liveApprovalResult = reviewWorkbenchApprovalWithLiveExecution(
@@ -2185,8 +2430,8 @@ export function App() {
         commitProject(
           liveApprovalResult.project,
           liveApprovalResult.pendingApprovalCount > 0
-            ? `Approval granted. ${liveApprovalResult.completedNodeCount} node(s) completed and ${liveApprovalResult.pendingApprovalCount} checkpoint(s) remain.`
-            : `Approval granted and downstream OpenClaw execution completed.`
+            ? `${downstreamWork.advisoryMessage ? `Advisory: ${downstreamWork.advisoryMessage} ` : ""}Approval granted. ${liveApprovalResult.completedNodeCount} node(s) completed and ${liveApprovalResult.pendingApprovalCount} checkpoint(s) remain.`
+            : `${downstreamWork.advisoryMessage ? `Advisory: ${downstreamWork.advisoryMessage} ` : ""}Approval granted and downstream OpenClaw execution completed.`
         );
         if (liveApprovalResult.taskId) {
           setSelectedTaskId(liveApprovalResult.taskId);
@@ -4234,6 +4479,180 @@ export function App() {
                   >
                     Clear session paths
                   </button>
+                </div>
+
+                <div className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>OpenClaw runtime governance</h3>
+                    <span>
+                      {openClawGovernanceReport ? new Date(openClawGovernanceReport.auditedAt).toLocaleString() : "Not audited"}
+                    </span>
+                  </div>
+                  <div className="metaStrip">
+                    <span>
+                      {openClawGovernanceReport
+                        ? `${openClawGovernanceReport.summary.fail} fail / ${openClawGovernanceReport.summary.unknown} unknown / ${openClawGovernanceReport.summary.pass} pass`
+                        : "Run an audit to inspect the embedded OpenClaw runtime."}
+                    </span>
+                    <span>
+                      {openClawGovernanceReport
+                        ? `${openClawGovernanceReport.proposedActions.filter((action) => action.safeToAutoApply).length} safe fix(es)`
+                        : "Safe fixes unavailable until audit"}
+                    </span>
+                    <span>
+                      {openClawGovernanceReport
+                        ? `${openClawGovernanceSelectedActionIds.length} selected for remediation`
+                        : "Nothing selected yet"}
+                    </span>
+                    <span>
+                      {openClawGovernanceReport
+                        ? `${openClawGovernanceReport.residualRisks.length} residual risk note(s)`
+                        : "Residual risks unavailable until audit"}
+                    </span>
+                  </div>
+                  <div className="inspectorActions">
+                    <button
+                      type="button"
+                      onClick={() => void handleAuditOpenClawRuntimeGovernance()}
+                      disabled={openClawGovernanceAction !== null}
+                    >
+                      {openClawGovernanceAction === "audit" ? "Auditing..." : "Run runtime audit"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRemediateOpenClawRuntimeGovernance()}
+                      disabled={
+                        openClawGovernanceAction !== null ||
+                        openClawGovernanceSelectedActionIds.length === 0
+                      }
+                    >
+                      {openClawGovernanceAction === "remediate" ? "Applying..." : "Apply selected fixes"}
+                    </button>
+                  </div>
+                  {openClawGovernanceReport ? (
+                    <div className="dashboardList">
+                      {openClawGovernanceReport.findings.map((finding) => (
+                        <article key={finding.id} className="dashboardListItem">
+                          <div className="dashboardListItemHeader">
+                            <strong>{finding.title}</strong>
+                            <span>{finding.status.toUpperCase()}</span>
+                          </div>
+                          <p className="dashboardEventBody">{finding.summary}</p>
+                          <div className="taskMeta">
+                            <span>{finding.severity}</span>
+                            <span>{finding.remediable ? "Auto-remediable" : "Report only"}</span>
+                            <span>
+                              {finding.remediationActionIds.length > 0
+                                ? `Actions: ${finding.remediationActionIds.join(", ")}`
+                                : "No automatic fix"}
+                            </span>
+                          </div>
+                          {finding.evidence.length > 0 ? (
+                            <p className="dashboardEventMeta">{finding.evidence.join(" | ")}</p>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="emptyState">
+                      The first release of this tool audits high-risk session tools, subagent allowlists, exec approvals,
+                      and elevated execution, then applies safe fixes for local OpenClaw deployments.
+                    </p>
+                  )}
+                  {openClawGovernanceReport?.proposedActions.length ? (
+                    <div className="dashboardList">
+                      {openClawGovernanceReport.proposedActions.map((action) => {
+                        const checked = openClawGovernanceSelectedActionIds.includes(action.id);
+                        return (
+                          <article key={action.id} className="dashboardListItem">
+                            <label className="taskMeta">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!action.safeToAutoApply || openClawGovernanceAction !== null}
+                                onChange={(event) =>
+                                  handleToggleOpenClawGovernanceAction(action.id, event.currentTarget.checked)
+                                }
+                              />
+                              <strong>{action.title}</strong>
+                              <span>{action.safeToAutoApply ? "Safe to auto-apply" : "Manual only"}</span>
+                              <span>{action.kind}</span>
+                            </label>
+                            <p className="dashboardEventBody">{action.description}</p>
+                            <p className="dashboardEventMeta">
+                              {action.targetPath ? `Target: ${action.targetPath}` : "Target: runtime operation"}
+                              {" | "}
+                              {action.requiresSandboxRecreate ? "Requires sandbox recreate" : "No sandbox recreate required"}
+                            </p>
+                          </article>
+                        );
+                      })}
+                      <div className="inspectorActions">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectAllOpenClawGovernanceActions()}
+                          disabled={openClawGovernanceAction !== null}
+                        >
+                          Select all safe fixes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleClearOpenClawGovernanceActions()}
+                          disabled={openClawGovernanceAction !== null || openClawGovernanceSelectedActionIds.length === 0}
+                        >
+                          Clear selection
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {openClawGovernanceNotes.length > 0 ? (
+                    <p className="dashboardEventBody">{openClawGovernanceNotes.join(" ")}</p>
+                  ) : null}
+                  {openClawGovernanceLastRemediation ? (
+                    <div className="dashboardList">
+                      <article className="dashboardListItem">
+                        <div className="dashboardListItemHeader">
+                          <strong>Latest remediation outcome</strong>
+                          <span>POST-CHECK</span>
+                        </div>
+                        <div className="taskMeta">
+                          <span>
+                            {openClawGovernanceLastRemediation.appliedActionTitles.length > 0
+                              ? `Applied: ${openClawGovernanceLastRemediation.appliedActionTitles.join(" | ")}`
+                              : "Applied: none"}
+                          </span>
+                        </div>
+                        <p className="dashboardEventMeta">
+                          {openClawGovernanceLastRemediation.skippedActionTitles.length > 0
+                            ? `Skipped: ${openClawGovernanceLastRemediation.skippedActionTitles.join(" | ")}`
+                            : "Skipped: none"}
+                        </p>
+                        <p className="dashboardEventMeta">
+                          {openClawGovernanceLastRemediation.fixedFindingTitles.length > 0
+                            ? `Fixed findings: ${openClawGovernanceLastRemediation.fixedFindingTitles.join(" | ")}`
+                            : "Fixed findings: none in this run"}
+                        </p>
+                        <p className="dashboardEventMeta">
+                          {openClawGovernanceLastRemediation.remainingFailTitles.length > 0
+                            ? `Remaining fails: ${openClawGovernanceLastRemediation.remainingFailTitles.join(" | ")}`
+                            : "Remaining fails: none"}
+                        </p>
+                        <p className="dashboardEventMeta">
+                          {openClawGovernanceLastRemediation.remainingUnknownTitles.length > 0
+                            ? `Remaining unknowns: ${openClawGovernanceLastRemediation.remainingUnknownTitles.join(" | ")}`
+                            : "Remaining unknowns: none"}
+                        </p>
+                      </article>
+                    </div>
+                  ) : null}
+                  {openClawGovernanceBackupPaths.length > 0 ? (
+                    <p className="dashboardEventMeta">Backups: {openClawGovernanceBackupPaths.join(" | ")}</p>
+                  ) : null}
+                  {openClawGovernanceReport?.residualRisks.length ? (
+                    <p className="dashboardEventMeta">
+                      Residual risks: {openClawGovernanceReport.residualRisks.join(" | ")}
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="dashboardPanel">

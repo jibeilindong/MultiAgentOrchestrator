@@ -7,6 +7,85 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function stringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, entry]) => (typeof entry === "string" ? [[key, entry]] : []))
+  );
+}
+
+function createDefaultProtocolMemory(timestamp: number) {
+  return {
+    protocolVersion: "openclaw.runtime.v1",
+    stableRules: [
+      "Machine-readable workflow coordination must use the runtime protocol.",
+      "Always end with exactly one valid routing JSON line when a machine tail is required.",
+      "Only choose downstream targets from the allowed candidate list.",
+      "Do not exceed the provided write scope, tool scope, or approval rules.",
+      "If uncertain, emit the smallest valid safe result instead of guessing."
+    ],
+    recentCorrections: [],
+    repeatOffenses: [],
+    lastSessionDigest: null,
+    lastUpdatedAt: timestamp
+  };
+}
+
+function normalizeAgents(input: Partial<MAProject>, base: MAProject): MAProject["agents"] {
+  const baseTimestamp = input.updatedAt ?? base.updatedAt;
+  const fallbackProtocolMemory = createDefaultProtocolMemory(baseTimestamp);
+
+  return (input.agents ?? base.agents).map((agent) => {
+    const rawOpenClawDefinition: Record<string, unknown> = isRecord(agent.openClawDefinition) ? agent.openClawDefinition : {};
+    const protocolMemory = isRecord(rawOpenClawDefinition.protocolMemory)
+      ? rawOpenClawDefinition.protocolMemory
+      : fallbackProtocolMemory;
+
+    return {
+      ...agent,
+      openClawDefinition: {
+        agentIdentifier:
+          typeof rawOpenClawDefinition["agentIdentifier"] === "string"
+            ? rawOpenClawDefinition["agentIdentifier"]
+            : agent.name,
+        modelIdentifier:
+          typeof rawOpenClawDefinition["modelIdentifier"] === "string"
+            ? rawOpenClawDefinition["modelIdentifier"]
+            : "MiniMax-M2.5",
+        runtimeProfile:
+          typeof rawOpenClawDefinition["runtimeProfile"] === "string"
+            ? rawOpenClawDefinition["runtimeProfile"]
+            : "default",
+        memoryBackupPath:
+          typeof rawOpenClawDefinition.memoryBackupPath === "string"
+            ? rawOpenClawDefinition.memoryBackupPath
+            : null,
+        soulSourcePath:
+          typeof rawOpenClawDefinition.soulSourcePath === "string"
+            ? rawOpenClawDefinition.soulSourcePath
+            : null,
+        environment: stringRecord(rawOpenClawDefinition.environment),
+        protocolMemory: {
+          ...fallbackProtocolMemory,
+          ...protocolMemory,
+          stableRules: Array.isArray(protocolMemory.stableRules)
+            ? protocolMemory.stableRules.filter((value): value is string => typeof value === "string")
+            : fallbackProtocolMemory.stableRules,
+          recentCorrections: Array.isArray(protocolMemory.recentCorrections)
+            ? protocolMemory.recentCorrections
+            : fallbackProtocolMemory.recentCorrections,
+          repeatOffenses: Array.isArray(protocolMemory.repeatOffenses)
+            ? protocolMemory.repeatOffenses
+            : fallbackProtocolMemory.repeatOffenses
+          }
+      }
+    };
+  });
+}
+
 export function normalizeProject(input: Partial<MAProject>): MAProject {
   const base = createEmptyProject(input.name ?? "Untitled Project");
   const openClawInput = isRecord(input.openClaw) ? input.openClaw : null;
@@ -19,7 +98,7 @@ export function normalizeProject(input: Partial<MAProject>): MAProject {
   return {
     ...base,
     ...input,
-    agents: input.agents ?? base.agents,
+    agents: normalizeAgents(input, base),
     workflows: input.workflows ?? base.workflows,
     permissions: input.permissions ?? base.permissions,
     openClaw: {
