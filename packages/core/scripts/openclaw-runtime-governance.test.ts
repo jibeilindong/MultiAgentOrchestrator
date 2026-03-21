@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildOpenClawGovernanceAuditReport } from "../src/openclaw-runtime-governance";
+import { buildOpenClawGovernanceAuditReport, summarizeOpenClawGovernancePreflight } from "../src/openclaw-runtime-governance";
 
 test("local audit proposes safe actions for dangerous tools, subagents, approvals, and elevated execution", () => {
   const report = buildOpenClawGovernanceAuditReport({
@@ -209,4 +209,83 @@ test("workspace isolation finding becomes remediable when paths are missing or d
   assert.equal(workspaceFinding.status, "fail");
   assert.equal(workspaceFinding.remediable, true);
   assert.equal(report.proposedActions.some((action) => action.id === "repair-agent-workspaces"), true);
+});
+
+test("preflight summary highlights failures, unknowns, safe fixes, and residual risks", () => {
+  const report = buildOpenClawGovernanceAuditReport({
+    deploymentKind: "container",
+    rootPath: "/workspace/.openclaw",
+    configPath: "/workspace/.openclaw/openclaw.json",
+    approvalsPath: "/workspace/.openclaw/exec-approvals.json",
+    agentIdentifiers: ["alpha", "beta"],
+    subagentBindings: [
+      {
+        agentIdentifier: "alpha",
+        allowAgents: ["beta"]
+      }
+    ],
+    workspaceBindings: [],
+    runtimeSecurity: {
+      approvalsHaveCustomEntries: false,
+      blockingIssues: [],
+      findings: [
+        {
+          agentIdentifier: "alpha",
+          sandboxMode: "off",
+          sessionIsSandboxed: false,
+          allowedDangerousTools: [],
+          execToolAllowed: true,
+          processToolAllowed: true,
+          elevatedAllowedByConfig: false,
+          elevatedAlwaysAllowedByConfig: false,
+          blockingIssues: []
+        }
+      ]
+    }
+  });
+
+  const summary = summarizeOpenClawGovernancePreflight(report);
+  assert.ok(summary);
+  assert.match(summary, /Governance audit reports/i);
+  assert.match(summary, /Failing checks:/i);
+  assert.match(summary, /Unknown checks:/i);
+  assert.match(summary, /safe remediation action\(s\) are available/i);
+  assert.match(summary, /Residual risks:/i);
+});
+
+test("preflight summary stays empty for a clean governance report", () => {
+  const report = buildOpenClawGovernanceAuditReport({
+    deploymentKind: "local",
+    rootPath: "/Users/example/.openclaw",
+    configPath: "/Users/example/.openclaw/openclaw.json",
+    approvalsPath: "/Users/example/.openclaw/exec-approvals.json",
+    agentIdentifiers: ["alpha"],
+    subagentBindings: [],
+    workspaceBindings: [
+      {
+        agentIdentifier: "alpha",
+        workspacePath: "/Users/example/.openclaw/workspace-alpha",
+        existsOnDisk: true
+      }
+    ],
+    runtimeSecurity: {
+      approvalsHaveCustomEntries: false,
+      blockingIssues: [],
+      findings: [
+        {
+          agentIdentifier: "alpha",
+          sandboxMode: "strict",
+          sessionIsSandboxed: true,
+          allowedDangerousTools: [],
+          execToolAllowed: false,
+          processToolAllowed: false,
+          elevatedAllowedByConfig: false,
+          elevatedAlwaysAllowedByConfig: false,
+          blockingIssues: []
+        }
+      ]
+    }
+  });
+
+  assert.equal(summarizeOpenClawGovernancePreflight(report), null);
 });

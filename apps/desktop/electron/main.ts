@@ -786,6 +786,48 @@ async function runOpenClawDeploymentShell(
   }
 }
 
+function expandHomePath(candidatePath: string, homeDirectory: string | null): string {
+  const trimmed = candidatePath.trim();
+  if (!trimmed.startsWith("~/") || !homeDirectory) {
+    return trimmed;
+  }
+  return path.join(homeDirectory, trimmed.slice(2));
+}
+
+async function resolveDeploymentHomeDirectory(config: OpenClawConfig): Promise<string | null> {
+  switch (config.deploymentKind) {
+    case "local":
+      return os.homedir();
+    case "container":
+      try {
+        const { stdout } = await runOpenClawDeploymentShell(config, "printf %s \"$HOME\"", {
+          timeoutMs: Math.max(config.timeout, 5) * 1000
+        });
+        return trimmedString(stdout) || null;
+      } catch {
+        return null;
+      }
+    case "remoteServer":
+      return null;
+  }
+}
+
+async function resolveOpenClawConfigPathFromCli(config: OpenClawConfig): Promise<string | null> {
+  try {
+    const { stdout, stderr } = await runOpenClawDeploymentCommand(config, ["config", "file"], {
+      timeoutMs: Math.max(config.timeout, 5) * 1000
+    });
+    const reported = trimmedString(`${stdout ?? ""}\n${stderr ?? ""}`);
+    if (!reported) {
+      return null;
+    }
+    const homeDirectory = await resolveDeploymentHomeDirectory(config);
+    return expandHomePath(reported.split(/\r?\n/).at(-1) ?? reported, homeDirectory);
+  } catch {
+    return null;
+  }
+}
+
 function normalizedNonEmpty(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
@@ -1144,6 +1186,16 @@ async function inspectOpenClawRuntimeSecurity(
 
 async function resolveOpenClawGovernancePaths(config: OpenClawConfig): Promise<OpenClawGovernancePaths> {
   const normalizedConfig = normalizeOpenClawConfig(config);
+  const cliConfigPath = await resolveOpenClawConfigPathFromCli(normalizedConfig);
+  if (cliConfigPath) {
+    const rootPath = path.dirname(cliConfigPath);
+    return {
+      rootPath,
+      configPath: cliConfigPath,
+      approvalsPath: await firstExistingChildPathForConfig(normalizedConfig, rootPath, ["exec-approvals.json"])
+    };
+  }
+
   for (const candidate of openClawRootCandidatesForConfig(normalizedConfig)) {
     if (!candidate || !(await pathExistsForConfig(normalizedConfig, candidate))) {
       continue;

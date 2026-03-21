@@ -3411,11 +3411,17 @@ struct AgentLibrarySidebar: View {
     @State private var projectExpanded: Bool = true
     @State private var templateExpanded: Bool = false
 
-    private var templateGroups: [(category: AgentTemplateCategory, templates: [AgentTemplate])] {
-        AgentTemplateCatalog.categories.compactMap { category in
-            let templates = AgentTemplateCatalog.templates(in: category)
-            guard !templates.isEmpty else { return nil }
-            return (category, templates)
+    private var templateGroups: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
+        AgentTemplateCatalog.families.compactMap { family in
+            let groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])] =
+                AgentTemplateCatalog.categories(in: family).compactMap { category -> (category: AgentTemplateCategory, templates: [AgentTemplate])? in
+                let templates = AgentTemplateCatalog.templates(in: category)
+                guard !templates.isEmpty else { return nil }
+                return (category, templates)
+            }
+
+            guard !groups.isEmpty else { return nil }
+            return (family, groups)
         }
     }
     
@@ -3487,18 +3493,26 @@ struct AgentLibrarySidebar: View {
                     }
 
                     if templateExpanded {
-                        ForEach(templateGroups, id: \.category) { group in
+                        ForEach(templateGroups, id: \.family) { familyGroup in
                             VStack(alignment: .leading, spacing: 8) {
-                                Text(group.category.rawValue)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                Text(familyGroup.family.rawValue)
+                                    .font(.caption.weight(.semibold))
                                     .padding(.horizontal, 4)
 
-                                ForEach(group.templates) { template in
-                                    TemplateLibraryItem(template: template) {
-                                        addTemplateNode(template)
+                                ForEach(familyGroup.groups, id: \.category) { group in
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(group.category.rawValue)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .padding(.horizontal, 4)
+
+                                        ForEach(group.templates) { template in
+                                            TemplateLibraryItem(template: template) {
+                                                addTemplateNode(template)
+                                            }
+                                            .padding(.horizontal, 4)
+                                        }
                                     }
-                                    .padding(.horizontal, 4)
                                 }
                             }
                         }
@@ -3703,6 +3717,10 @@ private struct TemplateLibraryItem: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(template.name)
                     .font(.subheadline)
+                    .lineLimit(1)
+                Text(template.taxonomyPath)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
                     .lineLimit(1)
                 Text(template.summary)
                     .font(.caption)

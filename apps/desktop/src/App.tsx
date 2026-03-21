@@ -42,6 +42,7 @@ import {
   updateWorkflowLaunchTestCase,
   updateOpenClawConfig,
   updateOpenClawSessionPaths,
+  summarizeOpenClawGovernancePreflight,
   updateProjectTaskDataSettings,
   updateTaskInProject,
   updateWorkflowEdgeLabel
@@ -535,32 +536,6 @@ function summarizeOpenClawGovernanceRemediation(
     remainingFailTitles: nextReport.findings.filter((finding) => finding.status === "fail").map((finding) => finding.title),
     remainingUnknownTitles: nextReport.findings.filter((finding) => finding.status === "unknown").map((finding) => finding.title)
   };
-}
-
-function summarizeOpenClawGovernancePreflight(report: OpenClawGovernanceAuditReport): string | null {
-  const failingTitles = report.findings.filter((finding) => finding.status === "fail").map((finding) => finding.title);
-  const unknownTitles = report.findings.filter((finding) => finding.status === "unknown").map((finding) => finding.title);
-  const safeFixCount = report.proposedActions.filter((action) => action.safeToAutoApply).length;
-
-  if (failingTitles.length === 0 && unknownTitles.length === 0 && report.residualRisks.length === 0) {
-    return null;
-  }
-
-  const parts = [`Governance audit reports ${report.summary.fail} fail and ${report.summary.unknown} unknown finding(s).`];
-  if (failingTitles.length > 0) {
-    parts.push(`Failing checks: ${failingTitles.join(", ")}.`);
-  }
-  if (unknownTitles.length > 0) {
-    parts.push(`Unknown checks: ${unknownTitles.join(", ")}.`);
-  }
-  if (safeFixCount > 0) {
-    parts.push(`${safeFixCount} safe remediation action(s) are available.`);
-  }
-  if (report.residualRisks.length > 0) {
-    parts.push(`Residual risks: ${report.residualRisks.join(" ")}`);
-  }
-
-  return parts.join(" ");
 }
 
 function formatRelativeDate(value?: number | null): string {

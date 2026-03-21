@@ -653,16 +653,23 @@ struct TemplatePickerPopover: View {
 
     @State private var searchText: String = ""
 
-    private var filteredCategories: [(category: AgentTemplateCategory, templates: [AgentTemplate])] {
-        AgentTemplateCatalog.categories.compactMap { category in
-            let templates = AgentTemplateCatalog.templates(in: category).filter {
-                searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || $0.name.localizedCaseInsensitiveContains(searchText)
-                || $0.summary.localizedCaseInsensitiveContains(searchText)
-                || $0.identity.localizedCaseInsensitiveContains(searchText)
+    private var filteredFamilies: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
+        AgentTemplateCatalog.families.compactMap { family in
+            let groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])] =
+                AgentTemplateCatalog.categories(in: family).compactMap { category -> (category: AgentTemplateCategory, templates: [AgentTemplate])? in
+                let templates = AgentTemplateCatalog.templates(in: category).filter {
+                    searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || $0.name.localizedCaseInsensitiveContains(searchText)
+                    || $0.summary.localizedCaseInsensitiveContains(searchText)
+                    || $0.identity.localizedCaseInsensitiveContains(searchText)
+                    || $0.taxonomyPath.localizedCaseInsensitiveContains(searchText)
+                }
+                guard !templates.isEmpty else { return nil }
+                return (category, templates)
             }
-            guard !templates.isEmpty else { return nil }
-            return (category, templates)
+
+            guard !groups.isEmpty else { return nil }
+            return (family, groups)
         }
     }
 
@@ -706,43 +713,54 @@ struct TemplatePickerPopover: View {
                         .buttonStyle(.plain)
                     }
 
-                    ForEach(filteredCategories, id: \.category) { group in
+                    ForEach(filteredFamilies, id: \.family) { familyGroup in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(group.category.rawValue)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            Text(familyGroup.family.rawValue)
+                                .font(.subheadline.weight(.semibold))
 
-                            ForEach(group.templates) { template in
-                                Button {
-                                    selectedTemplateID = template.id
-                                    onSelect(template)
-                                    isPresented = false
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        HStack {
-                                            Text(template.name)
-                                                .font(.body)
-                                            Spacer()
-                                            if template.id == selectedTemplateID {
-                                                Image(systemName: "checkmark.circle.fill")
-                                                    .foregroundColor(.accentColor)
+                            ForEach(familyGroup.groups, id: \.category) { group in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(group.category.rawValue)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+
+                                    ForEach(group.templates) { template in
+                                        Button {
+                                            selectedTemplateID = template.id
+                                            onSelect(template)
+                                            isPresented = false
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                HStack {
+                                                    Text(template.name)
+                                                        .font(.body)
+                                                    Spacer()
+                                                    if template.id == selectedTemplateID {
+                                                        Image(systemName: "checkmark.circle.fill")
+                                                            .foregroundColor(.accentColor)
+                                                    }
+                                                }
+                                                Text(template.summary)
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(2)
+                                                Text(template.taxonomyPath)
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                                Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                                    .lineLimit(2)
                                             }
+                                            .padding(10)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(template.id == selectedTemplateID ? Color.accentColor.opacity(0.12) : Color.clear)
+                                            .cornerRadius(8)
                                         }
-                                        Text(template.summary)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(2)
-                                        Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(2)
+                                        .buttonStyle(.plain)
                                     }
-                                    .padding(10)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(template.id == selectedTemplateID ? Color.accentColor.opacity(0.12) : Color.clear)
-                                    .cornerRadius(8)
                                 }
-                                .buttonStyle(.plain)
+                                .font(.caption)
                             }
                         }
                     }
@@ -806,6 +824,9 @@ struct TemplateSummaryCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(template.name)
                         .font(.subheadline.weight(.semibold))
+                    Text(template.taxonomyPath)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                     Text(template.summary)
                         .font(.caption)
                         .foregroundColor(.secondary)
