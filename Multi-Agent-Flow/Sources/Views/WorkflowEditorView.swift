@@ -1612,10 +1612,12 @@ struct EditorToolbar: View {
     }
 
     private var workflowApplyStatusView: some View {
-        HStack(spacing: 6) {
+        let pendingCount = max(1, appState.pendingWorkflowConfigurationRevisionDelta)
+
+        return HStack(spacing: 6) {
             Image(systemName: "clock.badge.exclamationmark")
                 .foregroundColor(.orange)
-            Text(LocalizedString.text("workflow_apply_pending"))
+            Text(LocalizedString.format("workflow_apply_pending_count", pendingCount))
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
@@ -3754,6 +3756,7 @@ struct NodePropertyPanel: View {
     @State private var maxIterations: Double = 1
     @State private var nodeDisplayColorHex: String?
     @State private var reloadStatus: String?
+    @State private var reloadStatusIsError = false
     @State private var managedConfigFiles: [ManagedAgentWorkspaceDocumentReference] = []
     @State private var selectedConfigFileName: String = "SOUL.md"
     @State private var selectedConfigFilePath: String?
@@ -3861,12 +3864,18 @@ struct NodePropertyPanel: View {
                                         Spacer()
                                     }
 
+                                    managedConfigQuickAccessView(agentID: agentID)
+
                                     if let selectedConfigFilePath {
                                         Text(selectedConfigFilePath)
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                             .textSelection(.enabled)
                                     }
+
+                                    Text(LocalizedString.text("managed_config_edit_hint"))
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
 
                                     TextEditor(text: managedConfigTextBinding)
                                         .font(.system(.caption, design: .monospaced))
@@ -3878,9 +3887,12 @@ struct NodePropertyPanel: View {
                                 }
                                 
                                 if let reloadStatus {
-                                    Text(reloadStatus)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                    HStack(spacing: 8) {
+                                        Image(systemName: reloadStatusIsError ? "xmark.octagon.fill" : "checkmark.circle.fill")
+                                        Text(reloadStatus)
+                                    }
+                                    .font(.caption)
+                                    .foregroundColor(reloadStatusIsError ? .red : .green)
                                 }
                             }
                             .padding(8)
@@ -3900,7 +3912,7 @@ struct NodePropertyPanel: View {
                 
                 Spacer()
                 
-                Button(LocalizedString.text("apply")) {
+                Button(LocalizedString.save) {
                     saveChanges()
                 }
                 .buttonStyle(.borderedProminent)
@@ -3960,6 +3972,58 @@ struct NodePropertyPanel: View {
         return managedConfigFiles.first?.fileName ?? "SOUL.md"
     }
 
+    private var quickAccessManagedConfigFiles: [ManagedAgentWorkspaceDocumentReference] {
+        let priority = [
+            "SOUL.md",
+            "AGENTS.md",
+            "IDENTITY.md",
+            "USER.md",
+            "TOOLS.md",
+            "HEARTBEAT.md"
+        ]
+        let prioritized = priority.compactMap { target in
+            managedConfigFiles.first(where: { $0.fileName == target })
+        }
+        if prioritized.count >= min(4, managedConfigFiles.count) {
+            return Array(prioritized.prefix(4))
+        }
+
+        let remaining = managedConfigFiles.filter { file in
+            prioritized.contains(where: { $0.fileName == file.fileName }) == false
+        }
+        return Array((prioritized + remaining).prefix(4))
+    }
+
+    @ViewBuilder
+    private func managedConfigQuickAccessView(agentID: UUID) -> some View {
+        if !quickAccessManagedConfigFiles.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(quickAccessManagedConfigFiles, id: \.fileName) { file in
+                        managedConfigQuickAccessButton(fileName: file.fileName) {
+                            guard selectedConfigFileName != file.fileName else { return }
+                            selectedConfigFileName = file.fileName
+                            loadManagedConfigDraft(agentID: agentID, fileName: file.fileName)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func managedConfigQuickAccessButton(fileName: String, action: @escaping () -> Void) -> some View {
+        if selectedConfigFileName == fileName {
+            Button(fileName, action: action)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        } else {
+            Button(fileName, action: action)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+    }
+
     private func loadNodeData() {
         nodeTitle = node.title
         agentDescription = ""
@@ -3971,6 +4035,7 @@ struct NodePropertyPanel: View {
         managedConfigDrafts = [:]
         selectedConfigFilePath = nil
         reloadStatus = nil
+        reloadStatusIsError = false
 
         if let agentID = node.agentID,
            let agent = getAgent(id: agentID) {
@@ -4005,9 +4070,13 @@ struct NodePropertyPanel: View {
                 documents: managedConfigDrafts
             )
             reloadStatus = fileResult.message
+            reloadStatusIsError = !fileResult.success
             if fileResult.success {
                 selectedConfigFilePath = fileResult.paths[selectedConfigFileName] ?? selectedConfigFilePath
             }
+        } else {
+            reloadStatus = LocalizedString.text("workflow_apply_pending")
+            reloadStatusIsError = false
         }
     }
 
@@ -4266,7 +4335,7 @@ struct EdgePropertyPanel: View {
 
                 Spacer()
 
-                Button(LocalizedString.text("apply")) {
+                Button(LocalizedString.save) {
                     saveRouteDisplayChanges()
                 }
                 .buttonStyle(.bordered)
@@ -4652,12 +4721,18 @@ struct AgentEditSheet: View {
                                 Spacer()
                             }
 
+                            managedConfigQuickAccessView()
+
                             if let selectedConfigFilePath {
                                 Text(selectedConfigFilePath)
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                     .textSelection(.enabled)
                             }
+
+                            Text(LocalizedString.text("managed_config_edit_hint"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
 
                             TextEditor(text: managedConfigTextBinding)
                                 .font(.system(.body, design: .monospaced))
@@ -4738,6 +4813,58 @@ struct AgentEditSheet: View {
         } else {
             managedConfigDrafts[fileName] = ""
             selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
+        }
+    }
+
+    private var quickAccessManagedConfigFiles: [ManagedAgentWorkspaceDocumentReference] {
+        let priority = [
+            "SOUL.md",
+            "AGENTS.md",
+            "IDENTITY.md",
+            "USER.md",
+            "TOOLS.md",
+            "HEARTBEAT.md"
+        ]
+        let prioritized = priority.compactMap { target in
+            managedConfigFiles.first(where: { $0.fileName == target })
+        }
+        if prioritized.count >= min(4, managedConfigFiles.count) {
+            return Array(prioritized.prefix(4))
+        }
+
+        let remaining = managedConfigFiles.filter { file in
+            prioritized.contains(where: { $0.fileName == file.fileName }) == false
+        }
+        return Array((prioritized + remaining).prefix(4))
+    }
+
+    @ViewBuilder
+    private func managedConfigQuickAccessView() -> some View {
+        if !quickAccessManagedConfigFiles.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(quickAccessManagedConfigFiles, id: \.fileName) { file in
+                        managedConfigQuickAccessButton(fileName: file.fileName) {
+                            guard selectedConfigFileName != file.fileName else { return }
+                            selectedConfigFileName = file.fileName
+                            loadManagedConfigDraft(fileName: file.fileName)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func managedConfigQuickAccessButton(fileName: String, action: @escaping () -> Void) -> some View {
+        if selectedConfigFileName == fileName {
+            Button(fileName, action: action)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        } else {
+            Button(fileName, action: action)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
         }
     }
 

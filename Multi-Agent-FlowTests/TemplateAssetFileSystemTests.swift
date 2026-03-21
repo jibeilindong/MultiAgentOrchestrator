@@ -263,6 +263,197 @@ final class TemplateAssetFileSystemTests: XCTestCase {
         XCTAssertFalse(fileSystem.hasTemplateDraft(for: template.id, under: rootURL))
     }
 
+    func testTemplateFileIndexExposesStandardOrderedTree() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 2,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test template file index ordering."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let index = fileSystem.templateFileIndex(
+            at: fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        )
+
+        XCTAssertEqual(
+            index.nodes.map(\.relativePath),
+            [
+                "template.json",
+                "SOUL.md",
+                "AGENTS.md",
+                "IDENTITY.md",
+                "USER.md",
+                "TOOLS.md",
+                "BOOTSTRAP.md",
+                "HEARTBEAT.md",
+                "MEMORY.md",
+                "lineage.json",
+                "revisions",
+                "extensions"
+            ]
+        )
+
+        let templateDocumentNode = try XCTUnwrap(index.node(relativePath: "template.json"))
+        XCTAssertTrue(templateDocumentNode.isEditable)
+        XCTAssertFalse(templateDocumentNode.isSystemManaged)
+        XCTAssertTrue(templateDocumentNode.isPresent)
+
+        let agentsNode = try XCTUnwrap(index.node(relativePath: "AGENTS.md"))
+        XCTAssertFalse(agentsNode.isEditable)
+        XCTAssertTrue(agentsNode.isSystemManaged)
+        XCTAssertEqual(agentsNode.category, .systemManaged)
+
+        let defaultPromptNode = try XCTUnwrap(index.node(relativePath: "extensions/examples/default-prompt.md"))
+        XCTAssertTrue(defaultPromptNode.isEditable)
+        XCTAssertTrue(defaultPromptNode.isRequired)
+        XCTAssertTrue(defaultPromptNode.isPresent)
+    }
+
+    func testTemplateFileIndexMarksMissingDirtyAndRevisionEntries() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 3,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test template file index states."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let templateRootURL = fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        try FileManager.default.removeItem(
+            at: templateRootURL.appendingPathComponent("USER.md", isDirectory: false)
+        )
+
+        let index = fileSystem.templateFileIndex(
+            at: templateRootURL,
+            dirtyFilePaths: ["SOUL.md", "extensions/examples/default-prompt.md"]
+        )
+
+        let userNode = try XCTUnwrap(index.node(relativePath: "USER.md"))
+        XCTAssertFalse(userNode.isPresent)
+        XCTAssertTrue(userNode.isRequired)
+
+        let soulNode = try XCTUnwrap(index.node(relativePath: "SOUL.md"))
+        XCTAssertTrue(soulNode.isDirty)
+
+        let promptNode = try XCTUnwrap(index.node(relativePath: "extensions/examples/default-prompt.md"))
+        XCTAssertTrue(promptNode.isDirty)
+
+        let revisionsNode = try XCTUnwrap(index.node(relativePath: "revisions"))
+        XCTAssertTrue(revisionsNode.isPresent)
+        XCTAssertEqual(revisionsNode.children.map(\.relativePath), ["revisions/r0003.json"])
+        XCTAssertTrue(revisionsNode.children.allSatisfy(\.isSystemManaged))
+    }
+
+    func testTemplateFileSystemReadsAndWritesDraftFileContents() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 1,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test draft file read/write."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let sourceURL = fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        let draftURL = try fileSystem.createTemplateDraftDirectory(
+            for: template.id,
+            from: sourceURL,
+            under: rootURL
+        )
+
+        let updatedContents = "# Updated\n\nThis is a draft."
+        try fileSystem.writeFileContents(
+            updatedContents,
+            at: draftURL,
+            relativePath: "SOUL.md"
+        )
+
+        let loadedContents = try fileSystem.fileContents(
+            at: draftURL,
+            relativePath: "SOUL.md"
+        )
+
+        XCTAssertEqual(loadedContents, updatedContents)
+    }
+
+    func testTemplateFileSystemCanScaffoldMissingStandardEditableFile() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 2,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test standard file scaffold."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let templateRootURL = fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        let userURL = templateRootURL.appendingPathComponent("USER.md", isDirectory: false)
+        try FileManager.default.removeItem(at: userURL)
+
+        try fileSystem.scaffoldFile(
+            at: templateRootURL,
+            relativePath: "USER.md",
+            template: template,
+            document: document,
+            lineage: lineage
+        )
+
+        let scaffoldedContents = try String(contentsOf: userURL, encoding: .utf8)
+        XCTAssertTrue(scaffoldedContents.contains("# USER"))
+        XCTAssertTrue(scaffoldedContents.contains("## Expected Deliverables"))
+    }
+
     func testBuiltInTemplateAssetCatalogMaterializesStandardAssets() throws {
         let rootURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }

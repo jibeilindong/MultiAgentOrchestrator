@@ -441,6 +441,60 @@ struct OpenClawProbeReportSnapshot: Codable {
     }
 }
 
+enum OpenClawRecoveryReportStatus: String, Codable {
+    case completed
+    case partial
+    case manualFollowUp = "manual_follow_up"
+    case failed
+}
+
+struct OpenClawRecoveryStateSnapshot: Codable {
+    var label: String
+    var summary: String
+    var layers: String
+
+    init(
+        label: String = "",
+        summary: String = "",
+        layers: String = ""
+    ) {
+        self.label = label
+        self.summary = summary
+        self.layers = layers
+    }
+}
+
+struct OpenClawRecoveryReportSnapshot: Codable {
+    var createdAt: Date
+    var status: OpenClawRecoveryReportStatus
+    var summary: String
+    var completedSteps: [String]
+    var manualSteps: [String]
+    var findings: [String]
+    var before: OpenClawRecoveryStateSnapshot
+    var after: OpenClawRecoveryStateSnapshot
+
+    init(
+        createdAt: Date = Date(),
+        status: OpenClawRecoveryReportStatus = .completed,
+        summary: String = "",
+        completedSteps: [String] = [],
+        manualSteps: [String] = [],
+        findings: [String] = [],
+        before: OpenClawRecoveryStateSnapshot = OpenClawRecoveryStateSnapshot(),
+        after: OpenClawRecoveryStateSnapshot = OpenClawRecoveryStateSnapshot()
+    ) {
+        self.createdAt = createdAt
+        self.status = status
+        self.summary = summary
+        self.completedSteps = completedSteps
+        self.manualSteps = manualSteps
+        self.findings = findings
+        self.before = before
+        self.after = after
+    }
+}
+
 struct ProjectOpenClawSnapshot: Codable {
     var config: OpenClawConfig
     var isConnected: Bool
@@ -449,6 +503,7 @@ struct ProjectOpenClawSnapshot: Codable {
     var detectedAgents: [ProjectOpenClawDetectedAgentRecord]
     var connectionState: OpenClawConnectionStateSnapshot
     var lastProbeReport: OpenClawProbeReportSnapshot?
+    var recoveryReports: [OpenClawRecoveryReportSnapshot]
     var sessionBackupPath: String?
     var sessionMirrorPath: String?
     var lastSyncedAt: Date
@@ -461,6 +516,7 @@ struct ProjectOpenClawSnapshot: Codable {
         case detectedAgents
         case connectionState
         case lastProbeReport
+        case recoveryReports
         case sessionBackupPath
         case sessionMirrorPath
         case lastSyncedAt
@@ -474,6 +530,7 @@ struct ProjectOpenClawSnapshot: Codable {
         detectedAgents: [ProjectOpenClawDetectedAgentRecord] = [],
         connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot(),
         lastProbeReport: OpenClawProbeReportSnapshot? = nil,
+        recoveryReports: [OpenClawRecoveryReportSnapshot] = [],
         sessionBackupPath: String? = nil,
         sessionMirrorPath: String? = nil,
         lastSyncedAt: Date = Date()
@@ -485,6 +542,7 @@ struct ProjectOpenClawSnapshot: Codable {
         self.detectedAgents = detectedAgents
         self.connectionState = connectionState
         self.lastProbeReport = lastProbeReport
+        self.recoveryReports = recoveryReports
         self.sessionBackupPath = sessionBackupPath
         self.sessionMirrorPath = sessionMirrorPath
         self.lastSyncedAt = lastSyncedAt
@@ -503,6 +561,7 @@ struct ProjectOpenClawSnapshot: Codable {
                 deploymentKind: config.deploymentKind
             )
         lastProbeReport = try container.decodeIfPresent(OpenClawProbeReportSnapshot.self, forKey: .lastProbeReport)
+        recoveryReports = try container.decodeIfPresent([OpenClawRecoveryReportSnapshot].self, forKey: .recoveryReports) ?? []
         sessionBackupPath = try container.decodeIfPresent(String.self, forKey: .sessionBackupPath)
         sessionMirrorPath = try container.decodeIfPresent(String.self, forKey: .sessionMirrorPath)
         lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt) ?? Date()
@@ -517,6 +576,7 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(detectedAgents, forKey: .detectedAgents)
         try container.encode(connectionState, forKey: .connectionState)
         try container.encodeIfPresent(lastProbeReport, forKey: .lastProbeReport)
+        try container.encode(recoveryReports, forKey: .recoveryReports)
         try container.encodeIfPresent(sessionBackupPath, forKey: .sessionBackupPath)
         try container.encodeIfPresent(sessionMirrorPath, forKey: .sessionMirrorPath)
         try container.encode(lastSyncedAt, forKey: .lastSyncedAt)

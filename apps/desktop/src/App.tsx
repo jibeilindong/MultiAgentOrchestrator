@@ -2,6 +2,7 @@ import {
   addAgentToProject,
   addNodeToWorkflow,
   addTaskToProject,
+  appendOpenClawRecoveryReport,
   addWorkflowLaunchTestCase,
   addWorkflowToProject,
   assessWorkflowRuntimeIsolation,
@@ -69,6 +70,9 @@ import {
 } from "@multi-agent-flow/domain";
 import { startTransition, useEffect, useState } from "react";
 import { WorkflowCanvasPreview } from "./components/WorkflowCanvasPreview";
+import { buildOpenClawRecoveryAudit, formatOpenClawRecoveryStatus } from "./openclaw-recovery-audit";
+import { buildOpenClawRecoveryReport } from "./openclaw-recovery-report";
+import { buildOpenClawRetryGuidance } from "./openclaw-retry-guidance";
 import { assessOpenClawRuntimeReadiness, formatOpenClawRuntimeLayers } from "./openclaw-runtime-readiness";
 
 type BusyAction = "new" | "open" | "save" | "saveAs" | null;
@@ -757,6 +761,10 @@ export function App() {
       ? activeWorkflow?.nodes.find((node) => node.id === selectedNodeIds[0]) ?? null
       : null;
   const selectedNodes = activeWorkflow?.nodes.filter((node) => selectedNodeIds.includes(node.id)) ?? [];
+  const openClawRecoveryReports = project?.openClaw.recoveryReports ?? [];
+  const openClawLastRecoveryReport = openClawRecoveryReports[0] ?? null;
+  const openClawRecoveryAudit = buildOpenClawRecoveryAudit(openClawRecoveryReports);
+  const openClawRetryGuidance = project ? buildOpenClawRetryGuidance(project.openClaw) : null;
   const selectedEdge =
     activeWorkflow?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const selectedTask = project?.tasks.find((task) => task.id === selectedTaskId) ?? null;
@@ -2380,12 +2388,29 @@ export function App() {
     setOpenClawAction("recover");
     setError(null);
 
+    const startingProject = project;
     let workingProject = project;
     const completedSteps: string[] = [];
+    const manualSteps: string[] = [];
+    const persistRecoveryReport = (report: ReturnType<typeof buildOpenClawRecoveryReport>) => {
+      const nextProject = appendOpenClawRecoveryReport(workingProject, report);
+      workingProject = nextProject;
+      commitProject(nextProject, undefined, { recordHistory: false });
+    };
 
     try {
       for (const action of readiness.recoveryActions) {
         if (action.command === "review_config") {
+          manualSteps.push(action.detail);
+          persistRecoveryReport(
+            buildOpenClawRecoveryReport({
+              before: startingProject.openClaw,
+              after: workingProject.openClaw,
+              createdAt: Date.now(),
+              completedSteps,
+              manualSteps
+            })
+          );
           setStatus(
             completedSteps.length > 0
               ? `Recovery progressed through ${completedSteps.join(" -> ")}. Manual follow-up: ${action.detail}`
@@ -2404,6 +2429,14 @@ export function App() {
 
           const nextReadiness = assessOpenClawRuntimeReadiness(nextProject.openClaw);
           if (nextReadiness.blockingMessage) {
+            persistRecoveryReport(
+              buildOpenClawRecoveryReport({
+                before: startingProject.openClaw,
+                after: nextProject.openClaw,
+                createdAt: Date.now(),
+                completedSteps
+              })
+            );
             setStatus(`Recovery stopped after ${action.title}: ${nextReadiness.blockingMessage}`);
             return;
           }
@@ -2420,12 +2453,29 @@ export function App() {
         }
       }
 
+      persistRecoveryReport(
+        buildOpenClawRecoveryReport({
+          before: startingProject.openClaw,
+          after: workingProject.openClaw,
+          createdAt: Date.now(),
+          completedSteps
+        })
+      );
       setStatus(
         completedSteps.length > 0
           ? `OpenClaw recovery plan completed: ${completedSteps.join(" -> ")}.`
           : "OpenClaw recovery plan did not require an automatic step."
       );
     } catch (actionError) {
+      persistRecoveryReport(
+        buildOpenClawRecoveryReport({
+          before: startingProject.openClaw,
+          after: workingProject.openClaw,
+          createdAt: Date.now(),
+          completedSteps,
+          errorMessage: actionError instanceof Error ? actionError.message : String(actionError)
+        })
+      );
       setError(actionError instanceof Error ? actionError.message : String(actionError));
     } finally {
       setOpenClawAction(null);
@@ -4716,6 +4766,32 @@ export function App() {
                         ))}
                       </div>
                     ) : null}
+                    {openClawLastRecoveryReport ? (
+                      <div className="dashboardChecklist">
+                        <div className="dashboardChecklistItem">
+                          <strong>Last recovery</strong>
+                          <span>{openClawLastRecoveryReport.summary}</span>
+                        </div>
+                        <div className="dashboardChecklistItem">
+                          <strong>Before</strong>
+                          <span>
+                            {openClawLastRecoveryReport.before.label} • {openClawLastRecoveryReport.before.layers}
+                          </span>
+                        </div>
+                        <div className="dashboardChecklistItem">
+                          <strong>After</strong>
+                          <span>
+                            {openClawLastRecoveryReport.after.label} • {openClawLastRecoveryReport.after.layers}
+                          </span>
+                        </div>
+                        {openClawLastRecoveryReport.findings.map((finding) => (
+                          <div key={finding} className="dashboardChecklistItem">
+                            <strong>Change</strong>
+                            <span>{finding}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -5165,6 +5241,78 @@ export function App() {
                         <strong>{action.title}</strong>
                         <span>{action.detail}</span>
                       </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {openClawRetryGuidance ? (
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Retry guidance</h3>
+                    <span>{openClawRetryGuidance.recommendation.replaceAll("_", " ")}</span>
+                  </div>
+                  <p className="dashboardEventBody">{openClawRetryGuidance.detail}</p>
+                  {openClawRetryGuidance.suggestedCommands.length > 0 ? (
+                    <p className="dashboardEventMeta">
+                      Suggested automatic steps: {openClawRetryGuidance.suggestedCommands.join(" -> ")}
+                    </p>
+                  ) : null}
+                  {openClawRetryGuidance.rationale.length > 0 ? (
+                    <div className="dashboardChecklist">
+                      {openClawRetryGuidance.rationale.map((reason) => (
+                        <div key={reason} className="dashboardChecklistItem">
+                          <strong>Reason</strong>
+                          <span>{reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {openClawRecoveryReports.length > 0 ? (
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>Recovery audit</h3>
+                    <span>{openClawRecoveryReports.length} report(s)</span>
+                  </div>
+                  <div className="dashboardSignalStrip">
+                    <span>Completed {openClawRecoveryAudit.summary.completed}</span>
+                    <span>Partial {openClawRecoveryAudit.summary.partial}</span>
+                    <span>Manual {openClawRecoveryAudit.summary.manualFollowUp}</span>
+                    <span>Failed {openClawRecoveryAudit.summary.failed}</span>
+                    <span>Improved {openClawRecoveryAudit.summary.improved}</span>
+                    <span>Reached ready {openClawRecoveryAudit.summary.reachedReady}</span>
+                  </div>
+                  <div className="dashboardList">
+                    {openClawRecoveryAudit.timeline.map((report) => (
+                      <article key={`${report.createdAt}-${report.summary}`} className="dashboardListItem">
+                        <div className="dashboardListItemHeader">
+                          <strong>{formatOpenClawRecoveryStatus(report.status)}</strong>
+                          <span>{fromSwiftDate(report.createdAt).toLocaleString()}</span>
+                        </div>
+                        <p className="dashboardEventBody">{report.summary}</p>
+                        <p className="dashboardEventMeta">
+                          {`${report.before.label} -> ${report.after.label}`} • {report.after.layers}
+                        </p>
+                        {report.completedSteps.length > 0 ? (
+                          <p className="dashboardEventMeta">Completed steps: {report.completedSteps.join(" -> ")}</p>
+                        ) : null}
+                        {report.manualSteps.length > 0 ? (
+                          <p className="dashboardEventMeta">Manual follow-up: {report.manualSteps.join(" | ")}</p>
+                        ) : null}
+                        {report.findings.length > 0 ? (
+                          <div className="dashboardChecklist">
+                            {report.findings.slice(0, 3).map((finding) => (
+                              <div key={finding} className="dashboardChecklistItem">
+                                <strong>Finding</strong>
+                                <span>{finding}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </article>
                     ))}
                   </div>
                 </section>

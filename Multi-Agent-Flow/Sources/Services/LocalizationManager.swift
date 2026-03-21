@@ -947,6 +947,7 @@ struct LocalizedString {
                 "apply_workflow_tooltip_pending": "Apply the current workflow's agent mirror, permissions, and communication settings",
                 "apply_workflow_tooltip_idle": "The current workflow has no pending configuration to apply",
                 "workflow_apply_pending": "Workflow changes pending apply",
+                "workflow_apply_pending_count": "%d pending updates to apply",
                 "workflow_applied_at": "Applied %@",
                 "workflow_apply_in_progress": "Workflow application is already in progress.",
                 "workflow_apply_project_required": "Create or open a project before applying workflow settings.",
@@ -1304,6 +1305,7 @@ struct LocalizedString {
                 "reloaded_from_path": "Reloaded managed config from %@",
                 "read_soul_failed": "Failed to read managed config file: %@",
                 "managed_config_saved_locally": "Saved to the node-local managed config. Apply to push changes into OpenClaw."
+                ,"managed_config_edit_hint": "Saving here only updates the node-local managed config. Use toolbar Apply to push changes into OpenClaw."
                 ,"no_agents_permission_desc": "Add some agents in the sidebar to configure permissions",
                 "na_short": "N/A",
                 "create_action": "Create",
@@ -1763,6 +1765,7 @@ struct LocalizedString {
                 "apply_workflow_tooltip_pending": "将当前工作流的 Agent 镜像、权限和通信设置应用到 OpenClaw",
                 "apply_workflow_tooltip_idle": "当前工作流没有待应用的配置",
                 "workflow_apply_pending": "工作流变更待应用",
+                "workflow_apply_pending_count": "%d 项更新待应用",
                 "workflow_applied_at": "已应用 %@",
                 "workflow_apply_in_progress": "工作流配置正在应用中。",
                 "workflow_apply_project_required": "请先创建或打开项目，再应用工作流配置。",
@@ -2120,6 +2123,7 @@ struct LocalizedString {
                 "reloaded_from_path": "已从 %@ 重新加载受管配置",
                 "read_soul_failed": "读取受管配置文件失败：%@",
                 "managed_config_saved_locally": "已保存到节点本地受管配置；点击 Apply 后会统一推送到 OpenClaw。"
+                ,"managed_config_edit_hint": "这里的保存只会更新节点本地受管配置；需要通过工具栏 Apply 才会推送到 OpenClaw。"
                 ,"no_agents_permission_desc": "请先在侧边栏添加一些 Agents，再来配置权限",
                 "na_short": "不适用",
                 "create_action": "创建",
@@ -2579,6 +2583,7 @@ struct LocalizedString {
                 "apply_workflow_tooltip_pending": "將目前工作流的 Agent 鏡像、權限與通訊設定套用到 OpenClaw",
                 "apply_workflow_tooltip_idle": "目前工作流沒有待套用的設定",
                 "workflow_apply_pending": "工作流變更待套用",
+                "workflow_apply_pending_count": "%d 項更新待套用",
                 "workflow_applied_at": "已套用 %@",
                 "workflow_apply_in_progress": "工作流設定正在套用中。",
                 "workflow_apply_project_required": "請先建立或開啟專案，再套用工作流設定。",
@@ -2936,6 +2941,7 @@ struct LocalizedString {
                 "reloaded_from_path": "已從 %@ 重新載入受管設定",
                 "read_soul_failed": "讀取受管設定檔失敗：%@",
                 "managed_config_saved_locally": "已儲存到節點本地受管設定；點擊 Apply 後會統一推送到 OpenClaw。"
+                ,"managed_config_edit_hint": "這裡的儲存只會更新節點本地受管設定；需要透過工具列 Apply 才會推送到 OpenClaw。"
                 ,"no_agents_permission_desc": "請先在側邊欄新增一些 Agents，再來設定權限",
                 "na_short": "不適用",
                 "create_action": "建立",

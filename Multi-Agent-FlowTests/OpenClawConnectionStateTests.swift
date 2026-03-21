@@ -127,4 +127,57 @@ final class OpenClawConnectionStateTests: XCTestCase {
         XCTAssertNil(report.layers)
         XCTAssertEqual(report.availableAgents, ["planner"])
     }
+
+    func testLegacyProjectOpenClawSnapshotDecodesWithoutRecoveryReports() throws {
+        let json = """
+        {
+          "config": {
+            "deploymentKind": "local",
+            "host": "127.0.0.1",
+            "port": 18789,
+            "useSSL": false,
+            "apiKey": "",
+            "defaultAgent": "default",
+            "timeout": 30,
+            "autoConnect": true,
+            "localBinaryPath": "/usr/local/bin/openclaw",
+            "container": {
+              "engine": "docker",
+              "containerName": "openclaw-dev",
+              "workspaceMountPath": "/workspace"
+            },
+            "cliQuietMode": true,
+            "cliLogLevel": "warning"
+          },
+          "isConnected": false,
+          "availableAgents": [],
+          "activeAgents": [],
+          "detectedAgents": [],
+          "connectionState": {
+            "phase": "idle",
+            "deploymentKind": "local",
+            "capabilities": {
+              "cliAvailable": false,
+              "gatewayReachable": false,
+              "gatewayAuthenticated": false,
+              "agentListingAvailable": false,
+              "sessionHistoryAvailable": false,
+              "gatewayAgentAvailable": false,
+              "gatewayChatAvailable": false,
+              "projectAttachmentSupported": false
+            },
+            "health": {}
+          },
+          "lastProbeReport": null,
+          "sessionBackupPath": null,
+          "sessionMirrorPath": null
+        }
+        """
+
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let snapshot = try JSONDecoder().decode(ProjectOpenClawSnapshot.self, from: data)
+
+        XCTAssertTrue(snapshot.recoveryReports.isEmpty)
+        XCTAssertEqual(snapshot.connectionState.phase, .idle)
+    }
 }

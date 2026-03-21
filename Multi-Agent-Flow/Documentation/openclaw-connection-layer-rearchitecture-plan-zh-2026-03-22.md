@@ -351,3 +351,7 @@ OpenClawDeploymentAdapter
 - launch verification 与审批后的下游 live continuation 现已复用同一套 readiness gating：runtime 被阻断时不再静默退回 synthetic 路径，而是将阻断原因写回 verification / workbench 状态
 - readiness helper 已进一步映射出结构化 recovery actions，诊断面板可直接触发 `Connect` / `Detect agents`，并对需要人工修正的 host、container、credential 配置给出明确修复建议
 - 桌面端已支持半自动 recovery plan 编排：当恢复链路安全时可按顺序执行 `Connect -> Detect agents`，并在需要人工修正配置时中途暂停并输出明确的接力提示
+- 桌面端恢复流程现已记录 before / after 差异报告，明确展示 readiness、layer 状态和恢复步骤是否真正改善了 runtime，避免“执行过恢复”但实际仍停留在旧退化状态的误判
+- 恢复报告现已持久化到 `ProjectOpenClawSnapshot`，项目重开后仍可查看最近恢复记录；桌面端也开始展示 recent recovery 列表，为后续跨会话恢复审计和自动重试策略提供基座
+- 桌面端现已将恢复历史升级为 recovery audit 视图，汇总 completed / partial / manual / failed / improved / reached ready 等指标，并在时间线中展开 steps、manual follow-up 与关键 findings，开始形成可读的恢复审计面
+- 桌面端已开始基于当前 readiness 与 recovery audit 生成 retry guidance，能明确区分 `auto_retry / manual_first / observe / not_needed`，开始把连接层从“可恢复”推进到“可决策”

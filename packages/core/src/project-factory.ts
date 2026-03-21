@@ -93,6 +93,7 @@ function createDefaultOpenClawSnapshot(now: number): ProjectOpenClawSnapshot {
     detectedAgents: [],
     connectionState: createDefaultOpenClawConnectionState(),
     lastProbeReport: null,
+    recoveryReports: [],
     sessionBackupPath: null,
     sessionMirrorPath: null,
     lastSyncedAt: now

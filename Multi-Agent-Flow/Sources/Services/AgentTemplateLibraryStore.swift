@@ -640,6 +640,20 @@ final class AgentTemplateLibraryStore: ObservableObject {
         draftSessions[templateID]
     }
 
+    func templateFileIndex(for templateID: String, prefersDraft: Bool = true) -> TemplateFileIndex? {
+        let rootURL: URL?
+
+        if prefersDraft, let draftURL = templateDraftDirectoryURL(for: templateID) {
+            rootURL = draftURL
+        } else {
+            rootURL = templateAssetDirectoryURL(for: templateID)
+        }
+
+        guard let rootURL else { return nil }
+        let dirtyPaths = Set(draftSessions[templateID]?.dirtyFilePaths ?? [])
+        return templateFileSystem.templateFileIndex(at: rootURL, dirtyFilePaths: dirtyPaths)
+    }
+
     @discardableResult
     func openDraftSession(for templateID: String) throws -> TemplateDraftSession {
         guard template(withID: templateID) != nil else {
@@ -670,6 +684,109 @@ final class AgentTemplateLibraryStore: ObservableObject {
             templateID: templateID,
             sourceAssetURL: sourceAssetURL,
             draftRootURL: draftRootURL
+        )
+        draftSessions[templateID] = session
+        return session
+    }
+
+    func selectDraftFile(_ relativePath: String?, for templateID: String) {
+        guard var session = draftSessions[templateID] else { return }
+        session.selectedFilePath = relativePath
+        draftSessions[templateID] = session
+    }
+
+    func templateFileContents(
+        for templateID: String,
+        relativePath: String,
+        prefersDraft: Bool = true
+    ) throws -> String {
+        let rootURL: URL
+
+        if prefersDraft {
+            let session = try openDraftSession(for: templateID)
+            rootURL = session.draftRootURL
+        } else if let assetURL = templateAssetDirectoryURL(for: templateID) {
+            rootURL = assetURL
+        } else {
+            throw AgentTemplateLibraryStoreError.missingTemplate(templateID)
+        }
+
+        return try templateFileSystem.fileContents(at: rootURL, relativePath: relativePath)
+    }
+
+    @discardableResult
+    func updateDraftFile(
+        for templateID: String,
+        relativePath: String,
+        contents: String
+    ) throws -> TemplateDraftSession {
+        var session = try openDraftSession(for: templateID)
+        try templateFileSystem.writeFileContents(
+            contents,
+            at: session.draftRootURL,
+            relativePath: relativePath
+        )
+
+        session.selectedFilePath = relativePath
+        session.hasUnsavedChanges = true
+        session.dirtyFilePaths = mergedDirtyPaths(
+            session.dirtyFilePaths,
+            inserting: relativePath
+        )
+        draftSessions[templateID] = session
+        return session
+    }
+
+    @discardableResult
+    func restoreDraftFile(
+        for templateID: String,
+        relativePath: String
+    ) throws -> TemplateDraftSession {
+        var session = try openDraftSession(for: templateID)
+        let sourceURL = session.sourceAssetURL
+        let sourceFileURL = templateFileSystem.templateFileURL(at: sourceURL, relativePath: relativePath)
+
+        if FileManager.default.fileExists(atPath: sourceFileURL.path) {
+            let sourceContents = try templateFileSystem.fileContents(at: sourceURL, relativePath: relativePath)
+            try templateFileSystem.writeFileContents(
+                sourceContents,
+                at: session.draftRootURL,
+                relativePath: relativePath
+            )
+        } else {
+            try templateFileSystem.removeFile(at: session.draftRootURL, relativePath: relativePath)
+        }
+
+        session.selectedFilePath = relativePath
+        session.dirtyFilePaths.removeAll { $0 == relativePath }
+        session.hasUnsavedChanges = !session.dirtyFilePaths.isEmpty
+        draftSessions[templateID] = session
+        return session
+    }
+
+    @discardableResult
+    func scaffoldDraftFile(
+        for templateID: String,
+        relativePath: String
+    ) throws -> TemplateDraftSession {
+        guard let template = template(withID: templateID) else {
+            throw AgentTemplateLibraryStoreError.missingTemplate(templateID)
+        }
+
+        var session = try openDraftSession(for: templateID)
+        try templateFileSystem.scaffoldFile(
+            at: session.draftRootURL,
+            relativePath: relativePath,
+            template: template,
+            document: templateAssetDocumentSnapshot(for: templateID, template: template),
+            lineage: templateLineageSnapshot(for: templateID, template: template)
+        )
+
+        session.selectedFilePath = relativePath
+        session.hasUnsavedChanges = true
+        session.dirtyFilePaths = mergedDirtyPaths(
+            session.dirtyFilePaths,
+            inserting: relativePath
         )
         draftSessions[templateID] = session
         return session
@@ -1094,6 +1211,43 @@ final class AgentTemplateLibraryStore: ObservableObject {
 
     private func status(for template: AgentTemplate) -> TemplateAssetStatus {
         template.validationIssues.contains(where: { $0.severity == .error }) ? .draft : .published
+    }
+
+    private func mergedDirtyPaths(
+        _ existingPaths: [String],
+        inserting relativePath: String
+    ) -> [String] {
+        let normalizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var paths = existingPaths.filter { !$0.isEmpty && $0 != normalizedPath }
+        paths.append(normalizedPath)
+        return paths.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func templateAssetDocumentSnapshot(
+        for templateID: String,
+        template: AgentTemplate
+    ) -> TemplateAssetDocument {
+        customTemplateDocuments[templateID] ?? TemplateAssetDocument(
+            template: template,
+            revision: 1,
+            status: status(for: template),
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+    }
+
+    private func templateLineageSnapshot(
+        for templateID: String,
+        template: AgentTemplate
+    ) -> TemplateLineage {
+        customTemplateLineages[templateID] ?? TemplateLineage(
+            sourceScope: isBuiltInTemplate(templateID) ? .builtInCatalog : .manualCreation,
+            sourceTemplateID: templateID,
+            sourceRevision: customTemplateDocuments[templateID]?.revision,
+            createdReason: "Draft scaffold generated for \(template.name)."
+        )
     }
 
     private func buildTemplateAssetImportPreviewEntries(

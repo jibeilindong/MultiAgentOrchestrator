@@ -219,18 +219,7 @@ struct TemplateFileSystem {
 
         let readmeURL = templateExtensionsReadmeURL(for: templateID, under: appSupportRootDirectory)
         if !fileManager.fileExists(atPath: readmeURL.path) {
-            try writeTextDocument(
-                """
-                # Template Extensions
-
-                This directory stores the secondary development materials for the template package.
-
-                - `examples/`: sample prompts or usage examples
-                - `tests/`: validation fixtures or test cases
-                - `assets/`: supporting files bundled with the template
-                """,
-                to: readmeURL
-            )
+            try writeTextDocument(renderExtensionsReadmeMarkdown(), to: readmeURL)
         }
     }
 
@@ -458,6 +447,122 @@ struct TemplateFileSystem {
         try fileManager.removeItem(at: draftURL)
     }
 
+    func templateFileIndex(
+        at rootDirectoryURL: URL,
+        dirtyFilePaths: Set<String> = []
+    ) -> TemplateFileIndex {
+        TemplateFileIndex(
+            rootDirectoryURL: rootDirectoryURL,
+            nodes: standardTemplateBlueprints.map {
+                resolveTemplateFileNode(
+                    from: $0,
+                    under: rootDirectoryURL,
+                    dirtyFilePaths: dirtyFilePaths
+                )
+            }
+        )
+    }
+
+    func templateFileURL(at rootDirectoryURL: URL, relativePath: String) -> URL {
+        let normalizedPath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return rootDirectoryURL.appendingPathComponent(normalizedPath, isDirectory: false)
+    }
+
+    func fileContents(
+        at rootDirectoryURL: URL,
+        relativePath: String
+    ) throws -> String {
+        try String(
+            contentsOf: templateFileURL(at: rootDirectoryURL, relativePath: relativePath),
+            encoding: .utf8
+        )
+    }
+
+    func writeFileContents(
+        _ contents: String,
+        at rootDirectoryURL: URL,
+        relativePath: String
+    ) throws {
+        try writeTextDocument(
+            contents,
+            to: templateFileURL(at: rootDirectoryURL, relativePath: relativePath)
+        )
+    }
+
+    func removeFile(
+        at rootDirectoryURL: URL,
+        relativePath: String
+    ) throws {
+        let fileURL = templateFileURL(at: rootDirectoryURL, relativePath: relativePath)
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+        try fileManager.removeItem(at: fileURL)
+    }
+
+    func scaffoldContents(
+        for relativePath: String,
+        template: AgentTemplate,
+        document: TemplateAssetDocument,
+        lineage: TemplateLineage
+    ) throws -> String? {
+        switch relativePath {
+        case "template.json":
+            return try encodedJSONString(from: document)
+        case "SOUL.md":
+            return template.soulMD
+        case "AGENTS.md":
+            return renderAgentsMarkdown(template: template, document: document)
+        case "IDENTITY.md":
+            return renderIdentityMarkdown(template: template)
+        case "USER.md":
+            return renderUserMarkdown(template: template)
+        case "TOOLS.md":
+            return renderToolsMarkdown(template: template)
+        case "BOOTSTRAP.md":
+            return renderBootstrapMarkdown(template: template)
+        case "HEARTBEAT.md":
+            return renderHeartbeatMarkdown()
+        case "MEMORY.md":
+            return renderMemoryMarkdown()
+        case "lineage.json":
+            return try encodedJSONString(from: lineage)
+        case "extensions/README.md":
+            return renderExtensionsReadmeMarkdown()
+        case "extensions/examples/README.md":
+            return renderExamplesReadmeMarkdown(template: template)
+        case "extensions/examples/default-prompt.md":
+            return renderExamplePromptMarkdown(template: template)
+        case "extensions/tests/README.md":
+            return renderTestsReadmeMarkdown(template: template)
+        case "extensions/tests/acceptance-checklist.md":
+            return renderAcceptanceChecklistMarkdown(template: template)
+        case "extensions/assets/README.md":
+            return renderAssetsReadmeMarkdown(template: template)
+        case "extensions/assets/asset-manifest.md":
+            return renderAssetManifestMarkdown(template: template, document: document)
+        default:
+            return nil
+        }
+    }
+
+    func scaffoldFile(
+        at rootDirectoryURL: URL,
+        relativePath: String,
+        template: AgentTemplate,
+        document: TemplateAssetDocument,
+        lineage: TemplateLineage
+    ) throws {
+        guard let contents = try scaffoldContents(
+            for: relativePath,
+            template: template,
+            document: document,
+            lineage: lineage
+        ) else {
+            return
+        }
+
+        try writeFileContents(contents, at: rootDirectoryURL, relativePath: relativePath)
+    }
+
     func exportTemplateAssetDirectory(
         for templateID: String,
         under appSupportRootDirectory: URL,
@@ -491,6 +596,14 @@ struct TemplateFileSystem {
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    private func encodedJSONString<T: Encodable>(from value: T) throws -> String {
+        let data = try encoder.encode(value)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        return text
+    }
+
     private func uniqueDirectoryURL(named preferredName: String, in parentDirectory: URL) -> URL {
         let trimmed = preferredName.trimmingCharacters(in: .whitespacesAndNewlines)
         let baseName = trimmed.isEmpty ? "template-asset" : trimmed
@@ -503,6 +616,362 @@ struct TemplateFileSystem {
         }
 
         return candidateURL
+    }
+
+    private func renderExtensionsReadmeMarkdown() -> String {
+        """
+        # Template Extensions
+
+        This directory stores the secondary development materials for the template package.
+
+        - `examples/`: sample prompts or usage examples
+        - `tests/`: validation fixtures or test cases
+        - `assets/`: supporting files bundled with the template
+        """
+    }
+
+    private var standardTemplateBlueprints: [TemplateFileBlueprint] {
+        [
+            .file(
+                relativePath: "template.json",
+                displayName: "template.json",
+                kind: .json,
+                category: .structure,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "SOUL.md",
+                displayName: "SOUL.md",
+                kind: .markdown,
+                category: .soul,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "AGENTS.md",
+                displayName: "AGENTS.md",
+                kind: .markdown,
+                category: .systemManaged,
+                isRequired: true,
+                isEditable: false,
+                isSystemManaged: true
+            ),
+            .file(
+                relativePath: "IDENTITY.md",
+                displayName: "IDENTITY.md",
+                kind: .markdown,
+                category: .support,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "USER.md",
+                displayName: "USER.md",
+                kind: .markdown,
+                category: .support,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "TOOLS.md",
+                displayName: "TOOLS.md",
+                kind: .markdown,
+                category: .support,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "BOOTSTRAP.md",
+                displayName: "BOOTSTRAP.md",
+                kind: .markdown,
+                category: .support,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "HEARTBEAT.md",
+                displayName: "HEARTBEAT.md",
+                kind: .markdown,
+                category: .support,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "MEMORY.md",
+                displayName: "MEMORY.md",
+                kind: .markdown,
+                category: .support,
+                isRequired: true,
+                isEditable: true,
+                isSystemManaged: false
+            ),
+            .file(
+                relativePath: "lineage.json",
+                displayName: "lineage.json",
+                kind: .json,
+                category: .systemManaged,
+                isRequired: true,
+                isEditable: false,
+                isSystemManaged: true
+            ),
+            .directory(
+                relativePath: "revisions",
+                displayName: "revisions",
+                category: .revision,
+                isRequired: true,
+                isEditable: false,
+                isSystemManaged: true,
+                includesDynamicChildren: true
+            ),
+            .directory(
+                relativePath: "extensions",
+                displayName: "extensions",
+                category: .extensionSupport,
+                isRequired: true,
+                isEditable: false,
+                isSystemManaged: false,
+                children: [
+                    .file(
+                        relativePath: "extensions/README.md",
+                        displayName: "README.md",
+                        kind: .markdown,
+                        category: .extensionSupport,
+                        isRequired: true,
+                        isEditable: true,
+                        isSystemManaged: false
+                    ),
+                    .directory(
+                        relativePath: "extensions/examples",
+                        displayName: "examples",
+                        category: .extensionSupport,
+                        isRequired: true,
+                        isEditable: false,
+                        isSystemManaged: false,
+                        children: [
+                            .file(
+                                relativePath: "extensions/examples/README.md",
+                                displayName: "README.md",
+                                kind: .markdown,
+                                category: .extensionSupport,
+                                isRequired: true,
+                                isEditable: true,
+                                isSystemManaged: false
+                            ),
+                            .file(
+                                relativePath: "extensions/examples/default-prompt.md",
+                                displayName: "default-prompt.md",
+                                kind: .markdown,
+                                category: .extensionSupport,
+                                isRequired: true,
+                                isEditable: true,
+                                isSystemManaged: false
+                            )
+                        ]
+                    ),
+                    .directory(
+                        relativePath: "extensions/tests",
+                        displayName: "tests",
+                        category: .extensionSupport,
+                        isRequired: true,
+                        isEditable: false,
+                        isSystemManaged: false,
+                        children: [
+                            .file(
+                                relativePath: "extensions/tests/README.md",
+                                displayName: "README.md",
+                                kind: .markdown,
+                                category: .extensionSupport,
+                                isRequired: true,
+                                isEditable: true,
+                                isSystemManaged: false
+                            ),
+                            .file(
+                                relativePath: "extensions/tests/acceptance-checklist.md",
+                                displayName: "acceptance-checklist.md",
+                                kind: .markdown,
+                                category: .extensionSupport,
+                                isRequired: true,
+                                isEditable: true,
+                                isSystemManaged: false
+                            )
+                        ]
+                    ),
+                    .directory(
+                        relativePath: "extensions/assets",
+                        displayName: "assets",
+                        category: .extensionSupport,
+                        isRequired: true,
+                        isEditable: false,
+                        isSystemManaged: false,
+                        children: [
+                            .file(
+                                relativePath: "extensions/assets/README.md",
+                                displayName: "README.md",
+                                kind: .markdown,
+                                category: .extensionSupport,
+                                isRequired: true,
+                                isEditable: true,
+                                isSystemManaged: false
+                            ),
+                            .file(
+                                relativePath: "extensions/assets/asset-manifest.md",
+                                displayName: "asset-manifest.md",
+                                kind: .markdown,
+                                category: .extensionSupport,
+                                isRequired: true,
+                                isEditable: true,
+                                isSystemManaged: false
+                            )
+                        ]
+                    )
+                ]
+            )
+        ]
+    }
+
+    private func resolveTemplateFileNode(
+        from blueprint: TemplateFileBlueprint,
+        under rootDirectoryURL: URL,
+        dirtyFilePaths: Set<String>
+    ) -> TemplateFileNode {
+        let nodeURL = rootDirectoryURL.appendingPathComponent(blueprint.relativePath, isDirectory: blueprint.kind == .directory)
+        let isPresent = fileManager.fileExists(atPath: nodeURL.path)
+        let children: [TemplateFileNode]
+
+        if blueprint.includesDynamicChildren {
+            children = dynamicRevisionNodes(in: nodeURL, dirtyFilePaths: dirtyFilePaths)
+        } else {
+            children = blueprint.children.map {
+                resolveTemplateFileNode(
+                    from: $0,
+                    under: rootDirectoryURL,
+                    dirtyFilePaths: dirtyFilePaths
+                )
+            }
+        }
+
+        return TemplateFileNode(
+            relativePath: blueprint.relativePath,
+            displayName: blueprint.displayName,
+            kind: blueprint.kind,
+            category: blueprint.category,
+            isRequired: blueprint.isRequired,
+            isEditable: blueprint.isEditable,
+            isSystemManaged: blueprint.isSystemManaged,
+            isPresent: isPresent,
+            isDirty: dirtyFilePaths.contains(blueprint.relativePath),
+            children: children
+        )
+    }
+
+    private func dynamicRevisionNodes(
+        in revisionsDirectoryURL: URL,
+        dirtyFilePaths: Set<String>
+    ) -> [TemplateFileNode] {
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: revisionsDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        return contents
+            .sorted {
+                $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+            }
+            .compactMap { url in
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+                guard values?.isDirectory != true else { return nil }
+
+                let relativePath = "revisions/\(url.lastPathComponent)"
+                return TemplateFileNode(
+                    relativePath: relativePath,
+                    displayName: url.lastPathComponent,
+                    kind: fileNodeKind(for: url),
+                    category: .revision,
+                    isRequired: false,
+                    isEditable: false,
+                    isSystemManaged: true,
+                    isPresent: true,
+                    isDirty: dirtyFilePaths.contains(relativePath),
+                    children: []
+                )
+            }
+    }
+
+    private func fileNodeKind(for url: URL) -> TemplateFileNodeKind {
+        switch url.pathExtension.lowercased() {
+        case "md":
+            return .markdown
+        case "json":
+            return .json
+        default:
+            return .other
+        }
+    }
+
+    private struct TemplateFileBlueprint {
+        let relativePath: String
+        let displayName: String
+        let kind: TemplateFileNodeKind
+        let category: TemplateFileNodeCategory
+        let isRequired: Bool
+        let isEditable: Bool
+        let isSystemManaged: Bool
+        let children: [TemplateFileBlueprint]
+        let includesDynamicChildren: Bool
+
+        static func file(
+            relativePath: String,
+            displayName: String,
+            kind: TemplateFileNodeKind,
+            category: TemplateFileNodeCategory,
+            isRequired: Bool,
+            isEditable: Bool,
+            isSystemManaged: Bool
+        ) -> TemplateFileBlueprint {
+            TemplateFileBlueprint(
+                relativePath: relativePath,
+                displayName: displayName,
+                kind: kind,
+                category: category,
+                isRequired: isRequired,
+                isEditable: isEditable,
+                isSystemManaged: isSystemManaged,
+                children: [],
+                includesDynamicChildren: false
+            )
+        }
+
+        static func directory(
+            relativePath: String,
+            displayName: String,
+            category: TemplateFileNodeCategory,
+            isRequired: Bool,
+            isEditable: Bool,
+            isSystemManaged: Bool,
+            children: [TemplateFileBlueprint] = [],
+            includesDynamicChildren: Bool = false
+        ) -> TemplateFileBlueprint {
+            TemplateFileBlueprint(
+                relativePath: relativePath,
+                displayName: displayName,
+                kind: .directory,
+                category: category,
+                isRequired: isRequired,
+                isEditable: isEditable,
+                isSystemManaged: isSystemManaged,
+                children: children,
+                includesDynamicChildren: includesDynamicChildren
+            )
+        }
     }
 
     private func renderAgentsMarkdown(template: AgentTemplate, document: TemplateAssetDocument) -> String {

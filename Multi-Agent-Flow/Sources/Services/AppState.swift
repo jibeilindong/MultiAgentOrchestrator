@@ -640,6 +640,11 @@ class AppState: ObservableObject {
         return runtimeState.workflowConfigurationRevision != runtimeState.appliedWorkflowConfigurationRevision
     }
 
+    var pendingWorkflowConfigurationRevisionDelta: Int {
+        guard let runtimeState = currentProject?.runtimeState else { return 0 }
+        return max(0, runtimeState.workflowConfigurationRevision - runtimeState.appliedWorkflowConfigurationRevision)
+    }
+
     var lastAppliedWorkflowConfigurationAt: Date? {
         currentProject?.runtimeState.lastAppliedWorkflowAt
     }

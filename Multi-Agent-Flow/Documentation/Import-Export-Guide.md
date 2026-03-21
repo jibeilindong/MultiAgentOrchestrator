@@ -1,107 +1,148 @@
-# Multi-Agent-Flow Import/Export Guide
+# Multi-Agent-Flow 导入导出指南
 
-## Export Format
+## 文档目的
 
-### JSON Structure
+本文档说明当前项目导入、导出、备份与模板保存的边界。
 
-```json
-{
-  "project": {
-    "id": "uuid",
-    "name": "Project Name",
-    "agents": [...],
-    "workflows": [...],
-    "permissions": [...],
-    "createdAt": "ISO8601 date",
-    "updatedAt": "ISO8601 date"
-  },
-  "tasks": [...],
-  "messages": [...],
-  "executionResults": [...],
-  "kanban": {
-    "tasks": {
-      "To Do": [...],
-      "In Progress": [...],
-      "Done": [...],
-      "Blocked": [...]
-    }
-  },
-  "exportedAt": 1234567890,
-  "version": "1.0",
-  "format": "maoproject"
-}
-```
+它讨论的是数据交换与归档能力，不替代 Workflow Editor 中的 `Save` 与 `Apply`。
 
-### Export Options
+## 先区分四类动作
 
-| Option | Description |
-|--------|-------------|
-| Include Tasks | Export all tasks |
-| Include Kanban Status | Export task status by column |
-| Include Messages | Export chat messages |
-| Include Execution Results | Export execution history |
+当前系统里有四类容易混淆的动作：
 
-### Supported Formats
+- `Save`
+  保存当前 `.maoproj` 项目草稿。
+- `Apply`
+  将当前 workflow 的待生效结构与节点本地受管配置推送到 OpenClaw。
+- `Import / Export`
+  用于项目数据交换、预览与迁移。
+- `Backup / Template`
+  用于归档恢复或将当前内容另存为模板资产。
 
-- **JSON** (.json) - Full data export
-- **YAML** (.yaml) - Human-readable format
-- **Markdown** (.md) - Documentation format
+最重要的区别是：
 
-## Import Guide
+- `Save` 不是导出
+- `Apply` 不是导出
+- `Export` 也不会替代 workflow 的生效流程
 
-### Step 1: Select File
+## 项目导出
 
-1. Click "Import Project..."
-2. Select a `.json` file
-3. System validates file format
+当前项目导出支持三种格式：
 
-### Step 2: Preview
+- `JSON`
+- `YAML`
+- `Markdown`
 
-Review imported data:
-- Project information
-- Data statistics
-- Warnings about potential issues
+导出内容以当前项目状态为基础，可按需包含：
 
-### Step 3: Confirm
+- 项目主体数据
+- 任务
+- 看板状态
+- 消息
+- 执行结果
 
-Select data to import:
-- Project configuration
-- Tasks & Kanban
-- Messages
-- Execution results
+导出的项目包会带有以下元数据字段：
 
-### Data Validation
+- `exportedAt`
+- `version`
+- `format`
 
-The system validates:
-- JSON structure
-- Required fields
-- Data compatibility
-- Version compatibility
+## 项目导入
 
-### Error Handling
+当前项目导入入口只接受：
 
-If import fails:
-1. System shows error message
-2. Original data is preserved
-3. You can retry with corrected file
+- `JSON` 文件
 
-## Backup & Restore
+导入流程包括三步：
 
-### Create Backup
+1. 选择导入文件。
+2. 查看导入预览。
+3. 确认实际要导入的数据范围。
 
-1. Click "Create Backup..."
-2. Choose location
-3. Backup includes all project data
+导入预览会显示：
 
-### Restore from Backup
+- 项目名称
+- agent 数量
+- workflow 数量
+- 任务数量
+- 消息数量
+- 执行结果数量
+- 看板统计
+- 基本格式与版本信息
 
-1. Click "Restore from Backup..."
-2. Select backup file
-3. Confirm restoration
+导入阶段会做基础校验，包括：
 
-## Templates
+- JSON 结构是否可解析
+- 推荐字段是否存在
+- 版本兼容性提示
+- 项目、任务、看板等数据的基础有效性
 
-Save current project as template:
-1. Click "Save as Template..."
-2. Enter template name
-3. Template saved for future use
+## 导出与导入的适用场景
+
+推荐按下面的方式使用：
+
+- 需要继续编辑当前项目
+  使用 `Save` 保存 `.maoproj`
+- 需要把当前设计结果发给别人做数据交换
+  使用 `Export`
+- 需要把当前 workflow 配置推送到 OpenClaw
+  使用 `Apply`
+- 需要做整包归档恢复
+  使用 `Backup`
+
+## 备份与恢复
+
+当前系统提供独立的备份与恢复入口。
+
+备份文件扩展名为：
+
+- `.maobackup`
+
+备份适合用于：
+
+- 项目归档
+- 本地恢复
+- 风险操作前留存快照
+
+恢复流程与普通项目导入不同，它面向的是专门的备份包，而不是通用导出文件。
+
+## 另存为模板
+
+当前系统支持将当前内容另存为模板文件。
+
+模板文件扩展名为：
+
+- `.maotemplate`
+
+这个动作适合：
+
+- 抽取可复用的初始配置
+- 将一组当前内容沉淀为模板资产
+
+它与 Workflow Editor 中的节点本地受管配置编辑是两个层次：
+
+- Workflow Editor 编辑的是当前项目里的节点本地受管副本
+- 保存为模板是把当前内容抽取为可复用资产
+
+## 注意事项
+
+### 导入不会替你执行 Apply
+
+导入项目数据之后，如果还需要让 workflow 配置在 OpenClaw 侧生效，仍然要按照当前产品语义执行 `Apply`。
+
+### 导出不会替你保存 `.maoproj`
+
+项目导出是数据交换动作，不等于更新当前工作中的项目草稿文件。
+
+### 执行结果属于可选导出内容
+
+如果只需要交换 workflow 设计与项目结构，可以不包含执行结果。
+
+### Workflow Editor 的配置草稿不等于导出包
+
+Workflow Editor 中的节点本地受管配置首先服务于当前项目设计与 Apply，不应把它理解成导出系统本身。
+
+## 相关文档
+
+- [Workflow Editor Guide](Workflow-Editor-Guide.md)
+- [OpenClaw 远程执行说明](OpenClaw-Remote-Execution.md)

@@ -486,6 +486,7 @@ export function syncOpenClawState(
     detectedAgents?: MAProject["openClaw"]["detectedAgents"];
     connectionState?: MAProject["openClaw"]["connectionState"];
     lastProbeReport?: MAProject["openClaw"]["lastProbeReport"];
+    recoveryReports?: MAProject["openClaw"]["recoveryReports"];
   }
 ): MAProject {
   const nextOpenClaw = {
@@ -497,12 +498,30 @@ export function syncOpenClawState(
     connectionState: payload.connectionState ?? project.openClaw.connectionState,
     lastProbeReport:
       payload.lastProbeReport === undefined ? project.openClaw.lastProbeReport ?? null : payload.lastProbeReport,
+    recoveryReports: payload.recoveryReports ?? project.openClaw.recoveryReports ?? [],
     lastSyncedAt: toSwiftDate()
   };
 
   return withUpdatedAt({
     ...project,
     openClaw: nextOpenClaw
+  });
+}
+
+export function appendOpenClawRecoveryReport(
+  project: MAProject,
+  report: NonNullable<MAProject["openClaw"]["recoveryReports"]>[number],
+  maxReports = 10
+): MAProject {
+  const nextReports = [report, ...(project.openClaw.recoveryReports ?? [])].slice(0, Math.max(1, maxReports));
+
+  return withUpdatedAt({
+    ...project,
+    openClaw: {
+      ...project.openClaw,
+      recoveryReports: nextReports,
+      lastSyncedAt: toSwiftDate()
+    }
   });
 }
 

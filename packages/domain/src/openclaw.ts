@@ -111,6 +111,26 @@ export interface OpenClawProbeReportSnapshot {
   observedDefaultTransports: string[];
 }
 
+export const OPENCLAW_RECOVERY_REPORT_STATUSES = ["completed", "partial", "manual_follow_up", "failed"] as const;
+export type OpenClawRecoveryReportStatus = (typeof OPENCLAW_RECOVERY_REPORT_STATUSES)[number];
+
+export interface OpenClawRecoveryStateSnapshot {
+  label: string;
+  summary: string;
+  layers: string;
+}
+
+export interface OpenClawRecoveryReportSnapshot {
+  createdAt: SwiftDate;
+  status: OpenClawRecoveryReportStatus;
+  summary: string;
+  completedSteps: string[];
+  manualSteps: string[];
+  findings: string[];
+  before: OpenClawRecoveryStateSnapshot;
+  after: OpenClawRecoveryStateSnapshot;
+}
+
 export interface ProjectOpenClawSnapshot {
   config: OpenClawConfig;
   isConnected: boolean;
@@ -119,6 +139,7 @@ export interface ProjectOpenClawSnapshot {
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
   connectionState: OpenClawConnectionStateSnapshot;
   lastProbeReport?: OpenClawProbeReportSnapshot | null;
+  recoveryReports?: OpenClawRecoveryReportSnapshot[];
   sessionBackupPath?: string | null;
   sessionMirrorPath?: string | null;
   lastSyncedAt: SwiftDate;

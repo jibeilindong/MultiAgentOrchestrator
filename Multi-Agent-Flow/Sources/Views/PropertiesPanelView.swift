@@ -1847,17 +1847,12 @@ struct TemplateLibraryManagerSheet: View {
                         )
                     )
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("SOUL.md 预览")
-                            .font(.headline)
-                        TextEditor(text: .constant((self.draft ?? TemplateEditorDraft(template: template)).applying(to: template).soulMD))
-                            .font(.system(.body, design: .monospaced))
-                            .frame(height: 320)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.gray.opacity(0.25), lineWidth: 1)
-                            )
-                    }
+                    TemplateWorkspaceView(
+                        template: template,
+                        onFeedback: { message in
+                            feedbackMessage = message
+                        }
+                    )
                 }
                 .padding()
             }
@@ -1876,6 +1871,10 @@ struct TemplateLibraryManagerSheet: View {
     private func saveDraft(baseTemplate: AgentTemplate, draft: TemplateEditorDraft) {
         let updated = draft.applying(to: baseTemplate)
         let persisted = templateLibrary.upsert(updated)
+        try? templateLibrary.discardDraftSession(for: baseTemplate.id)
+        if persisted.id != baseTemplate.id {
+            try? templateLibrary.discardDraftSession(for: persisted.id)
+        }
         selectedTemplateManagerID = persisted.id
         selectedTemplateID = persisted.id
         self.draft = TemplateEditorDraft(template: persisted)
