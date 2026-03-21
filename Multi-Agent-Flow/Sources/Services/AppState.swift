@@ -2057,17 +2057,38 @@ class AppState: ObservableObject {
         _ = ensureAgentNode(agentID: agent.id, suggestedPosition: snapPointToGrid(position))
     }
 
-    func removeNodes(_ nodeIDs: Set<UUID>) {
-        guard !nodeIDs.isEmpty else { return }
+    static func undeletableNodeIDs(in workflow: Workflow, from nodeIDs: Set<UUID>) -> Set<UUID> {
+        guard !nodeIDs.isEmpty else { return [] }
+
+        return Set(
+            workflow.nodes
+                .filter { nodeIDs.contains($0.id) && $0.type == .start }
+                .map(\.id)
+        )
+    }
+
+    func undeletableNodeIDs(in nodeIDs: Set<UUID>) -> Set<UUID> {
+        guard let workflow = currentProject?.workflows.first else { return [] }
+        return Self.undeletableNodeIDs(in: workflow, from: nodeIDs)
+    }
+
+    @discardableResult
+    func removeNodes(_ nodeIDs: Set<UUID>) -> Set<UUID> {
+        guard !nodeIDs.isEmpty else { return [] }
+
+        let removableNodeIDs = nodeIDs.subtracting(undeletableNodeIDs(in: nodeIDs))
+        guard !removableNodeIDs.isEmpty else { return [] }
 
         updateMainWorkflow { workflow in
-            workflow.nodes.removeAll { nodeIDs.contains($0.id) }
-            workflow.edges.removeAll { nodeIDs.contains($0.fromNodeID) || nodeIDs.contains($0.toNodeID) }
+            workflow.nodes.removeAll { removableNodeIDs.contains($0.id) }
+            workflow.edges.removeAll { removableNodeIDs.contains($0.fromNodeID) || removableNodeIDs.contains($0.toNodeID) }
         }
+
+        return removableNodeIDs
     }
 
     func removeNode(_ nodeID: UUID) {
-        removeNodes([nodeID])
+        _ = removeNodes([nodeID])
     }
 
     func removeEdge(_ edgeID: UUID) {

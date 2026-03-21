@@ -490,13 +490,22 @@ struct WorkflowEditorView: View {
         return []
     }
 
+    private func deletableActiveNodeSelection() -> Set<UUID> {
+        let selection = activeNodeSelection()
+        return selection.subtracting(appState.undeletableNodeIDs(in: selection))
+    }
+
     private func boundarySelectionContainsNodeIDs(_ boundary: WorkflowBoundary, selection: Set<UUID>) -> Bool {
         boundary.memberNodeIDs.allSatisfy { selection.contains($0) }
     }
 
     private func copySelection() {
+        copySelection(nodeSelection: nil)
+    }
+
+    private func copySelection(nodeSelection: Set<UUID>?) {
         guard let workflow = currentWorkflow() else { return }
-        let selection = activeNodeSelection()
+        let selection = nodeSelection ?? activeNodeSelection()
         guard !selection.isEmpty else { return }
 
         copiedNodes = workflow.nodes.filter { selection.contains($0.id) }
@@ -505,7 +514,9 @@ struct WorkflowEditorView: View {
     }
 
     private func cutSelection() {
-        copySelection()
+        let selection = deletableActiveNodeSelection()
+        guard !selection.isEmpty else { return }
+        copySelection(nodeSelection: selection)
         deleteSelection()
     }
 
@@ -572,17 +583,31 @@ struct WorkflowEditorView: View {
 
     private func deleteSelection() {
         let nodeSelection = activeNodeSelection()
+        let removedNodeIDs: Set<UUID>
         if !nodeSelection.isEmpty {
-            appState.removeNodes(nodeSelection)
+            removedNodeIDs = appState.removeNodes(nodeSelection)
+        } else {
+            removedNodeIDs = []
         }
+        let survivingNodeIDs = nodeSelection.subtracting(removedNodeIDs)
         if !selectedBoundaryIDs.isEmpty {
             appState.removeBoundaries(selectedBoundaryIDs)
         }
-        if nodeSelection.isEmpty && selectedBoundaryIDs.isEmpty {
+        if removedNodeIDs.isEmpty && selectedBoundaryIDs.isEmpty {
             return
         }
-        selectedNodeID = nil
-        selectedNodeIDs.removeAll()
+
+        if survivingNodeIDs.isEmpty {
+            selectedNodeID = nil
+            selectedNodeIDs.removeAll()
+        } else if survivingNodeIDs.count == 1 {
+            selectedNodeID = survivingNodeIDs.first
+            selectedNodeIDs.removeAll()
+        } else {
+            selectedNodeID = nil
+            selectedNodeIDs = survivingNodeIDs
+        }
+
         selectedEdgeID = nil
         selectedBoundaryIDs.removeAll()
     }
@@ -978,6 +1003,22 @@ struct EditorToolbar: View {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
     }
 
+    private var deletableNodeCandidateSelection: Set<UUID> {
+        if !selectedNodeIDs.isEmpty {
+            return selectedNodeIDs
+        }
+        if let selectedNodeID {
+            return [selectedNodeID]
+        }
+        return []
+    }
+
+    private var hasDeletableNodeSelection: Bool {
+        !deletableNodeCandidateSelection
+            .subtracting(appState.undeletableNodeIDs(in: deletableNodeCandidateSelection))
+            .isEmpty
+    }
+
     private var activeNodeCount: Int {
         if !selectedNodeIDs.isEmpty {
             return selectedNodeIDs.count
@@ -990,7 +1031,7 @@ struct EditorToolbar: View {
     }
 
     private var hasDeleteTarget: Bool {
-        hasNodeSelection || hasBoundarySelection || selectedEdgeID != nil
+        hasDeletableNodeSelection || hasBoundarySelection || selectedEdgeID != nil
     }
 
     var body: some View {

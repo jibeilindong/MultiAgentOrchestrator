@@ -49,6 +49,10 @@ struct ControlButtonsView: View {
         return []
     }
 
+    private var hasDeletableNodeSelection: Bool {
+        !activeSelection.subtracting(appState.undeletableNodeIDs(in: activeSelection)).isEmpty
+    }
+
     var body: some View {
         GeometryReader { geometry in
             Color.clear
@@ -128,10 +132,10 @@ struct ControlButtonsView: View {
                                     iconButton(systemName: "doc.on.doc", action: onCopySelection)
                                         .disabled(!hasNodeSelection)
                                     iconButton(systemName: "scissors", action: onCutSelection)
-                                        .disabled(!hasNodeSelection)
+                                        .disabled(!hasDeletableNodeSelection)
                                     iconButton(systemName: "doc.on.clipboard", action: onPasteSelection)
                                     iconButton(systemName: "trash", action: onDeleteSelection)
-                                        .disabled(!hasNodeSelection)
+                                        .disabled(!hasDeletableNodeSelection)
                                 }
 
                                 Text(hasNodeSelection ? "已选中 \(activeSelection.count) 个节点" : "当前未选中节点")
