@@ -1230,7 +1230,8 @@ class OpenClawService: ObservableObject {
                     }
                 } else {
                     self.executionState?.failedNodes.append(node.id)
-                    self.addLog(.error, "Node failed: \(agent.name) - \(result.output)", nodeID: node.id)
+                    let failureSummary = result.summaryText.compactSingleLinePreview(limit: 160)
+                    self.addLog(.error, "Node failed: \(agent.name) - \(failureSummary)", nodeID: node.id)
                 }
 
                 self.saveExecutionState()

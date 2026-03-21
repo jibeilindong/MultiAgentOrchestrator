@@ -101,27 +101,24 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
     }
 
     nonisolated var inferredRole: String? {
-        if let role = metadata["role"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-           !role.isEmpty {
-            return role
-        }
-
         switch runtimeEvent?.eventType {
         case .taskDispatch:
             return runtimeEvent?.source.kind == .user ? "user" : "assistant"
         case .taskAccepted, .taskProgress, .taskResult, .taskRoute, .taskError, .taskApprovalRequired, .taskApproved, .sessionSync:
             return "assistant"
         case nil:
-            return nil
+            break
         }
+
+        if let role = metadata["role"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !role.isEmpty {
+            return role
+        }
+
+        return nil
     }
 
     nonisolated var inferredKind: String? {
-        if let kind = metadata["kind"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-           !kind.isEmpty {
-            return kind
-        }
-
         switch runtimeEvent?.eventType {
         case .taskDispatch:
             return "input"
@@ -130,24 +127,41 @@ struct Message: Identifiable, Codable, Equatable, Hashable {
         case .taskResult, .taskRoute, .taskError, .taskApprovalRequired, .taskApproved:
             return "output"
         case nil:
-            return nil
+            break
         }
+
+        if let kind = metadata["kind"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           !kind.isEmpty {
+            return kind
+        }
+
+        return nil
     }
 
     nonisolated var inferredAgentName: String? {
+        if let runtimeAgentName = runtimeEvent?.source.agentName ?? runtimeEvent?.target.agentName,
+           !runtimeAgentName.isEmpty {
+            return runtimeAgentName
+        }
+
         if let agentName = metadata["agentName"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !agentName.isEmpty {
             return agentName
         }
-        return runtimeEvent?.source.agentName ?? runtimeEvent?.target.agentName
+        return nil
     }
 
     nonisolated var inferredOutputType: String? {
+        if let runtimeOutputType = runtimeEvent?.payload["outputType"],
+           !runtimeOutputType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return runtimeOutputType
+        }
+
         if let outputType = metadata["outputType"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !outputType.isEmpty {
             return outputType
         }
-        return runtimeEvent?.payload["outputType"]
+        return nil
     }
 
     nonisolated var summaryText: String {

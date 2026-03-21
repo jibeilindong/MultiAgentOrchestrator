@@ -1219,7 +1219,7 @@ final class OpsAnalyticsStore {
         limit: Int
     ) -> [OpsTraceSummaryRow] {
         let sql = """
-        SELECT span_id, start_time, duration_ms, attributes, service, status
+        SELECT span_id, start_time, duration_ms, attributes, service, status, events
         FROM spans
         WHERE project_id = ?
           AND service IN ('multi-agent-flow.execution', 'openclaw.external-session')
@@ -1250,8 +1250,14 @@ final class OpsAnalyticsStore {
             let attributes = dictionary(from: String(cString: attributesCString))
             let service = String(cString: serviceCString)
             let status = String(cString: statusCString)
+            let eventsText = sqlite3_column_type(statement, 6) == SQLITE_NULL
+                ? nil
+                : String(cString: sqlite3_column_text(statement, 6))
             let executionStatus = ExecutionStatus(rawValue: attributes["execution_status"] ?? "") ?? executionStatus(forSpanStatus: status)
             let outputType = ExecutionOutputType(rawValue: attributes["output_type"] ?? "") ?? .empty
+            let previewText = emptyToNil(attributes["preview_text"])
+                ?? emptyToNil(eventsText?.compactSingleLinePreview(limit: 160))
+                ?? "No output"
 
             rows.append(
                 OpsTraceSummaryRow(
@@ -1263,7 +1269,7 @@ final class OpsAnalyticsStore {
                     routingAction: emptyToNil(attributes["routing_action"]),
                     outputType: outputType,
                     sourceLabel: service == "openclaw.external-session" ? "OpenClaw" : "Runtime",
-                    previewText: attributes["preview_text"] ?? "No output"
+                    previewText: previewText
                 )
             )
         }

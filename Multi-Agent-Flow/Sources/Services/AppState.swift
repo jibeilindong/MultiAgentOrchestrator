@@ -3656,7 +3656,9 @@ class AppState: ObservableObject {
                 continue
             }
 
-            let role = (message.metadata["role"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let role = (message.inferredRole ?? message.metadata["role"] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
             guard role == "user" || role == "assistant" else { continue }
             localMessageIndicesByRole[role, default: []].append(index)
         }

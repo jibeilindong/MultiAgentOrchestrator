@@ -462,7 +462,7 @@ struct WorkflowEditorView: View {
                 self.isRunning = false
                 // 显示执行结果
                 for result in results {
-                    print("Agent executed: \(result.status) - \(result.output)")
+                    print("Agent executed: \(result.status) - \(result.summaryText)")
                 }
             }
         }

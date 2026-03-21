@@ -213,6 +213,7 @@ NOTARY_KEYCHAIN_PROFILE=multi-agent-flow-notary ./scripts/release-macos.sh
 - [工作流编辑器指南](Multi-Agent-Flow/Documentation/Workflow-Editor-Guide.md)
 - [导入导出指南](Multi-Agent-Flow/Documentation/Import-Export-Guide.md)
 - [OpenClaw 远程执行指南](Multi-Agent-Flow/Documentation/OpenClaw-Remote-Execution.md)
+- [OpenClaw Agent Runtime 协议](docs/openclaw-agent-runtime-protocol.md)
 - [嵌套子流程使用指南](Multi-Agent-Flow/Documentation/Subflow-Usage-Guide.md)
 
 ## 备注
