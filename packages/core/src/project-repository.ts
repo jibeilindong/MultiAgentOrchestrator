@@ -1,7 +1,9 @@
 import type { MAProject } from "@multi-agent-flow/domain";
+import { normalizeAgentName } from "./agent-naming";
 import { stableStringify } from "./json";
 import { createEmptyProject } from "./project-factory";
 import { toSwiftDate } from "./swift-date";
+import { normalizeWorkflowNodeTitle } from "./workflow-node-naming";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -37,20 +39,25 @@ function createDefaultProtocolMemory(timestamp: number) {
 function normalizeAgents(input: Partial<MAProject>, base: MAProject): MAProject["agents"] {
   const baseTimestamp = input.updatedAt ?? base.updatedAt;
   const fallbackProtocolMemory = createDefaultProtocolMemory(baseTimestamp);
+  const nextAgents: MAProject["agents"] = [];
 
-  return (input.agents ?? base.agents).map((agent) => {
+  for (const agent of input.agents ?? base.agents) {
     const rawOpenClawDefinition: Record<string, unknown> = isRecord(agent.openClawDefinition) ? agent.openClawDefinition : {};
     const protocolMemory = isRecord(rawOpenClawDefinition.protocolMemory)
       ? rawOpenClawDefinition.protocolMemory
       : fallbackProtocolMemory;
+    const normalizedName = normalizeAgentName(nextAgents, typeof agent.name === "string" ? agent.name : "", {
+      excludeAgentId: agent.id
+    });
 
-    return {
+    nextAgents.push({
       ...agent,
+      name: normalizedName,
       openClawDefinition: {
         agentIdentifier:
           typeof rawOpenClawDefinition["agentIdentifier"] === "string"
-            ? rawOpenClawDefinition["agentIdentifier"]
-            : agent.name,
+            ? rawOpenClawDefinition["agentIdentifier"] || normalizedName
+            : normalizedName,
         modelIdentifier:
           typeof rawOpenClawDefinition["modelIdentifier"] === "string"
             ? rawOpenClawDefinition["modelIdentifier"]
@@ -82,6 +89,45 @@ function normalizeAgents(input: Partial<MAProject>, base: MAProject): MAProject[
             : fallbackProtocolMemory.repeatOffenses
           }
       }
+    });
+  }
+
+  return nextAgents;
+}
+
+function normalizeWorkflows(
+  input: Partial<MAProject>,
+  base: MAProject,
+  agents: MAProject["agents"]
+): MAProject["workflows"] {
+  const agentNameById = new Map(agents.map((agent) => [agent.id, agent.name] as const));
+
+  return (input.workflows ?? base.workflows).map((workflow) => {
+    const nextNodes = [...workflow.nodes];
+
+    for (const [index, node] of workflow.nodes.entries()) {
+      const fallbackFunctionDescription = node.agentID ? agentNameById.get(node.agentID) : undefined;
+      const requestedTitle = (typeof node.title === "string" ? node.title.trim() : "") || fallbackFunctionDescription || "";
+      nextNodes[index] = {
+        ...node,
+        title: normalizeWorkflowNodeTitle(
+          {
+            ...workflow,
+            nodes: nextNodes
+          },
+          node.type,
+          requestedTitle,
+          {
+            excludeNodeId: node.id,
+            fallbackFunctionDescription
+          }
+        )
+      };
+    }
+
+    return {
+      ...workflow,
+      nodes: nextNodes
     };
   });
 }
@@ -94,12 +140,14 @@ export function normalizeProject(input: Partial<MAProject>): MAProject {
   const taskDataInput = isRecord(input.taskData) ? input.taskData : null;
   const memoryDataInput = isRecord(input.memoryData) ? input.memoryData : null;
   const runtimeStateInput = isRecord(input.runtimeState) ? input.runtimeState : null;
+  const agents = normalizeAgents(input, base);
+  const workflows = normalizeWorkflows(input, base, agents);
 
   return {
     ...base,
     ...input,
-    agents: normalizeAgents(input, base),
-    workflows: input.workflows ?? base.workflows,
+    agents,
+    workflows,
     permissions: input.permissions ?? base.permissions,
     openClaw: {
       ...base.openClaw,

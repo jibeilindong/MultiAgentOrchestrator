@@ -14,6 +14,7 @@ struct NodesView: View {
     @Binding var selectedBoundaryIDs: Set<UUID>
     @Binding var connectingFromNode: WorkflowNode?
     @Binding var tempConnectionEnd: CGPoint?
+    @Binding var transientNodePositions: [UUID: CGPoint]
     let scale: CGFloat
     let offset: CGSize
     let geometry: GeometryProxy
@@ -23,6 +24,7 @@ struct NodesView: View {
     var batchTargetNodeIDs: Set<UUID> = []
     var onNodeClick: ((WorkflowNode) -> Void)?
     var onNodeSelected: ((WorkflowNode) -> Void)?
+    var onNodeDragEnded: (([UUID: CGPoint]) -> Void)?
 
     @State private var draggingNode: WorkflowNode?
     @State private var dragOriginPositions: [UUID: CGPoint] = [:]
@@ -33,6 +35,7 @@ struct NodesView: View {
         let nodeConnectionCounts = workflow?.connectionCountsByNodeID() ?? [:]
         let connectedNodeIDs = allConnectedNodeIDs(in: workflow)
         let relatedNodeIDs = relatedNodeIDs(for: focusedNodeIDs, in: workflow)
+        let nodeIDsInBoundaries = nodeIDsInBoundaries(in: workflow)
 
         ForEach(workflow?.nodes ?? []) { node in
             let counts = nodeConnectionCounts[node.id] ?? .zero
@@ -42,6 +45,7 @@ struct NodesView: View {
                 agent: appState.getAgent(for: node),
                 incomingConnections: counts.incoming,
                 outgoingConnections: counts.outgoing,
+                isInBoundary: nodeIDsInBoundaries.contains(node.id),
                 isConnectingMode: isConnectMode,
                 isConnectSource: connectFromAgentID == node.id,
                 isBatchSource: batchSourceNodeIDs.contains(node.id),
@@ -53,13 +57,14 @@ struct NodesView: View {
                 textScale: appState.canvasDisplaySettings.textScale,
                 textColor: .black
             )
-            .position(adjustedPosition(node.position))
+            .position(adjustedPosition(node))
             .zIndex(selectedNodeIDs.contains(node.id) || node.id == selectedNodeID ? 100 : (draggingNode?.id == node.id ? 50 : 1))
             .gesture(createNodeGesture(for: node))
         }
     }
 
-    private func adjustedPosition(_ position: CGPoint) -> CGPoint {
+    private func adjustedPosition(_ node: WorkflowNode) -> CGPoint {
+        let position = transientNodePositions[node.id] ?? node.position
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
         return CGPoint(
@@ -77,6 +82,11 @@ struct NodesView: View {
                 draggingNode = node
             }
             .onEnded { _ in
+                let finalPositions = transientNodePositions
+                if !finalPositions.isEmpty {
+                    onNodeDragEnded?(finalPositions)
+                }
+                transientNodePositions.removeAll()
                 draggingNode = nil
                 dragOriginPositions.removeAll()
             }
@@ -144,13 +154,26 @@ struct NodesView: View {
         let dx = translation.width / scale
         let dy = translation.height / scale
 
-        appState.updateMainWorkflow { workflow in
-            for index in workflow.nodes.indices where selection.contains(workflow.nodes[index].id) {
-                guard let origin = dragOriginPositions[workflow.nodes[index].id] else { continue }
-                let tentative = CGPoint(x: origin.x + dx, y: origin.y + dy)
-                workflow.nodes[index].position = appState.snapPointToGrid(tentative)
+        var updatedPositions = transientNodePositions
+        for targetNode in workflow.nodes where selection.contains(targetNode.id) {
+            guard let origin = dragOriginPositions[targetNode.id] else { continue }
+            let tentative = CGPoint(x: origin.x + dx, y: origin.y + dy)
+            updatedPositions[targetNode.id] = appState.snapPointToGrid(tentative)
+        }
+        transientNodePositions = updatedPositions
+    }
+
+    private func nodeIDsInBoundaries(in workflow: Workflow?) -> Set<UUID> {
+        guard let workflow else { return [] }
+
+        var nodeIDs: Set<UUID> = []
+        for boundary in workflow.boundaries {
+            nodeIDs.formUnion(boundary.memberNodeIDs)
+            for node in workflow.nodes where boundary.rect.contains(node.position) {
+                nodeIDs.insert(node.id)
             }
         }
+        return nodeIDs
     }
 
     private func handleSingleTap(_ node: WorkflowNode) {

@@ -7,14 +7,14 @@
 
 import Foundation
 
-enum AgentTemplateFamily: String, CaseIterable, Identifiable, Hashable {
+enum AgentTemplateFamily: String, CaseIterable, Identifiable, Hashable, Codable {
     case functional = "功能型"
     case production = "作业型"
 
     var id: String { rawValue }
 }
 
-enum AgentTemplateCategory: String, CaseIterable, Identifiable, Hashable {
+enum AgentTemplateCategory: String, CaseIterable, Identifiable, Hashable, Codable {
     case functionalLearningTrainingTesting = "学习、训练、测试"
     case functionalSupervisionAssessment = "监督、考察"
     case functionalLogAnalysis = "日志分析"
@@ -44,16 +44,20 @@ enum AgentTemplateCategory: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-struct AgentTemplate: Identifiable, Hashable {
-    let id: String
-    let category: AgentTemplateCategory
-    let name: String
-    let summary: String
-    let applicableScenarios: [String]
-    let identity: String
-    let capabilities: [String]
-    let colorHex: String
-    let soulMD: String
+struct AgentTemplate: Identifiable, Hashable, Codable {
+    var meta: AgentTemplateMeta
+    var soulSpec: AgentTemplateSoulSpec
+
+    var id: String { meta.id }
+    var category: AgentTemplateCategory { meta.category }
+    var name: String { meta.name }
+    var summary: String { meta.summary }
+    var applicableScenarios: [String] { meta.applicableScenarios }
+    var identity: String { meta.identity }
+    var capabilities: [String] { meta.capabilities }
+    var colorHex: String { meta.colorHex }
+    var soulMD: String { AgentTemplateSoulRenderer.render(template: self) }
+    var validationIssues: [AgentTemplateValidationIssue] { AgentTemplateValidator.validate(self) }
 
     var family: AgentTemplateFamily { category.family }
 
@@ -62,10 +66,173 @@ struct AgentTemplate: Identifiable, Hashable {
     }
 }
 
+struct AgentTemplateMeta: Hashable, Codable {
+    var id: String
+    var category: AgentTemplateCategory
+    var name: String
+    var summary: String
+    var applicableScenarios: [String]
+    var identity: String
+    var capabilities: [String]
+    var colorHex: String
+    var sortOrder: Int
+    var isRecommended: Bool
+}
+
+struct AgentTemplateSoulSpec: Hashable, Codable {
+    var role: String
+    var mission: String
+    var coreCapabilities: [String]
+    var responsibilities: [String]
+    var workflow: [String]
+    var inputs: [String]
+    var outputs: [String]
+    var collaboration: [String]
+    var guardrails: [String]
+    var successCriteria: [String]
+}
+
+struct AgentTemplateValidationIssue: Hashable, Identifiable {
+    enum Severity: String, Hashable {
+        case warning
+        case error
+    }
+
+    let id: String
+    let severity: Severity
+    let field: String
+    let message: String
+
+    init(
+        id: String = UUID().uuidString,
+        severity: Severity,
+        field: String,
+        message: String
+    ) {
+        self.id = id
+        self.severity = severity
+        self.field = field
+        self.message = message
+    }
+}
+
+enum AgentTemplateSoulRenderer {
+    static func render(template: AgentTemplate) -> String {
+        let spec = template.soulSpec
+
+        return """
+        # \(template.name)
+
+        ## 角色定位
+        \(spec.role)
+
+        ## 核心使命
+        \(spec.mission)
+
+        ## 核心能力
+        \(bulletList(spec.coreCapabilities))
+
+        ## 输入要求
+        \(bulletList(spec.inputs))
+
+        ## 工作职责
+        \(bulletList(spec.responsibilities))
+
+        ## 工作流程
+        \(numberedList(spec.workflow))
+
+        ## 输出要求
+        \(bulletList(spec.outputs))
+
+        ## 协作边界
+        \(bulletList(spec.collaboration))
+
+        ## 行为边界
+        \(bulletList(spec.guardrails))
+
+        ## 成功标准
+        \(bulletList(spec.successCriteria))
+        """
+    }
+
+    private static func bulletList(_ items: [String]) -> String {
+        items.map { "- \($0)" }.joined(separator: "\n")
+    }
+
+    private static func numberedList(_ items: [String]) -> String {
+        items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+    }
+}
+
+enum AgentTemplateValidator {
+    private static let bannedManagementPhrases: [String] = [
+        "模板体系",
+        "主类：",
+        "子类：",
+        "功能型",
+        "作业型",
+        "默认模板",
+        "模板管理",
+        "OpenClaw 运行约束",
+        "输入协议",
+        "输出协议",
+        "记忆策略",
+        "回复格式",
+        "运行规则"
+    ]
+
+    static func validate(_ template: AgentTemplate) -> [AgentTemplateValidationIssue] {
+        let spec = template.soulSpec
+        let soul = template.soulMD
+        var issues: [AgentTemplateValidationIssue] = []
+
+        if spec.role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues.append(.init(severity: .error, field: "role", message: "角色定位不能为空。"))
+        }
+
+        if spec.mission.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues.append(.init(severity: .error, field: "mission", message: "核心使命不能为空。"))
+        }
+
+        let requiredLists: [(field: String, values: [String])] = [
+            ("coreCapabilities", spec.coreCapabilities),
+            ("inputs", spec.inputs),
+            ("responsibilities", spec.responsibilities),
+            ("workflow", spec.workflow),
+            ("outputs", spec.outputs),
+            ("collaboration", spec.collaboration),
+            ("guardrails", spec.guardrails),
+            ("successCriteria", spec.successCriteria)
+        ]
+
+        for (field, values) in requiredLists where values.isEmpty {
+            issues.append(.init(severity: .error, field: field, message: "\(field) 不能为空。"))
+        }
+
+        for phrase in bannedManagementPhrases where soul.contains(phrase) {
+            issues.append(.init(
+                severity: .error,
+                field: "soulMD",
+                message: "soul.md 包含模板管理信息：\(phrase)"
+            ))
+        }
+
+        for (field, values) in requiredLists where values.count > 6 {
+            issues.append(.init(
+                severity: .warning,
+                field: field,
+                message: "\(field) 条目过多，建议压缩到 6 条以内以保持精简。"
+            ))
+        }
+
+        return issues
+    }
+}
+
 enum AgentTemplateCatalog {
     static let defaultTemplateID = "ops.hr-workflow-architect"
 
-    static let templates: [AgentTemplate] = [
+    static let builtInTemplates: [AgentTemplate] = [
         template(
             id: "work.document-writing",
             category: .productionDocument,
@@ -101,8 +268,8 @@ enum AgentTemplateCatalog {
                 "可选的摘要、行动项和待确认问题清单。"
             ],
             collaboration: [
-                "与任务流转类 agent 配合确认交付边界。",
-                "与审查监督类 agent 配合进行事实核对与语言修订。",
+                "与组织协调 agent 配合确认交付边界与交付节奏。",
+                "与结果审查 agent 配合进行事实核对与语言修订。",
                 "必要时向用户追问缺失的上下文。"
             ],
             guardrails: [
@@ -151,8 +318,8 @@ enum AgentTemplateCatalog {
                 "简明的变更摘要和风险提示。"
             ],
             collaboration: [
-                "与审查监督类 agent 配合做代码审查。",
-                "与任务流转类 agent 交换优先级与拆分结果。",
+                "与结果审查 agent 配合做代码审查和返工确认。",
+                "与任务分拣与派发 agent 交换优先级与拆分结果。",
                 "与文档撰写 agent 配合输出实现说明。"
             ],
             guardrails: [
@@ -202,8 +369,8 @@ enum AgentTemplateCatalog {
             ],
             collaboration: [
                 "与绘图整理 agent 配合把分析结果变成清晰图表。",
-                "与审查监督类 agent 核对统计口径与结论边界。",
-                "与任务流转类 agent 明确产出节奏。"
+                "与结果审查 agent 核对统计口径与结论边界。",
+                "与组织协调 agent 明确产出节奏与优先级。"
             ],
             guardrails: [
                 "不得因样本偏差或数据缺失做过度结论。",
@@ -253,7 +420,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与数据分析 agent 协同，将结果转成合适的图表。",
                 "与文档撰写 agent 协同统一版式与叙述。",
-                "与审查监督类 agent 协同检查视觉表达是否准确。"
+                "与结果审查 agent 协同检查视觉表达是否准确。"
             ],
             guardrails: [
                 "不能为了美观牺牲信息准确性。",
@@ -303,7 +470,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与文档撰写 agent 协同打磨脚本与口播。",
                 "与绘图整理 agent 协同确定画面布局与字幕信息。",
-                "与审查监督类 agent 协同校验信息准确性与节奏质量。"
+                "与结果审查 agent 协同校验信息准确性与节奏质量。"
             ],
             guardrails: [
                 "不得忽略平台规格、时长和输出格式要求。",
@@ -351,9 +518,9 @@ enum AgentTemplateCatalog {
                 "适合继续深挖的方向优先级。"
             ],
             collaboration: [
-                "与任务流转类 agent 配合筛选和分派选题。",
+                "与任务分拣与派发 agent 配合筛选和分派选题。",
                 "与文档撰写 agent 配合产出正文。",
-                "与审查监督类 agent 配合核对热点来源与风险。"
+                "与结果审查 agent 配合核对热点来源与风险。"
             ],
             guardrails: [
                 "不得把猜测写成已证实信息。",
@@ -401,9 +568,9 @@ enum AgentTemplateCatalog {
                 "便于管理者快速判断状态的摘要。"
             ],
             collaboration: [
-                "与任务流转类 agent 协同分派和回收任务。",
-                "与审查监督类 agent 协同处理争议和阻塞。",
-                "与秘书类 agent 协同安排提醒和日程。"
+                "与任务分拣与派发 agent 协同分派和回收任务。",
+                "与执行监督 agent 协同处理争议和阻塞。",
+                "与秘书 agent 协同安排提醒和日程。"
             ],
             guardrails: [
                 "不得跳过关键依赖而直接宣布完成。",
@@ -453,7 +620,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与组织协调 agent 对齐任务状态。",
                 "与产出汇总 agent 协作生成最终汇报。",
-                "与审查监督 agent 核对遗漏与偏差。"
+                "与结果审查 agent 核对遗漏与偏差。"
             ],
             guardrails: [
                 "不得把尚未完成的任务写成完成。",
@@ -502,8 +669,8 @@ enum AgentTemplateCatalog {
             ],
             collaboration: [
                 "与组织协调 agent 确认分派顺序。",
-                "与任务分拣 agent 配合完成派发。",
-                "与审查监督 agent 交叉检查拆解是否遗漏。"
+                "与任务分拣与派发 agent 配合完成派发。",
+                "与结果审查 agent 交叉检查拆解是否遗漏。"
             ],
             guardrails: [
                 "不能把概念拆得失去原始目标。",
@@ -553,7 +720,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与凝练与拆解 agent 合作整理任务。",
                 "与组织协调 agent 合作平衡负载。",
-                "与审查监督 agent 合作处理冲突与异常。"
+                "与执行监督 agent 合作处理冲突与异常。"
             ],
             guardrails: [
                 "不能把不适合的任务硬派给不匹配的 agent。",
@@ -653,7 +820,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与任务总结 agent 对齐口径。",
                 "与文档撰写 agent 合作打磨表达。",
-                "与审查监督 agent 校对准确性。"
+                "与结果审查 agent 校对准确性。"
             ],
             guardrails: [
                 "不能遗漏关键差异或未完成项。",
@@ -803,7 +970,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与结果审查 agent 协同做验收判断。",
                 "与执行监督 agent 协同补充反馈。",
-                "与任务分拣 agent 协同识别用户真正关心的事项。"
+                "与任务分拣与派发 agent 协同识别用户真正关心的事项。"
             ],
             guardrails: [
                 "不能把自己的偏好伪装成普遍用户偏好。",
@@ -951,8 +1118,8 @@ enum AgentTemplateCatalog {
                 "可持续迭代的学习档案。"
             ],
             collaboration: [
-                "与任务流转 agent 协调训练节奏。",
-                "与审查监督 agent 共同评估成果。",
+                "与组织协调 agent 协调训练节奏。",
+                "与结果审查 agent 共同评估成果。",
                 "与秘书 agent 协调安排学习日程。"
             ],
             guardrails: [
@@ -1101,9 +1268,9 @@ enum AgentTemplateCatalog {
                 "便于继续处理的基础信息。"
             ],
             collaboration: [
-                "与任务流转 agent 协同整理信息。",
+                "与组织协调 agent 协同整理信息。",
                 "与组织协调 agent 协同安排日程。",
-                "与记忆管理 agent 协同沉淀日常记录。"
+                "与记忆优化 agent 协同沉淀日常记录。"
             ],
             guardrails: [
                 "不能把简单事务复杂化。",
@@ -1153,7 +1320,7 @@ enum AgentTemplateCatalog {
             collaboration: [
                 "与秘书 agent 协同整理日常记录。",
                 "与学习训练 agent 协同沉淀学习成果。",
-                "与任务流转 agent 协同提取历史经验。"
+                "与任务总结 agent 协同提取历史经验。"
             ],
             guardrails: [
                 "不能误删仍有价值的信息。",
@@ -1167,6 +1334,10 @@ enum AgentTemplateCatalog {
             ]
         )
     ]
+
+    static var templates: [AgentTemplate] {
+        AgentTemplateLibraryStore.shared.templates
+    }
 
     static var categories: [AgentTemplateCategory] {
         AgentTemplateCategory.allCases
@@ -1194,6 +1365,14 @@ enum AgentTemplateCatalog {
         templates(in: category).map { ($0.id, $0.name, $0.summary) }
     }
 
+    static func validationIssues(for templateID: String) -> [AgentTemplateValidationIssue] {
+        template(withID: templateID)?.validationIssues ?? []
+    }
+
+    static var invalidTemplateIDs: [String] {
+        templates.compactMap { $0.validationIssues.isEmpty ? nil : $0.id }
+    }
+
     private static func template(
         id: String,
         category: AgentTemplateCategory,
@@ -1205,361 +1384,245 @@ enum AgentTemplateCatalog {
         colorHex: String,
         role: String,
         mission: String,
+        coreCapabilities: [String]? = nil,
         responsibilities: [String],
         workflow: [String],
+        inputs: [String]? = nil,
         outputs: [String],
         collaboration: [String],
         guardrails: [String],
         successCriteria: [String]
     ) -> AgentTemplate {
         AgentTemplate(
-            id: id,
-            category: category,
-            name: name,
-            summary: summary,
-            applicableScenarios: applicableScenarios,
-            identity: identity,
-            capabilities: capabilities,
-            colorHex: colorHex,
-            soulMD: makeSoul(
-                title: name,
+            meta: AgentTemplateMeta(
+                id: id,
                 category: category,
-                role: role,
-                mission: mission,
-                responsibilities: responsibilities,
-                workflow: workflow,
-                outputs: outputs,
-                collaboration: collaboration,
-                guardrails: guardrails,
-                successCriteria: successCriteria
+                name: name,
+                summary: summary,
+                applicableScenarios: applicableScenarios,
+                identity: identity,
+                capabilities: capabilities,
+                colorHex: colorHex,
+                sortOrder: 0,
+                isRecommended: id == defaultTemplateID
+            ),
+            soulSpec: AgentTemplateSoulSpec(
+                role: role.trimmingCharacters(in: .whitespacesAndNewlines),
+                mission: mission.trimmingCharacters(in: .whitespacesAndNewlines),
+                coreCapabilities: normalizedItems(coreCapabilities ?? defaultCoreCapabilities(for: name, capabilities: capabilities)),
+                responsibilities: normalizedItems(responsibilities),
+                workflow: normalizedItems(workflow),
+                inputs: normalizedItems(inputs ?? defaultInputs(for: category, applicableScenarios: applicableScenarios)),
+                outputs: normalizedItems(outputs),
+                collaboration: normalizedItems(collaboration),
+                guardrails: normalizedItems(guardrails),
+                successCriteria: normalizedItems(successCriteria)
             )
         )
     }
 
-    private static func makeSoul(
-        title: String,
-        category: AgentTemplateCategory,
-        role: String,
-        mission: String,
-        responsibilities: [String],
-        workflow: [String],
-        outputs: [String],
-        collaboration: [String],
-        guardrails: [String],
-        successCriteria: [String]
-    ) -> String {
-        """
-        # \(title)
+    private static func defaultInputs(for category: AgentTemplateCategory, applicableScenarios: [String]) -> [String] {
+        let scenarioHint = applicableScenarios.prefix(2).joined(separator: "、")
 
-        ## 模版体系
-        - 主类：\(category.family.rawValue)
-        - 子类：\(category.rawValue)
-
-        ## 角色定位
-        \(role)
-
-        ## 核心使命
-        \(mission)
-
-        ## 工作职责
-        \(bulletList(responsibilities))
-
-        ## 工作流程
-        \(numberedList(workflow))
-
-        ## 输出要求
-        \(bulletList(outputs))
-
-        ## 协作方式
-        \(bulletList(collaboration))
-
-        ## 行为边界
-        \(bulletList(guardrails))
-
-        ## 成功标准
-        \(bulletList(successCriteria))
-
-        ## OpenClaw 运行约束
-        ### 输入协议
-        \(bulletList(runtimeConstraints(for: category).inputProtocol))
-
-        ### 输出协议
-        \(bulletList(runtimeConstraints(for: category).outputProtocol))
-
-        ### 记忆策略
-        \(bulletList(runtimeConstraints(for: category).memoryStrategy))
-
-        ### 回复格式
-        \(bulletList(runtimeConstraints(for: category).replyFormat))
-
-        ### 运行规则
-        \(bulletList(runtimeConstraints(for: category).runtimeRules))
-        """
-    }
-
-    private static func runtimeConstraints(for category: AgentTemplateCategory) -> (inputProtocol: [String], outputProtocol: [String], memoryStrategy: [String], replyFormat: [String], runtimeRules: [String]) {
         switch category {
         case .productionDocument:
-            return (
-                inputProtocol: [
-                    "优先接收任务目标、目标受众、文档格式、截止时间和事实边界。",
-                    "如同时涉及多个文档产物，先确认主产物与最终汇报口径。",
-                    "输入材料不足时，优先追问来源、口径和验收标准。"
-                ],
-                outputProtocol: [
-                    "输出应优先形成可直接交付的文档、报告、表格结构或文案结果。",
-                    "涉及假设、草稿或待确认内容时必须明确标记。",
-                    "必要时附上目录、字段定义、格式建议和后续补充项。"
-                ],
-                memoryStrategy: [
-                    "保留文档边界、术语口径、目标读者和关键事实来源。",
-                    "对大段素材优先提炼摘要与索引，而不是重复携带全文。",
-                    "多轮写作时重点记住版本差异、未确认项和待补信息。"
-                ],
-                replyFormat: [
-                    "优先使用标题、章节、列表、表格和摘要结构。",
-                    "先给结论或总览，再给正文和细节。",
-                    "对待确认项单独列块，避免混入正文。"
-                ],
-                runtimeRules: [
-                    "不要把推测写成事实。",
-                    "不要把草稿伪装成定稿。",
-                    "不要遗漏版本、范围和受众差异。"
-                ]
-            )
+            return [
+                "提供任务目标、目标读者、交付格式和截止时间。",
+                "提供已有事实材料、数据口径、参考文档与限制条件。",
+                scenarioHint.isEmpty ? "输入不足时先补齐范围、优先级和验收标准。" : "当前重点场景包括：\(scenarioHint)。输入不足时先补齐范围和验收标准。"
+            ]
         case .productionVideo:
-            return (
-                inputProtocol: [
-                    "优先接收视频目标、平台、时长、受众、风格和素材条件。",
-                    "需要拍摄或剪辑时，先确认现有素材与输出规格。",
-                    "涉及口播、字幕或镜头限制时必须先明确。"
-                ],
-                outputProtocol: [
-                    "输出应包含脚本、分镜、镜头节奏、素材清单和交付规格。",
-                    "若不能直接生成成片，至少要生成可继续拍摄或剪辑的结构化说明。",
-                    "需要说明字幕、配乐、封面和导出规格。"
-                ],
-                memoryStrategy: [
-                    "保留平台规范、时长约束、视觉基调和素材来源。",
-                    "多轮迭代时重点记住镜头调整点和剪辑反馈。",
-                    "对于素材授权和可用性保留清晰标注。"
-                ],
-                replyFormat: [
-                    "优先使用脚本段落、分镜编号、镜头清单和时间轴结构。",
-                    "先给整体视频结构，再展开每一段细节。",
-                    "交付规格单独列出，便于执行。"
-                ],
-                runtimeRules: [
-                    "不要忽略平台规格、时长限制和素材版权边界。",
-                    "不要只写创意，不给镜头和执行细节。",
-                    "不要让节奏设计破坏信息准确性。"
-                ]
-            )
+            return [
+                "提供视频目标、发布平台、时长要求、受众和风格方向。",
+                "提供可用素材、口播信息、品牌限制和导出规格。",
+                scenarioHint.isEmpty ? "缺少素材或规格时先确认平台规范、字幕要求和镜头边界。" : "当前重点场景包括：\(scenarioHint)。缺少素材或规格时先确认平台规范和镜头边界。"
+            ]
         case .productionCode:
-            return (
-                inputProtocol: [
-                    "优先接收需求目标、输入输出、约束、相关代码上下文和验收标准。",
-                    "不确定边界时，先厘清接口、兼容性和测试范围。",
-                    "涉及多模块联动时，先识别关键调用链和影响面。"
-                ],
-                outputProtocol: [
-                    "输出必须能直接指导实现、修改或验证下一步。",
-                    "需要给出代码时，优先给出可运行、可维护、可验证的结果。",
-                    "如存在假设、兼容风险或未执行验证，必须明确说明。"
-                ],
-                memoryStrategy: [
-                    "保留当前需求边界、关键约束、接口约定和验证结果。",
-                    "对实现细节只保留影响后续判断的核心结论。",
-                    "重复错误和回归风险应保留为高优先级标签。"
-                ],
-                replyFormat: [
-                    "优先使用结论、实现说明、验证结果和风险提示结构。",
-                    "代码说明要指向具体模块、接口或边界行为。",
-                    "需要多个方案时，给出推荐方案和取舍理由。"
-                ],
-                runtimeRules: [
-                    "不要假装执行过未执行的测试。",
-                    "不要为了快而跳过关键边界和错误处理。",
-                    "不要隐瞒破坏性改动或兼容性影响。"
-                ]
-            )
+            return [
+                "提供需求目标、输入输出、验收标准、技术约束和相关代码上下文。",
+                "提供接口约定、依赖关系、兼容性要求和测试范围。",
+                scenarioHint.isEmpty ? "边界不清时先确认影响面、回归范围和不可变规则。" : "当前重点场景包括：\(scenarioHint)。边界不清时先确认影响面和回归范围。"
+            ]
         case .productionImage:
-            return (
-                inputProtocol: [
-                    "优先接收视觉目标、画幅、风格、信息重点和输出尺寸。",
-                    "如涉及图表或信息图，先确认数据口径和主次层级。",
-                    "需要生成图片交付时，先确认文件格式和使用场景。"
-                ],
-                outputProtocol: [
-                    "输出应形成可直接交给设计、绘图或图像生成工具执行的说明。",
-                    "需要图片产物时，应明确版式、图层、注释和导出格式。",
-                    "如存在视觉假设，必须标注。"
-                ],
-                memoryStrategy: [
-                    "保留视觉规范、配色方向、尺寸要求和信息层级。",
-                    "多轮迭代时重点记住被否决的版式和原因。",
-                    "对数据图形保留口径和标注规则，避免失真。"
-                ],
-                replyFormat: [
-                    "优先使用视觉模块、布局说明、图层说明和注释规则。",
-                    "先给整体结构，再给局部设计细节。",
-                    "图片规格和导出要求单独列出。"
-                ],
-                runtimeRules: [
-                    "不要为了好看牺牲信息准确性。",
-                    "不要堆叠无关视觉元素造成阅读负担。",
-                    "不要遗漏尺寸、格式和使用场景。"
-                ]
-            )
+            return [
+                "提供视觉目标、使用场景、画幅比例、尺寸规格和风格偏好。",
+                "如涉及图表或流程图，提供数据口径、信息层级和标注要求。",
+                scenarioHint.isEmpty ? "缺少规格时先确认输出格式、版式重点和可读性要求。" : "当前重点场景包括：\(scenarioHint)。缺少规格时先确认输出格式和版式重点。"
+            ]
         case .functionalLearningTrainingTesting:
-            return (
-                inputProtocol: [
-                    "优先接收学习目标、当前水平、训练对象、材料和评估需求。",
-                    "需要测试时，先确认待测能力和通过标准。",
-                    "如果是在构建 skill，先确认适用角色与复用边界。"
-                ],
-                outputProtocol: [
-                    "输出应包含学习路径、训练方法、skill 沉淀或测试结论。",
-                    "如需评估能力，必须给出标准、证据和改进建议。",
-                    "训练与测试最好形成闭环，而不是单点建议。"
-                ],
-                memoryStrategy: [
-                    "记录学习主题、训练轮次、测试结果和典型错误模式。",
-                    "保留可复用的技能骨架，不保留冗长无用素材。",
-                    "对成长结论保留证据，不做空泛自评。"
-                ],
-                replyFormat: [
-                    "推荐使用目标 -> 训练/构建 -> 测试 -> 反馈 -> 下一步。",
-                    "训练计划可按阶段给出，测试结果先结论后细节。",
-                    "如在构建 skill，附适用范围和升级建议。"
-                ],
-                runtimeRules: [
-                    "不要只讲知识，不做训练或测试闭环。",
-                    "不要把一次偶然表现误判为稳定能力。",
-                    "不要忽略不同 agent 的能力差异和定位差异。"
-                ]
-            )
+            return [
+                "提供学习目标、训练对象、当前水平、可用材料和时间边界。",
+                "如需测试，提供待测能力、评分标准和通过门槛。",
+                scenarioHint.isEmpty ? "涉及 skill 构建时需补充适用角色、复用边界和升级目标。" : "当前重点场景包括：\(scenarioHint)。如涉及 skill 构建，需补充适用角色和复用边界。"
+            ]
         case .functionalSupervisionAssessment:
-            return (
-                inputProtocol: [
-                    "优先接收任务目标、当前状态、待审查产物、验收标准和关键风险。",
-                    "如果上下文不足，先明确检查范围、监督目标和通过标准。",
-                    "需要代用户判断时，先列出判断维度与优先级。"
-                ],
-                outputProtocol: [
-                    "输出必须明确任务是否在推进、结果是否达标，以及是否需要返工。",
-                    "问题清单应带原因、严重程度、修改建议和下一步计划。",
-                    "如需调整方案，应说明为什么现在要调而不是继续执行。"
-                ],
-                memoryStrategy: [
-                    "记住目标、验收标准、已发现问题和整改状态变化。",
-                    "对重复出现的错误模式保留精简标签和证据摘要。",
-                    "监督结束后只保留能支撑复盘和继续推进的关键结论。"
-                ],
-                replyFormat: [
-                    "建议采用结论 -> 状态/问题 -> 修改建议 -> 下一步计划。",
-                    "严重问题、返工结论和阻断项要单独标出。",
-                    "如果只是继续推进，也要给出推进依据。"
-                ],
-                runtimeRules: [
-                    "不要回避错误，也不要用模糊措辞掩盖结论。",
-                    "不要把主观偏好当成审查标准。",
-                    "发现需要返工或改线时，要明确说清楚。"
-                ]
-            )
+            return [
+                "提供任务目标、当前状态、待审查结果、验收标准和关键风险。",
+                "提供上游上下文、修改历史、阻塞点和需要重点检查的内容。",
+                scenarioHint.isEmpty ? "判断不通过或需返工时，必须能追溯到具体证据和目标偏差。" : "当前重点场景包括：\(scenarioHint)。判断返工时必须能追溯到具体证据。"
+            ]
         case .functionalLogAnalysis:
-            return (
-                inputProtocol: [
-                    "优先接收日志范围、分析目标、异常定义和比较维度。",
-                    "如需归责，先确认证据口径与时间范围。",
-                    "能力评比前先统一指标和样本标准。"
-                ],
-                outputProtocol: [
-                    "输出应包含异常模式、脏数据来源、能力对比和证据摘要。",
-                    "归因结论必须附带依据，不可只给主观判断。",
-                    "结果最好转化为训练、返工或架构调整建议。"
-                ],
-                memoryStrategy: [
-                    "保留高频异常、稳定错误模式和关键样本索引。",
-                    "对偶发噪音只做轻量记录，避免污染后续判断。",
-                    "能力评比时保留统一评分口径和基准线。"
-                ],
-                replyFormat: [
-                    "建议采用异常概览 -> 归因 -> 对比 -> 建议的结构。",
-                    "对关键日志片段做摘要，不堆叠大段原文。",
-                    "能力排名或对比表应有清晰指标列。"
-                ],
-                runtimeRules: [
-                    "不要在证据不足时直接归责。",
-                    "不要把一次偶发异常夸大为长期问题。",
-                    "不要混淆日志事实、解释和建议。"
-                ]
-            )
+            return [
+                "提供日志范围、分析目标、异常定义、时间窗口和比较维度。",
+                "提供样本口径、关键链路、评分标准和需要定位的问题类型。",
+                scenarioHint.isEmpty ? "如需能力评比或归责，先统一证据标准和样本边界。" : "当前重点场景包括：\(scenarioHint)。如需归责，先统一证据标准和样本边界。"
+            ]
         case .functionalMemoryOptimization:
-            return (
-                inputProtocol: [
-                    "优先接收记忆范围、时间范围、整理目标和保留策略。",
-                    "如果要查看记忆，需要先确认是检索、总结、压缩还是清理。",
-                    "遇到冲突记忆时先标记来源和时间。"
-                ],
-                outputProtocol: [
-                    "输出应包含摘要、标签、主题、冲突点和检索提示。",
-                    "需要压缩时必须保留可追溯的关键上下文。",
-                    "清理建议要明确说明保留、合并和删除的理由。"
-                ],
-                memoryStrategy: [
-                    "保留高价值摘要、稳定偏好和关键历史结论。",
-                    "压缩长内容，删除冗余复制，但保留引用线索。",
-                    "对冲突记忆进行来源标注，不直接覆盖。"
-                ],
-                replyFormat: [
-                    "推荐使用主题 -> 摘要 -> 标签 -> 关联 -> 建议的格式。",
-                    "如需输出检索结果，按时间或主题排序。",
-                    "如需清理建议，分成合并、归档、删除三类。"
-                ],
-                runtimeRules: [
-                    "不要误删仍有价值的信息。",
-                    "不要把摘要压缩到不可理解。",
-                    "不要忽略记忆之间的冲突与来源差异。"
-                ]
-            )
+            return [
+                "提供记忆范围、时间范围、整理目标、保留策略和检索需求。",
+                "提供需要保留的关键上下文、偏好、历史结论和来源信息。",
+                scenarioHint.isEmpty ? "涉及清理或合并时，必须说明哪些能删、哪些必须保留。" : "当前重点场景包括：\(scenarioHint)。涉及清理时必须说明保留与删除依据。"
+            ]
         case .functionalHRWorkflow:
-            return (
-                inputProtocol: [
-                    "优先接收任务规模、角色分布、负载情况、阻塞点和领域边界。",
-                    "如果要决定是否招人，先确认当前链路缺的到底是能力、容量还是流程。",
-                    "需要并行或隔离时，先确认任务之间是否足够独立。"
-                ],
-                outputProtocol: [
-                    "输出应包含招人建议、角色边界、分工方式或工作流调整方案。",
-                    "需要派发或部署时，明确输入输出、交接方式和回收规则。",
-                    "如果判断暂时不需要新增 agent，也要说明理由。"
-                ],
-                memoryStrategy: [
-                    "保留组织结构、角色边界、负载状态和未解决的协作冲突。",
-                    "对已证明有效的编排方案保留精简模板。",
-                    "对领域冲突和物理隔离方案保留可复用经验。"
-                ],
-                replyFormat: [
-                    "推荐使用当前结构 -> 问题 -> 组织调整 -> 下一步部署的格式。",
-                    "如果涉及多个候选角色，给出推荐项和备选项。",
-                    "需要并行时，用清单或表格列出各路径边界。"
-                ],
-                runtimeRules: [
-                    "不要为了复杂化而盲目新增角色。",
-                    "不要忽略领域冲突造成的上下文污染。",
-                    "并行化和探索式分支都必须可回收、可解释。"
-                ]
-            )
+            return [
+                "提供任务规模、角色分布、负载情况、阻塞点和领域边界。",
+                "提供现有工作流、交接方式、资源限制和需要优化的效率问题。",
+                scenarioHint.isEmpty ? "涉及招人、并行或隔离时，需说明当前缺口是能力、容量还是流程。" : "当前重点场景包括：\(scenarioHint)。涉及招人或并行时，需先说明缺口来源。"
+            ]
         }
     }
 
-    private static func bulletList(_ items: [String]) -> String {
-        items.map { "- \($0)" }.joined(separator: "\n")
+    private static func defaultCoreCapabilities(for name: String, capabilities: [String]) -> [String] {
+        let mapped = capabilities.compactMap { capabilityLabelMap[$0.lowercased()] }
+        if !mapped.isEmpty {
+            return Array(mapped.prefix(4))
+        }
+
+        return [
+            "\(name) 相关任务理解",
+            "结构化执行与交付",
+            "边界判断与质量自检"
+        ]
     }
 
-    private static func numberedList(_ items: [String]) -> String {
-        items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+    private static func normalizedItems(_ items: [String]) -> [String] {
+        items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static let capabilityLabelMap: [String: String] = [
+        "writing": "结构化写作与文档表达",
+        "editing": "内容校对与语言润色",
+        "structure": "信息结构设计与整理",
+        "summarization": "重点提炼与摘要压缩",
+        "implementation": "代码实现与需求落地",
+        "debugging": "问题定位与缺陷修复",
+        "testing": "验证设计与结果确认",
+        "refactoring": "重构整理与可维护性优化",
+        "analysis": "问题分析与结论提炼",
+        "statistics": "统计口径判断与数据解读",
+        "visualization": "分析结果表达与图表化",
+        "visual-design": "视觉结构设计",
+        "layout": "版式组织与信息排布",
+        "charting": "图表规划与展示",
+        "organization": "资料组织与结构梳理",
+        "trend-analysis": "热点追踪与趋势判断",
+        "ideation": "创意发散与方向生成",
+        "brainstorming": "多方案头脑风暴",
+        "coordination": "跨角色协作与推进",
+        "planning": "计划制定与节奏控制",
+        "tracking": "进度跟踪与状态同步",
+        "communication": "沟通协调与对齐",
+        "dispatching": "任务分派与负载匹配",
+        "prioritization": "优先级判断",
+        "aggregation": "多结果汇总与归并",
+        "reporting": "结果汇报与对外表达",
+        "review": "结果审查与问题识别",
+        "verification": "事实核对与正确性判断",
+        "quality-control": "质量把关与标准执行",
+        "risk-check": "风险识别与阻断",
+        "monitoring": "执行过程监控",
+        "question-answering": "澄清支持与问题响应",
+        "blocking": "阻塞识别与解除",
+        "clarification": "需求澄清与边界追问",
+        "feedback": "反馈给出与方向修正",
+        "acceptance": "验收判断",
+        "role-play": "用户视角模拟",
+        "reflection": "方案反思与升级判断",
+        "architecture-review": "架构审视与调整建议",
+        "adaptation": "执行反馈驱动调整",
+        "log-analysis": "日志解析与异常归因",
+        "forensics": "问题取证与链路定位",
+        "benchmarking": "能力对比与基准评估",
+        "diagnostics": "系统诊断与问题归类",
+        "learning": "学习组织与知识吸收",
+        "curriculum-design": "训练路径设计",
+        "assessment": "能力评估与差距判断",
+        "training": "训练执行与复盘",
+        "skill-design": "技能沉淀与模块设计",
+        "knowledge-packaging": "经验结构化封装",
+        "specialization": "专业化能力建设",
+        "workflow-standardization": "标准流程抽象",
+        "scoring": "评分标准制定",
+        "evaluation": "测试结果评估",
+        "administration": "日常事务处理",
+        "scheduling": "提醒与日程安排",
+        "chat": "轻量沟通与接待",
+        "memory": "上下文整理与记忆维护",
+        "retrieval": "检索线索设计",
+        "staffing": "角色招聘与配置",
+        "workflow-design": "工作流设计与优化",
+        "parallelization": "并行路径规划",
+        "isolation-planning": "领域隔离方案设计",
+        "scriptwriting": "视频脚本设计",
+        "storyboarding": "分镜规划",
+        "media-production": "视频交付组织"
+    ]
+}
+
+extension AgentTemplate {
+    func withSortOrder(_ sortOrder: Int) -> AgentTemplate {
+        var copy = self
+        copy.meta.sortOrder = sortOrder
+        return copy
+    }
+
+    func withRecommended(_ isRecommended: Bool) -> AgentTemplate {
+        var copy = self
+        copy.meta.isRecommended = isRecommended
+        return copy
+    }
+
+    func sanitizedForPersistence() -> AgentTemplate {
+        var copy = self
+        copy.meta.id = copy.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.meta.name = copy.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.meta.summary = copy.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.meta.identity = copy.identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.meta.applicableScenarios = copy.applicableScenarios
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.meta.capabilities = copy.capabilities
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.role = copy.soulSpec.role.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.soulSpec.mission = copy.soulSpec.mission.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.soulSpec.coreCapabilities = copy.soulSpec.coreCapabilities
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.responsibilities = copy.soulSpec.responsibilities
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.workflow = copy.soulSpec.workflow
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.inputs = copy.soulSpec.inputs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.outputs = copy.soulSpec.outputs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.collaboration = copy.soulSpec.collaboration
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.guardrails = copy.soulSpec.guardrails
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        copy.soulSpec.successCriteria = copy.soulSpec.successCriteria
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return copy
     }
 }
 

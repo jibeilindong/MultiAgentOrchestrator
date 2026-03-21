@@ -41,9 +41,16 @@ struct CanvasContentView: View {
     @State private var boundaryDragSnapshots: [UUID: BoundaryDragSnapshot] = [:]
     @State private var draggingBoundaryID: UUID?
     @State private var legendFrame: CGRect = .null
+    @State private var transientNodePositions: [UUID: CGPoint] = [:]
+    @State private var transientBoundaryRects: [UUID: CGRect] = [:]
+    @State private var edgeGeometryCache = WorkflowCanvasEdgeGeometryCache()
 
     private var currentWorkflow: Workflow? {
         appState.currentProject?.workflows.first
+    }
+
+    private var currentConnectionCounts: [UUID: WorkflowNodeConnectionCounts] {
+        currentWorkflow?.connectionCountsByNodeID() ?? [:]
     }
 
     private var visibleLegendGroupCount: Int {
@@ -88,6 +95,15 @@ struct CanvasContentView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let canvasNodeFramesByID = nodeFramesByID(in: geometry)
+            let edgeGeometry = edgeGeometryCache.resolve(
+                workflow: currentWorkflow,
+                nodeFramesByID: canvasNodeFramesByID,
+                transientNodeIDs: Set(transientNodePositions.keys)
+            )
+            let canvasEdgeLayouts = edgeGeometry.edgeLayouts
+            let sharedEdgeHitLayouts = edgeGeometry.sharedHitLayouts
+            let previewLineLayouts = buildPreviewLineLayouts(nodeFramesByID: canvasNodeFramesByID)
             let canvasLayer = ZStack {
                 GridBackground()
                     .frame(width: geometry.size.width * 10, height: geometry.size.height * 10)
@@ -101,15 +117,15 @@ struct CanvasContentView: View {
                 }
 
                 ConnectionLinesView(
-                    currentWorkflow: currentWorkflow,
-                    scale: $scale,
-                    offset: offset,
+                    edgeLayouts: canvasEdgeLayouts,
+                    sharedHitLayouts: sharedEdgeHitLayouts,
+                    previewLineLayouts: previewLineLayouts,
+                    blockedRects: Array(canvasNodeFramesByID.values),
                     lineColor: appState.canvasDisplaySettings.lineColor.color,
                     lineWidth: appState.canvasDisplaySettings.lineWidth,
                     textScale: appState.canvasDisplaySettings.textScale,
                     textColor: .black,
                     selectedEdgeID: $selectedEdgeID,
-                    previewCandidates: batchPreview?.newEdges ?? [],
                     recentlyCreatedEdgeIDs: batchCreatedEdgeIDs,
                     onEdgeSelected: { edge in
                         suppressCanvasTapClear = true
@@ -117,13 +133,6 @@ struct CanvasContentView: View {
                         selectedNodeIDs.removeAll()
                         selectedBoundaryIDs.removeAll()
                         onEdgeSelected?(edge)
-                    },
-                    onEdgeSecondarySelected: { edge in
-                        suppressCanvasTapClear = true
-                        selectedNodeID = nil
-                        selectedNodeIDs.removeAll()
-                        selectedBoundaryIDs.removeAll()
-                        onEdgeSecondarySelected?(edge)
                     }
                 )
 
@@ -144,6 +153,7 @@ struct CanvasContentView: View {
                         handleBoundaryDrag(boundaryID: boundaryID, translation: translation)
                     },
                     onBoundaryDragEnded: { boundaryID in
+                        commitBoundaryDrag(boundaryID: boundaryID)
                         boundaryDragSnapshots.removeValue(forKey: boundaryID)
                         if draggingBoundaryID == boundaryID {
                             draggingBoundaryID = nil
@@ -154,7 +164,7 @@ struct CanvasContentView: View {
                 if let fromNode = connectingFromNode,
                    let endPoint = tempConnectionEnd {
                     ConnectionLineShape(
-                        from: adjustedPosition(fromNode.position, geometry: geometry),
+                        from: adjustedPosition(resolvedPosition(for: fromNode), geometry: geometry),
                         to: endPoint
                     )
                     .stroke(Color.orange.opacity(0.8), style: StrokeStyle(lineWidth: 3, dash: [6, 3]))
@@ -168,6 +178,7 @@ struct CanvasContentView: View {
                     selectedBoundaryIDs: $selectedBoundaryIDs,
                     connectingFromNode: $connectingFromNode,
                     tempConnectionEnd: $tempConnectionEnd,
+                    transientNodePositions: $transientNodePositions,
                     scale: scale,
                     offset: offset,
                     geometry: geometry,
@@ -176,7 +187,8 @@ struct CanvasContentView: View {
                     batchSourceNodeIDs: batchSourceNodeIDs,
                     batchTargetNodeIDs: batchTargetNodeIDs,
                     onNodeClick: onNodeClick,
-                    onNodeSelected: onNodeSelected
+                    onNodeSelected: onNodeSelected,
+                    onNodeDragEnded: commitNodeDrag
                 )
                 .environmentObject(appState)
 
@@ -242,7 +254,7 @@ struct CanvasContentView: View {
                         legendInteractionFrame.contains(location)
                     },
                     onEdgeHit: { location in
-                        guard let edge = edge(at: location, geometry: geometry) else { return false }
+                        guard let edge = edge(at: location, in: canvasEdgeLayouts) else { return false }
                         suppressCanvasTapClear = true
                         selectedNodeID = nil
                         selectedNodeIDs.removeAll()
@@ -252,7 +264,7 @@ struct CanvasContentView: View {
                         return true
                     },
                     isBlankLocation: { location in
-                        isBlankCanvasLocation(location, geometry: geometry)
+                        isBlankCanvasLocation(location, geometry: geometry, edgeLayouts: canvasEdgeLayouts)
                     },
                     currentOffset: { offset },
                     onBlankClick: {
@@ -308,7 +320,7 @@ struct CanvasContentView: View {
                         let distance = hypot(dx, dy)
 
                         if distance < 4 {
-                            if let edge = edge(at: location, geometry: geometry) {
+                            if let edge = edge(at: location, in: canvasEdgeLayouts) {
                                 suppressCanvasTapClear = true
                                 selectedNodeID = nil
                                 selectedNodeIDs.removeAll()
@@ -354,6 +366,14 @@ struct CanvasContentView: View {
             x: position.x * scale + offset.width + centerX,
             y: position.y * scale + offset.height + centerY
         )
+    }
+
+    private func resolvedPosition(for node: WorkflowNode) -> CGPoint {
+        transientNodePositions[node.id] ?? node.position
+    }
+
+    private func resolvedRect(for boundary: WorkflowBoundary) -> CGRect {
+        transientBoundaryRects[boundary.id] ?? boundary.rect
     }
 
     private func handleDrop(providers: [NSItemProvider], location: CGPoint, geometry: GeometryProxy) -> Bool {
@@ -458,7 +478,7 @@ struct CanvasContentView: View {
             .filter { selectedBoundaries.contains($0.id) }
             .flatMap { boundary in
                 (workflow?.nodes ?? []).compactMap { node in
-                    boundaryFrame(for: boundary, geometry: geometry).contains(adjustedPosition(node.position, geometry: geometry)) ? node.id : nil
+                    boundaryFrame(for: boundary, geometry: geometry).contains(adjustedPosition(resolvedPosition(for: node), geometry: geometry)) ? node.id : nil
                 }
             })
 
@@ -490,13 +510,31 @@ struct CanvasContentView: View {
         selectedNodeID = nil
         selectedEdgeID = nil
 
+        transientBoundaryRects[boundaryID] = appState.snapRectToGrid(
+            snapshot.rect.offsetBy(dx: dx, dy: dy)
+        )
+    }
+
+    private func commitBoundaryDrag(boundaryID: UUID) {
+        guard let finalRect = transientBoundaryRects[boundaryID] else { return }
+
         appState.updateMainWorkflow { workflow in
             guard let boundaryIndex = workflow.boundaries.firstIndex(where: { $0.id == boundaryID }) else { return }
-
-            workflow.boundaries[boundaryIndex].rect = appState.snapRectToGrid(
-                snapshot.rect.offsetBy(dx: dx, dy: dy)
-            )
+            workflow.boundaries[boundaryIndex].rect = finalRect
             workflow.boundaries[boundaryIndex].updatedAt = Date()
+        }
+
+        transientBoundaryRects.removeValue(forKey: boundaryID)
+    }
+
+    private func commitNodeDrag(_ positions: [UUID: CGPoint]) {
+        guard !positions.isEmpty else { return }
+
+        appState.updateMainWorkflow { workflow in
+            for index in workflow.nodes.indices {
+                guard let position = positions[workflow.nodes[index].id] else { continue }
+                workflow.nodes[index].position = position
+            }
         }
     }
 
@@ -555,8 +593,9 @@ struct CanvasContentView: View {
     }
 
     private func boundaryFrame(for boundary: WorkflowBoundary, geometry: GeometryProxy) -> CGRect {
-        let origin = adjustedPosition(CGPoint(x: boundary.rect.minX, y: boundary.rect.minY), geometry: geometry)
-        let opposite = adjustedPosition(CGPoint(x: boundary.rect.maxX, y: boundary.rect.maxY), geometry: geometry)
+        let boundaryRect = resolvedRect(for: boundary)
+        let origin = adjustedPosition(CGPoint(x: boundaryRect.minX, y: boundaryRect.minY), geometry: geometry)
+        let opposite = adjustedPosition(CGPoint(x: boundaryRect.maxX, y: boundaryRect.maxY), geometry: geometry)
         return CGRect(
             x: min(origin.x, opposite.x),
             y: min(origin.y, opposite.y),
@@ -566,7 +605,7 @@ struct CanvasContentView: View {
     }
 
     private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
-        let center = adjustedPosition(node.position, geometry: geometry)
+        let center = adjustedPosition(resolvedPosition(for: node), geometry: geometry)
         let size = nodeSize(for: node)
         return CGRect(
             x: center.x - size.width / 2,
@@ -581,9 +620,7 @@ struct CanvasContentView: View {
         case .start:
             return CGSize(width: 100, height: 68)
         case .agent:
-            let outgoing = currentWorkflow?.edges.reduce(into: 0) { partial, edge in
-                if edge.isOutgoing(from: node.id) { partial += 1 }
-            } ?? 0
+            let outgoing = currentConnectionCounts[node.id]?.outgoing ?? 0
             return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
         }
     }
@@ -604,10 +641,9 @@ struct CanvasContentView: View {
         }
     }
 
-    private func edge(at location: CGPoint, geometry: GeometryProxy) -> WorkflowEdge? {
-        guard let workflow = currentWorkflow else { return nil }
+    private func edge(at location: CGPoint, in layouts: [WorkflowCanvasEdgeLayout]) -> WorkflowEdge? {
         let tolerance = max(10, appState.canvasDisplaySettings.lineWidth + 6)
-        return routedEdgeLayouts(in: geometry, workflow: workflow)
+        return layouts
             .compactMap { layout -> (WorkflowEdge, CGFloat)? in
                 guard let distance = layout.distance(to: location, tolerance: tolerance) else { return nil }
                 return (layout.edge, distance)
@@ -616,379 +652,49 @@ struct CanvasContentView: View {
             .0
     }
 
-    private func isBlankCanvasLocation(_ location: CGPoint, geometry: GeometryProxy) -> Bool {
+    private func isBlankCanvasLocation(
+        _ location: CGPoint,
+        geometry: GeometryProxy,
+        edgeLayouts: [WorkflowCanvasEdgeLayout]
+    ) -> Bool {
         guard node(at: location, geometry: geometry) == nil else { return false }
-        guard edge(at: location, geometry: geometry) == nil else { return false }
+        guard edge(at: location, in: edgeLayouts) == nil else { return false }
         guard boundary(at: location, geometry: geometry) == nil else { return false }
         return true
     }
 
-    private func isPoint(_ point: CGPoint, near polyline: [CGPoint], tolerance: CGFloat) -> Bool {
-        guard polyline.count >= 2 else { return false }
-        for segment in zip(polyline, polyline.dropFirst()) {
-            if distance(point, to: segment.0, and: segment.1) <= tolerance {
-                return true
+    private func nodeFramesByID(in geometry: GeometryProxy) -> [UUID: CGRect] {
+        guard let workflow = currentWorkflow else { return [:] }
+        return Dictionary(
+            uniqueKeysWithValues: workflow.nodes.map { node in
+                (node.id, nodeFrame(for: node, geometry: geometry))
             }
-        }
-        return false
+        )
     }
 
-    private func distance(_ point: CGPoint, to a: CGPoint, and b: CGPoint) -> CGFloat {
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        if abs(dx) < 0.001 && abs(dy) < 0.001 {
-            return hypot(point.x - a.x, point.y - a.y)
-        }
+    private func buildPreviewLineLayouts(
+        nodeFramesByID: [UUID: CGRect]
+    ) -> [WorkflowCanvasPreviewLineLayout] {
+        guard currentWorkflow != nil else { return [] }
 
-        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)))
-        let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
-        return hypot(point.x - projection.x, point.y - projection.y)
-    }
-
-    private func routedEdgeLayouts(in geometry: GeometryProxy, workflow: Workflow) -> [RoutedEdgeHitLayout] {
-        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-        let nodeFramesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, nodeFrame(for: $0, geometry: geometry)) })
-        let candidates = workflow.edges.compactMap { edge -> RoutedEdgeHitCandidate? in
-            guard let fromNode = nodesByID[edge.fromNodeID],
-                  let toNode = nodesByID[edge.toNodeID],
-                  let fromFrame = nodeFramesByID[fromNode.id],
-                  let toFrame = nodeFramesByID[toNode.id] else {
+        return (batchPreview?.newEdges ?? []).compactMap { candidate in
+            guard candidate.status == .new,
+                  let fromFrame = nodeFramesByID[candidate.fromNodeID],
+                  let toFrame = nodeFramesByID[candidate.toNodeID] else {
                 return nil
             }
 
-            let targetSide = WorkflowEdgeRoutePlanner.preferredIncomingSide(
-                for: toFrame,
-                toward: CGPoint(x: fromFrame.midX, y: fromFrame.midY)
-            )
-
-            return RoutedEdgeHitCandidate(
-                edge: edge,
-                fromFrame: fromFrame,
-                toFrame: toFrame,
-                targetSide: targetSide
+            return WorkflowCanvasPreviewLineLayout(
+                id: candidate.id,
+                from: fromFrame.center,
+                to: toFrame.center
             )
         }
-
-        let fanoutInfoBySourceID = fanoutLayoutMap(for: candidates, workflow: workflow)
-        let faninInfoByBundleKey = faninLayoutMap(for: candidates)
-        let grouped = Dictionary(grouping: candidates) { $0.bundleKey }
-        var layouts: [RoutedEdgeHitLayout] = []
-
-        for bundle in grouped.values {
-            let sortedBundle = bundle.sorted { lhs, rhs in
-                let lhsAngle = atan2(lhs.fromFrame.midY - lhs.toFrame.midY, lhs.fromFrame.midX - lhs.toFrame.midX)
-                let rhsAngle = atan2(rhs.fromFrame.midY - rhs.toFrame.midY, rhs.fromFrame.midX - rhs.toFrame.midX)
-                return lhsAngle < rhsAngle
-            }
-            let laneOffsets = laneOffsets(for: sortedBundle.count)
-
-            for (index, candidate) in sortedBundle.enumerated() {
-                let obstacles = workflow.nodes.compactMap { node -> CGRect? in
-                    guard node.id != candidate.edge.fromNodeID,
-                          node.id != candidate.edge.toNodeID else { return nil }
-                    return nodeFramesByID[node.id]
-                }
-
-                let points: [CGPoint]
-                if let fanoutInfo = fanoutInfoBySourceID[candidate.edge.fromNodeID] {
-                    if candidate.edge.toNodeID == fanoutInfo.centerTargetID,
-                       abs(candidate.toFrame.midX - candidate.fromFrame.midX) <= 28 {
-                        points = WorkflowEdgeRoutePlanner.centerDownRoute(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            avoiding: obstacles
-                        ) ?? WorkflowEdgeRoutePlanner.route(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            avoiding: obstacles,
-                            preferredAxis: .vertical,
-                            laneOffset: 0
-                        )
-                    } else if let fanoutPath = WorkflowEdgeRoutePlanner.fanoutRoute(
-                        from: candidate.fromFrame,
-                        to: candidate.toFrame,
-                        turnY: fanoutInfo.turnY,
-                        targetAnchorX: fanoutInfo.targetAnchorX(
-                            for: candidate.edge.toNodeID,
-                            default: candidate.toFrame.midX
-                        ),
-                        avoiding: obstacles
-                    ) {
-                        points = fanoutPath
-                    } else {
-                        points = WorkflowEdgeRoutePlanner.route(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            avoiding: obstacles,
-                            preferredAxis: candidate.preferredAxis,
-                            laneOffset: laneOffsets[index]
-                        )
-                    }
-                } else if let faninInfo = faninInfoByBundleKey[candidate.bundleKey],
-                          let mergedPath = WorkflowEdgeRoutePlanner.faninRoute(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            incomingSide: faninInfo.incomingSide,
-                            mergeAxisValue: faninInfo.mergeAxisValue,
-                            trunkAxisValue: faninInfo.trunkAxisValue,
-                            avoiding: obstacles
-                          ) {
-                    points = mergedPath
-                } else {
-                    points = WorkflowEdgeRoutePlanner.route(
-                        from: candidate.fromFrame,
-                        to: candidate.toFrame,
-                        avoiding: obstacles,
-                        preferredAxis: candidate.preferredAxis,
-                        laneOffset: laneOffsets[index]
-                    )
-                }
-
-                layouts.append(RoutedEdgeHitLayout(edge: candidate.edge, points: points))
-            }
-        }
-
-        return layouts
-    }
-
-    private func laneOffsets(for count: Int) -> [CGFloat] {
-        laneOffsets(for: count, spacing: 14)
-    }
-
-    private func laneOffsets(for count: Int, spacing: CGFloat) -> [CGFloat] {
-        guard count > 1 else { return [0] }
-        let center = CGFloat(count - 1) / 2
-        return (0..<count).map { index in
-            (CGFloat(index) - center) * spacing
-        }
-    }
-
-    private func fanoutLayoutMap(
-        for candidates: [RoutedEdgeHitCandidate],
-        workflow: Workflow
-    ) -> [UUID: HitFanoutLayoutInfo] {
-        let groupedBySource = Dictionary(grouping: candidates, by: { $0.edge.fromNodeID })
-        var layoutBySource: [UUID: HitFanoutLayoutInfo] = [:]
-
-        for (sourceID, group) in groupedBySource {
-            guard group.count >= 2,
-                  let sourceFrame = group.first?.fromFrame else { continue }
-
-            let downwardTargets = group.filter { candidate in
-                candidate.toFrame.midY > sourceFrame.midY + 18
-            }
-            guard downwardTargets.count >= 2 else { continue }
-
-            let sourceBottom = sourceFrame.maxY + 10
-            let targetTop = downwardTargets.map { $0.toFrame.minY }.min() ?? .greatestFiniteMagnitude
-            let centeredTarget = closestTarget(to: sourceFrame.midX, in: downwardTargets)
-            let verticalGap = targetTop - sourceBottom
-            guard verticalGap >= 42 else { continue }
-
-            let preferredTurnY = sourceBottom + max(28, min(76, verticalGap * 0.4))
-            let turnY = min(preferredTurnY, targetTop - 18)
-            guard turnY > sourceBottom + 8, turnY < targetTop - 8 else { continue }
-
-            let sortedTargets = downwardTargets.sorted { lhs, rhs in
-                if abs(lhs.toFrame.midX - rhs.toFrame.midX) > 0.5 {
-                    return lhs.toFrame.midX < rhs.toFrame.midX
-                }
-                return lhs.toFrame.midY < rhs.toFrame.midY
-            }
-
-            let fanoutSpacingValue = WorkflowEdgeRoutePlanner.fanoutSpacing(
-                for: sourceFrame,
-                targetCount: sortedTargets.count
-            )
-            let slotOffsets = laneOffsets(for: sortedTargets.count, spacing: fanoutSpacingValue)
-            let targetAnchorXByTargetID = Dictionary(
-                uniqueKeysWithValues: zip(sortedTargets, slotOffsets).map { candidate, slotOffset in
-                    let preferredAnchorX = sourceFrame.midX + slotOffset
-                    let anchorX = WorkflowEdgeRoutePlanner.clampedVerticalEntryX(
-                        for: candidate.toFrame,
-                        preferredX: preferredAnchorX
-                    )
-                    return (candidate.edge.toNodeID, anchorX)
-                }
-            )
-
-            layoutBySource[sourceID] = HitFanoutLayoutInfo(
-                turnY: turnY,
-                centerTargetID: centeredTarget?.edge.toNodeID,
-                targetAnchorXByTargetID: targetAnchorXByTargetID
-            )
-        }
-
-        return layoutBySource
-    }
-
-    private func faninLayoutMap(for candidates: [RoutedEdgeHitCandidate]) -> [RoutedEdgeBundleKey: HitFaninLayoutInfo] {
-        let groupedByBundleKey = Dictionary(grouping: candidates, by: \.bundleKey)
-        var layoutByBundleKey: [RoutedEdgeBundleKey: HitFaninLayoutInfo] = [:]
-
-        for (bundleKey, group) in groupedByBundleKey {
-            guard group.count >= 2,
-                  let targetFrame = group.first?.toFrame else { continue }
-
-            let info: HitFaninLayoutInfo?
-            switch bundleKey.incomingSide {
-            case .bottom:
-                let sources = group.filter { $0.fromFrame.midY > targetFrame.midY + 18 }
-                guard sources.count >= 2 else { continue }
-                let targetBottom = targetFrame.maxY + 10
-                let nearestSourceTop = sources.map { $0.fromFrame.minY }.min() ?? .greatestFiniteMagnitude
-                let verticalGap = nearestSourceTop - targetBottom
-                guard verticalGap >= 34 else { continue }
-                let preferredMergeY = targetBottom + compactMergeOffset(for: verticalGap)
-                let mergeY = min(preferredMergeY, nearestSourceTop - 18)
-                guard mergeY > targetBottom + 8, mergeY < nearestSourceTop - 8 else { continue }
-                info = HitFaninLayoutInfo(incomingSide: .bottom, mergeAxisValue: mergeY, trunkAxisValue: targetFrame.midX)
-
-            case .top:
-                let sources = group.filter { $0.fromFrame.midY < targetFrame.midY - 18 }
-                guard sources.count >= 2 else { continue }
-                let targetTop = targetFrame.minY - 10
-                let nearestSourceBottom = sources.map { $0.fromFrame.maxY }.max() ?? -.greatestFiniteMagnitude
-                let verticalGap = targetTop - nearestSourceBottom
-                guard verticalGap >= 34 else { continue }
-                let preferredMergeY = targetTop - compactMergeOffset(for: verticalGap)
-                let mergeY = max(preferredMergeY, nearestSourceBottom + 18)
-                guard mergeY < targetTop - 8, mergeY > nearestSourceBottom + 8 else { continue }
-                info = HitFaninLayoutInfo(incomingSide: .top, mergeAxisValue: mergeY, trunkAxisValue: targetFrame.midX)
-
-            case .left:
-                let sources = group.filter { $0.fromFrame.midX < targetFrame.midX - 18 }
-                guard sources.count >= 2 else { continue }
-                let targetLeft = targetFrame.minX - 10
-                let nearestSourceRight = sources.map { $0.fromFrame.maxX }.max() ?? -.greatestFiniteMagnitude
-                let horizontalGap = targetLeft - nearestSourceRight
-                guard horizontalGap >= 34 else { continue }
-                let preferredMergeX = targetLeft - compactMergeOffset(for: horizontalGap)
-                let mergeX = max(preferredMergeX, nearestSourceRight + 18)
-                guard mergeX < targetLeft - 8, mergeX > nearestSourceRight + 8 else { continue }
-                info = HitFaninLayoutInfo(incomingSide: .left, mergeAxisValue: mergeX, trunkAxisValue: targetFrame.midY)
-
-            case .right:
-                let sources = group.filter { $0.fromFrame.midX > targetFrame.midX + 18 }
-                guard sources.count >= 2 else { continue }
-                let targetRight = targetFrame.maxX + 10
-                let nearestSourceLeft = sources.map { $0.fromFrame.minX }.min() ?? .greatestFiniteMagnitude
-                let horizontalGap = nearestSourceLeft - targetRight
-                guard horizontalGap >= 34 else { continue }
-                let preferredMergeX = targetRight + compactMergeOffset(for: horizontalGap)
-                let mergeX = min(preferredMergeX, nearestSourceLeft - 18)
-                guard mergeX > targetRight + 8, mergeX < nearestSourceLeft - 8 else { continue }
-                info = HitFaninLayoutInfo(incomingSide: .right, mergeAxisValue: mergeX, trunkAxisValue: targetFrame.midY)
-            }
-
-            if let info {
-                layoutByBundleKey[bundleKey] = info
-            }
-        }
-
-        return layoutByBundleKey
-    }
-
-    private func compactMergeOffset(for gap: CGFloat) -> CGFloat {
-        max(18, min(48, gap * 0.28))
-    }
-
-    private func closestTarget(
-        to sourceMidX: CGFloat,
-        in candidates: [RoutedEdgeHitCandidate]
-    ) -> RoutedEdgeHitCandidate? {
-        guard !candidates.isEmpty else { return nil }
-
-        var bestCandidate = candidates[0]
-        var bestDistance = abs(bestCandidate.toFrame.midX - sourceMidX)
-
-        for candidate in candidates.dropFirst() {
-            let distance = abs(candidate.toFrame.midX - sourceMidX)
-            if distance < bestDistance {
-                bestCandidate = candidate
-                bestDistance = distance
-            }
-        }
-
-        return bestCandidate
     }
 }
 
 private struct BoundaryDragSnapshot {
     let rect: CGRect
-}
-
-private struct RoutedEdgeHitCandidate {
-    let edge: WorkflowEdge
-    let fromFrame: CGRect
-    let toFrame: CGRect
-    let targetSide: EdgeAnchorSide
-
-    var bundleKey: RoutedEdgeBundleKey {
-        RoutedEdgeBundleKey(
-            targetNodeID: edge.toNodeID,
-            incomingSide: targetSide,
-            requiresApproval: edge.requiresApproval
-        )
-    }
-
-    var preferredAxis: EdgeRouteAxis {
-        let dx = toFrame.midX - fromFrame.midX
-        let dy = toFrame.midY - fromFrame.midY
-        return abs(dx) >= abs(dy) ? .horizontal : .vertical
-    }
-}
-
-private struct RoutedEdgeBundleKey: Hashable {
-    let targetNodeID: UUID
-    let incomingSide: EdgeAnchorSide
-    let requiresApproval: Bool
-}
-
-private struct RoutedEdgeHitLayout {
-    let edge: WorkflowEdge
-    let points: [CGPoint]
-
-    func distance(to location: CGPoint, tolerance: CGFloat) -> CGFloat? {
-        guard points.count >= 2 else { return nil }
-        var best: CGFloat?
-        for segment in zip(points, points.dropFirst()) {
-            let segmentDistance = distance(from: location, to: segment.0, and: segment.1)
-            guard segmentDistance <= tolerance else { continue }
-            if best == nil || segmentDistance < best! {
-                best = segmentDistance
-            }
-        }
-        return best
-    }
-
-    private func distance(from point: CGPoint, to a: CGPoint, and b: CGPoint) -> CGFloat {
-        let dx = b.x - a.x
-        let dy = b.y - a.y
-        if abs(dx) < 0.001 && abs(dy) < 0.001 {
-            return hypot(point.x - a.x, point.y - a.y)
-        }
-
-        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)))
-        let projection = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
-        return hypot(point.x - projection.x, point.y - projection.y)
-    }
-}
-
-private struct HitFanoutLayoutInfo {
-    let turnY: CGFloat
-    let centerTargetID: UUID?
-    let targetAnchorXByTargetID: [UUID: CGFloat]
-
-    func targetAnchorX(for targetID: UUID, default defaultX: CGFloat) -> CGFloat {
-        targetAnchorXByTargetID[targetID] ?? defaultX
-    }
-}
-
-private struct HitFaninLayoutInfo {
-    let incomingSide: EdgeAnchorSide
-    let mergeAxisValue: CGFloat
-    let trunkAxisValue: CGFloat
 }
 
 struct WorkflowBoundaryDisplayGroup: Identifiable {

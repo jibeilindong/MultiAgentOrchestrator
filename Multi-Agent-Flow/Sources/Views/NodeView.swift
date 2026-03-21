@@ -8,13 +8,13 @@
 import SwiftUI
 
 struct NodeView: View {
-    @EnvironmentObject var appState: AppState
     @ObservedObject private var localizationManager = LocalizationManager.shared
     let node: WorkflowNode
     let isSelected: Bool
     let agent: Agent?
     let incomingConnections: Int
     let outgoingConnections: Int
+    let isInBoundary: Bool
     
     // 连接模式状态
     var isConnectingMode: Bool = false
@@ -108,7 +108,7 @@ struct NodeView: View {
         if isRelatedToSelection {
             return Color.yellow.opacity(0.92)
         }
-        if appState.boundary(for: node.id) != nil {
+        if isInBoundary {
             return Color.orange.opacity(0.75)
         }
         if isHovered {

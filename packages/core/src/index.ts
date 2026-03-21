@@ -1,5 +1,6 @@
 export * from "./json";
 export * from "./launch-verification";
+export * from "./agent-naming";
 export * from "./openclaw-runtime-governance";
 export * from "./openclaw-runtime-security";
 export * from "./project-factory";

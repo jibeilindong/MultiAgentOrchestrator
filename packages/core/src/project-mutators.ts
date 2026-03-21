@@ -14,6 +14,7 @@ import type {
 } from "@multi-agent-flow/domain";
 import { toSwiftDate } from "./swift-date";
 import { createUUID } from "./uuid";
+import { normalizeAgentName } from "./agent-naming";
 import { normalizeWorkflowNodeTitle } from "./workflow-node-naming";
 
 function withUpdatedAt(project: MAProject): MAProject {
@@ -61,12 +62,13 @@ function createDefaultProtocolMemory(now: number): OpenClawAgentProtocolMemory {
   };
 }
 
-function createAgent(name: string, index: number): Agent {
+function createAgent(name: string, index: number, existingAgents: Agent[] = []): Agent {
   const now = toSwiftDate();
+  const normalizedName = normalizeAgentName(existingAgents, name);
 
   return {
     id: createUUID(),
-    name,
+    name: normalizedName,
     identity: "generalist",
     description: "",
     soulMD: "# New Agent\nThis agent configuration was created in the cross-platform shell.",
@@ -79,7 +81,7 @@ function createAgent(name: string, index: number): Agent {
     capabilities: ["basic"],
     colorHex: null,
     openClawDefinition: {
-      agentIdentifier: name,
+      agentIdentifier: normalizedName,
       modelIdentifier: "MiniMax-M2.5",
       runtimeProfile: "default",
       memoryBackupPath: null,
@@ -528,8 +530,9 @@ export function importDetectedOpenClawAgents(
     }
 
     const importedAgent = createAgent(
-      uniqueName(nextAgents.map((agent) => agent.name), record.name || "Imported Agent"),
-      nextAgents.length
+      record.name || "Imported Agent",
+      nextAgents.length,
+      nextAgents
     );
     importedAgent.identity = "openclaw";
     importedAgent.description = record.issues.length
@@ -566,19 +569,23 @@ export function importDetectedOpenClawAgents(
 }
 
 export function addAgentToProject(project: MAProject, baseName = "New Agent"): MAProject {
-  const name = uniqueName(
-    project.agents.map((agent) => agent.name),
-    baseName
-  );
+  const name = normalizeAgentName(project.agents, baseName);
 
   return withUpdatedAt({
     ...project,
-    agents: [...project.agents, createAgent(name, project.agents.length)]
+    agents: [...project.agents, createAgent(name, project.agents.length, project.agents)]
   });
 }
 
 export function updateAgentInProject(project: MAProject, agentId: string, patch: AgentDraft): MAProject {
   let didChange = false;
+  const previousAgent = project.agents.find((agent) => agent.id === agentId);
+  const normalizedName =
+    patch.name === undefined
+      ? previousAgent?.name
+      : normalizeAgentName(project.agents, patch.name, {
+          excludeAgentId: agentId
+        });
 
   const nextAgents = project.agents.map((agent) => {
     if (agent.id !== agentId) {
@@ -587,7 +594,7 @@ export function updateAgentInProject(project: MAProject, agentId: string, patch:
 
     const nextAgent: Agent = {
       ...agent,
-      name: patch.name === undefined ? agent.name : patch.name.trim() || agent.name,
+      name: normalizedName ?? agent.name,
       identity: patch.identity === undefined ? agent.identity : patch.identity.trim() || agent.identity,
       description: patch.description === undefined ? agent.description : patch.description.trim(),
       soulMD: patch.soulMD === undefined ? agent.soulMD : patch.soulMD,
@@ -597,8 +604,8 @@ export function updateAgentInProject(project: MAProject, agentId: string, patch:
         ...agent.openClawDefinition,
         agentIdentifier:
           patch.openClawDefinition?.agentIdentifier === undefined
-            ? agent.openClawDefinition.agentIdentifier
-            : patch.openClawDefinition.agentIdentifier.trim(),
+            ? agent.openClawDefinition.agentIdentifier || normalizedName || agent.name
+            : patch.openClawDefinition.agentIdentifier.trim() || normalizedName || agent.name,
         modelIdentifier:
           patch.openClawDefinition?.modelIdentifier === undefined
             ? agent.openClawDefinition.modelIdentifier
@@ -634,9 +641,54 @@ export function updateAgentInProject(project: MAProject, agentId: string, patch:
     return project;
   }
 
+  const renamedAgent = nextAgents.find((agent) => agent.id === agentId) ?? null;
+  const nextWorkflows =
+    previousAgent && renamedAgent
+      ? project.workflows.map((workflow) => {
+          const nextNodes = [...workflow.nodes];
+          let workflowDidChange = false;
+
+          for (const [index, node] of workflow.nodes.entries()) {
+            if (node.type !== "agent" || node.agentID !== agentId) {
+              continue;
+            }
+
+            const trimmedTitle = node.title.trim();
+            if (trimmedTitle.length > 0 && trimmedTitle !== previousAgent.name) {
+              continue;
+            }
+
+            nextNodes[index] = {
+              ...node,
+              title: normalizeWorkflowNodeTitle(
+                {
+                  ...workflow,
+                  nodes: nextNodes
+                },
+                node.type,
+                renamedAgent.name,
+                {
+                  excludeNodeId: node.id,
+                  fallbackFunctionDescription: renamedAgent.name
+                }
+              )
+            };
+            workflowDidChange = true;
+          }
+
+          return workflowDidChange
+            ? {
+                ...workflow,
+                nodes: nextNodes
+              }
+            : workflow;
+        })
+      : project.workflows;
+
   return withUpdatedAt({
     ...project,
-    agents: nextAgents
+    agents: nextAgents,
+    workflows: nextWorkflows
   });
 }
 

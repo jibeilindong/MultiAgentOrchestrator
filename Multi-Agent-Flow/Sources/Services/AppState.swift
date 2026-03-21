@@ -976,6 +976,7 @@ class AppState: ObservableObject {
             tasks: project.tasks,
             existing: project.workspaceIndex
         )
+        hydratedProject = normalizeProjectNaming(hydratedProject)
         if !hydratedProject.workflows.isEmpty {
             hydratedProject.permissions = conversationPermissions(for: hydratedProject.workflows)
         }
@@ -1012,8 +1013,13 @@ class AppState: ObservableObject {
             ("Reviewer", "负责审查输出、发现风险并提出修正意见。", ["review", "quality"])
         ]
 
-        return templates.enumerated().map { index, entry in
-            var agent = Agent(name: entry.0)
+        var agents: [Agent] = []
+        for (index, entry) in templates.enumerated() {
+            let normalizedName = Agent.normalizedName(
+                requestedName: entry.0,
+                existingAgents: agents
+            )
+            var agent = Agent(name: normalizedName)
             agent.description = entry.1
             agent.soulMD = """
             # \(entry.0)
@@ -1022,9 +1028,66 @@ class AppState: ObservableObject {
             """
             agent.position = CGPoint(x: CGFloat(180 + (index * 220)), y: CGFloat(180 + ((index % 2) * 130)))
             agent.capabilities = entry.2
-            agent.openClawDefinition.agentIdentifier = entry.0
-            return agent
+            agent.openClawDefinition.agentIdentifier = normalizedName
+            agents.append(agent)
         }
+        return agents
+    }
+
+    private func normalizeProjectNaming(_ project: MAProject) -> MAProject {
+        var normalizedProject = project
+        var normalizedAgents: [Agent] = []
+        var previousAgentNamesByID: [UUID: String] = [:]
+
+        for agent in project.agents {
+            previousAgentNamesByID[agent.id] = agent.name
+            var normalizedAgent = agent
+            normalizedAgent.name = Agent.normalizedName(
+                requestedName: agent.name,
+                existingAgents: normalizedAgents,
+                excludingAgentID: agent.id
+            )
+            if normalizedAgent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                normalizedAgent.openClawDefinition.agentIdentifier = normalizedAgent.name
+            }
+            normalizedAgents.append(normalizedAgent)
+        }
+
+        normalizedProject.agents = normalizedAgents
+        let agentNameByID = Dictionary(uniqueKeysWithValues: normalizedAgents.map { ($0.id, $0.name) })
+
+        normalizedProject.workflows = normalizedProject.workflows.map { workflow in
+            var normalizedWorkflow = workflow
+            var normalizedNodes: [WorkflowNode] = []
+
+            for node in workflow.nodes {
+                var normalizedNode = node
+                let trimmedTitle = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackFunctionDescription = node.agentID.flatMap { agentNameByID[$0] }
+                let previousAgentName = node.agentID.flatMap { previousAgentNamesByID[$0] }
+                let requestedTitle: String
+
+                if trimmedTitle.isEmpty || (previousAgentName != nil && trimmedTitle == previousAgentName!) {
+                    requestedTitle = fallbackFunctionDescription ?? trimmedTitle
+                } else {
+                    requestedTitle = trimmedTitle
+                }
+
+                normalizedNode.title = WorkflowNode.normalizedTitle(
+                    requestedTitle: requestedTitle,
+                    nodeType: node.type,
+                    existingNodes: normalizedNodes,
+                    excludingNodeID: node.id,
+                    fallbackFunctionDescription: fallbackFunctionDescription
+                )
+                normalizedNodes.append(normalizedNode)
+            }
+
+            normalizedWorkflow.nodes = normalizedNodes
+            return normalizedWorkflow
+        }
+
+        return normalizedProject
     }
 
     private func makeOfflineTemplateWorkflow(agents: [Agent]) -> Workflow {
@@ -1142,7 +1205,7 @@ class AppState: ObservableObject {
         let imported = openClawManager.importDetectedAgents(into: &project, selectedRecordIDs: selectedRecordIDs)
         guard !imported.isEmpty else { return [] }
 
-        currentProject = project
+        currentProject = normalizeProjectNaming(project)
         syncCurrentProjectFromManagers()
         persistCurrentProjectSilently()
         return imported
@@ -1236,6 +1299,7 @@ class AppState: ObservableObject {
         var normalizedProject = project
         let deduplication = enforceUniqueAgentNodes(in: normalizedProject.workflows)
         normalizedProject.workflows = deduplication.workflows
+        normalizedProject = normalizeProjectNaming(normalizedProject)
         if !normalizedProject.workflows.isEmpty {
             normalizedProject.permissions = conversationPermissions(for: normalizedProject.workflows)
         }
@@ -1538,12 +1602,16 @@ class AppState: ObservableObject {
     @discardableResult
     func ensureAgent(named name: String, description: String? = nil) -> Agent? {
         guard var project = currentProject else { return nil }
+        let normalizedName = Agent.normalizedName(
+            requestedName: name,
+            existingAgents: project.agents
+        )
 
-        if let existing = project.agents.first(where: { $0.name == name }) {
+        if let existing = project.agents.first(where: { $0.name == normalizedName }) {
             return existing
         }
 
-        var agent = Agent(name: name)
+        var agent = Agent(name: normalizedName)
         if let description {
             agent.description = description
         }
@@ -2112,15 +2180,45 @@ class AppState: ObservableObject {
         guard var project = currentProject,
               let index = project.agents.firstIndex(where: { $0.id == updatedAgent.id }) else { return }
 
-        project.agents[index] = updatedAgent
+        let previousAgent = project.agents[index]
+        var normalizedAgent = updatedAgent
+        normalizedAgent.name = Agent.normalizedName(
+            requestedName: updatedAgent.name,
+            existingAgents: project.agents,
+            excludingAgentID: updatedAgent.id
+        )
+        if normalizedAgent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalizedAgent.openClawDefinition.agentIdentifier = normalizedAgent.name
+        }
+
+        project.agents[index] = normalizedAgent
+        for workflowIndex in project.workflows.indices {
+            for nodeIndex in project.workflows[workflowIndex].nodes.indices {
+                let node = project.workflows[workflowIndex].nodes[nodeIndex]
+                guard node.type == .agent, node.agentID == normalizedAgent.id else { continue }
+
+                let trimmedTitle = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedTitle.isEmpty, trimmedTitle != previousAgent.name {
+                    continue
+                }
+
+                project.workflows[workflowIndex].nodes[nodeIndex].title = WorkflowNode.normalizedTitle(
+                    requestedTitle: normalizedAgent.name,
+                    nodeType: node.type,
+                    existingNodes: project.workflows[workflowIndex].nodes,
+                    excludingNodeID: node.id,
+                    fallbackFunctionDescription: normalizedAgent.name
+                )
+            }
+        }
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
 
-        let mirrorWrite = writeAgentSoulToProjectMirror(agent: updatedAgent, project: project)
+        let mirrorWrite = writeAgentSoulToProjectMirror(agent: normalizedAgent, project: project)
         if mirrorWrite.success, let path = mirrorWrite.path,
            let refreshedProject = currentProject,
-           let refreshedIndex = refreshedProject.agents.firstIndex(where: { $0.id == updatedAgent.id }) {
+           let refreshedIndex = refreshedProject.agents.firstIndex(where: { $0.id == normalizedAgent.id }) {
             currentProject?.agents[refreshedIndex].openClawDefinition.soulSourcePath = path
         }
         persistCurrentProjectSilently()
@@ -2133,7 +2231,7 @@ class AppState: ObservableObject {
         }
 
         if reload {
-            reloadAgent(updatedAgent.id)
+            reloadAgent(normalizedAgent.id)
         }
     }
 
@@ -3432,7 +3530,10 @@ class AppState: ObservableObject {
     @discardableResult
     func addNewAgent(named name: String = "New Agent", templateID: String? = nil) -> Agent? {
         guard var project = currentProject else { return nil }
-        let resolvedName = uniqueAgentName(baseName: name, suffix: "")
+        let resolvedName = Agent.normalizedName(
+            requestedName: name,
+            existingAgents: project.agents
+        )
         var newAgent = Agent(name: resolvedName)
         if let templateID, let template = AgentTemplateCatalog.template(withID: templateID) {
             newAgent.apply(template: template)
@@ -3550,15 +3651,11 @@ class AppState: ObservableObject {
     }
 
     private func uniqueAgentName(baseName: String, suffix: String) -> String {
-        guard let project = currentProject else { return suffix.isEmpty ? baseName : "\(baseName) \(suffix)" }
-        let existingNames = Set(project.agents.map(\.name))
-        var candidate = suffix.isEmpty ? baseName : "\(baseName) \(suffix)"
-        var counter = 2
-        while existingNames.contains(candidate) {
-            candidate = suffix.isEmpty ? "\(baseName) \(counter)" : "\(baseName) \(suffix) \(counter)"
-            counter += 1
-        }
-        return candidate
+        let requestedName = suffix.isEmpty ? baseName : "\(baseName) \(suffix)"
+        return Agent.normalizedName(
+            requestedName: requestedName,
+            existingAgents: currentProject?.agents ?? []
+        )
     }
 
     // 添加新节点

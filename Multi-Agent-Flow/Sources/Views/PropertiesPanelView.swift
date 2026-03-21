@@ -183,6 +183,7 @@ struct NodePropertiesView: View {
 // Agent属性视图
 struct AgentPropertiesView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var templateLibrary = AgentTemplateLibraryStore.shared
     @State private var selectedAgentID: UUID?
     @State private var agentName: String = ""
     @State private var agentIdentity: String = ""
@@ -195,6 +196,7 @@ struct AgentPropertiesView: View {
     @State private var openClawRuntimeProfile: String = "default"
     @State private var openClawMemoryBackupPath: String = ""
     @State private var selectedTemplateID: String = AgentTemplateCatalog.defaultTemplateID
+    @State private var showingTemplateManager = false
 
     private let agentColorPresets: [(title: String, hex: String, color: Color)] = [
         ("蓝", "2563EB", .blue),
@@ -336,6 +338,11 @@ struct AgentPropertiesView: View {
                                         onSelect: { template in applyTemplate(template) },
                                         labelTitle: selectedTemplate.name
                                     )
+                                    Button("模板库") {
+                                        showingTemplateManager = true
+                                    }
+                                    .font(.caption)
+                                    .buttonStyle(.borderless)
                                     Button(LocalizedString.text("apply_template")) {
                                         loadTemplate()
                                     }
@@ -436,6 +443,9 @@ struct AgentPropertiesView: View {
                 selectedTemplateID = matchingTemplateID(for: firstAgent)
             }
         }
+        .sheet(isPresented: $showingTemplateManager) {
+            TemplateLibraryManagerSheet(selectedTemplateID: $selectedTemplateID)
+        }
     }
     
     private var hasChanges: Bool {
@@ -453,6 +463,7 @@ struct AgentPropertiesView: View {
     }
     
     private func loadTemplate() {
+        templateLibrary.markUsed(selectedTemplate.id)
         applyTemplate(selectedTemplate)
     }
 
@@ -505,6 +516,7 @@ struct AgentPropertiesView: View {
     }
     
     private func createNewAgent() {
+        templateLibrary.markUsed(selectedTemplateID)
         guard let newAgent = appState.addNewAgent(templateID: selectedTemplateID) else { return }
         selectedAgentID = newAgent.id
         agentName = newAgent.name
@@ -643,6 +655,7 @@ struct TemplatePickerButton: View {
 }
 
 struct TemplatePickerPopover: View {
+    @ObservedObject private var templateLibrary = AgentTemplateLibraryStore.shared
     @Binding var selectedTemplateID: String
     @Binding var isPresented: Bool
     let blankActionTitle: String?
@@ -653,17 +666,25 @@ struct TemplatePickerPopover: View {
 
     @State private var searchText: String = ""
 
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var favoriteTemplates: [AgentTemplate] {
+        templateLibrary.favoriteTemplates.filter(matchesSearch)
+    }
+
+    private var recentTemplates: [AgentTemplate] {
+        templateLibrary.recentTemplates
+            .filter(matchesSearch)
+            .filter { !templateLibrary.isFavorite($0.id) }
+    }
+
     private var filteredFamilies: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
         AgentTemplateCatalog.families.compactMap { family in
             let groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])] =
                 AgentTemplateCatalog.categories(in: family).compactMap { category -> (category: AgentTemplateCategory, templates: [AgentTemplate])? in
-                let templates = AgentTemplateCatalog.templates(in: category).filter {
-                    searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || $0.name.localizedCaseInsensitiveContains(searchText)
-                    || $0.summary.localizedCaseInsensitiveContains(searchText)
-                    || $0.identity.localizedCaseInsensitiveContains(searchText)
-                    || $0.taxonomyPath.localizedCaseInsensitiveContains(searchText)
-                }
+                let templates = AgentTemplateCatalog.templates(in: category).filter(matchesSearch)
                 guard !templates.isEmpty else { return nil }
                 return (category, templates)
             }
@@ -713,6 +734,20 @@ struct TemplatePickerPopover: View {
                         .buttonStyle(.plain)
                     }
 
+                    if !favoriteTemplates.isEmpty {
+                        templateQuickSection(
+                            title: "收藏模板",
+                            templates: favoriteTemplates
+                        )
+                    }
+
+                    if !recentTemplates.isEmpty {
+                        templateQuickSection(
+                            title: "最近使用",
+                            templates: recentTemplates
+                        )
+                    }
+
                     ForEach(filteredFamilies, id: \.family) { familyGroup in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(familyGroup.family.rawValue)
@@ -725,39 +760,7 @@ struct TemplatePickerPopover: View {
                                         .foregroundColor(.secondary)
 
                                     ForEach(group.templates) { template in
-                                        Button {
-                                            selectedTemplateID = template.id
-                                            onSelect(template)
-                                            isPresented = false
-                                        } label: {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                HStack {
-                                                    Text(template.name)
-                                                        .font(.body)
-                                                    Spacer()
-                                                    if template.id == selectedTemplateID {
-                                                        Image(systemName: "checkmark.circle.fill")
-                                                            .foregroundColor(.accentColor)
-                                                    }
-                                                }
-                                                Text(template.summary)
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                                    .lineLimit(2)
-                                                Text(template.taxonomyPath)
-                                                    .font(.caption2)
-                                                    .foregroundColor(.secondary)
-                                                Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
-                                                    .font(.caption2)
-                                                    .foregroundColor(.secondary)
-                                                    .lineLimit(2)
-                                            }
-                                            .padding(10)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(template.id == selectedTemplateID ? Color.accentColor.opacity(0.12) : Color.clear)
-                                            .cornerRadius(8)
-                                        }
-                                        .buttonStyle(.plain)
+                                        templateSelectionButton(template)
                                     }
                                 }
                                 .font(.caption)
@@ -804,15 +807,110 @@ struct TemplatePickerPopover: View {
         }
         .padding()
     }
+
+    private func matchesSearch(_ template: AgentTemplate) -> Bool {
+        trimmedSearchText.isEmpty
+        || template.name.localizedCaseInsensitiveContains(trimmedSearchText)
+        || template.summary.localizedCaseInsensitiveContains(trimmedSearchText)
+        || template.identity.localizedCaseInsensitiveContains(trimmedSearchText)
+        || template.taxonomyPath.localizedCaseInsensitiveContains(trimmedSearchText)
+    }
+
+    @ViewBuilder
+    private func templateQuickSection(title: String, templates: [AgentTemplate]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach(templates) { template in
+                templateSelectionButton(template)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func templateSelectionButton(_ template: AgentTemplate) -> some View {
+        Button {
+            templateLibrary.markUsed(template.id)
+            selectedTemplateID = template.id
+            onSelect(template)
+            isPresented = false
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(template.name)
+                        .font(.body)
+                    if templateLibrary.isFavorite(template.id) {
+                        Image(systemName: "star.fill")
+                            .font(.caption2)
+                            .foregroundColor(.yellow)
+                    }
+                    Spacer()
+                    if template.id == selectedTemplateID {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.accentColor)
+                    }
+                }
+                Text(template.summary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text(template.taxonomyPath)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(template.id == selectedTemplateID ? Color.accentColor.opacity(0.12) : Color.clear)
+            .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 struct TemplateSummaryCard: View {
     let template: AgentTemplate
 
+    private var validationText: String {
+        let issues = template.validationIssues
+        if issues.isEmpty {
+            return "已通过规范校验"
+        }
+
+        let errorCount = issues.filter { $0.severity == .error }.count
+        let warningCount = issues.filter { $0.severity == .warning }.count
+
+        if errorCount > 0 {
+            return "存在 \(errorCount) 个错误，\(warningCount) 个提醒"
+        }
+
+        return "存在 \(warningCount) 个提醒"
+    }
+
+    private var validationColor: Color {
+        let issues = template.validationIssues
+        if issues.contains(where: { $0.severity == .error }) {
+            return .red
+        }
+        if issues.contains(where: { $0.severity == .warning }) {
+            return .orange
+        }
+        return .green
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(LocalizedString.text("current_template_summary"))
+            Text("模板管理信息")
                 .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text("以下信息仅用于模板选择与管理，不会写入 SOUL.md。")
+                .font(.caption2)
                 .foregroundColor(.secondary)
 
             HStack(alignment: .top, spacing: 10) {
@@ -831,16 +929,840 @@ struct TemplateSummaryCard: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Text("能力标签：\(template.capabilities.joined(separator: " · "))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(LocalizedString.format("applicable_scenarios", template.applicableScenarios.joined(separator: " · ")))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Text(validationText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(validationColor)
                 }
             }
             .padding(10)
             .background(Color.primary.opacity(0.04))
             .cornerRadius(8)
         }
+    }
+}
+
+private enum TemplateManagerMode: String, CaseIterable, Identifiable {
+    case editor = "编辑模板"
+    case validation = "校验扫描"
+
+    var id: String { rawValue }
+}
+
+private enum TemplateLibrarySourceFilter: String, CaseIterable, Identifiable {
+    case all = "全部来源"
+    case builtIn = "仅内置"
+    case custom = "仅自定义"
+    case invalid = "仅异常"
+
+    var id: String { rawValue }
+}
+
+private enum TemplateValidationSeverityFilter: String, CaseIterable, Identifiable {
+    case all = "全部问题"
+    case errorsOnly = "仅错误"
+    case warningsOnly = "仅提醒"
+
+    var id: String { rawValue }
+}
+
+private struct TemplateEditorDraft {
+    var id: String
+    var category: AgentTemplateCategory
+    var name: String
+    var summary: String
+    var applicableScenariosText: String
+    var identity: String
+    var capabilitiesText: String
+    var colorHex: String
+    var role: String
+    var mission: String
+    var coreCapabilitiesText: String
+    var responsibilitiesText: String
+    var workflowText: String
+    var inputsText: String
+    var outputsText: String
+    var collaborationText: String
+    var guardrailsText: String
+    var successCriteriaText: String
+
+    init(template: AgentTemplate) {
+        id = template.id
+        category = template.category
+        name = template.name
+        summary = template.summary
+        applicableScenariosText = template.applicableScenarios.joined(separator: "\n")
+        identity = template.identity
+        capabilitiesText = template.capabilities.joined(separator: "\n")
+        colorHex = template.colorHex
+        role = template.soulSpec.role
+        mission = template.soulSpec.mission
+        coreCapabilitiesText = template.soulSpec.coreCapabilities.joined(separator: "\n")
+        responsibilitiesText = template.soulSpec.responsibilities.joined(separator: "\n")
+        workflowText = template.soulSpec.workflow.joined(separator: "\n")
+        inputsText = template.soulSpec.inputs.joined(separator: "\n")
+        outputsText = template.soulSpec.outputs.joined(separator: "\n")
+        collaborationText = template.soulSpec.collaboration.joined(separator: "\n")
+        guardrailsText = template.soulSpec.guardrails.joined(separator: "\n")
+        successCriteriaText = template.soulSpec.successCriteria.joined(separator: "\n")
+    }
+
+    func applying(to template: AgentTemplate) -> AgentTemplate {
+        var updated = template
+        updated.meta.category = category
+        updated.meta.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.meta.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.meta.applicableScenarios = splitLines(applicableScenariosText)
+        updated.meta.identity = identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.meta.capabilities = splitLines(capabilitiesText)
+        updated.meta.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.soulSpec.role = role.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.soulSpec.mission = mission.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.soulSpec.coreCapabilities = splitLines(coreCapabilitiesText)
+        updated.soulSpec.responsibilities = splitLines(responsibilitiesText)
+        updated.soulSpec.workflow = splitLines(workflowText)
+        updated.soulSpec.inputs = splitLines(inputsText)
+        updated.soulSpec.outputs = splitLines(outputsText)
+        updated.soulSpec.collaboration = splitLines(collaborationText)
+        updated.soulSpec.guardrails = splitLines(guardrailsText)
+        updated.soulSpec.successCriteria = splitLines(successCriteriaText)
+        return updated.sanitizedForPersistence()
+    }
+
+    private func splitLines(_ text: String) -> [String] {
+        text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+struct TemplateLibraryManagerSheet: View {
+    @ObservedObject private var templateLibrary = AgentTemplateLibraryStore.shared
+    @Binding var selectedTemplateID: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var mode: TemplateManagerMode = .editor
+    @State private var selectedTemplateManagerID: String?
+    @State private var draft: TemplateEditorDraft?
+    @State private var feedbackMessage: String?
+    @State private var searchText: String = ""
+    @State private var sourceFilter: TemplateLibrarySourceFilter = .all
+    @State private var familyFilter: AgentTemplateFamily?
+
+    init(selectedTemplateID: Binding<String>) {
+        self._selectedTemplateID = selectedTemplateID
+    }
+
+    private var selectedTemplate: AgentTemplate? {
+        guard let selectedTemplateManagerID else { return nil }
+        return templateLibrary.template(withID: selectedTemplateManagerID)
+    }
+
+    private var sortedTemplates: [AgentTemplate] {
+        templateLibrary.templates.sorted { lhs, rhs in
+            if lhs.meta.sortOrder == rhs.meta.sortOrder {
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            return lhs.meta.sortOrder < rhs.meta.sortOrder
+        }
+    }
+
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var filteredTemplates: [AgentTemplate] {
+        sortedTemplates.filter { template in
+            let matchesSearch = trimmedSearchText.isEmpty
+                || template.name.localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.summary.localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.identity.localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.taxonomyPath.localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.capabilities.joined(separator: " ").localizedCaseInsensitiveContains(trimmedSearchText)
+
+            let matchesSource: Bool
+            switch sourceFilter {
+            case .all:
+                matchesSource = true
+            case .builtIn:
+                matchesSource = templateLibrary.isBuiltInTemplate(template.id)
+            case .custom:
+                matchesSource = !templateLibrary.isBuiltInTemplate(template.id)
+            case .invalid:
+                matchesSource = !template.validationIssues.isEmpty
+            }
+
+            let matchesFamily = familyFilter == nil || template.family == familyFilter
+            return matchesSearch && matchesSource && matchesFamily
+        }
+    }
+
+    private var groupedTemplates: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
+        AgentTemplateCatalog.families.compactMap { family in
+            guard familyFilter == nil || familyFilter == family else { return nil }
+
+            let groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])] =
+                AgentTemplateCatalog.categories(in: family).compactMap { category in
+                    let templates = filteredTemplates.filter { $0.category == category }
+                    guard !templates.isEmpty else { return nil }
+                    return (category, templates)
+                }
+
+            guard !groups.isEmpty else { return nil }
+            return (family, groups)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("模板库管理")
+                    .font(.headline)
+                Spacer()
+                Button("导出筛选结果") {
+                    exportFilteredTemplates()
+                }
+                .buttonStyle(.bordered)
+                .disabled(filteredTemplates.isEmpty || filteredTemplates.count == sortedTemplates.count)
+                Button("导出全部") {
+                    exportAllTemplates()
+                }
+                .buttonStyle(.bordered)
+                Picker("", selection: $mode) {
+                    ForEach(TemplateManagerMode.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                Button("关闭") { dismiss() }
+            }
+            .padding()
+
+            Divider()
+
+            HStack(spacing: 0) {
+                templateListPane
+                Divider()
+                contentPane
+            }
+
+            if let feedbackMessage {
+                Divider()
+                Text(feedbackMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(minWidth: 980, minHeight: 680)
+        .onAppear {
+            let initial = templateLibrary.template(withID: selectedTemplateID)?.id
+                ?? sortedTemplates.first?.id
+            selectedTemplateManagerID = initial
+            if let template = initial.flatMap({ templateLibrary.template(withID: $0) }) {
+                draft = TemplateEditorDraft(template: template)
+            }
+        }
+        .onChange(of: selectedTemplateManagerID) { _, newValue in
+            if let newValue, let template = templateLibrary.template(withID: newValue) {
+                draft = TemplateEditorDraft(template: template)
+            } else {
+                draft = nil
+            }
+        }
+        .onChange(of: templateLibrary.templates.map(\.id)) { _, ids in
+            if let selectedTemplateManagerID, ids.contains(selectedTemplateManagerID) {
+                return
+            }
+            selectedTemplateManagerID = ids.first
+        }
+        .onChange(of: filteredTemplates.map(\.id)) { _, ids in
+            guard !ids.isEmpty else { return }
+            if let selectedTemplateManagerID, ids.contains(selectedTemplateManagerID) {
+                return
+            }
+            selectedTemplateManagerID = ids.first
+        }
+    }
+
+    @ViewBuilder
+    private var templateListPane: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button("新建自定义模板") {
+                    let sourceID = selectedTemplateManagerID ?? AgentTemplateCatalog.defaultTemplateID
+                    if let template = templateLibrary.duplicateTemplate(from: sourceID) {
+                        selectedTemplateManagerID = template.id
+                        selectedTemplateID = template.id
+                        draft = TemplateEditorDraft(template: template)
+                        feedbackMessage = "已创建自定义模板：\(template.name)"
+                    }
+                }
+                .buttonStyle(.bordered)
+
+                Button("导入模板") {
+                    importTemplates()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            TextField("搜索模板", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Picker("来源", selection: $sourceFilter) {
+                    ForEach(TemplateLibrarySourceFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Picker(
+                    "家族",
+                    selection: Binding(
+                        get: { familyFilter },
+                        set: { familyFilter = $0 }
+                    )
+                ) {
+                    Text("全部家族").tag(Optional<AgentTemplateFamily>.none)
+                    ForEach(AgentTemplateCatalog.families, id: \.self) { family in
+                        Text(family.rawValue).tag(Optional(family))
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            HStack {
+                Text("模板数：\(filteredTemplates.count) / \(sortedTemplates.count)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("收藏：\(templateLibrary.favoriteTemplateIDs.count)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("最近：\(templateLibrary.recentTemplateIDs.count)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Spacer()
+                if !trimmedSearchText.isEmpty || sourceFilter != .all || familyFilter != nil {
+                    Button("清除筛选") {
+                        searchText = ""
+                        sourceFilter = .all
+                        familyFilter = nil
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+            }
+
+            List(selection: $selectedTemplateManagerID) {
+                ForEach(groupedTemplates, id: \.family) { familyGroup in
+                    Section(familyGroup.family.rawValue) {
+                        ForEach(familyGroup.groups, id: \.category) { group in
+                            Section(group.category.rawValue) {
+                                ForEach(group.templates, id: \.id) { template in
+                                    templateListRow(template)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if groupedTemplates.isEmpty {
+                Text("当前筛选条件下没有可显示的模板。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .frame(width: 280)
+    }
+
+    @ViewBuilder
+    private var contentPane: some View {
+        switch mode {
+        case .editor:
+            templateEditorPane
+        case .validation:
+            TemplateValidationScannerView(
+                templates: sortedTemplates,
+                onSelectTemplate: { templateID in
+                    selectedTemplateManagerID = templateID
+                    selectedTemplateID = templateID
+                    mode = .editor
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var templateEditorPane: some View {
+        if let template = selectedTemplate, let draft {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(templateLibrary.isBuiltInTemplate(template.id) ? "内置模板" : "自定义模板")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(template.id)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                        Spacer()
+                        Button("导出当前模板") {
+                            exportTemplate(templateID: template.id)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button(templateLibrary.isFavorite(template.id) ? "取消收藏" : "加入收藏") {
+                            templateLibrary.toggleFavorite(template.id)
+                            feedbackMessage = templateLibrary.isFavorite(template.id) ? "已加入收藏模板。" : "已取消收藏模板。"
+                        }
+                        .buttonStyle(.bordered)
+
+                        if templateLibrary.isBuiltInTemplate(template.id) {
+                            Button("重置内置覆盖") {
+                                templateLibrary.resetBuiltInTemplate(template.id)
+                                if let reloaded = templateLibrary.template(withID: template.id) {
+                                    self.draft = TemplateEditorDraft(template: reloaded)
+                                    feedbackMessage = "已重置内置模板覆盖。"
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        } else {
+                            Button("删除自定义模板", role: .destructive) {
+                                let fallbackID = AgentTemplateCatalog.defaultTemplateID
+                                templateLibrary.deleteCustomTemplate(template.id)
+                                selectedTemplateManagerID = templateLibrary.template(withID: fallbackID)?.id ?? templateLibrary.templates.first?.id
+                                feedbackMessage = "已删除自定义模板。"
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        Button("另存为副本") {
+                            if let copy = templateLibrary.duplicateTemplate(from: template.id) {
+                                selectedTemplateManagerID = copy.id
+                                selectedTemplateID = copy.id
+                                self.draft = TemplateEditorDraft(template: copy)
+                                feedbackMessage = "已复制模板：\(copy.name)"
+                            }
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("保存修改") {
+                            saveDraft(baseTemplate: template, draft: draft)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+
+                    TemplateDraftEditor(
+                        draft: Binding(
+                            get: { self.draft ?? TemplateEditorDraft(template: template) },
+                            set: { self.draft = $0 }
+                        )
+                    )
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("SOUL.md 预览")
+                            .font(.headline)
+                        TextEditor(text: .constant((self.draft ?? TemplateEditorDraft(template: template)).applying(to: template).soulMD))
+                            .font(.system(.body, design: .monospaced))
+                            .frame(height: 320)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+                            )
+                    }
+                }
+                .padding()
+            }
+        } else {
+            VStack(spacing: 12) {
+                Text("请选择一个模板")
+                    .font(.headline)
+                Text("可以在左侧选择模板，或新建一个自定义模板。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func saveDraft(baseTemplate: AgentTemplate, draft: TemplateEditorDraft) {
+        let updated = draft.applying(to: baseTemplate)
+        templateLibrary.upsert(updated)
+        selectedTemplateManagerID = updated.id
+        selectedTemplateID = updated.id
+        self.draft = TemplateEditorDraft(template: updated)
+        feedbackMessage = updated.validationIssues.isEmpty ? "模板已保存，并通过规范校验。" : "模板已保存，但仍有 \(updated.validationIssues.count) 个校验问题。"
+    }
+
+    private func importTemplates() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+            do {
+                let imported = try templateLibrary.importTemplates(from: data)
+                if let first = imported.first {
+                    selectedTemplateManagerID = first.id
+                    selectedTemplateID = first.id
+                    draft = TemplateEditorDraft(template: first)
+                }
+                feedbackMessage = "已导入 \(imported.count) 个模板。"
+            } catch {
+                feedbackMessage = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportTemplate(templateID: String) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "\(templateID).json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let data = try templateLibrary.exportTemplates([templateID])
+                try data.write(to: url, options: .atomic)
+                feedbackMessage = "模板已导出到 \(url.lastPathComponent)。"
+            } catch {
+                feedbackMessage = "导出失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func templateListRow(_ template: AgentTemplate) -> some View {
+        let issues = template.validationIssues
+        let errorCount = issues.filter { $0.severity == .error }.count
+        let warningCount = issues.filter { $0.severity == .warning }.count
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(template.name)
+                if templateLibrary.isFavorite(template.id) {
+                    Image(systemName: "star.fill")
+                        .font(.caption2)
+                        .foregroundColor(.yellow)
+                }
+                if template.id == AgentTemplateCatalog.defaultTemplateID {
+                    Text("推荐")
+                        .font(.caption2)
+                        .foregroundColor(.green)
+                }
+                Spacer()
+            }
+
+            Text(template.taxonomyPath)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 6) {
+                Text(templateLibrary.isBuiltInTemplate(template.id) ? "内置" : "自定义")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                if templateLibrary.recentTemplateIDs.contains(template.id) {
+                    Text("最近")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.blue)
+                }
+
+                if errorCount > 0 {
+                    Text("错误 \(errorCount)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.red)
+                } else if warningCount > 0 {
+                    Text("提醒 \(warningCount)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.orange)
+                } else {
+                    Text("已校验")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.green)
+                }
+            }
+        }
+        .tag(template.id)
+    }
+
+    private func exportAllTemplates() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "agent-template-library.json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let data = try templateLibrary.exportAllTemplates()
+                try data.write(to: url, options: .atomic)
+                feedbackMessage = "已导出全部模板到 \(url.lastPathComponent)。"
+            } catch {
+                feedbackMessage = "导出全部失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportFilteredTemplates() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "filtered-agent-templates.json"
+        let filteredTemplateIDs = filteredTemplates.map(\.id)
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let data = try templateLibrary.exportTemplates(filteredTemplateIDs)
+                try data.write(to: url, options: .atomic)
+                feedbackMessage = "已导出 \(filteredTemplateIDs.count) 个筛选模板到 \(url.lastPathComponent)。"
+            } catch {
+                feedbackMessage = "导出筛选结果失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+private struct TemplateDraftEditor: View {
+    @Binding var draft: TemplateEditorDraft
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("管理字段") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        editorField("名称", text: $draft.name)
+                        editorField("Identity", text: $draft.identity)
+                    }
+                    HStack {
+                        Picker("分类", selection: $draft.category) {
+                            ForEach(AgentTemplateCatalog.categories, id: \.self) { category in
+                                Text(category.rawValue).tag(category)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        editorField("颜色 HEX", text: $draft.colorHex)
+                    }
+                    multilineField("摘要", text: $draft.summary, height: 70)
+                    multilineField("适用场景", text: $draft.applicableScenariosText, height: 80)
+                    multilineField("能力标签", text: $draft.capabilitiesText, height: 80)
+                }
+            }
+
+            GroupBox("SOUL 结构") {
+                VStack(alignment: .leading, spacing: 10) {
+                    multilineField("角色定位", text: $draft.role, height: 70)
+                    multilineField("核心使命", text: $draft.mission, height: 70)
+                    multilineField("核心能力", text: $draft.coreCapabilitiesText, height: 80)
+                    multilineField("输入要求", text: $draft.inputsText, height: 80)
+                    multilineField("工作职责", text: $draft.responsibilitiesText, height: 110)
+                    multilineField("工作流程", text: $draft.workflowText, height: 110)
+                    multilineField("输出要求", text: $draft.outputsText, height: 90)
+                    multilineField("协作边界", text: $draft.collaborationText, height: 90)
+                    multilineField("行为边界", text: $draft.guardrailsText, height: 90)
+                    multilineField("成功标准", text: $draft.successCriteriaText, height: 90)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func editorField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextField(title, text: text)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    @ViewBuilder
+    private func multilineField(_ title: String, text: Binding<String>, height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextEditor(text: text)
+                .font(.system(.body, design: .monospaced))
+                .frame(height: height)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+                )
+        }
+    }
+}
+
+private struct TemplateValidationScannerView: View {
+    let templates: [AgentTemplate]
+    let onSelectTemplate: (String) -> Void
+
+    @State private var searchText: String = ""
+    @State private var severityFilter: TemplateValidationSeverityFilter = .all
+
+    private var invalidTemplates: [AgentTemplate] {
+        templates.filter { !$0.validationIssues.isEmpty }
+    }
+
+    private var filteredInvalidTemplates: [AgentTemplate] {
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return invalidTemplates.filter { template in
+            let matchingIssues = filteredIssues(for: template)
+            let matchesTemplateFields = trimmedSearchText.isEmpty
+                || template.name.localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.summary.localizedCaseInsensitiveContains(trimmedSearchText)
+                || template.taxonomyPath.localizedCaseInsensitiveContains(trimmedSearchText)
+
+            return matchesTemplateFields || !matchingIssues.isEmpty
+        }
+    }
+
+    private var totalErrorCount: Int {
+        invalidTemplates.flatMap(\.validationIssues).filter { $0.severity == .error }.count
+    }
+
+    private var totalWarningCount: Int {
+        invalidTemplates.flatMap(\.validationIssues).filter { $0.severity == .warning }.count
+    }
+
+    private func filteredIssues(for template: AgentTemplate) -> [AgentTemplateValidationIssue] {
+        let trimmedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return template.validationIssues.filter { issue in
+            let matchesSeverity: Bool
+            switch severityFilter {
+            case .all:
+                matchesSeverity = true
+            case .errorsOnly:
+                matchesSeverity = issue.severity == .error
+            case .warningsOnly:
+                matchesSeverity = issue.severity == .warning
+            }
+
+            let matchesSearch = trimmedSearchText.isEmpty
+                || issue.field.localizedCaseInsensitiveContains(trimmedSearchText)
+                || issue.message.localizedCaseInsensitiveContains(trimmedSearchText)
+
+            return matchesSeverity && matchesSearch
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("模板校验扫描")
+                            .font(.headline)
+                        Text("扫描所有模板，检查是否存在管理信息泄漏、字段缺失或内容过长。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Text("异常模板：\(filteredInvalidTemplates.count) / \(templates.count)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(invalidTemplates.isEmpty ? .green : .orange)
+                }
+
+                HStack {
+                    TextField("搜索异常模板或问题描述", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+
+                    Picker("问题级别", selection: $severityFilter) {
+                        ForEach(TemplateValidationSeverityFilter.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 120)
+                }
+
+                HStack(spacing: 12) {
+                    Text("错误：\(totalErrorCount)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.red)
+                    Text("提醒：\(totalWarningCount)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.orange)
+                    Spacer()
+                    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || severityFilter != .all {
+                        Button("清除筛选") {
+                            searchText = ""
+                            severityFilter = .all
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
+                }
+
+                if invalidTemplates.isEmpty {
+                    Text("当前所有模板均通过规范校验。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.green.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else if filteredInvalidTemplates.isEmpty {
+                    Text("当前筛选条件下没有匹配的问题模板。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else {
+                    ForEach(filteredInvalidTemplates, id: \.id) { template in
+                        let issues = filteredIssues(for: template)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(template.name)
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(template.taxonomyPath)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Button("打开模板") {
+                                    onSelectTemplate(template.id)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            ForEach(issues) { issue in
+                                Text("[\(issue.severity.rawValue.uppercased())] \(issue.field): \(issue.message)")
+                                    .font(.caption)
+                                    .foregroundColor(issue.severity == .error ? .red : .orange)
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+            }
+            .padding()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

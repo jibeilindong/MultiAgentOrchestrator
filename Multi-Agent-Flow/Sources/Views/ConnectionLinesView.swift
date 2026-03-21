@@ -8,575 +8,174 @@ import Foundation
 
 struct ConnectionLinesView: View {
     @ObservedObject private var localizationManager = LocalizationManager.shared
-    let currentWorkflow: Workflow?
-    @Binding var scale: CGFloat
-    let offset: CGSize
+    let edgeLayouts: [WorkflowCanvasEdgeLayout]
+    let sharedHitLayouts: [WorkflowCanvasSharedSegmentHitLayout]
+    let previewLineLayouts: [WorkflowCanvasPreviewLineLayout]
+    let blockedRects: [CGRect]
     let lineColor: Color
     let lineWidth: CGFloat
     let textScale: CGFloat
     let textColor: Color
     @Binding var selectedEdgeID: UUID?
-    let previewCandidates: [BatchConnectionCandidate]
     let recentlyCreatedEdgeIDs: Set<UUID>
     @State private var hoveredSharedSegmentID: String?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
-    var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
 
     init(
-        currentWorkflow: Workflow?,
-        scale: Binding<CGFloat>,
-        offset: CGSize,
+        edgeLayouts: [WorkflowCanvasEdgeLayout] = [],
+        sharedHitLayouts: [WorkflowCanvasSharedSegmentHitLayout] = [],
+        previewLineLayouts: [WorkflowCanvasPreviewLineLayout] = [],
+        blockedRects: [CGRect] = [],
         lineColor: Color = .blue,
         lineWidth: CGFloat = 2,
         textScale: CGFloat = 1,
         textColor: Color = .black,
         selectedEdgeID: Binding<UUID?> = .constant(nil),
-        previewCandidates: [BatchConnectionCandidate] = [],
         recentlyCreatedEdgeIDs: Set<UUID> = [],
-        onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
-        onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil
+        onEdgeSelected: ((WorkflowEdge) -> Void)? = nil
     ) {
-        self.currentWorkflow = currentWorkflow
-        self._scale = scale
-        self.offset = offset
+        self.edgeLayouts = edgeLayouts
+        self.sharedHitLayouts = sharedHitLayouts
+        self.previewLineLayouts = previewLineLayouts
+        self.blockedRects = blockedRects
         self.lineColor = lineColor
         self.lineWidth = lineWidth
         self.textScale = textScale
         self.textColor = textColor
         self._selectedEdgeID = selectedEdgeID
-        self.previewCandidates = previewCandidates
         self.recentlyCreatedEdgeIDs = recentlyCreatedEdgeIDs
         self.onEdgeSelected = onEdgeSelected
-        self.onEdgeSecondarySelected = onEdgeSecondarySelected
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let renderData = buildRenderData(in: geo)
-            ZStack {
-                ForEach(renderData.edgeLayouts, id: \.edge.id) { layout in
-                    let points = layout.points
+        let renderData = buildRenderData()
+        ZStack {
+            ForEach(renderData.edgeLayouts, id: \.edge.id) { layout in
+                let points = layout.points
 
-                    if !layout.strokePolylines.isEmpty {
-                        OrthogonalConnectionGroupShape(polylines: layout.strokePolylines)
-                            .stroke(
-                                layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.92) : layout.baseColor.opacity(0.78)),
-                                style: StrokeStyle(
-                                    lineWidth: max(1, lineWidth + (layout.isSelected ? 1 : 0) + (layout.isRecentlyCreated ? 1.5 : 0)),
-                                    lineCap: .round,
-                                    lineJoin: .round,
-                                    dash: layout.edge.requiresApproval ? [8, 4] : []
-                                )
+                if !layout.strokePolylines.isEmpty {
+                    OrthogonalConnectionGroupShape(polylines: layout.strokePolylines)
+                        .stroke(
+                            layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.92) : layout.baseColor.opacity(0.78)),
+                            style: StrokeStyle(
+                                lineWidth: max(1, lineWidth + (layout.isSelected ? 1 : 0) + (layout.isRecentlyCreated ? 1.5 : 0)),
+                                lineCap: .round,
+                                lineJoin: .round,
+                                dash: layout.edge.requiresApproval ? [8, 4] : []
                             )
-                    }
-
-                    ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14))
-                        .fill(Color.clear)
-                        .contentShape(ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14)))
-                        .onTapGesture {
-                            selectedEdgeID = layout.edge.id
-                            onEdgeSelected?(layout.edge)
-                        }
-
-                    if points.count >= 2 {
-                        if layout.showsForwardArrow {
-                            ArrowShape(from: points[points.count - 2], to: points[points.count - 1])
-                                .stroke(
-                                    layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
-                                    style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
-                                )
-                        }
-                        if layout.edge.isBidirectional {
-                            ArrowShape(from: points[1], to: points[0])
-                                .stroke(
-                                    layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
-                                    style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
-                                )
-                        }
-                    }
-
-                    let displayText = layout.displayText
-                    if !displayText.isEmpty {
-                        EdgeLabelView(
-                            text: displayText,
-                            requiresApproval: layout.edge.requiresApproval,
-                            textScale: textScale,
-                            textColor: textColor,
-                            accentColor: layout.baseColor
                         )
-                        .position(layout.labelPosition ?? labelPosition(for: layout))
-                    }
                 }
 
-                ForEach(previewLineLayouts(in: geo), id: \.id) { previewLine in
-                    Path { path in
-                        path.move(to: previewLine.from)
-                        path.addLine(to: previewLine.to)
+                ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14))
+                    .fill(Color.clear)
+                    .contentShape(ConnectionHitShape(points: points, hitWidth: max(18, lineWidth + 14)))
+                    .onTapGesture {
+                        selectedEdgeID = layout.edge.id
+                        onEdgeSelected?(layout.edge)
                     }
-                    .stroke(
-                        Color.accentColor.opacity(0.85),
-                        style: StrokeStyle(lineWidth: max(2, lineWidth + 0.5), lineCap: .round, dash: [10, 6])
-                    )
-                }
 
-                ForEach(renderData.sharedHitLayouts, id: \.id) { sharedHit in
-                    let isHovered = hoveredSharedSegmentID == sharedHit.id
-                    let containsSelectedEdge = selectedEdgeID.map { selectedID in
-                        sharedHit.edges.contains(where: { $0.id == selectedID })
-                    } ?? false
-
-                    if isHovered {
-                        OrthogonalConnectionShape(points: sharedHit.points)
+                if points.count >= 2 {
+                    if layout.showsForwardArrow {
+                        ArrowShape(from: points[points.count - 2], to: points[points.count - 1])
                             .stroke(
-                                Color.accentColor.opacity(containsSelectedEdge ? 0.5 : 0.35),
-                                style: StrokeStyle(
-                                    lineWidth: max(containsSelectedEdge ? 7 : 6, lineWidth + 4),
-                                    lineCap: .round,
-                                    lineJoin: .round
-                                )
+                                layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
+                                style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
                             )
-                            .allowsHitTesting(false)
                     }
+                    if layout.edge.isBidirectional {
+                        ArrowShape(from: points[1], to: points[0])
+                            .stroke(
+                                layout.isSelected ? Color.accentColor : (layout.isRecentlyCreated ? Color.accentColor.opacity(0.95) : layout.baseColor.opacity(0.9)),
+                                style: StrokeStyle(lineWidth: max(1, lineWidth), lineCap: .round)
+                            )
+                    }
+                }
 
-                    ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16))
-                        .fill(Color.clear)
-                        .contentShape(ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16)))
-                        .onTapGesture {
-                            cycleSharedSegmentSelection(sharedHit.edges)
-                        }
+                let displayText = layout.displayText
+                if !displayText.isEmpty {
+                    EdgeLabelView(
+                        text: displayText,
+                        requiresApproval: layout.edge.requiresApproval,
+                        textScale: textScale,
+                        textColor: textColor,
+                        accentColor: layout.baseColor
+                    )
+                    .position(layout.labelPosition ?? labelPosition(for: layout))
                 }
             }
-            .onContinuousHover(coordinateSpace: .local) { phase in
-                switch phase {
-                case .active(let location):
-                    updateHoveredSharedSegment(
-                        sharedSegmentHitID(at: location, in: renderData.sharedHitLayouts)
-                    )
-                case .ended:
-                    updateHoveredSharedSegment(nil)
+
+            ForEach(previewLineLayouts, id: \.id) { previewLine in
+                Path { path in
+                    path.move(to: previewLine.from)
+                    path.addLine(to: previewLine.to)
                 }
+                .stroke(
+                    Color.accentColor.opacity(0.85),
+                    style: StrokeStyle(lineWidth: max(2, lineWidth + 0.5), lineCap: .round, dash: [10, 6])
+                )
+            }
+
+            ForEach(renderData.sharedHitLayouts, id: \.id) { sharedHit in
+                let isHovered = hoveredSharedSegmentID == sharedHit.id
+                let containsSelectedEdge = selectedEdgeID.map { selectedID in
+                    sharedHit.edges.contains(where: { $0.id == selectedID })
+                } ?? false
+
+                if isHovered {
+                    OrthogonalConnectionShape(points: sharedHit.points)
+                        .stroke(
+                            Color.accentColor.opacity(containsSelectedEdge ? 0.5 : 0.35),
+                            style: StrokeStyle(
+                                lineWidth: max(containsSelectedEdge ? 7 : 6, lineWidth + 4),
+                                lineCap: .round,
+                                lineJoin: .round
+                            )
+                        )
+                        .allowsHitTesting(false)
+                }
+
+                ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16))
+                    .fill(Color.clear)
+                    .contentShape(ConnectionHitShape(points: sharedHit.points, hitWidth: max(22, lineWidth + 16)))
+                    .onTapGesture {
+                        cycleSharedSegmentSelection(sharedHit.edges)
+                    }
+            }
+        }
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            switch phase {
+            case .active(let location):
+                updateHoveredSharedSegment(
+                    sharedSegmentHitID(at: location, in: renderData.sharedHitLayouts)
+                )
+            case .ended:
+                updateHoveredSharedSegment(nil)
             }
         }
     }
 
-    private func buildRenderData(in geometry: GeometryProxy) -> ConnectionRenderData {
-        let edgeLayouts = buildEdgeLayouts(in: geometry)
+    private func buildRenderData() -> ConnectionRenderData {
+        let renderEdgeLayouts = edgeLayouts.map { layout in
+            EdgeLayout(
+                edge: layout.edge,
+                points: layout.points,
+                strokePolylines: [layout.points],
+                isSelected: selectedEdgeID == layout.edge.id,
+                isRecentlyCreated: recentlyCreatedEdgeIDs.contains(layout.edge.id),
+                baseColor: edgeBaseColor(layout.edge),
+                displayText: edgeDisplayText(layout.edge),
+                showsForwardArrow: true,
+                labelPosition: nil
+            )
+        }
+
         return ConnectionRenderData(
-            edgeLayouts: edgeLayouts,
-            sharedHitLayouts: buildSharedHitLayouts(from: edgeLayouts)
+            edgeLayouts: resolvedLabelLayouts(
+                resolvedSharedStrokeLayouts(deduplicatedArrowLayouts(renderEdgeLayouts)),
+                blockedRects: blockedRects
+            ),
+            sharedHitLayouts: sharedHitLayouts
         )
-    }
-
-    private func buildEdgeLayouts(in geometry: GeometryProxy) -> [EdgeLayout] {
-        guard let workflow = currentWorkflow else { return [] }
-        let nodesByID: [UUID: WorkflowNode] = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-        let nodeFramesByID: [UUID: CGRect] = Dictionary(
-            uniqueKeysWithValues: workflow.nodes.map { node in
-                (node.id, nodeFrame(for: node, geometry: geometry))
-            }
-        )
-        let candidates = workflow.edges.compactMap { edge -> RoutedEdgeCandidate? in
-            guard let fromNode = nodesByID[edge.fromNodeID],
-                  let toNode = nodesByID[edge.toNodeID],
-                  let fromFrame = nodeFramesByID[fromNode.id],
-                  let toFrame = nodeFramesByID[toNode.id] else {
-                return nil
-            }
-
-            let targetSide = WorkflowEdgeRoutePlanner.preferredIncomingSide(
-                for: toFrame,
-                toward: fromFrame.center
-            )
-            return RoutedEdgeCandidate(
-                edge: edge,
-                fromFrame: fromFrame,
-                toFrame: toFrame,
-                targetSide: targetSide
-            )
-        }
-
-        let fanoutInfoBySourceID = fanoutLayoutMap(for: candidates, in: geometry, workflow: workflow)
-        let faninInfoByBundleKey = faninLayoutMap(for: candidates)
-        let grouped = Dictionary(grouping: candidates, by: { $0.bundleKey })
-        var layouts: [EdgeLayout] = []
-
-        for bundle in grouped.values {
-            let sortedBundle = bundle.sorted { lhs, rhs in
-                let lhsAngle = angle(from: lhs.toFrame.center, to: lhs.fromFrame.center)
-                let rhsAngle = angle(from: rhs.toFrame.center, to: rhs.fromFrame.center)
-                return lhsAngle < rhsAngle
-            }
-            let laneOffsets = laneOffsets(for: sortedBundle.count)
-
-            for (index, candidate) in sortedBundle.enumerated() {
-                let obstacles = workflow.nodes
-                    .compactMap { node -> CGRect? in
-                        guard node.id != candidate.edge.fromNodeID,
-                              node.id != candidate.edge.toNodeID else { return nil }
-                        return nodeFramesByID[node.id]
-                    }
-
-                let path: [CGPoint]
-                if let fanoutInfo = fanoutInfoBySourceID[candidate.edge.fromNodeID] {
-                    if candidate.edge.toNodeID == fanoutInfo.centerTargetID,
-                       abs(candidate.toFrame.midX - candidate.fromFrame.midX) <= 28 {
-                        path = WorkflowEdgeRoutePlanner.centerDownRoute(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            avoiding: obstacles
-                        ) ?? WorkflowEdgeRoutePlanner.route(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            avoiding: obstacles,
-                            preferredAxis: .vertical,
-                            laneOffset: 0
-                        )
-                    } else if let fanoutPath = WorkflowEdgeRoutePlanner.fanoutRoute(
-                        from: candidate.fromFrame,
-                        to: candidate.toFrame,
-                        turnY: fanoutInfo.turnY,
-                        targetAnchorX: fanoutInfo.targetAnchorX(
-                            for: candidate.edge.toNodeID,
-                            default: candidate.toFrame.midX
-                        ),
-                        avoiding: obstacles
-                    ) {
-                        path = fanoutPath
-                    } else {
-                        path = WorkflowEdgeRoutePlanner.route(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            avoiding: obstacles,
-                            preferredAxis: candidate.preferredAxis,
-                            laneOffset: laneOffsets[index]
-                        )
-                    }
-                } else if let faninInfo = faninInfoByBundleKey[candidate.bundleKey],
-                          let mergedPath = WorkflowEdgeRoutePlanner.faninRoute(
-                            from: candidate.fromFrame,
-                            to: candidate.toFrame,
-                            incomingSide: faninInfo.incomingSide,
-                            mergeAxisValue: faninInfo.mergeAxisValue,
-                            trunkAxisValue: faninInfo.trunkAxisValue,
-                            avoiding: obstacles
-                          ) {
-                    path = mergedPath
-                } else {
-                    path = WorkflowEdgeRoutePlanner.route(
-                        from: candidate.fromFrame,
-                        to: candidate.toFrame,
-                        avoiding: obstacles,
-                        preferredAxis: candidate.preferredAxis,
-                        laneOffset: laneOffsets[index]
-                    )
-                }
-
-                layouts.append(
-                    EdgeLayout(
-                        edge: candidate.edge,
-                        points: path,
-                        strokePolylines: [path],
-                        isSelected: selectedEdgeID == candidate.edge.id,
-                        isRecentlyCreated: recentlyCreatedEdgeIDs.contains(candidate.edge.id),
-                        baseColor: edgeBaseColor(candidate.edge),
-                        displayText: edgeDisplayText(candidate.edge),
-                        showsForwardArrow: true,
-                        labelPosition: nil
-                    )
-                )
-            }
-        }
-
-        return resolvedLabelLayouts(
-            resolvedSharedStrokeLayouts(deduplicatedArrowLayouts(layouts)),
-            blockedRects: Array(nodeFramesByID.values)
-        )
-    }
-
-    private func buildSharedHitLayouts(from layouts: [EdgeLayout]) -> [SharedSegmentHitLayout] {
-        let axisSegments = layouts.flatMap { layout in
-            sharedAxisSegments(for: layout)
-        }
-        let groupedSegments = Dictionary(grouping: axisSegments, by: \.axisKey)
-
-        return groupedSegments
-            .flatMap { axisKey, segments in
-                sharedHitLayouts(for: segments, axisKey: axisKey)
-            }
-            .sorted { lhs, rhs in
-            let lhsPoint = lhs.points.first ?? .zero
-            let rhsPoint = rhs.points.first ?? .zero
-            if abs(lhsPoint.y - rhsPoint.y) > 0.5 {
-                return lhsPoint.y < rhsPoint.y
-            }
-            return lhsPoint.x < rhsPoint.x
-        }
-    }
-
-    private func previewLineLayouts(in geometry: GeometryProxy) -> [PreviewLineLayout] {
-        guard let workflow = currentWorkflow else { return [] }
-        let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-
-        return previewCandidates.compactMap { candidate in
-            guard candidate.status == .new,
-                  let fromNode = nodesByID[candidate.fromNodeID],
-                  let toNode = nodesByID[candidate.toNodeID] else { return nil }
-
-            return PreviewLineLayout(
-                id: candidate.id,
-                from: nodeFrame(for: fromNode, geometry: geometry).center,
-                to: nodeFrame(for: toNode, geometry: geometry).center
-            )
-        }
-    }
-
-    private func sharedAxisSegments(for layout: EdgeLayout) -> [SharedAxisSegmentCandidate] {
-        zip(layout.points, layout.points.dropFirst()).compactMap { from, to in
-            let isVertical = abs(from.x - to.x) < 0.5
-            let isHorizontal = abs(from.y - to.y) < 0.5
-            guard isVertical || isHorizontal else { return nil }
-
-            let orientation: SharedSegmentOrientation = isVertical ? .vertical : .horizontal
-            let fixedValue = isVertical ? from.x : from.y
-            let rangeStart = isVertical ? min(from.y, to.y) : min(from.x, to.x)
-            let rangeEnd = isVertical ? max(from.y, to.y) : max(from.x, to.x)
-            guard rangeEnd - rangeStart > 0.5 else { return nil }
-
-            return SharedAxisSegmentCandidate(
-                axisKey: "\(orientation.rawValue):\(Int((fixedValue * 10).rounded()))",
-                orientation: orientation,
-                fixedValue: fixedValue,
-                rangeStart: rangeStart,
-                rangeEnd: rangeEnd,
-                edge: layout.edge
-            )
-        }
-    }
-
-    private func sharedHitLayouts(
-        for segments: [SharedAxisSegmentCandidate],
-        axisKey: String
-    ) -> [SharedSegmentHitLayout] {
-        let boundaries = uniqueSortedAxisBoundaries(
-            segments.flatMap { [$0.rangeStart, $0.rangeEnd] }
-        )
-        guard boundaries.count >= 2 else { return [] }
-
-        var atomicSegments: [SharedAtomicSegment] = []
-        for (start, end) in zip(boundaries, boundaries.dropFirst()) {
-            guard end - start > 0.5 else { continue }
-
-            let coveringEdges = uniqueEdgesPreservingOrder(
-                segments.compactMap { segment in
-                    segment.covers(start: start, end: end) ? segment.edge : nil
-                }
-            )
-            guard coveringEdges.count >= 2,
-                  let firstSegment = segments.first else { continue }
-
-            atomicSegments.append(
-                SharedAtomicSegment(
-                    orientation: firstSegment.orientation,
-                    fixedValue: firstSegment.fixedValue,
-                    rangeStart: start,
-                    rangeEnd: end,
-                    edges: coveringEdges
-                )
-            )
-        }
-
-        guard !atomicSegments.isEmpty else { return [] }
-        var mergedSegments: [SharedAtomicSegment] = []
-        for segment in atomicSegments {
-            if let last = mergedSegments.last,
-               last.canMerge(with: segment) {
-                mergedSegments[mergedSegments.count - 1] = last.merged(with: segment)
-            } else {
-                mergedSegments.append(segment)
-            }
-        }
-
-        return mergedSegments.map { segment in
-            SharedSegmentHitLayout(
-                id: "\(axisKey):\(Int((segment.rangeStart * 10).rounded()))-\(Int((segment.rangeEnd * 10).rounded()))",
-                points: segment.points,
-                edges: segment.edges
-            )
-        }
-    }
-
-    private func uniqueSortedAxisBoundaries(_ values: [CGFloat]) -> [CGFloat] {
-        var result: [CGFloat] = []
-        for value in values.sorted() {
-            if let last = result.last, abs(last - value) < 0.5 {
-                continue
-            }
-            result.append(value)
-        }
-        return result
-    }
-
-    private func fanoutLayoutMap(
-        for candidates: [RoutedEdgeCandidate],
-        in geometry: GeometryProxy,
-        workflow: Workflow
-    ) -> [UUID: FanoutLayoutInfo] {
-        let groupedBySource = Dictionary(grouping: candidates, by: { $0.edge.fromNodeID })
-        var layoutBySource: [UUID: FanoutLayoutInfo] = [:]
-
-        for (sourceID, group) in groupedBySource {
-            guard group.count >= 2,
-                  let sourceFrame = group.first?.fromFrame else { continue }
-
-            let downwardTargets = group.filter { candidate in
-                candidate.toFrame.center.y > sourceFrame.center.y + 18
-            }
-            guard downwardTargets.count >= 2 else { continue }
-
-            let sourceBottom = sourceFrame.maxY + 10
-            let targetTop = downwardTargets.map { $0.toFrame.minY }.min() ?? .greatestFiniteMagnitude
-            let centeredTarget = closestTarget(to: sourceFrame.midX, in: downwardTargets)
-            let verticalGap = targetTop - sourceBottom
-            guard verticalGap >= 42 else { continue }
-
-            let preferredTurnY = sourceBottom + max(28, min(76, verticalGap * 0.4))
-            let turnY = min(preferredTurnY, targetTop - 18)
-            guard turnY > sourceBottom + 8, turnY < targetTop - 8 else { continue }
-
-            let sortedTargets = downwardTargets.sorted { lhs, rhs in
-                if abs(lhs.toFrame.midX - rhs.toFrame.midX) > 0.5 {
-                    return lhs.toFrame.midX < rhs.toFrame.midX
-                }
-                return lhs.toFrame.midY < rhs.toFrame.midY
-            }
-
-            let fanoutSpacingValue = WorkflowEdgeRoutePlanner.fanoutSpacing(
-                for: sourceFrame,
-                targetCount: sortedTargets.count
-            )
-            let slotOffsets = laneOffsets(for: sortedTargets.count, spacing: fanoutSpacingValue)
-            let targetAnchorXByTargetID: [UUID: CGFloat] = Dictionary(
-                uniqueKeysWithValues: zip(sortedTargets, slotOffsets).map { candidate, slotOffset in
-                    let preferredAnchorX = sourceFrame.midX + slotOffset
-                    let anchorX = WorkflowEdgeRoutePlanner.clampedVerticalEntryX(
-                        for: candidate.toFrame,
-                        preferredX: preferredAnchorX
-                    )
-                    return (candidate.edge.toNodeID, anchorX)
-                }
-            )
-
-            layoutBySource[sourceID] = FanoutLayoutInfo(
-                turnY: turnY,
-                centerTargetID: centeredTarget?.edge.toNodeID,
-                targetAnchorXByTargetID: targetAnchorXByTargetID
-            )
-        }
-
-        return layoutBySource
-    }
-
-    private func faninLayoutMap(for candidates: [RoutedEdgeCandidate]) -> [RoutedEdgeBundleKey: FaninLayoutInfo] {
-        let groupedByBundleKey = Dictionary(grouping: candidates, by: \.bundleKey)
-        var layoutByBundleKey: [RoutedEdgeBundleKey: FaninLayoutInfo] = [:]
-
-        for (bundleKey, group) in groupedByBundleKey {
-            guard group.count >= 2,
-                  let targetFrame = group.first?.toFrame else { continue }
-
-            let info: FaninLayoutInfo?
-            switch bundleKey.incomingSide {
-            case .bottom:
-                let sources = group.filter { candidate in
-                    candidate.fromFrame.center.y > targetFrame.center.y + 18
-                }
-                guard sources.count >= 2 else { continue }
-
-                let targetBottom = targetFrame.maxY + 10
-                let nearestSourceTop = sources.map { $0.fromFrame.minY }.min() ?? .greatestFiniteMagnitude
-                let verticalGap = nearestSourceTop - targetBottom
-                guard verticalGap >= 34 else { continue }
-
-                let preferredMergeY = targetBottom + compactMergeOffset(for: verticalGap)
-                let mergeY = min(preferredMergeY, nearestSourceTop - 18)
-                guard mergeY > targetBottom + 8, mergeY < nearestSourceTop - 8 else { continue }
-
-                info = FaninLayoutInfo(
-                    incomingSide: .bottom,
-                    mergeAxisValue: mergeY,
-                    trunkAxisValue: targetFrame.midX
-                )
-
-            case .top:
-                let sources = group.filter { candidate in
-                    candidate.fromFrame.center.y < targetFrame.center.y - 18
-                }
-                guard sources.count >= 2 else { continue }
-
-                let targetTop = targetFrame.minY - 10
-                let nearestSourceBottom = sources.map { $0.fromFrame.maxY }.max() ?? -.greatestFiniteMagnitude
-                let verticalGap = targetTop - nearestSourceBottom
-                guard verticalGap >= 34 else { continue }
-
-                let preferredMergeY = targetTop - compactMergeOffset(for: verticalGap)
-                let mergeY = max(preferredMergeY, nearestSourceBottom + 18)
-                guard mergeY < targetTop - 8, mergeY > nearestSourceBottom + 8 else { continue }
-
-                info = FaninLayoutInfo(
-                    incomingSide: .top,
-                    mergeAxisValue: mergeY,
-                    trunkAxisValue: targetFrame.midX
-                )
-
-            case .left:
-                let sources = group.filter { candidate in
-                    candidate.fromFrame.center.x < targetFrame.center.x - 18
-                }
-                guard sources.count >= 2 else { continue }
-
-                let targetLeft = targetFrame.minX - 10
-                let nearestSourceRight = sources.map { $0.fromFrame.maxX }.max() ?? -.greatestFiniteMagnitude
-                let horizontalGap = targetLeft - nearestSourceRight
-                guard horizontalGap >= 34 else { continue }
-
-                let preferredMergeX = targetLeft - compactMergeOffset(for: horizontalGap)
-                let mergeX = max(preferredMergeX, nearestSourceRight + 18)
-                guard mergeX < targetLeft - 8, mergeX > nearestSourceRight + 8 else { continue }
-
-                info = FaninLayoutInfo(
-                    incomingSide: .left,
-                    mergeAxisValue: mergeX,
-                    trunkAxisValue: targetFrame.midY
-                )
-
-            case .right:
-                let sources = group.filter { candidate in
-                    candidate.fromFrame.center.x > targetFrame.center.x + 18
-                }
-                guard sources.count >= 2 else { continue }
-
-                let targetRight = targetFrame.maxX + 10
-                let nearestSourceLeft = sources.map { $0.fromFrame.minX }.min() ?? .greatestFiniteMagnitude
-                let horizontalGap = nearestSourceLeft - targetRight
-                guard horizontalGap >= 34 else { continue }
-
-                let preferredMergeX = targetRight + compactMergeOffset(for: horizontalGap)
-                let mergeX = min(preferredMergeX, nearestSourceLeft - 18)
-                guard mergeX > targetRight + 8, mergeX < nearestSourceLeft - 8 else { continue }
-
-                info = FaninLayoutInfo(
-                    incomingSide: .right,
-                    mergeAxisValue: mergeX,
-                    trunkAxisValue: targetFrame.midY
-                )
-            }
-
-            if let info {
-                layoutByBundleKey[bundleKey] = info
-            }
-        }
-
-        return layoutByBundleKey
     }
 
     private func deduplicatedArrowLayouts(_ layouts: [EdgeLayout]) -> [EdgeLayout] {
@@ -711,7 +310,7 @@ struct ConnectionLinesView: View {
         }
     }
 
-    private func sharedSegmentHitID(at location: CGPoint, in layouts: [SharedSegmentHitLayout]) -> String? {
+    private func sharedSegmentHitID(at location: CGPoint, in layouts: [WorkflowCanvasSharedSegmentHitLayout]) -> String? {
         let hoverThreshold = max(10, lineWidth + 6)
         let bestMatch = layouts.compactMap { layout -> (id: String, distance: CGFloat)? in
             guard layout.points.count >= 2 else { return nil }
@@ -921,98 +520,6 @@ struct ConnectionLinesView: View {
         return startKey <= endKey ? "\(startKey)|\(endKey)" : "\(endKey)|\(startKey)"
     }
 
-    private func uniqueEdgesPreservingOrder(_ edges: [WorkflowEdge]) -> [WorkflowEdge] {
-        var seen = Set<UUID>()
-        var result: [WorkflowEdge] = []
-        for edge in edges {
-            guard seen.insert(edge.id).inserted else { continue }
-            result.append(edge)
-        }
-        return result
-    }
-
-    private func compactMergeOffset(for gap: CGFloat) -> CGFloat {
-        max(18, min(48, gap * 0.28))
-    }
-
-    private func closestTarget(
-        to sourceMidX: CGFloat,
-        in candidates: [RoutedEdgeCandidate]
-    ) -> RoutedEdgeCandidate? {
-        guard !candidates.isEmpty else { return nil }
-
-        var bestCandidate = candidates[0]
-        var bestDistance = abs(bestCandidate.toFrame.midX - sourceMidX)
-
-        for candidate in candidates.dropFirst() {
-            let distance = abs(candidate.toFrame.midX - sourceMidX)
-            if distance < bestDistance {
-                bestCandidate = candidate
-                bestDistance = distance
-            }
-        }
-
-        return bestCandidate
-    }
-
-    private func nodeFrame(for node: WorkflowNode, geometry: GeometryProxy) -> CGRect {
-        let center = getNodeCenter(node.position, geometry: geometry)
-        let size = nodeSize(for: node)
-
-        return CGRect(
-            x: center.x - size.width / 2,
-            y: center.y - size.height / 2,
-            width: size.width,
-            height: size.height
-        )
-    }
-
-    private func nodeSize(for node: WorkflowNode) -> CGSize {
-        switch node.type {
-        case .start:
-            return CGSize(width: 100, height: 68)
-        case .agent:
-            let outgoing = currentWorkflow?.edges.reduce(into: 0) { partial, edge in
-                if edge.isOutgoing(from: node.id) { partial += 1 }
-            } ?? 0
-            return CGSize(width: 110, height: outgoing == 0 ? 92 : 78)
-        }
-    }
-
-    private func getNodeCenter(_ position: CGPoint, geometry: GeometryProxy) -> CGPoint {
-        let centerX = geometry.size.width / 2
-        let centerY = geometry.size.height / 2
-        return CGPoint(
-            x: position.x * scale + offset.width + centerX,
-            y: position.y * scale + offset.height + centerY
-        )
-    }
-
-    private func displayText(for edges: [WorkflowEdge]) -> String {
-        let labels = Set(edges.map(edgeDisplayText).filter { !$0.isEmpty })
-        if labels.count == 1 {
-            return labels.first ?? ""
-        }
-        return edges.count == 1 ? edgeDisplayText(edges[0]) : ""
-    }
-
-    private func laneOffsets(for count: Int) -> [CGFloat] {
-        laneOffsets(for: count, spacing: 14)
-    }
-
-    private func laneOffsets(for count: Int, spacing: CGFloat) -> [CGFloat] {
-        guard count > 1 else { return [0] }
-
-        let center = CGFloat(count - 1) / 2
-        return (0..<count).map { index in
-            (CGFloat(index) - center) * spacing
-        }
-    }
-
-    private func angle(from center: CGPoint, to point: CGPoint) -> CGFloat {
-        atan2(point.y - center.y, point.x - center.x)
-    }
-
     private func edgeDisplayText(_ edge: WorkflowEdge) -> String {
         let label = edge.label.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         let condition = edge.conditionExpression.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
@@ -1143,541 +650,9 @@ private struct EdgeLayout {
     let labelPosition: CGPoint?
 }
 
-private struct PreviewLineLayout: Identifiable {
-    let id: String
-    let from: CGPoint
-    let to: CGPoint
-}
-
 private struct ConnectionRenderData {
     let edgeLayouts: [EdgeLayout]
-    let sharedHitLayouts: [SharedSegmentHitLayout]
-}
-
-private struct SharedAxisSegmentCandidate {
-    let axisKey: String
-    let orientation: SharedSegmentOrientation
-    let fixedValue: CGFloat
-    let rangeStart: CGFloat
-    let rangeEnd: CGFloat
-    let edge: WorkflowEdge
-
-    func covers(start: CGFloat, end: CGFloat) -> Bool {
-        rangeStart <= start + 0.5 && rangeEnd >= end - 0.5
-    }
-}
-
-private struct SharedAtomicSegment {
-    let orientation: SharedSegmentOrientation
-    let fixedValue: CGFloat
-    let rangeStart: CGFloat
-    let rangeEnd: CGFloat
-    let edges: [WorkflowEdge]
-
-    var points: [CGPoint] {
-        switch orientation {
-        case .horizontal:
-            return [
-                CGPoint(x: rangeStart, y: fixedValue),
-                CGPoint(x: rangeEnd, y: fixedValue)
-            ]
-        case .vertical:
-            return [
-                CGPoint(x: fixedValue, y: rangeStart),
-                CGPoint(x: fixedValue, y: rangeEnd)
-            ]
-        }
-    }
-
-    func canMerge(with other: SharedAtomicSegment) -> Bool {
-        orientation == other.orientation
-            && abs(fixedValue - other.fixedValue) < 0.5
-            && abs(rangeEnd - other.rangeStart) < 0.5
-            && edges.map(\.id) == other.edges.map(\.id)
-    }
-
-    func merged(with other: SharedAtomicSegment) -> SharedAtomicSegment {
-        SharedAtomicSegment(
-            orientation: orientation,
-            fixedValue: fixedValue,
-            rangeStart: min(rangeStart, other.rangeStart),
-            rangeEnd: max(rangeEnd, other.rangeEnd),
-            edges: edges
-        )
-    }
-}
-
-private struct SharedSegmentHitLayout {
-    let id: String
-    let points: [CGPoint]
-    let edges: [WorkflowEdge]
-}
-
-private enum SharedSegmentOrientation: String {
-    case horizontal
-    case vertical
-}
-
-private struct RoutedEdgeCandidate {
-    let edge: WorkflowEdge
-    let fromFrame: CGRect
-    let toFrame: CGRect
-    let targetSide: EdgeAnchorSide
-
-    var bundleKey: RoutedEdgeBundleKey {
-        RoutedEdgeBundleKey(
-            targetNodeID: edge.toNodeID,
-            incomingSide: targetSide,
-            requiresApproval: edge.requiresApproval
-        )
-    }
-
-    var preferredAxis: EdgeRouteAxis {
-        let dx = toFrame.midX - fromFrame.midX
-        let dy = toFrame.midY - fromFrame.midY
-        return abs(dx) >= abs(dy) ? .horizontal : .vertical
-    }
-}
-
-private struct RoutedEdgeBundleKey: Hashable {
-    let targetNodeID: UUID
-    let incomingSide: EdgeAnchorSide
-    let requiresApproval: Bool
-}
-
-enum EdgeAnchorSide: String, Hashable {
-    case left
-    case right
-    case top
-    case bottom
-}
-
-struct WorkflowEdgeRoutePlanner {
-    private static let anchorClearance: CGFloat = 10
-    private static let obstaclePadding: CGFloat = 14
-    private static let candidateSpacing: CGFloat = 16
-
-    static func route(
-        from sourceFrame: CGRect,
-        to targetFrame: CGRect,
-        avoiding obstacles: [CGRect],
-        preferredAxis: EdgeRouteAxis,
-        laneOffset: CGFloat
-    ) -> [CGPoint] {
-        let sourceCenter = sourceFrame.center
-        let targetCenter = targetFrame.center
-        let sourceSide = preferredOutgoingSide(for: sourceFrame, toward: targetCenter)
-        let targetSide = preferredIncomingSide(for: targetFrame, toward: sourceCenter)
-
-        let start = anchorPoint(on: sourceFrame, side: sourceSide, laneOffset: laneOffset)
-        let end = anchorPoint(on: targetFrame, side: targetSide, laneOffset: laneOffset)
-        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
-
-        let candidates = candidatePaths(
-            from: start,
-            to: end,
-            blockedRects: blockedRects,
-            laneOffset: laneOffset,
-            preferredAxis: preferredAxis
-        )
-
-        for path in candidates {
-            if isClear(path, blockedRects: blockedRects) {
-                return simplify(path)
-            }
-        }
-
-        return simplify(candidates.first ?? [start, end])
-    }
-
-    static func fanoutRoute(
-        from sourceFrame: CGRect,
-        to targetFrame: CGRect,
-        turnY: CGFloat,
-        targetAnchorX: CGFloat,
-        avoiding obstacles: [CGRect]
-    ) -> [CGPoint]? {
-        let start = CGPoint(x: sourceFrame.midX, y: sourceFrame.maxY + anchorClearance)
-        let end = CGPoint(
-            x: clampedVerticalEntryX(for: targetFrame, preferredX: targetAnchorX),
-            y: targetFrame.minY - anchorClearance
-        )
-        guard turnY > start.y + 4, turnY < end.y - 4 else { return nil }
-
-        let path = simplify([
-            start,
-            CGPoint(x: sourceFrame.midX, y: turnY),
-            CGPoint(x: end.x, y: turnY),
-            end
-        ])
-
-        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
-        return isClear(path, blockedRects: blockedRects) ? path : nil
-    }
-
-    static func faninRoute(
-        from sourceFrame: CGRect,
-        to targetFrame: CGRect,
-        incomingSide: EdgeAnchorSide,
-        mergeAxisValue: CGFloat,
-        trunkAxisValue: CGFloat,
-        avoiding obstacles: [CGRect]
-    ) -> [CGPoint]? {
-        let start: CGPoint
-        let end: CGPoint
-        let path: [CGPoint]
-
-        switch incomingSide {
-        case .bottom:
-            start = CGPoint(x: sourceFrame.midX, y: sourceFrame.minY - anchorClearance)
-            end = CGPoint(x: trunkAxisValue, y: targetFrame.maxY + anchorClearance)
-            guard mergeAxisValue > end.y + 4, mergeAxisValue < start.y - 4 else { return nil }
-            path = simplify([
-                start,
-                CGPoint(x: start.x, y: mergeAxisValue),
-                CGPoint(x: trunkAxisValue, y: mergeAxisValue),
-                end
-            ])
-
-        case .top:
-            start = CGPoint(x: sourceFrame.midX, y: sourceFrame.maxY + anchorClearance)
-            end = CGPoint(x: trunkAxisValue, y: targetFrame.minY - anchorClearance)
-            guard mergeAxisValue > start.y + 4, mergeAxisValue < end.y - 4 else { return nil }
-            path = simplify([
-                start,
-                CGPoint(x: start.x, y: mergeAxisValue),
-                CGPoint(x: trunkAxisValue, y: mergeAxisValue),
-                end
-            ])
-
-        case .left:
-            start = CGPoint(x: sourceFrame.maxX + anchorClearance, y: sourceFrame.midY)
-            end = CGPoint(x: targetFrame.minX - anchorClearance, y: trunkAxisValue)
-            guard mergeAxisValue > start.x + 4, mergeAxisValue < end.x - 4 else { return nil }
-            path = simplify([
-                start,
-                CGPoint(x: mergeAxisValue, y: start.y),
-                CGPoint(x: mergeAxisValue, y: trunkAxisValue),
-                end
-            ])
-
-        case .right:
-            start = CGPoint(x: sourceFrame.minX - anchorClearance, y: sourceFrame.midY)
-            end = CGPoint(x: targetFrame.maxX + anchorClearance, y: trunkAxisValue)
-            guard mergeAxisValue > end.x + 4, mergeAxisValue < start.x - 4 else { return nil }
-            path = simplify([
-                start,
-                CGPoint(x: mergeAxisValue, y: start.y),
-                CGPoint(x: mergeAxisValue, y: trunkAxisValue),
-                end
-            ])
-        }
-
-        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
-        return isClear(path, blockedRects: blockedRects) ? path : nil
-    }
-
-    static func fanoutSpacing(for sourceFrame: CGRect, targetCount: Int) -> CGFloat {
-        guard targetCount > 1 else { return 0 }
-
-        let widthDriven = max(22, sourceFrame.width * 0.28)
-        let countAdjusted = max(20, 40 - CGFloat(max(0, targetCount - 3)) * 3)
-        return min(38, max(widthDriven, countAdjusted))
-    }
-
-    static func centerDownRoute(
-        from sourceFrame: CGRect,
-        to targetFrame: CGRect,
-        avoiding obstacles: [CGRect]
-    ) -> [CGPoint]? {
-        let start = CGPoint(x: sourceFrame.midX, y: sourceFrame.maxY + anchorClearance)
-        let end = CGPoint(x: targetFrame.midX, y: targetFrame.minY - anchorClearance)
-        let blockedRects = obstacles.map { $0.insetBy(dx: -obstaclePadding, dy: -obstaclePadding) }
-
-        let direct = simplify([start, end])
-        if isClear(direct, blockedRects: blockedRects) {
-            return direct
-        }
-
-        let midY = (start.y + end.y) / 2
-        let fallback = simplify([
-            start,
-            CGPoint(x: start.x, y: midY),
-            CGPoint(x: end.x, y: midY),
-            end
-        ])
-        return isClear(fallback, blockedRects: blockedRects) ? fallback : nil
-    }
-
-    static func clampedVerticalEntryX(for targetFrame: CGRect, preferredX: CGFloat) -> CGFloat {
-        let inset = min(18, max(10, targetFrame.width * 0.18))
-        let minX = targetFrame.minX + inset
-        let maxX = targetFrame.maxX - inset
-        return min(max(preferredX, minX), maxX)
-    }
-
-    private static func candidatePaths(
-        from start: CGPoint,
-        to end: CGPoint,
-        blockedRects: [CGRect],
-        laneOffset: CGFloat,
-        preferredAxis: EdgeRouteAxis
-    ) -> [[CGPoint]] {
-        var ranked: [(points: [CGPoint], bends: Int, length: CGFloat)] = []
-        var seen = Set<String>()
-
-        func append(_ points: [CGPoint], bends: Int) {
-            let key = points.map { "\(Int(($0.x * 10).rounded())):\(Int(($0.y * 10).rounded()))" }.joined(separator: "|")
-            guard seen.insert(key).inserted else { return }
-            ranked.append((points: points, bends: bends, length: pathLength(points)))
-        }
-
-        if abs(start.x - end.x) < 0.5 {
-            append([start, end], bends: 0)
-        }
-
-        if preferredAxis == .horizontal {
-            let midY = (start.y + end.y) / 2
-            append([
-                start,
-                CGPoint(x: start.x, y: midY),
-                CGPoint(x: end.x, y: midY),
-                end
-            ], bends: 2)
-        }
-
-        let corridorYs = corridorYs(
-            from: start,
-            to: end,
-            blockedRects: blockedRects,
-            laneOffset: laneOffset,
-            preferredAxis: preferredAxis
-        )
-        for y in corridorYs {
-            append([
-                start,
-                CGPoint(x: start.x, y: y),
-                CGPoint(x: end.x, y: y),
-                end
-            ], bends: 2)
-        }
-
-        let outerXs = outerCorridorXs(for: blockedRects, laneOffset: laneOffset)
-        let yPairs = orderedYPairs(from: corridorYs)
-        for outerX in outerXs {
-            for pair in yPairs {
-                append([
-                    start,
-                    CGPoint(x: start.x, y: pair.0),
-                    CGPoint(x: outerX, y: pair.0),
-                    CGPoint(x: outerX, y: pair.1),
-                    CGPoint(x: end.x, y: pair.1),
-                    end
-                ], bends: 4)
-            }
-        }
-
-        return ranked
-            .sorted { lhs, rhs in
-                if lhs.bends != rhs.bends { return lhs.bends < rhs.bends }
-                return lhs.length < rhs.length
-            }
-            .map(\.points)
-    }
-
-    private static func corridorYs(
-        from start: CGPoint,
-        to end: CGPoint,
-        blockedRects: [CGRect],
-        laneOffset: CGFloat,
-        preferredAxis: EdgeRouteAxis
-    ) -> [CGFloat] {
-        var values: [CGFloat] = [
-            (start.y + end.y) / 2 + laneOffset
-        ]
-
-        for rect in blockedRects {
-            values.append(rect.minY - candidateSpacing)
-            values.append(rect.maxY + candidateSpacing)
-        }
-
-        let anchorBias = preferredAxis == .horizontal ? candidateSpacing : candidateSpacing * 0.5
-        values.append(min(start.y, end.y) - candidateSpacing - anchorBias)
-        values.append(max(start.y, end.y) + candidateSpacing + anchorBias)
-
-        return uniqueSorted(values)
-    }
-
-    private static func outerCorridorXs(for blockedRects: [CGRect], laneOffset: CGFloat) -> [CGFloat] {
-        guard !blockedRects.isEmpty else { return [laneOffset == 0 ? 0 : laneOffset] }
-
-        let minX = blockedRects.map(\.minX).min() ?? 0
-        let maxX = blockedRects.map(\.maxX).max() ?? 0
-        return uniqueSorted([
-            minX - candidateSpacing * 2 - abs(laneOffset),
-            maxX + candidateSpacing * 2 + abs(laneOffset)
-        ])
-    }
-
-    private static func orderedYPairs(from values: [CGFloat]) -> [(CGFloat, CGFloat)] {
-        guard values.count > 1 else { return [] }
-        var pairs: [(CGFloat, CGFloat)] = []
-        for lhs in values {
-            for rhs in values where abs(lhs - rhs) > 0.5 {
-                pairs.append((lhs, rhs))
-            }
-        }
-        return pairs.sorted { lhs, rhs in
-            let lhsMid = (lhs.0 + lhs.1) / 2
-            let rhsMid = (rhs.0 + rhs.1) / 2
-            let lhsSpan = abs(lhs.0 - lhs.1)
-            let rhsSpan = abs(rhs.0 - rhs.1)
-            if lhsSpan != rhsSpan { return lhsSpan < rhsSpan }
-            return abs(lhsMid) < abs(rhsMid)
-        }
-    }
-
-    private static func uniqueSorted(_ values: [CGFloat]) -> [CGFloat] {
-        var result: [CGFloat] = []
-        for value in values.sorted() {
-            if result.contains(where: { abs($0 - value) < 0.5 }) { continue }
-            result.append(value)
-        }
-        return result
-    }
-
-    private static func pathLength(_ points: [CGPoint]) -> CGFloat {
-        guard points.count >= 2 else { return 0 }
-        return zip(points, points.dropFirst()).reduce(0) { partial, segment in
-            partial + hypot(segment.1.x - segment.0.x, segment.1.y - segment.0.y)
-        }
-    }
-
-    static func preferredOutgoingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        let center = rect.center
-        let dx = point.x - center.x
-        let dy = point.y - center.y
-        let verticalThreshold = max(32, rect.height * 0.55)
-
-        if dy >= verticalThreshold {
-            return .bottom
-        }
-        if dy <= -verticalThreshold {
-            return .top
-        }
-        if abs(dx) > abs(dy) * 1.2 {
-            return dx >= 0 ? .right : .left
-        }
-        return dy >= 0 ? .bottom : .top
-    }
-
-    static func preferredIncomingSide(for rect: CGRect, toward point: CGPoint) -> EdgeAnchorSide {
-        let center = rect.center
-        let dx = point.x - center.x
-        let dy = point.y - center.y
-        let verticalThreshold = max(32, rect.height * 0.55)
-
-        if dy <= -verticalThreshold {
-            return .top
-        }
-        if dy >= verticalThreshold {
-            return .bottom
-        }
-        if abs(dx) > abs(dy) * 1.2 {
-            return dx >= 0 ? .right : .left
-        }
-        return dy >= 0 ? .bottom : .top
-    }
-
-    private static func anchorPoint(on rect: CGRect, side: EdgeAnchorSide, laneOffset: CGFloat) -> CGPoint {
-        switch side {
-        case .top: return CGPoint(x: rect.midX + laneOffset, y: rect.minY - anchorClearance)
-        case .bottom: return CGPoint(x: rect.midX + laneOffset, y: rect.maxY + anchorClearance)
-        case .left: return CGPoint(x: rect.minX - anchorClearance, y: rect.midY + laneOffset)
-        case .right: return CGPoint(x: rect.maxX + anchorClearance, y: rect.midY + laneOffset)
-        }
-    }
-
-    private static func isClear(_ path: [CGPoint], blockedRects: [CGRect]) -> Bool {
-        guard path.count >= 2 else { return false }
-        for (from, to) in zip(path, path.dropFirst()) {
-            if blockedRects.contains(where: { segment(from, to: to).intersects($0) }) {
-                return false
-            }
-        }
-        return true
-    }
-
-    private static func simplify(_ path: [CGPoint]) -> [CGPoint] {
-        guard path.count > 2 else { return path }
-
-        var points: [CGPoint] = [path[0]]
-        for point in path.dropFirst() {
-            while points.count >= 2 {
-                let a = points[points.count - 2]
-                let b = points[points.count - 1]
-                if isCollinear(a, b, point) {
-                    points.removeLast()
-                } else {
-                    break
-                }
-            }
-            points.append(point)
-        }
-        return points
-    }
-
-    private static func isCollinear(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> Bool {
-        (abs(a.x - b.x) < 0.5 && abs(b.x - c.x) < 0.5) ||
-        (abs(a.y - b.y) < 0.5 && abs(b.y - c.y) < 0.5)
-    }
-
-    private static func segment(_ from: CGPoint, to: CGPoint) -> CGRect {
-        CGRect(
-            x: min(from.x, to.x),
-            y: min(from.y, to.y),
-            width: max(abs(to.x - from.x), 1),
-            height: max(abs(to.y - from.y), 1)
-        ).insetBy(dx: -1, dy: -1)
-    }
-}
-
-private struct FanoutLayoutInfo {
-    let turnY: CGFloat
-    let centerTargetID: UUID?
-    let targetAnchorXByTargetID: [UUID: CGFloat]
-
-    func targetAnchorX(for targetID: UUID, default defaultX: CGFloat) -> CGFloat {
-        targetAnchorXByTargetID[targetID] ?? defaultX
-    }
-}
-
-private struct FaninLayoutInfo {
-    let incomingSide: EdgeAnchorSide
-    let mergeAxisValue: CGFloat
-    let trunkAxisValue: CGFloat
-}
-
-enum EdgeRouteAxis {
-    case horizontal
-    case vertical
-}
-
-private extension CGRect {
-    var center: CGPoint {
-        CGPoint(x: midX, y: midY)
-    }
-
-    var area: CGFloat {
-        guard !isNull, !isEmpty else { return 0 }
-        return width * height
-    }
-}
-
-private extension CGPoint {
-    func distance(to other: CGPoint) -> CGFloat {
-        hypot(x - other.x, y - other.y)
-    }
+    let sharedHitLayouts: [WorkflowCanvasSharedSegmentHitLayout]
 }
 
 struct OrthogonalConnectionShape: Shape {
