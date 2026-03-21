@@ -10,32 +10,49 @@ extension Notification.Name {
     static let openSettings = Notification.Name("openSettings")
 }
 
+enum AppLaunchHooks {
+    static var didFinishLaunching: (() -> Void)?
+    static var willTerminate: (() -> Void)?
+}
+
 final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
-    var onWillTerminate: (() -> Void)?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppLaunchHooks.didFinishLaunching?()
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
-        onWillTerminate?()
+        AppLaunchHooks.willTerminate?()
     }
 }
 
 @main
 struct MultiAgentFlowApp: App {
-    @StateObject private var appState = AppState()
+    @StateObject private var appState: AppState
+    @StateObject private var appLaunchBenchmarkRunner: AppLaunchBenchmarkRunner
     @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var appDelegate
     @State private var showingSettings = false
     @State private var showingToolbarCustomization = false
     @State private var selectedTab = 0
     @State private var zoomScale: CGFloat = 1.0
+
+    init() {
+        let appState = AppState()
+        let benchmarkRunner = AppLaunchBenchmarkRunner()
+        _appState = StateObject(wrappedValue: appState)
+        _appLaunchBenchmarkRunner = StateObject(wrappedValue: benchmarkRunner)
+
+        AppLaunchHooks.didFinishLaunching = {
+            benchmarkRunner.runIfRequested(appState: appState)
+        }
+        AppLaunchHooks.willTerminate = {
+            appState.shutdown()
+        }
+    }
     
     var body: some Scene {
         WindowGroup {
             ContentView(selectedTab: $selectedTab, zoomScale: $zoomScale)
                 .environmentObject(appState)
-                .onAppear {
-                    appDelegate.onWillTerminate = {
-                        appState.shutdown()
-                    }
-                }
                 .sheet(isPresented: $showingSettings) {
                     SettingsView()
                         .environmentObject(appState)

@@ -4,6 +4,7 @@ import {
   addTaskToProject,
   addWorkflowLaunchTestCase,
   addWorkflowToProject,
+  assessWorkflowRuntimeIsolation,
   assignAgentToNode,
   assignAgentToNodes,
   assignTaskToAgent,
@@ -15,6 +16,7 @@ import {
   type WorkflowLaunchExecutionObservation,
   generateTasksFromWorkflow,
   moveTaskToStatus,
+  resolveProjectAgentWorkspacePaths,
   resolveWorkflowLaunchTestCases,
   runWorkflowLaunchVerification,
   repositionWorkflowNode,
@@ -285,19 +287,47 @@ function resolveDetectedWorkspacePaths(project: MAProject, agentId: string): str
   if (!agent) {
     return [];
   }
+  return resolveProjectAgentWorkspacePaths(project, agent);
+}
 
-  const matchKeys = new Set(
-    [agent.name, agent.openClawDefinition.agentIdentifier]
-      .map((value) => normalizeRouteKey(value ?? ""))
-      .filter(Boolean)
+interface LiveExecutionPreflightResult {
+  blocked: boolean;
+  message: string | null;
+}
+
+async function evaluateLiveExecutionPreflight(project: MAProject, workflow: Workflow): Promise<LiveExecutionPreflightResult> {
+  const assessment = assessWorkflowRuntimeIsolation(project, workflow);
+  if (assessment.blockingFindings.length > 0) {
+    return {
+      blocked: true,
+      message: assessment.blockingFindings.join(" ")
+    };
+  }
+
+  const workflowAgentIdentifiers = Array.from(
+    new Set(
+      assessment.workflowAgents
+        .map((agent) => resolveRuntimeAgentIdentifier(project, agent.id))
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
   );
 
-  const paths = project.openClaw.detectedAgents
-    .filter((record) => matchKeys.has(normalizeRouteKey(record.name)))
-    .flatMap((record) => [record.workspacePath, record.directoryPath])
-    .filter((value): value is string => Boolean(value && value.trim()));
+  const runtimeSecurity = await requireDesktopApi().inspectOpenClawRuntimeSecurity(
+    project.openClaw.config,
+    workflowAgentIdentifiers
+  );
+  if (runtimeSecurity.blockingIssues.length > 0) {
+    return {
+      blocked: true,
+      message: runtimeSecurity.blockingIssues.join(" ")
+    };
+  }
 
-  return Array.from(new Set(paths)).sort((left, right) => left.localeCompare(right));
+  return {
+    blocked: false,
+    message: null
+  };
 }
 
 function buildLiveExecutionGuardrails(
@@ -882,6 +912,16 @@ export function App() {
     initialRoutes: Array<{ edge: WorkflowEdge | null; targetNodeId: string }>,
     seedVisitCounts?: Map<string, number>
   ) {
+    const preflight = await evaluateLiveExecutionPreflight(currentProject, workflow);
+    if (preflight.blocked) {
+      return {
+        liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
+        approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
+        errorMessage: preflight.message,
+        blocked: true
+      };
+    }
+
     const liveExecutions: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3] = [];
     const approvalCheckpoints: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4] = [];
     const visitCounts = seedVisitCounts ? new Map(seedVisitCounts) : new Map<string, number>();
@@ -966,11 +1006,23 @@ export function App() {
 
     return {
       liveExecutions,
-      approvalCheckpoints
+      approvalCheckpoints,
+      errorMessage: null,
+      blocked: false
     };
   }
 
   async function runLiveWorkflowCase(currentProject: MAProject, workflow: Workflow, prompt: string) {
+    const preflight = await evaluateLiveExecutionPreflight(currentProject, workflow);
+    if (preflight.blocked) {
+      return {
+        liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
+        approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
+        errorMessage: preflight.message,
+        blocked: true
+      };
+    }
+
     const entryNodeIds = resolveEntryAgentNodeIds(currentProject, workflow.id);
     const leadEntryNode = workflow.nodes.find((node) => node.id === entryNodeIds[0]) ?? null;
     const leadAgent =
@@ -980,7 +1032,8 @@ export function App() {
       return {
         liveExecutions: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3],
         approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
-        errorMessage: "No executable entry agent was resolved for this workflow."
+        errorMessage: "No executable entry agent was resolved for this workflow.",
+        blocked: false
       };
     }
 
@@ -1020,7 +1073,8 @@ export function App() {
       return {
         liveExecutions: [initialExecution],
         approvalCheckpoints: [] as Parameters<typeof publishWorkbenchPromptWithLiveExecution>[4],
-        errorMessage: liveExecution.message
+        errorMessage: liveExecution.message,
+        blocked: false
       };
     }
 
@@ -1040,7 +1094,8 @@ export function App() {
     return {
       liveExecutions: [initialExecution, ...downstreamWork.liveExecutions],
       approvalCheckpoints: downstreamWork.approvalCheckpoints,
-      errorMessage: null
+      errorMessage: downstreamWork.errorMessage,
+      blocked: downstreamWork.blocked
     };
   }
 
@@ -2030,6 +2085,10 @@ export function App() {
     setWorkbenchError(null);
     try {
       const liveCase = await runLiveWorkflowCase(project, activeWorkflow, trimmedPrompt);
+      if (liveCase.blocked) {
+        setWorkbenchError(liveCase.errorMessage ?? "Live execution was blocked by runtime isolation guardrails.");
+        return;
+      }
       if (liveCase.liveExecutions.length > 0 && liveCase.liveExecutions[0]?.success) {
         const liveResult = publishWorkbenchPromptWithLiveExecution(
           project,
@@ -2111,6 +2170,10 @@ export function App() {
           [{ edge: null, targetNodeId: targetNode.id }],
           visitCounts
         );
+        if (downstreamWork.blocked) {
+          setWorkbenchError(downstreamWork.errorMessage ?? "Approval could not continue because runtime isolation checks failed.");
+          return;
+        }
         const liveApprovalResult = reviewWorkbenchApprovalWithLiveExecution(
           project,
           messageId,

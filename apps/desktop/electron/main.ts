@@ -104,6 +104,24 @@ interface OpenClawAgentExecutionResult {
   primaryRuntimeEvent: OpenClawRuntimeEvent | null;
 }
 
+interface OpenClawRuntimeSecurityFinding {
+  agentIdentifier: string;
+  sandboxMode: string;
+  sessionIsSandboxed: boolean;
+  allowedDangerousTools: string[];
+  execToolAllowed: boolean;
+  processToolAllowed: boolean;
+  elevatedAllowedByConfig: boolean;
+  elevatedAlwaysAllowedByConfig: boolean;
+  blockingIssues: string[];
+}
+
+interface OpenClawRuntimeSecurityInspectionResult {
+  blockingIssues: string[];
+  findings: OpenClawRuntimeSecurityFinding[];
+  approvalsHaveCustomEntries: boolean;
+}
+
 interface DirectoryInspection {
   name: string;
   path: string;
@@ -848,6 +866,194 @@ function extractJSONPayloads(text: string): string[] {
   return payloads;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function parseLastJSONObject(text: string): Record<string, unknown> | null {
+  const payloads = extractJSONPayloads(text);
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(payloads[index]) as unknown;
+      const record = asRecord(parsed);
+      if (record) {
+        return record;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function blockingErrorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? trimmedString(error.message) : trimmedString(String(error));
+  return message || fallback;
+}
+
+async function inspectOpenClawExecApprovalSnapshot(config: OpenClawConfig): Promise<{ hasCustomEntries: boolean }> {
+  const { stdout, stderr } = await runOpenClawDeploymentCommand(config, ["approvals", "get", "--json"], {
+    timeoutMs: Math.max(config.timeout, 5) * 1000
+  });
+  const payload = parseLastJSONObject(`${stdout ?? ""}\n${stderr ?? ""}`);
+  if (!payload) {
+    throw new Error("Failed to parse `openclaw approvals get --json` output.");
+  }
+
+  const fileRecord = asRecord(payload.file) ?? {};
+  const defaults = asRecord(fileRecord.defaults);
+  const agents = asRecord(fileRecord.agents);
+
+  return {
+    hasCustomEntries: Boolean((defaults && Object.keys(defaults).length > 0) || (agents && Object.keys(agents).length > 0))
+  };
+}
+
+async function inspectOpenClawSandboxSecurity(
+  config: OpenClawConfig,
+  agentIdentifier: string,
+  approvalsHaveCustomEntries: boolean
+): Promise<OpenClawRuntimeSecurityFinding> {
+  const { stdout, stderr } = await runOpenClawDeploymentCommand(
+    config,
+    ["sandbox", "explain", "--agent", agentIdentifier, "--json"],
+    {
+      timeoutMs: Math.max(config.timeout, 5) * 1000
+    }
+  );
+  const payload = parseLastJSONObject(`${stdout ?? ""}\n${stderr ?? ""}`);
+  if (!payload) {
+    throw new Error("Failed to parse `openclaw sandbox explain --json` output.");
+  }
+
+  const sandbox = asRecord(payload.sandbox) ?? {};
+  const tools = asRecord(sandbox.tools) ?? {};
+  const elevated = asRecord(payload.elevated) ?? {};
+  const allowedTools = new Set(stringArray(tools.allow).map((tool) => tool.toLowerCase()));
+  const allowedDangerousTools = ["subagents", "sessions_send", "sessions_spawn"].filter((tool) =>
+    allowedTools.has(tool)
+  );
+  const sandboxMode = trimmedString(typeof sandbox.mode === "string" ? sandbox.mode : "unknown") || "unknown";
+  const sessionIsSandboxed = sandbox.sessionIsSandboxed === true;
+  const execToolAllowed = allowedTools.has("exec");
+  const processToolAllowed = allowedTools.has("process");
+  const elevatedAllowedByConfig = elevated.allowedByConfig === true;
+  const elevatedAlwaysAllowedByConfig = elevated.alwaysAllowedByConfig === true;
+  const blockingIssues: string[] = [];
+
+  if (sandboxMode.toLowerCase() === "off" || !sessionIsSandboxed) {
+    blockingIssues.push(
+      `agent ${agentIdentifier} is not running inside an enforced OpenClaw sandbox, so the app cannot prevent it from creating side-channel sessions during execution.`
+    );
+  }
+
+  if (allowedDangerousTools.length > 0) {
+    blockingIssues.push(
+      `agent ${agentIdentifier} is allowed high-risk session tools: ${allowedDangerousTools.join(", ")}. Disable them in the OpenClaw sandbox before running a multi-agent workflow.`
+    );
+  }
+
+  if (approvalsHaveCustomEntries && (execToolAllowed || processToolAllowed)) {
+    blockingIssues.push(
+      `OpenClaw exec approvals contain custom allow rules while agent ${agentIdentifier} can still use ${
+        execToolAllowed && processToolAllowed ? "exec/process" : execToolAllowed ? "exec" : "process"
+      }; the app cannot prove it will not start extra agent/session processes on its own.`
+    );
+  }
+
+  if (elevatedAllowedByConfig || elevatedAlwaysAllowedByConfig) {
+    blockingIssues.push(
+      `agent ${agentIdentifier} is allowed to use OpenClaw elevated execution, which can bypass app-layer orchestration constraints.`
+    );
+  }
+
+  return {
+    agentIdentifier,
+    sandboxMode,
+    sessionIsSandboxed,
+    allowedDangerousTools,
+    execToolAllowed,
+    processToolAllowed,
+    elevatedAllowedByConfig,
+    elevatedAlwaysAllowedByConfig,
+    blockingIssues
+  };
+}
+
+async function inspectOpenClawRuntimeSecurity(
+  config: OpenClawConfig,
+  agentIdentifiers: string[]
+): Promise<OpenClawRuntimeSecurityInspectionResult> {
+  const normalizedConfig = normalizeOpenClawConfig(config);
+  const uniqueAgentIdentifiers = Array.from(
+    new Set(agentIdentifiers.map((value) => trimmedString(value)).filter(Boolean))
+  );
+
+  if (uniqueAgentIdentifiers.length <= 1) {
+    return {
+      blockingIssues: [],
+      findings: [],
+      approvalsHaveCustomEntries: false
+    };
+  }
+
+  if (normalizedConfig.deploymentKind === "remoteServer") {
+    return {
+      blockingIssues: [
+        "remoteServer mode does not let the desktop app verify OpenClaw sandbox/runtime policy for multi-agent workflows."
+      ],
+      findings: [],
+      approvalsHaveCustomEntries: false
+    };
+  }
+
+  let approvalsHaveCustomEntries = false;
+  try {
+    const approvalsSnapshot = await inspectOpenClawExecApprovalSnapshot(normalizedConfig);
+    approvalsHaveCustomEntries = approvalsSnapshot.hasCustomEntries;
+  } catch (error) {
+    return {
+      blockingIssues: [
+        `Unable to inspect OpenClaw exec approvals, so the app cannot verify runtime isolation: ${blockingErrorMessage(
+          error,
+          "OpenClaw approvals inspection failed."
+        )}`
+      ],
+      findings: [],
+      approvalsHaveCustomEntries: false
+    };
+  }
+
+  const findings: OpenClawRuntimeSecurityFinding[] = [];
+  const blockingIssues: string[] = [];
+
+  for (const agentIdentifier of uniqueAgentIdentifiers) {
+    try {
+      const finding = await inspectOpenClawSandboxSecurity(
+        normalizedConfig,
+        agentIdentifier,
+        approvalsHaveCustomEntries
+      );
+      findings.push(finding);
+      blockingIssues.push(...finding.blockingIssues);
+    } catch (error) {
+      blockingIssues.push(
+        `Unable to inspect OpenClaw sandbox policy for agent ${agentIdentifier}: ${blockingErrorMessage(
+          error,
+          "OpenClaw sandbox inspection failed."
+        )}`
+      );
+    }
+  }
+
+  return {
+    blockingIssues: Array.from(new Set(blockingIssues)).sort((left, right) => left.localeCompare(right)),
+    findings,
+    approvalsHaveCustomEntries
+  };
+}
+
 function extractFinalResponseCandidate(json: unknown): string | null {
   if (typeof json === "string") {
     return normalizedNonEmpty(json);
@@ -1363,6 +1569,16 @@ function registerProjectIpcHandlers() {
     "openClaw:executeAgent",
     async (_event, payload: { config: OpenClawConfig; request: OpenClawAgentExecutionRequest }): Promise<OpenClawAgentExecutionResult> => {
       return executeOpenClawAgent(payload.config, payload.request);
+    }
+  );
+
+  ipcMain.handle(
+    "openClaw:inspectRuntimeSecurity",
+    async (
+      _event,
+      payload: { config: OpenClawConfig; agentIdentifiers: string[] }
+    ): Promise<OpenClawRuntimeSecurityInspectionResult> => {
+      return inspectOpenClawRuntimeSecurity(payload.config, payload.agentIdentifiers);
     }
   );
 }

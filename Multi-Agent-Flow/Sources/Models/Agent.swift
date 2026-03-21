@@ -14,6 +14,9 @@ struct OpenClawAgentDefinition: Codable, Hashable {
     var runtimeProfile: String
     var memoryBackupPath: String?
     var soulSourcePath: String?
+    var lastImportedSoulHash: String?
+    var lastImportedSoulPath: String?
+    var lastImportedAt: Date?
     var environment: [String: String]
 
     init(
@@ -22,6 +25,9 @@ struct OpenClawAgentDefinition: Codable, Hashable {
         runtimeProfile: String = "default",
         memoryBackupPath: String? = nil,
         soulSourcePath: String? = nil,
+        lastImportedSoulHash: String? = nil,
+        lastImportedSoulPath: String? = nil,
+        lastImportedAt: Date? = nil,
         environment: [String: String] = [:]
     ) {
         self.agentIdentifier = agentIdentifier
@@ -29,6 +35,9 @@ struct OpenClawAgentDefinition: Codable, Hashable {
         self.runtimeProfile = runtimeProfile
         self.memoryBackupPath = memoryBackupPath
         self.soulSourcePath = soulSourcePath
+        self.lastImportedSoulHash = lastImportedSoulHash
+        self.lastImportedSoulPath = lastImportedSoulPath
+        self.lastImportedAt = lastImportedAt
         self.environment = environment
     }
 }

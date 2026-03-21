@@ -879,13 +879,11 @@ class OpenClawService: ObservableObject {
             return
         }
 
-        let workspaceConflicts = OpenClawManager.shared.workspaceIsolationConflicts(for: workflow, agents: agents)
-        if !workspaceConflicts.isEmpty {
-            let message = workspaceConflicts.map { conflict in
-                "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
-            }.joined(separator: " | ")
-            lastError = "Workspace isolation conflict"
-            addLog(.error, "Cannot execute workflow until agent workspaces are isolated: \(message)")
+        let isolationAssessment = OpenClawManager.shared.runtimeIsolationAssessment(for: workflow, agents: agents)
+        if !isolationAssessment.blockingMessages.isEmpty {
+            let message = isolationAssessment.blockingMessages.joined(separator: " | ")
+            lastError = "Runtime isolation preflight failed"
+            addLog(.error, "Cannot execute workflow until runtime isolation requirements are satisfied: \(message)")
             completion([])
             return
         }
@@ -970,19 +968,17 @@ class OpenClawService: ObservableObject {
         onProgress: ((OpenClawRuntimeEvent) -> Void)? = nil,
         completion: @escaping (WorkbenchEntryExecution) -> Void
     ) {
-        let workspaceConflicts = OpenClawManager.shared.workspaceIsolationConflicts(for: workflow, agents: agents)
-        if !workspaceConflicts.isEmpty {
-            let message = workspaceConflicts.map { conflict in
-                "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
-            }.joined(separator: " | ")
+        let isolationAssessment = OpenClawManager.shared.runtimeIsolationAssessment(for: workflow, agents: agents)
+        if !isolationAssessment.blockingMessages.isEmpty {
+            let message = isolationAssessment.blockingMessages.joined(separator: " | ")
             let failedResult = ExecutionResult(
                 nodeID: node.id,
                 agentID: node.agentID ?? UUID(),
                 status: .failed,
-                output: "Workspace isolation conflict: \(message)",
+                output: "Runtime isolation preflight failed: \(message)",
                 outputType: .errorSummary
             )
-            addLog(.error, "Cannot execute workbench entry until agent workspaces are isolated: \(message)", nodeID: node.id)
+            addLog(.error, "Cannot execute workbench entry until runtime isolation requirements are satisfied: \(message)", nodeID: node.id)
             completion(WorkbenchEntryExecution(result: failedResult, downstreamNodes: []))
             return
         }

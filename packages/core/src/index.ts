@@ -3,6 +3,7 @@ export * from "./launch-verification";
 export * from "./project-factory";
 export * from "./project-mutators";
 export * from "./project-repository";
+export * from "./runtime-isolation";
 export * from "./swift-date";
 export * from "./uuid";
 export * from "./workflow-node-naming";

@@ -68,6 +68,24 @@ interface OpenClawAgentExecutionResult {
   primaryRuntimeEvent: OpenClawRuntimeEvent | null;
 }
 
+interface OpenClawRuntimeSecurityFinding {
+  agentIdentifier: string;
+  sandboxMode: string;
+  sessionIsSandboxed: boolean;
+  allowedDangerousTools: string[];
+  execToolAllowed: boolean;
+  processToolAllowed: boolean;
+  elevatedAllowedByConfig: boolean;
+  elevatedAlwaysAllowedByConfig: boolean;
+  blockingIssues: string[];
+}
+
+interface OpenClawRuntimeSecurityInspectionResult {
+  blockingIssues: string[];
+  findings: OpenClawRuntimeSecurityFinding[];
+  approvalsHaveCustomEntries: boolean;
+}
+
 contextBridge.exposeInMainWorld("desktopApi", {
   platform: process.platform,
   versions: {
@@ -110,5 +128,11 @@ contextBridge.exposeInMainWorld("desktopApi", {
   },
   executeOpenClawAgent(config: OpenClawConfig, request: OpenClawAgentExecutionRequest): Promise<OpenClawAgentExecutionResult> {
     return ipcRenderer.invoke("openClaw:executeAgent", { config, request });
+  },
+  inspectOpenClawRuntimeSecurity(
+    config: OpenClawConfig,
+    agentIdentifiers: string[]
+  ): Promise<OpenClawRuntimeSecurityInspectionResult> {
+    return ipcRenderer.invoke("openClaw:inspectRuntimeSecurity", { config, agentIdentifiers });
   }
 });

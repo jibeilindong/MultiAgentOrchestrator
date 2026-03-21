@@ -10,6 +10,7 @@ import type {
   WorkflowNode,
   WorkflowVerificationStatus
 } from "@multi-agent-flow/domain";
+import { assessWorkflowRuntimeIsolation } from "./runtime-isolation";
 import { toSwiftDate } from "./swift-date";
 import { createUUID } from "./uuid";
 
@@ -173,6 +174,9 @@ function staticVerificationFindings(project: MAProject, workflow: Workflow): {
   if (invalidIdentifiers.length > 0) {
     failures.push(`${invalidIdentifiers.length} agent(s) are missing a usable OpenClaw identifier.`);
   }
+
+  const runtimeIsolation = assessWorkflowRuntimeIsolation(project, workflow);
+  failures.push(...runtimeIsolation.blockingFindings);
 
   const reachable = reachableAgentNodeIds(workflow);
   const unreachableAgents = agentNodes.filter((node) => !reachable.has(node.id));

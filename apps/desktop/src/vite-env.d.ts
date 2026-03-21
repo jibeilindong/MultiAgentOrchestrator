@@ -70,6 +70,24 @@ declare global {
     primaryRuntimeEvent: OpenClawRuntimeEvent | null;
   }
 
+  interface OpenClawRuntimeSecurityFinding {
+    agentIdentifier: string;
+    sandboxMode: string;
+    sessionIsSandboxed: boolean;
+    allowedDangerousTools: string[];
+    execToolAllowed: boolean;
+    processToolAllowed: boolean;
+    elevatedAllowedByConfig: boolean;
+    elevatedAlwaysAllowedByConfig: boolean;
+    blockingIssues: string[];
+  }
+
+  interface OpenClawRuntimeSecurityInspectionResult {
+    blockingIssues: string[];
+    findings: OpenClawRuntimeSecurityFinding[];
+    approvalsHaveCustomEntries: boolean;
+  }
+
   interface Window {
     desktopApi?: {
       platform: string;
@@ -93,6 +111,10 @@ declare global {
         config: OpenClawConfig,
         request: OpenClawAgentExecutionRequest
       ): Promise<OpenClawAgentExecutionResult>;
+      inspectOpenClawRuntimeSecurity(
+        config: OpenClawConfig,
+        agentIdentifiers: string[]
+      ): Promise<OpenClawRuntimeSecurityInspectionResult>;
     };
   }
 }

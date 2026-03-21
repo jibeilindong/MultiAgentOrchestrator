@@ -1095,13 +1095,33 @@ class AppState: ObservableObject {
         currentProject = project
         openClawManager.connect(for: project) { [weak self] success, message in
             guard let self else { return }
-            DispatchQueue.main.async {
+            DispatchQueue.main.async(execute: {
                 self.syncCurrentProjectFromManagers()
                 if success {
+                    if var refreshedProject = self.currentProject,
+                       let soulReport = self.openClawManager.applyPendingSoulReconcileResult(to: &refreshedProject) {
+                        self.currentProject = refreshedProject
+                        self.objectWillChange.send()
+
+                        if let summary = soulReport.summaryText {
+                            let logLevel = soulReport.conflictCount > 0 || soulReport.missingSourceCount > 0
+                                ? ExecutionLogEntry.LogLevel.warning
+                                : ExecutionLogEntry.LogLevel.info
+                            self.openClawService.addLog(logLevel, summary)
+                        }
+
+                        for agentReport in soulReport.agentReports where agentReport.status == .conflict || agentReport.status == .missingSource {
+                            let detail = "SOUL \(agentReport.agentName): \(agentReport.message)"
+                            self.openClawService.addLog(
+                                .warning,
+                                detail
+                            )
+                        }
+                    }
                     self.persistCurrentProjectSilently()
                 }
                 completion?(success, message)
-            }
+            })
         }
     }
 
@@ -2693,16 +2713,8 @@ class AppState: ObservableObject {
             failures.append("存在 \(invalidIdentifiers.count) 个 agent 缺少可用的 OpenClaw 标识。")
         }
 
-        let workflowAgents = agentNodes.compactMap { node in
-            node.agentID.flatMap { agentByID[$0] }
-        }
-        let workspaceConflicts = openClawManager.workspaceIsolationConflicts(for: workflowAgents)
-        if !workspaceConflicts.isEmpty {
-            let summaries = workspaceConflicts.map { conflict in
-                "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
-            }
-            failures.append("检测到 agent workspace 冲突：\(summaries.joined(separator: "；"))")
-        }
+        let isolationAssessment = openClawManager.runtimeIsolationAssessment(for: workflow, agents: agents)
+        failures.append(contentsOf: isolationAssessment.blockingMessages)
 
         let reachableAgentIDs = Set(openClawService.executionPlan(for: workflow).map(\.id))
         let unreachableAgents = agentNodes.filter { !reachableAgentIDs.contains($0.id) }
@@ -2715,8 +2727,8 @@ class AppState: ObservableObject {
         }
 
         let approvalEdges = workflow.edges.filter(\.requiresApproval)
-        if !approvalEdges.isEmpty && openClawManager.config.deploymentKind == .remoteServer {
-            warnings.append("当前工作流包含 \(approvalEdges.count) 条需要审批的边，但 remoteServer 模式暂不支持把审批白名单同步到 OpenClaw 运行时。")
+        if !approvalEdges.isEmpty {
+            warnings.append("当前工作流包含 \(approvalEdges.count) 条需要审批的边，运行时可能暂停等待人工确认。")
         }
 
         let findings = failures + warnings

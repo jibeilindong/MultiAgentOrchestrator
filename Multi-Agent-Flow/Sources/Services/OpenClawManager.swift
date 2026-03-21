@@ -5,6 +5,7 @@
 
 import Foundation
 import Combine
+import CryptoKit
 
 private let openClawSoulFileNames = ["SOUL.md", "soul.md"]
 private let openClawSoulNestedDirectories = ["", "agent", "private"]
@@ -162,6 +163,54 @@ class OpenClawManager: ObservableObject {
         let agentIdentifiers: [String]
     }
 
+    struct RuntimeIsolationAssessment {
+        let workflowAgents: [Agent]
+        let missingWorkspaceAgents: [Agent]
+        let workspaceConflicts: [WorkspaceIsolationConflict]
+        let remoteMultiAgentBlocked: Bool
+        let runtimeSecurityMessages: [String]
+
+        var blockingMessages: [String] {
+            var messages: [String] = []
+
+            if !missingWorkspaceAgents.isEmpty {
+                let names = missingWorkspaceAgents
+                    .map(\.name)
+                    .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                    .joined(separator: ", ")
+                messages.append("未解析到以下 agent 的独立 workspace：\(names)")
+            }
+
+            if !workspaceConflicts.isEmpty {
+                let summaries = workspaceConflicts.map { conflict in
+                    "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
+                }
+                messages.append("检测到 agent workspace 冲突：\(summaries.joined(separator: "；"))")
+            }
+
+            if remoteMultiAgentBlocked {
+                messages.append("remoteServer 模式当前无法对多 agent 工作流强制执行运行时隔离，请切换到 local/container，或将当前工作流收敛为单 agent 执行。")
+            }
+
+            messages.append(contentsOf: runtimeSecurityMessages)
+
+            return messages
+        }
+    }
+
+    private struct AgentSandboxSecurityInspection {
+        let agentIdentifier: String
+        let sandboxMode: String
+        let sessionIsSandboxed: Bool
+        let allowedTools: Set<String>
+        let elevatedAllowedByConfig: Bool
+        let elevatedAlwaysAllowedByConfig: Bool
+    }
+
+    private struct ExecApprovalSnapshot {
+        let hasCustomEntries: Bool
+    }
+
     struct ClawHubSkillRecord: Identifiable, Hashable {
         var id: String { slug }
         var slug: String
@@ -179,6 +228,80 @@ class OpenClawManager: ObservableObject {
     private struct MirrorStageResult {
         var updatedAgentCount: Int = 0
         var unresolvedAgentNames: [String] = []
+    }
+
+    enum SoulReconcileStatus: String, Hashable {
+        case overwritten
+        case keptLocal
+        case unchanged
+        case conflict
+        case missingSource
+    }
+
+    struct SoulReconcileAgentReport: Hashable {
+        let agentID: UUID
+        let agentName: String
+        let status: SoulReconcileStatus
+        let sourcePath: String?
+        let message: String
+    }
+
+    struct SoulReconcileReport: Hashable {
+        let projectID: UUID
+        let agentReports: [SoulReconcileAgentReport]
+
+        var overwrittenCount: Int {
+            agentReports.filter { $0.status == .overwritten }.count
+        }
+
+        var keptLocalCount: Int {
+            agentReports.filter { $0.status == .keptLocal }.count
+        }
+
+        var unchangedCount: Int {
+            agentReports.filter { $0.status == .unchanged }.count
+        }
+
+        var conflictCount: Int {
+            agentReports.filter { $0.status == .conflict }.count
+        }
+
+        var missingSourceCount: Int {
+            agentReports.filter { $0.status == .missingSource }.count
+        }
+
+        var summaryText: String? {
+            guard !agentReports.isEmpty else { return nil }
+
+            var parts: [String] = []
+            if overwrittenCount > 0 { parts.append("自动更新 \(overwrittenCount) 个") }
+            if unchangedCount > 0 { parts.append("确认一致 \(unchangedCount) 个") }
+            if keptLocalCount > 0 { parts.append("保留本地 \(keptLocalCount) 个") }
+            if conflictCount > 0 { parts.append("待人工处理冲突 \(conflictCount) 个") }
+            if missingSourceCount > 0 { parts.append("未找到源文件 \(missingSourceCount) 个") }
+            guard !parts.isEmpty else { return nil }
+            return "SOUL 同步结果：\(parts.joined(separator: "；"))"
+        }
+    }
+
+    private struct SoulReconcileAgentUpdate {
+        let agentID: UUID
+        let soulMD: String?
+        let soulSourcePath: String?
+        let lastImportedSoulHash: String?
+        let lastImportedSoulPath: String?
+        let lastImportedAt: Date?
+    }
+
+    private struct PendingSoulReconcileResult {
+        let projectID: UUID
+        let updates: [SoulReconcileAgentUpdate]
+        let report: SoulReconcileReport
+    }
+
+    private enum SoulMirrorStagePolicy {
+        case projectContent
+        case backupContent
     }
 
     private final class AgentRuntimeChannel {
@@ -316,6 +439,7 @@ class OpenClawManager: ObservableObject {
     }
 
     private var sessionContext: SessionContext?
+    private var pendingSoulReconcileResult: PendingSoulReconcileResult?
     private var discoverySnapshotURL: URL?
     private var pluginStageCleanupPerformed = false
     private let pluginStageCleanupLock = NSLock()
@@ -354,16 +478,28 @@ class OpenClawManager: ObservableObject {
     ) {
         status = .connecting
         config.save()
+        pendingSoulReconcileResult = nil
 
         let cleanupResult = cleanupStalePluginInstallStageArtifactsIfNeeded(using: config)
         let cleanupNote: String? = cleanupResult.success ? nil : cleanupResult.message
         var stageNote: String?
+        var reconcileNote: String?
 
         if let projectID, config.deploymentKind != .remoteServer {
             do {
                 try beginSession(for: projectID)
                 if let project {
-                    let stageResult = stageProjectAgentsIntoMirror(project)
+                    let reconciledProject = reconcileProjectAgentsFromSessionBackup(project)
+                    pendingSoulReconcileResult = PendingSoulReconcileResult(
+                        projectID: project.id,
+                        updates: reconciledProject.updates,
+                        report: reconciledProject.report
+                    )
+                    reconcileNote = reconciledProject.report.summaryText
+                    let stageResult = stageProjectAgentsIntoMirror(
+                        reconciledProject.project,
+                        stagePolicies: reconciledProject.stagePolicies
+                    )
                     try applySessionMirrorToDeployment()
                     stageNote = mirrorStageMessage(from: stageResult)
                 }
@@ -379,10 +515,14 @@ class OpenClawManager: ObservableObject {
             guard let self else { return }
             if !success, projectID != nil {
                 self.endSession(restoreOriginalState: true)
+                self.pendingSoulReconcileResult = nil
             }
             var extraNotes: [String] = []
             if let stageNote, !stageNote.isEmpty {
                 extraNotes.append(stageNote)
+            }
+            if let reconcileNote, !reconcileNote.isEmpty {
+                extraNotes.append(reconcileNote)
             }
             if let cleanupNote, !cleanupNote.isEmpty {
                 extraNotes.append(cleanupNote)
@@ -614,6 +754,7 @@ class OpenClawManager: ObservableObject {
         if sessionContext != nil {
             endSession(restoreOriginalState: true)
         }
+        pendingSoulReconcileResult = nil
         isConnected = false
         agents = []
         activeAgents.removeAll()
@@ -1999,6 +2140,39 @@ class OpenClawManager: ObservableObject {
         return workspaceIsolationConflicts(for: workflowAgents)
     }
 
+    func runtimeIsolationAssessment(
+        for workflow: Workflow,
+        agents: [Agent],
+        using config: OpenClawConfig? = nil
+    ) -> RuntimeIsolationAssessment {
+        let resolvedConfig = config ?? self.config
+        let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        var seenAgentIDs = Set<UUID>()
+        let workflowAgents = workflow.nodes.compactMap { node -> Agent? in
+            guard let agentID = node.agentID,
+                  seenAgentIDs.insert(agentID).inserted else {
+                return nil
+            }
+            return agentByID[agentID]
+        }
+
+        let missingWorkspaceAgents = workflowAgents.filter { agent in
+            guard let workspacePath = resolvedWorkspacePath(for: agent),
+                  normalizeWorkspacePath(workspacePath) != nil else {
+                return true
+            }
+            return false
+        }
+
+        return RuntimeIsolationAssessment(
+            workflowAgents: workflowAgents,
+            missingWorkspaceAgents: missingWorkspaceAgents,
+            workspaceConflicts: workspaceIsolationConflicts(for: workflowAgents),
+            remoteMultiAgentBlocked: resolvedConfig.deploymentKind == .remoteServer && workflowAgents.count > 1,
+            runtimeSecurityMessages: runtimeSecurityMessages(for: workflowAgents, using: resolvedConfig)
+        )
+    }
+
     func resolvedWorkspacePath(for agent: Agent) -> String? {
         let candidateNames = [
             agent.openClawDefinition.agentIdentifier,
@@ -2028,6 +2202,142 @@ class OpenClawManager: ObservableObject {
             .standardizedFileURL
             .path
         return normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : normalized
+    }
+
+    private func runtimeSecurityMessages(
+        for workflowAgents: [Agent],
+        using config: OpenClawConfig
+    ) -> [String] {
+        guard workflowAgents.count > 1 else { return [] }
+        guard config.deploymentKind != .remoteServer else { return [] }
+
+        let dangerousTools: Set<String> = [
+            "subagents",
+            "sessions_send",
+            "sessions_spawn"
+        ]
+
+        let approvalsSnapshot: ExecApprovalSnapshot?
+        do {
+            approvalsSnapshot = try inspectExecApprovalSnapshot(using: config)
+        } catch {
+            return ["无法读取 OpenClaw exec approvals 配置，当前无法确认 agent 不会通过底层工具绕过软件权限：\(error.localizedDescription)"]
+        }
+
+        var messages: [String] = []
+        var seenIdentifiers = Set<String>()
+
+        for agent in workflowAgents {
+            let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !identifier.isEmpty, seenIdentifiers.insert(identifier.lowercased()).inserted else { continue }
+
+            let inspection: AgentSandboxSecurityInspection
+            do {
+                inspection = try inspectSandboxSecurity(forAgentIdentifier: identifier, using: config)
+            } catch {
+                messages.append("无法检查 agent \(identifier) 的 OpenClaw sandbox 策略：\(error.localizedDescription)")
+                continue
+            }
+
+            if inspection.sandboxMode.lowercased() == "off" || !inspection.sessionIsSandboxed {
+                messages.append("agent \(identifier) 的 OpenClaw sandbox 未启用隔离运行，当前无法阻止其在运行时绕过软件自行建立额外会话。")
+            }
+
+            let dangerousAllowedTools = Array(inspection.allowedTools.intersection(dangerousTools)).sorted()
+            if !dangerousAllowedTools.isEmpty {
+                messages.append("agent \(identifier) 当前允许高风险会话工具：\(dangerousAllowedTools.joined(separator: ", "))。请先在 OpenClaw sandbox 中禁用后再运行多 agent 工作流。")
+            }
+
+            if approvalsSnapshot?.hasCustomEntries == true,
+               inspection.allowedTools.contains("exec") || inspection.allowedTools.contains("process") {
+                messages.append("检测到 OpenClaw exec approvals 已配置自定义 allowlist，且 agent \(identifier) 仍可执行本地命令；当前无法证明其不会自行启动额外 agent/session。")
+            }
+
+            if inspection.elevatedAllowedByConfig || inspection.elevatedAlwaysAllowedByConfig {
+                messages.append("agent \(identifier) 当前允许 OpenClaw elevated 执行策略，存在越过软件编排直接调用底层能力的风险。")
+            }
+        }
+
+        return Array(Set(messages)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func inspectSandboxSecurity(
+        forAgentIdentifier agentIdentifier: String,
+        using config: OpenClawConfig
+    ) throws -> AgentSandboxSecurityInspection {
+        let result = try runOpenClawCommand(
+            using: config,
+            arguments: ["sandbox", "explain", "--agent", agentIdentifier, "--json"]
+        )
+        guard result.terminationStatus == 0 else {
+            let fallback = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "OpenClawManager",
+                code: Int(result.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw sandbox 策略失败" : fallback]
+            )
+        }
+
+        guard let payload = extractJSONPayload(from: result.standardOutput) ?? extractJSONPayload(from: result.standardError),
+              let object = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            throw NSError(
+                domain: "OpenClawManager",
+                code: 1201,
+                userInfo: [NSLocalizedDescriptionKey: "解析 OpenClaw sandbox explain 输出失败"]
+            )
+        }
+
+        let sandbox = (object["sandbox"] as? [String: Any]) ?? [:]
+        let tools = (sandbox["tools"] as? [String: Any]) ?? [:]
+        let elevated = (object["elevated"] as? [String: Any]) ?? [:]
+        let allowedTools = ((tools["allow"] as? [String]) ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+
+        return AgentSandboxSecurityInspection(
+            agentIdentifier: agentIdentifier,
+            sandboxMode: ((sandbox["mode"] as? String) ?? "unknown").trimmingCharacters(in: .whitespacesAndNewlines),
+            sessionIsSandboxed: (sandbox["sessionIsSandboxed"] as? Bool) ?? false,
+            allowedTools: Set(allowedTools),
+            elevatedAllowedByConfig: (elevated["allowedByConfig"] as? Bool) ?? false,
+            elevatedAlwaysAllowedByConfig: (elevated["alwaysAllowedByConfig"] as? Bool) ?? false
+        )
+    }
+
+    private func inspectExecApprovalSnapshot(using config: OpenClawConfig) throws -> ExecApprovalSnapshot {
+        let result = try runOpenClawCommand(
+            using: config,
+            arguments: ["approvals", "get", "--json"]
+        )
+        guard result.terminationStatus == 0 else {
+            let fallback = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "OpenClawManager",
+                code: Int(result.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw exec approvals 失败" : fallback]
+            )
+        }
+
+        guard let payload = extractJSONPayload(from: result.standardOutput) ?? extractJSONPayload(from: result.standardError),
+              let object = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            throw NSError(
+                domain: "OpenClawManager",
+                code: 1202,
+                userInfo: [NSLocalizedDescriptionKey: "解析 OpenClaw approvals get 输出失败"]
+            )
+        }
+
+        let fileRecord = (object["file"] as? [String: Any]) ?? [:]
+        let defaults = (fileRecord["defaults"] as? [String: Any]) ?? [:]
+        let agents = (fileRecord["agents"] as? [String: Any]) ?? [:]
+
+        return ExecApprovalSnapshot(
+            hasCustomEntries: !defaults.isEmpty || !agents.isEmpty
+        )
     }
 
     private func existingLocalAgentSoulURL(matching candidateNames: [String]) -> URL? {
@@ -2061,7 +2371,329 @@ class OpenClawManager: ObservableObject {
         return nil
     }
 
-    private func stageProjectAgentsIntoMirror(_ project: MAProject) -> MirrorStageResult {
+    func applyPendingSoulReconcileResult(to project: inout MAProject) -> SoulReconcileReport? {
+        guard let pendingSoulReconcileResult, pendingSoulReconcileResult.projectID == project.id else {
+            return nil
+        }
+
+        let updatesByAgentID = Dictionary(uniqueKeysWithValues: pendingSoulReconcileResult.updates.map { ($0.agentID, $0) })
+        var didChangeProject = false
+
+        for index in project.agents.indices {
+            let agentID = project.agents[index].id
+            guard let update = updatesByAgentID[agentID] else { continue }
+
+            var didChangeAgent = false
+
+            if let soulMD = update.soulMD, project.agents[index].soulMD != soulMD {
+                project.agents[index].soulMD = soulMD
+                didChangeAgent = true
+            }
+
+            if project.agents[index].openClawDefinition.soulSourcePath != update.soulSourcePath {
+                project.agents[index].openClawDefinition.soulSourcePath = update.soulSourcePath
+                didChangeAgent = true
+            }
+
+            if project.agents[index].openClawDefinition.lastImportedSoulHash != update.lastImportedSoulHash {
+                project.agents[index].openClawDefinition.lastImportedSoulHash = update.lastImportedSoulHash
+                didChangeAgent = true
+            }
+
+            if project.agents[index].openClawDefinition.lastImportedSoulPath != update.lastImportedSoulPath {
+                project.agents[index].openClawDefinition.lastImportedSoulPath = update.lastImportedSoulPath
+                didChangeAgent = true
+            }
+
+            if project.agents[index].openClawDefinition.lastImportedAt != update.lastImportedAt {
+                project.agents[index].openClawDefinition.lastImportedAt = update.lastImportedAt
+                didChangeAgent = true
+            }
+
+            if didChangeAgent {
+                project.agents[index].updatedAt = Date()
+                didChangeProject = true
+            }
+        }
+
+        if didChangeProject {
+            project.updatedAt = Date()
+        }
+
+        let report = pendingSoulReconcileResult.report
+        self.pendingSoulReconcileResult = nil
+        return report
+    }
+
+    private struct SoulReconcileComputation {
+        let project: MAProject
+        let updates: [SoulReconcileAgentUpdate]
+        let report: SoulReconcileReport
+        let stagePolicies: [UUID: SoulMirrorStagePolicy]
+    }
+
+    private func reconcileProjectAgentsFromSessionBackup(_ project: MAProject) -> SoulReconcileComputation {
+        guard let sessionContext else {
+            return SoulReconcileComputation(
+                project: project,
+                updates: [],
+                report: SoulReconcileReport(projectID: project.id, agentReports: []),
+                stagePolicies: [:]
+            )
+        }
+
+        var reconciledProject = project
+        var updates: [SoulReconcileAgentUpdate] = []
+        var reports: [SoulReconcileAgentReport] = []
+        var stagePolicies: [UUID: SoulMirrorStagePolicy] = [:]
+        let now = Date()
+
+        for index in reconciledProject.agents.indices {
+            let agent = reconciledProject.agents[index]
+            guard let sourceURL = resolveSessionBackupSoulURL(for: agent, in: project, backupURL: sessionContext.backupURL),
+                  let remoteContent = try? String(contentsOf: sourceURL, encoding: .utf8) else {
+                reports.append(
+                    SoulReconcileAgentReport(
+                        agentID: agent.id,
+                        agentName: agent.name,
+                        status: .missingSource,
+                        sourcePath: nil,
+                        message: "未在连接前备份中定位到可用的 SOUL 文件。"
+                    )
+                )
+                stagePolicies[agent.id] = .backupContent
+                continue
+            }
+
+            let localHash = soulContentHash(agent.soulMD)
+            let remoteHash = soulContentHash(remoteContent)
+            let baselineHash = normalizedNonEmptyString(agent.openClawDefinition.lastImportedSoulHash)
+            let sourcePath = sourceURL.path
+
+            if localHash == remoteHash {
+                let update = SoulReconcileAgentUpdate(
+                    agentID: agent.id,
+                    soulMD: nil,
+                    soulSourcePath: sourcePath,
+                    lastImportedSoulHash: remoteHash,
+                    lastImportedSoulPath: sourcePath,
+                    lastImportedAt: now
+                )
+                applySoulReconcileUpdate(update, to: &reconciledProject.agents[index], at: now)
+                updates.append(update)
+                stagePolicies[agent.id] = .projectContent
+                reports.append(
+                    SoulReconcileAgentReport(
+                        agentID: agent.id,
+                        agentName: agent.name,
+                        status: .unchanged,
+                        sourcePath: sourcePath,
+                        message: "本地 SOUL 与 OpenClaw 一致，已刷新同步基线。"
+                    )
+                )
+                continue
+            }
+
+            if isPlaceholderSoulContent(agent.soulMD) {
+                let update = SoulReconcileAgentUpdate(
+                    agentID: agent.id,
+                    soulMD: remoteContent,
+                    soulSourcePath: sourcePath,
+                    lastImportedSoulHash: remoteHash,
+                    lastImportedSoulPath: sourcePath,
+                    lastImportedAt: now
+                )
+                applySoulReconcileUpdate(update, to: &reconciledProject.agents[index], at: now)
+                updates.append(update)
+                stagePolicies[agent.id] = .projectContent
+                reports.append(
+                    SoulReconcileAgentReport(
+                        agentID: agent.id,
+                        agentName: agent.name,
+                        status: .overwritten,
+                        sourcePath: sourcePath,
+                        message: "本地 SOUL 仍为默认模板，已自动替换为 OpenClaw 内容。"
+                    )
+                )
+                continue
+            }
+
+            if let baselineHash {
+                if localHash == baselineHash && remoteHash != baselineHash {
+                    let update = SoulReconcileAgentUpdate(
+                        agentID: agent.id,
+                        soulMD: remoteContent,
+                        soulSourcePath: sourcePath,
+                        lastImportedSoulHash: remoteHash,
+                        lastImportedSoulPath: sourcePath,
+                        lastImportedAt: now
+                    )
+                    applySoulReconcileUpdate(update, to: &reconciledProject.agents[index], at: now)
+                    updates.append(update)
+                    stagePolicies[agent.id] = .projectContent
+                    reports.append(
+                        SoulReconcileAgentReport(
+                            agentID: agent.id,
+                            agentName: agent.name,
+                            status: .overwritten,
+                            sourcePath: sourcePath,
+                            message: "本地自上次同步后未修改，已自动更新为 OpenClaw 最新内容。"
+                        )
+                    )
+                    continue
+                }
+
+                if localHash != baselineHash && remoteHash == baselineHash {
+                    let update = SoulReconcileAgentUpdate(
+                        agentID: agent.id,
+                        soulMD: nil,
+                        soulSourcePath: sourcePath,
+                        lastImportedSoulHash: baselineHash,
+                        lastImportedSoulPath: sourcePath,
+                        lastImportedAt: agent.openClawDefinition.lastImportedAt
+                    )
+                    applySoulReconcileUpdate(update, to: &reconciledProject.agents[index], at: now)
+                    updates.append(update)
+                    stagePolicies[agent.id] = .projectContent
+                    reports.append(
+                        SoulReconcileAgentReport(
+                            agentID: agent.id,
+                            agentName: agent.name,
+                            status: .keptLocal,
+                            sourcePath: sourcePath,
+                            message: "检测到仅本地发生修改，已保留本地 SOUL。"
+                        )
+                    )
+                    continue
+                }
+
+                if localHash != baselineHash && remoteHash != baselineHash {
+                    let update = SoulReconcileAgentUpdate(
+                        agentID: agent.id,
+                        soulMD: nil,
+                        soulSourcePath: sourcePath,
+                        lastImportedSoulHash: baselineHash,
+                        lastImportedSoulPath: agent.openClawDefinition.lastImportedSoulPath ?? sourcePath,
+                        lastImportedAt: agent.openClawDefinition.lastImportedAt
+                    )
+                    reconciledProject.agents[index].soulMD = remoteContent
+                    applySoulReconcileUpdate(update, to: &reconciledProject.agents[index], at: now)
+                    updates.append(update)
+                    stagePolicies[agent.id] = .backupContent
+                    reports.append(
+                        SoulReconcileAgentReport(
+                            agentID: agent.id,
+                            agentName: agent.name,
+                            status: .conflict,
+                            sourcePath: sourcePath,
+                            message: "本地与 OpenClaw 自上次同步后都发生了变化，需由用户手动处理。"
+                        )
+                    )
+                    continue
+                }
+            }
+
+            let update = SoulReconcileAgentUpdate(
+                agentID: agent.id,
+                soulMD: nil,
+                soulSourcePath: sourcePath,
+                lastImportedSoulHash: agent.openClawDefinition.lastImportedSoulHash,
+                lastImportedSoulPath: agent.openClawDefinition.lastImportedSoulPath,
+                lastImportedAt: agent.openClawDefinition.lastImportedAt
+            )
+            reconciledProject.agents[index].soulMD = remoteContent
+            applySoulReconcileUpdate(update, to: &reconciledProject.agents[index], at: now)
+            updates.append(update)
+            stagePolicies[agent.id] = .backupContent
+            reports.append(
+                SoulReconcileAgentReport(
+                    agentID: agent.id,
+                    agentName: agent.name,
+                    status: .conflict,
+                    sourcePath: sourcePath,
+                    message: "首次同步检测到本地与 OpenClaw 不一致，已保留本地 SOUL，等待用户判断。"
+                )
+            )
+        }
+
+        return SoulReconcileComputation(
+            project: reconciledProject,
+            updates: updates,
+            report: SoulReconcileReport(projectID: project.id, agentReports: reports),
+            stagePolicies: stagePolicies
+        )
+    }
+
+    private func applySoulReconcileUpdate(_ update: SoulReconcileAgentUpdate, to agent: inout Agent, at timestamp: Date) {
+        if let soulMD = update.soulMD {
+            agent.soulMD = soulMD
+        }
+        agent.openClawDefinition.soulSourcePath = update.soulSourcePath
+        agent.openClawDefinition.lastImportedSoulHash = update.lastImportedSoulHash
+        agent.openClawDefinition.lastImportedSoulPath = update.lastImportedSoulPath
+        agent.openClawDefinition.lastImportedAt = update.lastImportedAt
+        agent.updatedAt = timestamp
+    }
+
+    private func resolveSessionBackupSoulURL(for agent: Agent, in project: MAProject, backupURL: URL) -> URL? {
+        let candidateNames = Array(
+            Set([
+                agent.name,
+                agent.openClawDefinition.agentIdentifier,
+                normalizedTargetIdentifier(for: agent)
+            ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        )
+
+        let sourceCandidates = mirrorSourceCandidates(for: agent, in: project, matching: candidateNames)
+        for sourceURL in sourceCandidates {
+            if let translated = translateURLToBackup(sourceURL, backupURL: backupURL, project: project),
+               FileManager.default.fileExists(atPath: translated.path) {
+                return translated
+            }
+        }
+
+        if let backupMatch = findMatchingSoulURL(in: backupURL, matching: candidateNames) {
+            return backupMatch
+        }
+
+        return nil
+    }
+
+    private func normalizedNonEmptyString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func normalizeSoulContent(_ content: String) -> String {
+        var normalized = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        while normalized.hasSuffix("\n\n") {
+            normalized.removeLast()
+        }
+
+        return normalized
+    }
+
+    private func soulContentHash(_ content: String) -> String {
+        let normalized = normalizeSoulContent(content)
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func isPlaceholderSoulContent(_ content: String) -> Bool {
+        let normalized = normalizeSoulContent(content)
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || normalized == normalizeSoulContent("# 新智能体\n这是我的配置...")
+    }
+
+    private func stageProjectAgentsIntoMirror(
+        _ project: MAProject,
+        stagePolicies: [UUID: SoulMirrorStagePolicy] = [:]
+    ) -> MirrorStageResult {
         let mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
         let backupURL: URL? = {
             if let sessionContext, sessionContext.projectID == project.id {
@@ -2082,9 +2714,27 @@ class OpenClawManager: ObservableObject {
                 continue
             }
 
+            let contentToStage: String
+            switch stagePolicies[agent.id] ?? .projectContent {
+            case .projectContent:
+                contentToStage = agent.soulMD
+            case .backupContent:
+                guard let backupContent = backupSoulContent(
+                    for: agent,
+                    in: project,
+                    mirrorSoulURL: soulURL,
+                    mirrorURL: mirrorURL,
+                    backupURL: backupURL
+                ) else {
+                    result.unresolvedAgentNames.append(agent.name)
+                    continue
+                }
+                contentToStage = backupContent
+            }
+
             do {
                 try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try agent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+                try contentToStage.write(to: soulURL, atomically: true, encoding: .utf8)
                 result.updatedAgentCount += 1
             } catch {
                 result.unresolvedAgentNames.append(agent.name)
@@ -2141,10 +2791,6 @@ class OpenClawManager: ObservableObject {
             ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
         )
 
-        if let existingMirrorMatch = findMatchingSoulURL(in: mirrorURL, matching: candidateNames) {
-            return existingMirrorMatch
-        }
-
         let sourceCandidates = mirrorSourceCandidates(for: agent, in: project, matching: candidateNames)
         for sourceURL in sourceCandidates {
             if let translated = translateURLToMirror(
@@ -2155,6 +2801,10 @@ class OpenClawManager: ObservableObject {
             ) {
                 return translated
             }
+        }
+
+        if let existingMirrorMatch = findMatchingSoulURL(in: mirrorURL, matching: candidateNames) {
+            return existingMirrorMatch
         }
 
         if let backupURL,
@@ -2237,6 +2887,65 @@ class OpenClawManager: ObservableObject {
             if let translated = translateRelativeURL(sourceURL, from: sourceRoot, to: mirrorURL) {
                 return translated
             }
+        }
+
+        return nil
+    }
+
+    private func translateURLToBackup(_ sourceURL: URL, backupURL: URL, project: MAProject) -> URL? {
+        if sourceURL.path == backupURL.path || sourceURL.path.hasPrefix(backupURL.path + "/") {
+            return sourceURL
+        }
+
+        var sourceRoots: [URL] = []
+        if let sessionContext, sessionContext.projectID == project.id {
+            sourceRoots.append(sessionContext.mirrorURL)
+            sourceRoots.append(sessionContext.backupURL)
+        }
+        if let previousMirrorPath = firstNonEmptyPath(project.openClaw.sessionMirrorPath) {
+            sourceRoots.append(URL(fileURLWithPath: previousMirrorPath, isDirectory: true))
+        }
+        if let previousBackupPath = firstNonEmptyPath(project.openClaw.sessionBackupPath) {
+            sourceRoots.append(URL(fileURLWithPath: previousBackupPath, isDirectory: true))
+        }
+        if config.deploymentKind == .local {
+            sourceRoots.append(localOpenClawRootURL())
+        }
+
+        var seen = Set<String>()
+        for sourceRoot in sourceRoots where seen.insert(sourceRoot.path).inserted {
+            if let translated = translateRelativeURL(sourceURL, from: sourceRoot, to: backupURL) {
+                return translated
+            }
+        }
+
+        return nil
+    }
+
+    private func backupSoulContent(
+        for agent: Agent,
+        in project: MAProject,
+        mirrorSoulURL: URL,
+        mirrorURL: URL,
+        backupURL: URL?
+    ) -> String? {
+        guard let backupURL else { return nil }
+
+        var candidates: [URL] = []
+        if let translatedMirrorURL = translateRelativeURL(mirrorSoulURL, from: mirrorURL, to: backupURL) {
+            candidates.append(translatedMirrorURL)
+        }
+        if let resolvedBackupURL = resolveSessionBackupSoulURL(for: agent, in: project, backupURL: backupURL) {
+            candidates.append(resolvedBackupURL)
+        }
+
+        var seen = Set<String>()
+        for candidate in candidates where seen.insert(candidate.path).inserted {
+            guard FileManager.default.fileExists(atPath: candidate.path),
+                  let content = try? String(contentsOf: candidate, encoding: .utf8) else {
+                continue
+            }
+            return content
         }
 
         return nil
