@@ -2671,7 +2671,15 @@ struct ProjectPropertiesView: View {
     @State private var isRunningLaunchVerification = false
 
     private var workspaceRootPath: String {
-        appState.currentProject?.taskData.workspaceRootPath ?? appState.projectManager.defaultWorkspaceRootDirectory.path
+        if let configuredPath = appState.currentProject?.taskData.workspaceRootPath, !configuredPath.isEmpty {
+            return configuredPath
+        }
+
+        if let projectID = appState.currentProject?.id {
+            return appState.projectManager.defaultWorkspaceRootDirectory(for: projectID).path
+        }
+
+        return appState.projectManager.legacyDefaultWorkspaceRootDirectory.path
     }
 
     private var workflows: [Workflow] {

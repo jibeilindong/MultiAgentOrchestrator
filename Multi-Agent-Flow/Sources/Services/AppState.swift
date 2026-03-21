@@ -42,7 +42,7 @@ class ProjectManager: ObservableObject {
         return projectsDirectory.appendingPathComponent("backups", isDirectory: true)
     }
 
-    var openClawSessionRootDirectory: URL {
+    var legacyOpenClawSessionRootDirectory: URL {
         return projectsDirectory.appendingPathComponent("openclaw-sessions", isDirectory: true)
     }
 
@@ -56,7 +56,7 @@ class ProjectManager: ObservableObject {
         return appSupportPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
     }
 
-    var defaultWorkspaceRootDirectory: URL {
+    var legacyDefaultWorkspaceRootDirectory: URL {
         appSupportRootDirectory.appendingPathComponent("Workspaces", isDirectory: true)
     }
 
@@ -68,7 +68,7 @@ class ProjectManager: ObservableObject {
         appSupportRootDirectory.appendingPathComponent("Drafts", isDirectory: true)
     }
 
-    var analyticsRootDirectory: URL {
+    var legacyAnalyticsRootDirectory: URL {
         appSupportRootDirectory.appendingPathComponent("Analytics", isDirectory: true)
     }
 
@@ -85,11 +85,11 @@ class ProjectManager: ObservableObject {
     func createDirectoriesIfNeeded() {
         try? fileManager.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: openClawSessionRootDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: legacyOpenClawSessionRootDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: legacyDefaultWorkspaceRootDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: analyticsRootDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: legacyAnalyticsRootDirectory, withIntermediateDirectories: true)
         try? projectFileSystem.ensureBaseDirectories(under: appSupportRootDirectory)
     }
     
@@ -113,6 +113,7 @@ class ProjectManager: ObservableObject {
     }
     
     func saveProject(_ project: MAProject, to url: URL? = nil) throws -> URL {
+        try projectFileSystem.validateProject(project)
         let destinationURL = url ?? projectURL(for: project.name)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -139,6 +140,7 @@ class ProjectManager: ObservableObject {
     }
 
     func saveDraft(_ project: MAProject) throws -> URL {
+        try projectFileSystem.validateProject(project)
         let destinationURL = draftURL(for: project.id)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -199,12 +201,32 @@ class ProjectManager: ObservableObject {
         "\(projectID.uuidString)/\(taskID.uuidString)"
     }
 
+    func defaultWorkspaceRootDirectory(for projectID: UUID) -> URL {
+        let rootURL = projectFileSystem.taskWorkspaceRootDirectory(for: projectID, under: appSupportRootDirectory)
+        let legacyProjectRoot = legacyDefaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+        let compatibilityProjectRoot = rootURL.appendingPathComponent(projectID.uuidString, isDirectory: true)
+
+        try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        mergeDirectoryIfNeeded(from: legacyProjectRoot, to: compatibilityProjectRoot)
+        return rootURL
+    }
+
     func workspaceURL(for relativePath: String) -> URL {
-        defaultWorkspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
+        legacyDefaultWorkspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
+    }
+
+    func workspaceURL(for projectID: UUID, relativePath: String) -> URL {
+        defaultWorkspaceRootDirectory(for: projectID).appendingPathComponent(relativePath, isDirectory: true)
     }
 
     func ensureWorkspaceDirectory(relativePath: String) -> URL {
         let url = workspaceURL(for: relativePath)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    func ensureWorkspaceDirectory(for projectID: UUID, relativePath: String) -> URL {
+        let url = workspaceURL(for: projectID, relativePath: relativePath)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
@@ -215,33 +237,51 @@ class ProjectManager: ObservableObject {
             removeDraft(for: projectID)
             projectFileSystem.removeManagedProjectRoot(for: projectID, under: appSupportRootDirectory)
             try? FileManager.default.removeItem(
-                at: defaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+                at: legacyDefaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
             try? FileManager.default.removeItem(
-                at: openClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+                at: legacyOpenClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
+            try? FileManager.default.removeItem(at: legacyAnalyticsDatabaseURL(for: projectID))
         }
         loadProjectList()
     }
 
     func openClawProjectRoot(for projectID: UUID) -> URL {
-        openClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+        let rootURL = projectFileSystem.openClawSessionRootDirectory(for: projectID, under: appSupportRootDirectory)
+        let legacyRootURL = legacyOpenClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
+
+        try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        mergeDirectoryIfNeeded(from: legacyRootURL, to: rootURL)
+        return rootURL
     }
 
     func openClawBackupDirectory(for projectID: UUID) -> URL {
-        openClawProjectRoot(for: projectID).appendingPathComponent("backup", isDirectory: true)
+        let url = projectFileSystem.openClawBackupDirectory(for: projectID, under: appSupportRootDirectory)
+        _ = openClawProjectRoot(for: projectID)
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     func openClawMirrorDirectory(for projectID: UUID) -> URL {
-        openClawProjectRoot(for: projectID).appendingPathComponent("mirror", isDirectory: true)
+        let url = projectFileSystem.openClawMirrorDirectory(for: projectID, under: appSupportRootDirectory)
+        _ = openClawProjectRoot(for: projectID)
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     func openClawImportedAgentsDirectory(for projectID: UUID) -> URL {
-        openClawProjectRoot(for: projectID).appendingPathComponent("agents", isDirectory: true)
+        let url = projectFileSystem.openClawImportedAgentsDirectory(for: projectID, under: appSupportRootDirectory)
+        _ = openClawProjectRoot(for: projectID)
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     func analyticsDatabaseURL(for projectID: UUID) -> URL {
-        analyticsRootDirectory.appendingPathComponent("\(projectID.uuidString).sqlite", isDirectory: false)
+        let url = projectFileSystem.analyticsDatabaseURL(for: projectID, under: appSupportRootDirectory)
+        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        mergeFileIfNeeded(from: legacyAnalyticsDatabaseURL(for: projectID), to: url)
+        return url
     }
 
     func managedProjectRootDirectory(for projectID: UUID) -> URL {
@@ -254,6 +294,10 @@ class ProjectManager: ObservableObject {
 
     private func currentProjectFileURLFallback(for project: MAProject) -> URL {
         projectURL(for: project.name)
+    }
+
+    private func legacyAnalyticsDatabaseURL(for projectID: UUID) -> URL {
+        legacyAnalyticsRootDirectory.appendingPathComponent("\(projectID.uuidString).sqlite", isDirectory: false)
     }
 
     private func migrateLegacyStorageIfNeeded() {
@@ -301,6 +345,14 @@ class ProjectManager: ObservableObject {
         if remainingLegacyContents.isEmpty {
             try? fileManager.removeItem(at: legacyURL)
         }
+    }
+
+    private func mergeFileIfNeeded(from legacyURL: URL, to currentURL: URL) {
+        guard fileManager.fileExists(atPath: legacyURL.path) else { return }
+        guard !fileManager.fileExists(atPath: currentURL.path) else { return }
+
+        try? fileManager.createDirectory(at: currentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fileManager.moveItem(at: legacyURL, to: currentURL)
     }
 }
 
@@ -1743,7 +1795,7 @@ class AppState: ObservableObject {
             return url
         }
 
-        let url = projectManager.defaultWorkspaceRootDirectory
+        let url = projectManager.defaultWorkspaceRootDirectory(for: project.id)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
@@ -1753,9 +1805,14 @@ class AppState: ObservableObject {
             return projectManager.ensureWorkspaceDirectory(relativePath: relativePath)
         }
 
-        let url = workspaceRootURL(for: project).appendingPathComponent(relativePath, isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
+        if let configuredPath = project.taskData.workspaceRootPath, !configuredPath.isEmpty {
+            let url = URL(fileURLWithPath: configuredPath, isDirectory: true)
+                .appendingPathComponent(relativePath, isDirectory: true)
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+
+        return projectManager.ensureWorkspaceDirectory(for: project.id, relativePath: relativePath)
     }
     
     // 工作流操作方法
