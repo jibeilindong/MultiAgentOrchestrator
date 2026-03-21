@@ -179,6 +179,47 @@ final class ProjectFileSystemTests: XCTestCase {
         )
     }
 
+    func testNodeOpenClawPathHelpersResolveManagedDesignLocations() {
+        let projectID = UUID(uuidString: "01000000-0000-0000-0000-000000000001")!
+        let workflowID = UUID(uuidString: "02000000-0000-0000-0000-000000000002")!
+        let nodeID = UUID(uuidString: "03000000-0000-0000-0000-000000000003")!
+        let appSupportRoot = URL(fileURLWithPath: "/tmp/project-fs-helpers", isDirectory: true)
+        let fileSystem = ProjectFileSystem()
+
+        let nodeRootURL = fileSystem.designNodeRootDirectory(
+            for: nodeID,
+            workflowID: workflowID,
+            projectID: projectID,
+            under: appSupportRoot
+        )
+        let openClawRootURL = fileSystem.nodeOpenClawRootDirectory(
+            for: nodeID,
+            workflowID: workflowID,
+            projectID: projectID,
+            under: appSupportRoot
+        )
+        let workspaceRootURL = fileSystem.nodeOpenClawWorkspaceDirectory(
+            for: nodeID,
+            workflowID: workflowID,
+            projectID: projectID,
+            under: appSupportRoot
+        )
+        let soulURL = fileSystem.nodeOpenClawSoulURL(
+            for: nodeID,
+            workflowID: workflowID,
+            projectID: projectID,
+            under: appSupportRoot
+        )
+
+        XCTAssertEqual(
+            nodeRootURL.path,
+            "/tmp/project-fs-helpers/Projects/01000000-0000-0000-0000-000000000001/design/workflows/02000000-0000-0000-0000-000000000002/nodes/03000000-0000-0000-0000-000000000003"
+        )
+        XCTAssertEqual(openClawRootURL, nodeRootURL.appendingPathComponent("openclaw", isDirectory: true))
+        XCTAssertEqual(workspaceRootURL, openClawRootURL.appendingPathComponent("workspace", isDirectory: true))
+        XCTAssertEqual(soulURL, workspaceRootURL.appendingPathComponent("SOUL.md", isDirectory: false))
+    }
+
     func testSynchronizeProjectUpdatesStoredSnapshotContents() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -336,6 +377,89 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertTrue(toolsContents.contains(agent.openClawDefinition.modelIdentifier))
         XCTAssertEqual(importRecordJSON["agentIdentifier"] as? String, agent.openClawDefinition.agentIdentifier)
         XCTAssertEqual(importRecordJSON["memoryBackupPath"] as? String, agent.openClawDefinition.memoryBackupPath)
+    }
+
+    func testSynchronizeProjectMirrorsOpenClawWorkspaceSkillsAndMemoryArtifacts() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let externalAgentRoot = tempRoot.appendingPathComponent("external-agent", isDirectory: true)
+        let externalWorkspaceRoot = externalAgentRoot.appendingPathComponent("workspace", isDirectory: true)
+        let externalSkillsRoot = externalWorkspaceRoot.appendingPathComponent("skills", isDirectory: true)
+        let externalMemoryRoot = externalWorkspaceRoot.appendingPathComponent("memory", isDirectory: true)
+        let externalPrivateRoot = externalAgentRoot.appendingPathComponent("private", isDirectory: true)
+        let nestedSkillDirectory = externalSkillsRoot.appendingPathComponent("playbooks", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: nestedSkillDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalMemoryRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalPrivateRoot, withIntermediateDirectories: true)
+
+        let soulSourceURL = externalWorkspaceRoot.appendingPathComponent("SOUL.md", isDirectory: false)
+        try "# External Soul\nMirrored".write(to: soulSourceURL, atomically: true, encoding: .utf8)
+        try "planner-skill".write(
+            to: externalSkillsRoot.appendingPathComponent("planner.md", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "nested-checklist".write(
+            to: nestedSkillDirectory.appendingPathComponent("checklist.md", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "workspace-memory".write(
+            to: externalMemoryRoot.appendingPathComponent("summary.txt", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{\"session\":\"backup\"}".write(
+            to: externalPrivateRoot.appendingPathComponent("session.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        var project = MAProject(name: "Mirror Test")
+        var agent = Agent(name: "镜像-OpenClaw-1")
+        agent.soulMD = "# Managed Soul\nPrimary"
+        agent.openClawDefinition.agentIdentifier = "mirror-agent"
+        agent.openClawDefinition.memoryBackupPath = externalPrivateRoot.path
+        agent.openClawDefinition.soulSourcePath = soulSourceURL.path
+        project.agents = [agent]
+
+        var workflow = project.workflows[0]
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = "镜像节点"
+        workflow.nodes = [node]
+        project.workflows = [workflow]
+
+        let fileSystem = ProjectFileSystem()
+        _ = try fileSystem.synchronizeProject(project, sourceProjectFileURL: nil, under: tempRoot)
+
+        let openClawWorkspaceRoot = fileSystem.managedProjectRootDirectory(for: project.id, under: tempRoot)
+            .appendingPathComponent(
+                "design/workflows/\(workflow.id.uuidString)/nodes/\(node.id.uuidString)/openclaw/workspace",
+                isDirectory: true
+            )
+
+        let mirroredSkillURL = openClawWorkspaceRoot.appendingPathComponent("skills/planner.md", isDirectory: false)
+        let mirroredNestedSkillURL = openClawWorkspaceRoot.appendingPathComponent(
+            "skills/playbooks/checklist.md",
+            isDirectory: false
+        )
+        let mirroredWorkspaceMemoryURL = openClawWorkspaceRoot.appendingPathComponent(
+            "memory/workspace/summary.txt",
+            isDirectory: false
+        )
+        let mirroredBackupMemoryURL = openClawWorkspaceRoot.appendingPathComponent(
+            "memory/backup/session.json",
+            isDirectory: false
+        )
+
+        XCTAssertEqual(try String(contentsOf: mirroredSkillURL, encoding: .utf8), "planner-skill")
+        XCTAssertEqual(try String(contentsOf: mirroredNestedSkillURL, encoding: .utf8), "nested-checklist")
+        XCTAssertEqual(try String(contentsOf: mirroredWorkspaceMemoryURL, encoding: .utf8), "workspace-memory")
+        XCTAssertEqual(try String(contentsOf: mirroredBackupMemoryURL, encoding: .utf8), "{\"session\":\"backup\"}")
     }
 
     func testSynchronizeProjectWritesDerivedWorkflowIndexes() throws {

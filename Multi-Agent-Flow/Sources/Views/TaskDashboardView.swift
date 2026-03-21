@@ -4080,11 +4080,41 @@ struct MonitoringDashboardView: View {
         guard let project else { return [:] }
 
         var rootsByAgent: [UUID: [URL]] = [:]
+
+        var managedWorkspaceByAgentID: [UUID: URL] = [:]
+        for workflow in project.workflows {
+            for node in workflow.nodes where node.type == .agent {
+                guard let agentID = node.agentID, managedWorkspaceByAgentID[agentID] == nil else { continue }
+                managedWorkspaceByAgentID[agentID] = ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+                    for: node.id,
+                    workflowID: workflow.id,
+                    projectID: project.id,
+                    under: ProjectManager.shared.appSupportRootDirectory
+                )
+            }
+        }
+
         for agent in project.agents {
+            if let managedWorkspaceURL = managedWorkspaceByAgentID[agent.id] {
+                rootsByAgent[agent.id, default: []].append(managedWorkspaceURL)
+                continue
+            }
+
+            if let workspacePath = OpenClawManager.shared.resolvedWorkspacePath(for: agent)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !workspacePath.isEmpty {
+                rootsByAgent[agent.id, default: []].append(URL(fileURLWithPath: workspacePath, isDirectory: true))
+                continue
+            }
+
             if let memoryPath = agent.openClawDefinition.memoryBackupPath?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                !memoryPath.isEmpty {
-                rootsByAgent[agent.id, default: []].append(URL(fileURLWithPath: memoryPath, isDirectory: true))
+                let privateURL = URL(fileURLWithPath: memoryPath, isDirectory: true)
+                let rootURL = privateURL.lastPathComponent == "private"
+                    ? privateURL.deletingLastPathComponent()
+                    : privateURL
+                rootsByAgent[agent.id, default: []].append(rootURL)
             }
         }
 

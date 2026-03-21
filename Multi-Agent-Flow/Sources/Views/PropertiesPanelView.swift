@@ -2679,7 +2679,7 @@ struct ProjectPropertiesView: View {
             return appState.projectManager.defaultWorkspaceRootDirectory(for: projectID).path
         }
 
-        return appState.projectManager.legacyDefaultWorkspaceRootDirectory.path
+        return appState.projectManager.managedProjectsRootDirectory.path
     }
 
     private var workflows: [Workflow] {

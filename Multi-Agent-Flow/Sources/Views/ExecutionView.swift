@@ -591,6 +591,7 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
         appState.openClawService.executeWorkflow(
             workflow,
             agents: project.agents,
+            projectID: project.id,
             projectRuntimeSessionID: project.runtimeState.sessionID
         ) { _ in
             isExecuting = false

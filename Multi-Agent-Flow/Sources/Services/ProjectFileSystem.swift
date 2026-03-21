@@ -501,6 +501,62 @@ struct ProjectFileSystem {
             .appendingPathComponent("agents", isDirectory: true)
     }
 
+    func designWorkflowRootDirectory(
+        for workflowID: UUID,
+        projectID: UUID,
+        under appSupportRootDirectory: URL
+    ) -> URL {
+        managedProjectRootDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("design/workflows", isDirectory: true)
+            .appendingPathComponent(workflowID.uuidString, isDirectory: true)
+    }
+
+    func designNodeRootDirectory(
+        for nodeID: UUID,
+        workflowID: UUID,
+        projectID: UUID,
+        under appSupportRootDirectory: URL
+    ) -> URL {
+        designWorkflowRootDirectory(for: workflowID, projectID: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("nodes", isDirectory: true)
+            .appendingPathComponent(nodeID.uuidString, isDirectory: true)
+    }
+
+    func nodeOpenClawRootDirectory(
+        for nodeID: UUID,
+        workflowID: UUID,
+        projectID: UUID,
+        under appSupportRootDirectory: URL
+    ) -> URL {
+        designNodeRootDirectory(for: nodeID, workflowID: workflowID, projectID: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("openclaw", isDirectory: true)
+    }
+
+    func nodeOpenClawWorkspaceDirectory(
+        for nodeID: UUID,
+        workflowID: UUID,
+        projectID: UUID,
+        under appSupportRootDirectory: URL
+    ) -> URL {
+        nodeOpenClawRootDirectory(for: nodeID, workflowID: workflowID, projectID: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("workspace", isDirectory: true)
+    }
+
+    func nodeOpenClawSoulURL(
+        for nodeID: UUID,
+        workflowID: UUID,
+        projectID: UUID,
+        under appSupportRootDirectory: URL
+    ) -> URL {
+        nodeOpenClawWorkspaceDirectory(
+            for: nodeID,
+            workflowID: workflowID,
+            projectID: projectID,
+            under: appSupportRootDirectory
+        )
+        .appendingPathComponent("SOUL.md", isDirectory: false)
+    }
+
     func analyticsRootDirectory(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
         managedProjectRootDirectory(for: projectID, under: appSupportRootDirectory)
             .appendingPathComponent("analytics", isDirectory: true)
@@ -1293,6 +1349,12 @@ struct ProjectFileSystem {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
+        try syncMirroredOpenClawWorkspaceArtifacts(
+            for: agent,
+            memoryRootURL: memoryRootURL,
+            skillsRootURL: skillsRootURL
+        )
+
         try writeTextDocument(
             renderAgentsMarkdown(agent: agent, nodeID: nodeID),
             to: workspaceRootURL.appendingPathComponent("AGENTS.md", isDirectory: false)
@@ -1364,6 +1426,118 @@ struct ProjectFileSystem {
             ),
             to: stateRootURL.appendingPathComponent("import-record.json", isDirectory: false)
         )
+    }
+
+    private func syncMirroredOpenClawWorkspaceArtifacts(
+        for agent: Agent,
+        memoryRootURL: URL,
+        skillsRootURL: URL
+    ) throws {
+        try recreateDirectory(at: skillsRootURL)
+        try recreateDirectory(at: memoryRootURL)
+
+        if let skillsSourceURL = resolveOpenClawWorkspaceRootURL(for: agent)?
+            .appendingPathComponent("skills", isDirectory: true),
+           directoryExists(at: skillsSourceURL) {
+            try copyDirectoryContents(from: skillsSourceURL, to: skillsRootURL)
+        }
+
+        let workspaceMemoryRootURL = memoryRootURL.appendingPathComponent("workspace", isDirectory: true)
+        let backupMemoryRootURL = memoryRootURL.appendingPathComponent("backup", isDirectory: true)
+        try fileManager.createDirectory(at: workspaceMemoryRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: backupMemoryRootURL, withIntermediateDirectories: true)
+
+        if let workspaceMemorySourceURL = resolveOpenClawWorkspaceRootURL(for: agent)?
+            .appendingPathComponent("memory", isDirectory: true),
+           directoryExists(at: workspaceMemorySourceURL) {
+            try copyDirectoryContents(from: workspaceMemorySourceURL, to: workspaceMemoryRootURL)
+        }
+
+        if let backupMemorySourceURL = resolveOpenClawMemoryBackupRootURL(for: agent),
+           directoryExists(at: backupMemorySourceURL) {
+            try copyDirectoryContents(from: backupMemorySourceURL, to: backupMemoryRootURL)
+        }
+    }
+
+    private func resolveOpenClawWorkspaceRootURL(for agent: Agent) -> URL? {
+        if let memoryBackupRootURL = resolveOpenClawMemoryBackupRootURL(for: agent) {
+            let candidate = memoryBackupRootURL.lastPathComponent == "private"
+                ? memoryBackupRootURL.deletingLastPathComponent().appendingPathComponent("workspace", isDirectory: true)
+                : memoryBackupRootURL.appendingPathComponent("workspace", isDirectory: true)
+            if directoryExists(at: candidate) {
+                return candidate
+            }
+        }
+
+        guard let soulSourcePath = normalizedNonEmptyPath(agent.openClawDefinition.soulSourcePath) else {
+            return nil
+        }
+
+        var candidate = URL(fileURLWithPath: soulSourcePath, isDirectory: false).deletingLastPathComponent()
+        for _ in 0..<6 {
+            if directoryLooksLikeOpenClawWorkspace(candidate) {
+                return candidate
+            }
+
+            let next = candidate.deletingLastPathComponent()
+            if next.path == candidate.path {
+                break
+            }
+            candidate = next
+        }
+
+        return nil
+    }
+
+    private func resolveOpenClawMemoryBackupRootURL(for agent: Agent) -> URL? {
+        guard let memoryBackupPath = normalizedNonEmptyPath(agent.openClawDefinition.memoryBackupPath) else {
+            return nil
+        }
+
+        let url = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
+        return directoryExists(at: url) ? url : nil
+    }
+
+    private func normalizedNonEmptyPath(_ path: String?) -> String? {
+        let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func directoryLooksLikeOpenClawWorkspace(_ url: URL) -> Bool {
+        if fileManager.fileExists(atPath: url.appendingPathComponent("SOUL.md", isDirectory: false).path) {
+            return true
+        }
+
+        return directoryExists(at: url.appendingPathComponent("skills", isDirectory: true))
+            || directoryExists(at: url.appendingPathComponent("memory", isDirectory: true))
+    }
+
+    private func directoryExists(at url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private func recreateDirectory(at url: URL) throws {
+        if fileManager.fileExists(atPath: url.path) {
+            try? fileManager.removeItem(at: url)
+        }
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    private func copyDirectoryContents(from sourceURL: URL, to destinationURL: URL) throws {
+        let contents = try fileManager.contentsOfDirectory(
+            at: sourceURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+
+        for item in contents {
+            let destinationItemURL = destinationURL.appendingPathComponent(item.lastPathComponent, isDirectory: false)
+            if fileManager.fileExists(atPath: destinationItemURL.path) {
+                try? fileManager.removeItem(at: destinationItemURL)
+            }
+            try fileManager.copyItem(at: item, to: destinationItemURL)
+        }
     }
 
     private func writeTextDocument(_ text: String, to url: URL) throws {

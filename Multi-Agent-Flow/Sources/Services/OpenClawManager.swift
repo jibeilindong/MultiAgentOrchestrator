@@ -84,8 +84,7 @@ class OpenClawManager: ObservableObject {
     private var cachedLocalGatewayConfigModificationDate: Date?
     
     var backupDirectory: URL {
-        let openclawPath = NSHomeDirectory() + "/.openclaw"
-        return URL(fileURLWithPath: openclawPath).appendingPathComponent("backups", isDirectory: true)
+        localOpenClawRootURL().appendingPathComponent("backups", isDirectory: true)
     }
     
     enum OpenClawStatus {
@@ -877,7 +876,26 @@ class OpenClawManager: ObservableObject {
             try? FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
 
             var copiedItemCount = 0
-            copiedItemCount += (try? replaceDirectoryContents(of: privateRoot, withContentsOf: sourceDirectory)) ?? 0
+            let sourcePrivateURL: URL? = {
+                let nestedPrivateURL = sourceDirectory.appendingPathComponent("private", isDirectory: true)
+                if FileManager.default.fileExists(atPath: nestedPrivateURL.path) {
+                    return nestedPrivateURL
+                }
+
+                if let statePath = record.statePath {
+                    let candidate = URL(fileURLWithPath: statePath, isDirectory: true)
+                    if candidate.lastPathComponent == "private",
+                       FileManager.default.fileExists(atPath: candidate.path) {
+                        return candidate
+                    }
+                }
+
+                return nil
+            }()
+
+            if let sourcePrivateURL {
+                copiedItemCount += (try? replaceDirectoryContents(of: privateRoot, withContentsOf: sourcePrivateURL)) ?? 0
+            }
 
             if let workspacePath = record.workspacePath {
                 let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
@@ -888,7 +906,8 @@ class OpenClawManager: ObservableObject {
 
             if let statePath = record.statePath {
                 let stateURL = URL(fileURLWithPath: statePath, isDirectory: true)
-                if FileManager.default.fileExists(atPath: stateURL.path) {
+                if FileManager.default.fileExists(atPath: stateURL.path),
+                   stateURL.standardizedFileURL.path != sourcePrivateURL?.standardizedFileURL.path {
                     copiedItemCount += (try? replaceDirectoryContents(of: stateRoot, withContentsOf: stateURL)) ?? 0
                 }
             }
@@ -902,6 +921,10 @@ class OpenClawManager: ObservableObject {
                 soulText = content
             }
 
+            let managedSoulURL = preferredOpenClawSoulURL(in: workspaceRoot, maxAncestorDepth: 0)
+            try? FileManager.default.createDirectory(at: managedSoulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? soulText.write(to: managedSoulURL, atomically: true, encoding: .utf8)
+
             let skillsDirectory = sourceDirectory.appendingPathComponent("skills", isDirectory: true)
             var capabilities: [String] = ["basic"]
             if let skillContents = try? FileManager.default.contentsOfDirectory(at: skillsDirectory, includingPropertiesForKeys: nil) {
@@ -913,11 +936,18 @@ class OpenClawManager: ObservableObject {
                 }
             }
 
+            if FileManager.default.fileExists(atPath: skillsDirectory.path) {
+                let managedSkillsDirectory = workspaceRoot.appendingPathComponent("skills", isDirectory: true)
+                try? FileManager.default.createDirectory(at: managedSkillsDirectory, withIntermediateDirectories: true)
+                copiedItemCount += (try? replaceDirectoryContents(of: managedSkillsDirectory, withContentsOf: skillsDirectory)) ?? 0
+            }
+
             let resolution = AgentImportNamingService.resolveImportedAgent(
                 rawName: record.name,
                 soulMD: soulText,
                 capabilities: capabilities
             )
+            let importedAt = Date()
             let selection = selectionMap[record.id]
             let resolvedFunctionDescription = selection?.functionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             let functionDescription = {
@@ -957,15 +987,21 @@ class OpenClawManager: ObservableObject {
             agent.capabilities = capabilities
             agent.openClawDefinition.agentIdentifier = record.name
             agent.openClawDefinition.memoryBackupPath = privateRoot.path
-            agent.openClawDefinition.soulSourcePath = (resolvedSoulURL ?? preferredOpenClawSoulURL(in: sourceDirectory, maxAncestorDepth: 0)).path
+            agent.openClawDefinition.soulSourcePath = managedSoulURL.path
+            agent.openClawDefinition.lastImportedSoulHash = soulContentHash(soulText)
+            agent.openClawDefinition.lastImportedSoulPath = managedSoulURL.path
+            agent.openClawDefinition.lastImportedAt = importedAt
             agent.openClawDefinition.runtimeProfile = "imported"
-            agent.updatedAt = Date()
+            agent.updatedAt = importedAt
             project.agents.append(agent)
 
             var updatedRecord = record
             updatedRecord.copiedToProjectPath = agentRoot.path
+            updatedRecord.workspacePath = workspaceRoot.path
+            updatedRecord.statePath = stateRoot.path
+            updatedRecord.soulPath = managedSoulURL.path
             updatedRecord.copiedFileCount = copiedItemCount
-            updatedRecord.importedAt = Date()
+            updatedRecord.importedAt = importedAt
             importedRecords.append(updatedRecord)
         }
 
@@ -1444,9 +1480,7 @@ class OpenClawManager: ObservableObject {
             backupURL = sessionContext.backupURL
         } else {
             mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
-            backupURL = firstNonEmptyPath(project.openClaw.sessionBackupPath).map {
-                URL(fileURLWithPath: $0, isDirectory: true)
-            }
+            backupURL = ProjectManager.shared.openClawBackupDirectory(for: project.id)
         }
 
         return resolveProjectMirrorSoulURL(for: agent, in: project, mirrorURL: mirrorURL, backupURL: backupURL)
@@ -2216,6 +2250,10 @@ class OpenClawManager: ObservableObject {
     }
 
     func resolvedWorkspacePath(for agent: Agent) -> String? {
+        if let managedWorkspace = projectManagedWorkspacePath(for: agent) {
+            return managedWorkspace
+        }
+
         let candidateNames = [
             agent.openClawDefinition.agentIdentifier,
             agent.name
@@ -2230,6 +2268,29 @@ class OpenClawManager: ObservableObject {
         if !normalizedNames.isEmpty,
            let record = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
             return firstNonEmptyPath(record.workspacePath, record.directoryPath, record.copiedToProjectPath)
+        }
+
+        return nil
+    }
+
+    private func projectManagedWorkspacePath(for agent: Agent) -> String? {
+        if let memoryBackupPath = firstNonEmptyPath(agent.openClawDefinition.memoryBackupPath) {
+            let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
+            let workspaceURL = (privateURL.lastPathComponent == "private"
+                ? privateURL.deletingLastPathComponent()
+                : privateURL
+            ).appendingPathComponent("workspace", isDirectory: true)
+
+            if FileManager.default.fileExists(atPath: workspaceURL.path) {
+                return workspaceURL.path
+            }
+        }
+
+        if let sourcePath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
+            let candidateRoot = URL(fileURLWithPath: sourcePath, isDirectory: false).deletingLastPathComponent()
+            if FileManager.default.fileExists(atPath: candidateRoot.path) {
+                return candidateRoot.path
+            }
         }
 
         return nil
@@ -2741,10 +2802,7 @@ class OpenClawManager: ObservableObject {
             if let sessionContext, sessionContext.projectID == project.id {
                 return sessionContext.backupURL
             }
-            if let backupPath = firstNonEmptyPath(project.openClaw.sessionBackupPath) {
-                return URL(fileURLWithPath: backupPath, isDirectory: true)
-            }
-            return nil
+            return ProjectManager.shared.openClawBackupDirectory(for: project.id)
         }()
 
         try? FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
@@ -2914,6 +2972,8 @@ class OpenClawManager: ObservableObject {
         if let currentBackupURL {
             sourceRoots.append(currentBackupURL)
         }
+        sourceRoots.append(ProjectManager.shared.openClawMirrorDirectory(for: project.id))
+        sourceRoots.append(ProjectManager.shared.openClawBackupDirectory(for: project.id))
         if let previousMirrorPath = firstNonEmptyPath(project.openClaw.sessionMirrorPath) {
             sourceRoots.append(URL(fileURLWithPath: previousMirrorPath, isDirectory: true))
         }
@@ -2944,6 +3004,8 @@ class OpenClawManager: ObservableObject {
             sourceRoots.append(sessionContext.mirrorURL)
             sourceRoots.append(sessionContext.backupURL)
         }
+        sourceRoots.append(ProjectManager.shared.openClawMirrorDirectory(for: project.id))
+        sourceRoots.append(ProjectManager.shared.openClawBackupDirectory(for: project.id))
         if let previousMirrorPath = firstNonEmptyPath(project.openClaw.sessionMirrorPath) {
             sourceRoots.append(URL(fileURLWithPath: previousMirrorPath, isDirectory: true))
         }
@@ -3977,21 +4039,20 @@ class OpenClawManager: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: backupPath, withIntermediateDirectories: true)
             
-            let openclawPath = NSHomeDirectory() + "/.openclaw"
             let fileManager = FileManager.default
+            let openClawRootURL = localOpenClawRootURL()
             
             // 备份agents目录
-            let agentsSrc = URL(fileURLWithPath: openclawPath).appendingPathComponent("agents")
+            let agentsSrc = openClawRootURL.appendingPathComponent("agents", isDirectory: true)
             let agentsDst = backupPath.appendingPathComponent("agents")
             if fileManager.fileExists(atPath: agentsSrc.path) {
                 try fileManager.copyItem(at: agentsSrc, to: agentsDst)
             }
             
             // 备份workspaces
-            let workspacesSrc = URL(fileURLWithPath: openclawPath)
-            for item in try fileManager.contentsOfDirectory(atPath: openclawPath) {
+            for item in try fileManager.contentsOfDirectory(atPath: openClawRootURL.path) {
                 if item.hasPrefix("workspace") {
-                    let src = workspacesSrc.appendingPathComponent(item)
+                    let src = openClawRootURL.appendingPathComponent(item)
                     let dst = backupPath.appendingPathComponent(item)
                     try fileManager.copyItem(at: src, to: dst)
                 }
@@ -4007,14 +4068,13 @@ class OpenClawManager: ObservableObject {
     
     // 还原到备份
     func restore(backupPath: URL) -> Bool {
-        let openclawPath = NSHomeDirectory() + "/.openclaw"
-        
         do {
             let fileManager = FileManager.default
+            let openClawRootURL = localOpenClawRootURL()
             
             // 恢复agents
             let agentsBackup = backupPath.appendingPathComponent("agents")
-            let agentsDst = URL(fileURLWithPath: openclawPath).appendingPathComponent("agents")
+            let agentsDst = openClawRootURL.appendingPathComponent("agents", isDirectory: true)
             if fileManager.fileExists(atPath: agentsBackup.path) {
                 if fileManager.fileExists(atPath: agentsDst.path) {
                     try fileManager.removeItem(at: agentsDst)
@@ -4026,7 +4086,7 @@ class OpenClawManager: ObservableObject {
             for item in try fileManager.contentsOfDirectory(atPath: backupPath.path) {
                 if item.hasPrefix("workspace") {
                     let src = backupPath.appendingPathComponent(item)
-                    let dst = URL(fileURLWithPath: openclawPath).appendingPathComponent(item)
+                    let dst = openClawRootURL.appendingPathComponent(item)
                     if fileManager.fileExists(atPath: dst.path) {
                         try fileManager.removeItem(at: dst)
                     }

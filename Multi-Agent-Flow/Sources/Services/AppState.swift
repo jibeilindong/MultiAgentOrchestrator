@@ -21,21 +21,27 @@ struct ProjectFileReference: Identifiable, Hashable {
 
 // 项目文件管理器
 class ProjectManager: ObservableObject {
+    struct StorageDirectories {
+        let projectsDirectory: URL
+        let legacyProjectsDirectory: URL
+        let appSupportRootDirectory: URL
+        let legacyAppSupportRootDirectory: URL
+    }
+
     static let shared = ProjectManager()
     
     @Published var projects: [ProjectFileReference] = []
 
-    private let fileManager = FileManager.default
-    private let projectFileSystem = ProjectFileSystem.shared
+    private let fileManager: FileManager
+    private let projectFileSystem: ProjectFileSystem
+    private let storageDirectories: StorageDirectories
     
     var projectsDirectory: URL {
-        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return documentsPath.appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+        storageDirectories.projectsDirectory
     }
 
     var legacyProjectsDirectory: URL {
-        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return documentsPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
+        storageDirectories.legacyProjectsDirectory
     }
     
     var backupsDirectory: URL {
@@ -47,13 +53,11 @@ class ProjectManager: ObservableObject {
     }
 
     var appSupportRootDirectory: URL {
-        let appSupportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupportPath.appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+        storageDirectories.appSupportRootDirectory
     }
 
     var legacyAppSupportRootDirectory: URL {
-        let appSupportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupportPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
+        storageDirectories.legacyAppSupportRootDirectory
     }
 
     var legacyDefaultWorkspaceRootDirectory: URL {
@@ -75,26 +79,46 @@ class ProjectManager: ObservableObject {
     var managedProjectsRootDirectory: URL {
         projectFileSystem.managedProjectsRootDirectory(under: appSupportRootDirectory)
     }
+
+    var scratchWorkspaceRootDirectory: URL {
+        managedProjectsRootDirectory.appendingPathComponent("_scratch-workspaces", isDirectory: true)
+    }
     
-    private init() {
+    init(
+        fileManager: FileManager = .default,
+        projectFileSystem: ProjectFileSystem = .shared,
+        storageDirectories: StorageDirectories? = nil
+    ) {
+        self.fileManager = fileManager
+        self.projectFileSystem = projectFileSystem
+        self.storageDirectories = storageDirectories ?? Self.defaultStorageDirectories(using: fileManager)
         migrateLegacyStorageIfNeeded()
         createDirectoriesIfNeeded()
         loadProjectList()
+    }
+
+    private static func defaultStorageDirectories(using fileManager: FileManager) -> StorageDirectories {
+        let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let appSupportPath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+
+        return StorageDirectories(
+            projectsDirectory: documentsPath.appendingPathComponent("Multi-Agent-Flow", isDirectory: true),
+            legacyProjectsDirectory: documentsPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true),
+            appSupportRootDirectory: appSupportPath.appendingPathComponent("Multi-Agent-Flow", isDirectory: true),
+            legacyAppSupportRootDirectory: appSupportPath.appendingPathComponent("MultiAgentOrchestrator", isDirectory: true)
+        )
     }
     
     func createDirectoriesIfNeeded() {
         try? fileManager.createDirectory(at: projectsDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: legacyOpenClawSessionRootDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: legacyDefaultWorkspaceRootDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: legacyAnalyticsRootDirectory, withIntermediateDirectories: true)
         try? projectFileSystem.ensureBaseDirectories(under: appSupportRootDirectory)
     }
     
     func loadProjectList() {
-        guard let contents = try? FileManager.default.contentsOfDirectory(at: projectsDirectory, includingPropertiesForKeys: nil) else {
+        guard let contents = try? fileManager.contentsOfDirectory(at: projectsDirectory, includingPropertiesForKeys: nil) else {
             projects = []
             return
         }
@@ -212,7 +236,7 @@ class ProjectManager: ObservableObject {
     }
 
     func workspaceURL(for relativePath: String) -> URL {
-        legacyDefaultWorkspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
+        scratchWorkspaceRootDirectory.appendingPathComponent(relativePath, isDirectory: true)
     }
 
     func workspaceURL(for projectID: UUID, relativePath: String) -> URL {
@@ -221,28 +245,28 @@ class ProjectManager: ObservableObject {
 
     func ensureWorkspaceDirectory(relativePath: String) -> URL {
         let url = workspaceURL(for: relativePath)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
 
     func ensureWorkspaceDirectory(for projectID: UUID, relativePath: String) -> URL {
         let url = workspaceURL(for: projectID, relativePath: relativePath)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
 
     func deleteProject(at url: URL, projectID: UUID? = nil) {
-        try? FileManager.default.removeItem(at: url)
+        try? fileManager.removeItem(at: url)
         if let projectID {
             removeDraft(for: projectID)
             projectFileSystem.removeManagedProjectRoot(for: projectID, under: appSupportRootDirectory)
-            try? FileManager.default.removeItem(
+            try? fileManager.removeItem(
                 at: legacyDefaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
-            try? FileManager.default.removeItem(
+            try? fileManager.removeItem(
                 at: legacyOpenClawSessionRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
-            try? FileManager.default.removeItem(at: legacyAnalyticsDatabaseURL(for: projectID))
+            try? fileManager.removeItem(at: legacyAnalyticsDatabaseURL(for: projectID))
         }
         loadProjectList()
     }
@@ -727,8 +751,14 @@ class AppState: ObservableObject {
         project.executionResults = openClawService.executionResults
         project.executionLogs = openClawService.executionLogs
         project.openClaw = openClawManager.snapshot()
+        normalizeManagedSessionSnapshotPaths(in: &project)
         project.taskData.lastUpdatedAt = Date()
-        project.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        project.workspaceIndex = ensureWorkspaceIndex(
+            for: project.id,
+            workspaceRootPath: project.taskData.workspaceRootPath,
+            tasks: taskManager.tasks,
+            existing: project.workspaceIndex
+        )
         project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         currentProject = project
@@ -1125,22 +1155,11 @@ class AppState: ObservableObject {
     }
 
     private func materializeProjectAgentMirrors(in project: inout MAProject) -> (success: Bool, message: String) {
-        for index in project.agents.indices {
-            let agent = project.agents[index]
+        for agent in project.agents {
             let mirrorWrite = writeAgentSoulToProjectMirror(agent: agent, project: project)
-            guard mirrorWrite.success,
-                  let soulPath = mirrorWrite.path,
-                  let privateRootPath = mirrorWrite.privateRootPath else {
+            guard mirrorWrite.success else {
                 return (false, mirrorWrite.message)
             }
-
-            project.agents[index] = Self.preparedMirroredAgentForProjectMirror(
-                agent: agent,
-                soulPath: soulPath,
-                privateRootPath: privateRootPath,
-                importedAt: Date()
-            )
-            project.agents[index].updatedAt = Date()
         }
 
         return (true, LocalizedString.text("workflow_apply_pending"))
@@ -1207,6 +1226,7 @@ class AppState: ObservableObject {
         hydratedProject.workflows = deduplication.workflows
         hydratedProject.workspaceIndex = ensureWorkspaceIndex(
             for: hydratedProject.id,
+            workspaceRootPath: hydratedProject.taskData.workspaceRootPath,
             tasks: project.tasks,
             existing: project.workspaceIndex
         )
@@ -1476,8 +1496,14 @@ class AppState: ObservableObject {
         project.executionResults = openClawService.executionResults
         project.executionLogs = openClawService.executionLogs
         project.openClaw = openClawManager.snapshot()
+        normalizeManagedSessionSnapshotPaths(in: &project)
         project.taskData.lastUpdatedAt = Date()
-        project.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        project.workspaceIndex = ensureWorkspaceIndex(
+            for: project.id,
+            workspaceRootPath: project.taskData.workspaceRootPath,
+            tasks: taskManager.tasks,
+            existing: project.workspaceIndex
+        )
         project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         project.updatedAt = Date()
@@ -1489,6 +1515,11 @@ class AppState: ObservableObject {
             return appliedProjectSnapshot
         }
         return snapshotCurrentProject()
+    }
+
+    private func normalizeManagedSessionSnapshotPaths(in project: inout MAProject) {
+        project.openClaw.sessionBackupPath = projectManager.openClawBackupDirectory(for: project.id).path
+        project.openClaw.sessionMirrorPath = projectManager.openClawMirrorDirectory(for: project.id).path
     }
 
     private func persistDraft(_ project: MAProject, kind: DraftSaveKind) {
@@ -1571,6 +1602,7 @@ class AppState: ObservableObject {
 
     private func ensureWorkspaceIndex(
         for projectID: UUID,
+        workspaceRootPath: String?,
         tasks: [Task],
         existing: [ProjectWorkspaceRecord]
     ) -> [ProjectWorkspaceRecord] {
@@ -1579,7 +1611,11 @@ class AppState: ObservableObject {
         return tasks.map { task in
             let relativePath = existingByTaskID[task.id]?.workspaceRelativePath
                 ?? projectManager.relativeWorkspacePath(projectID: projectID, taskID: task.id)
-            _ = ensureWorkspaceDirectory(relativePath: relativePath)
+            _ = ensureWorkspaceDirectory(
+                for: projectID,
+                relativePath: relativePath,
+                workspaceRootPath: workspaceRootPath
+            )
 
             var record = existingByTaskID[task.id] ?? ProjectWorkspaceRecord(
                 taskID: task.id,
@@ -1596,7 +1632,12 @@ class AppState: ObservableObject {
     func absoluteWorkspaceURL(for taskID: UUID) -> URL? {
         guard let project = currentProject else { return nil }
 
-        let workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        let workspaceIndex = ensureWorkspaceIndex(
+            for: project.id,
+            workspaceRootPath: project.taskData.workspaceRootPath,
+            tasks: taskManager.tasks,
+            existing: project.workspaceIndex
+        )
         guard let record = workspaceIndex.first(where: { $0.taskID == taskID }) else {
             return nil
         }
@@ -1660,7 +1701,12 @@ class AppState: ObservableObject {
         project.taskData.workspaceRootPath = path
         project.taskData.lastUpdatedAt = Date()
         currentProject = project
-        currentProject?.workspaceIndex = ensureWorkspaceIndex(for: project.id, tasks: taskManager.tasks, existing: project.workspaceIndex)
+        currentProject?.workspaceIndex = ensureWorkspaceIndex(
+            for: project.id,
+            workspaceRootPath: project.taskData.workspaceRootPath,
+            tasks: taskManager.tasks,
+            existing: project.workspaceIndex
+        )
     }
 
     func addBoundary(around nodeIDs: Set<UUID>) {
@@ -1805,14 +1851,27 @@ class AppState: ObservableObject {
             return projectManager.ensureWorkspaceDirectory(relativePath: relativePath)
         }
 
-        if let configuredPath = project.taskData.workspaceRootPath, !configuredPath.isEmpty {
+        return ensureWorkspaceDirectory(
+            for: project.id,
+            relativePath: relativePath,
+            workspaceRootPath: project.taskData.workspaceRootPath
+        )
+    }
+
+    private func ensureWorkspaceDirectory(
+        for projectID: UUID,
+        relativePath: String,
+        workspaceRootPath: String?
+    ) -> URL {
+        if let workspaceRootPath, !workspaceRootPath.isEmpty {
+            let configuredPath = workspaceRootPath
             let url = URL(fileURLWithPath: configuredPath, isDirectory: true)
                 .appendingPathComponent(relativePath, isDirectory: true)
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             return url
         }
 
-        return projectManager.ensureWorkspaceDirectory(for: project.id, relativePath: relativePath)
+        return projectManager.ensureWorkspaceDirectory(for: projectID, relativePath: relativePath)
     }
     
     // 工作流操作方法
@@ -2488,6 +2547,12 @@ class AppState: ObservableObject {
         guard let project = currentProject,
               let agent = project.agents.first(where: { $0.id == agentID }) else { return nil }
 
+        if let managedSoulURL = managedNodeOpenClawSoulURL(for: agent, in: project),
+           FileManager.default.fileExists(atPath: managedSoulURL.path),
+           let content = try? String(contentsOf: managedSoulURL, encoding: .utf8) {
+            return (content, managedSoulURL.path)
+        }
+
         if let mirrorURL = openClawManager.projectMirrorSoulURL(for: agent, in: project),
            FileManager.default.fileExists(atPath: mirrorURL.path),
            let content = try? String(contentsOf: mirrorURL, encoding: .utf8) {
@@ -2552,14 +2617,10 @@ class AppState: ObservableObject {
     }
 
     func agentWorkspaceURL(for agentID: UUID) -> URL? {
-        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
+        guard let project = currentProject,
+              let agent = project.agents.first(where: { $0.id == agentID }) else { return nil }
 
-        let candidateNames = [
-            agent.openClawDefinition.agentIdentifier,
-            agent.name
-        ]
-
-        if let workspacePath = openClawManager.localAgentWorkspacePath(matching: candidateNames) {
+        if let workspacePath = openClawManager.resolvedWorkspacePath(for: agent) {
             return URL(fileURLWithPath: workspacePath, isDirectory: true)
         }
 
@@ -2629,6 +2690,12 @@ class AppState: ObservableObject {
     }
 
     private func existingAgentSoulFileURL(for agent: Agent) -> URL? {
+        if let project = currentProject,
+           let managedSoulURL = managedNodeOpenClawSoulURL(for: agent, in: project),
+           FileManager.default.fileExists(atPath: managedSoulURL.path) {
+            return managedSoulURL
+        }
+
         if let directPath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
             let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
             if FileManager.default.fileExists(atPath: directURL.path) {
@@ -2651,17 +2718,17 @@ class AppState: ObservableObject {
         var roots: [URL] = []
 
         if let project = currentProject,
+           let managedWorkspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project) {
+            roots.append(managedWorkspaceURL)
+        }
+
+        if let project = currentProject,
            let mirrorURL = openClawManager.projectMirrorSoulURL(for: agent, in: project) {
             roots.append(mirrorURL.deletingLastPathComponent())
         }
 
-        let candidateNames = [
-            agent.openClawDefinition.agentIdentifier,
-            agent.name
-        ]
-
-        if let workspaceSoulURL = openClawManager.localAgentSoulURL(matching: candidateNames) {
-            roots.append(workspaceSoulURL.deletingLastPathComponent())
+        if let workspacePath = openClawManager.resolvedWorkspacePath(for: agent) {
+            roots.append(URL(fileURLWithPath: workspacePath, isDirectory: true))
         }
 
         if let directPath = firstNonEmptyPath(agent.openClawDefinition.soulSourcePath) {
@@ -2669,6 +2736,10 @@ class AppState: ObservableObject {
             roots.append(directURL.deletingLastPathComponent())
         }
 
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ]
         let keys = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
 
         if !keys.isEmpty {
@@ -2706,6 +2777,37 @@ class AppState: ObservableObject {
 
     private func preferredSoulURL(in rootURL: URL) -> URL {
         preferredOpenClawSoulURL(in: rootURL, maxAncestorDepth: 3)
+    }
+
+    private func managedNodeOpenClawWorkspaceURL(for agent: Agent, in project: MAProject) -> URL? {
+        guard let binding = nodeBinding(for: agent.id, in: project) else { return nil }
+
+        return ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+            for: binding.nodeID,
+            workflowID: binding.workflowID,
+            projectID: project.id,
+            under: projectManager.appSupportRootDirectory
+        )
+    }
+
+    private func managedNodeOpenClawSoulURL(for agent: Agent, in project: MAProject) -> URL? {
+        guard let binding = nodeBinding(for: agent.id, in: project) else { return nil }
+
+        return ProjectFileSystem.shared.nodeOpenClawSoulURL(
+            for: binding.nodeID,
+            workflowID: binding.workflowID,
+            projectID: project.id,
+            under: projectManager.appSupportRootDirectory
+        )
+    }
+
+    private func nodeBinding(for agentID: UUID, in project: MAProject) -> (workflowID: UUID, nodeID: UUID)? {
+        for workflow in project.workflows {
+            if let node = workflow.nodes.first(where: { $0.type == .agent && $0.agentID == agentID }) {
+                return (workflow.id, node.id)
+            }
+        }
+        return nil
     }
 
     private func firstNonEmptyPath(_ candidates: String?...) -> String? {
@@ -2983,6 +3085,7 @@ class AppState: ObservableObject {
                 workflow,
                 agents: agents,
                 prompt: testCase.prompt,
+                projectID: currentProject?.id,
                 projectRuntimeSessionID: currentProject?.runtimeState.sessionID,
                 agentOutputMode: .structuredJSON
             ) { [weak self] results in
@@ -3551,6 +3654,7 @@ class AppState: ObservableObject {
                 workflow: workflow,
                 agents: project.agents,
                 prompt: trimmedPrompt,
+                projectID: project.id,
                 sessionID: workbenchSessionID,
                 thinkingLevel: workbenchThinkingLevel,
                 onStream: { [weak self] chunk in
@@ -3659,6 +3763,7 @@ class AppState: ObservableObject {
                     workflow,
                     agents: project.agents,
                     prompt: trimmedPrompt,
+                    projectID: project.id,
                     projectRuntimeSessionID: project.runtimeState.sessionID,
                     startingNodes: backgroundNodes,
                     entryNodeIDsOverride: backgroundEntryNodeIDs,

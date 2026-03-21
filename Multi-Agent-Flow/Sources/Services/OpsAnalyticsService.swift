@@ -843,7 +843,16 @@ final class OpsAnalyticsService: ObservableObject {
             let path = agent.openClawDefinition.memoryBackupPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return path.isEmpty ? nil : agent.id
         })
-        return explicitBackups.union(configuredPaths)
+        let nodeBoundAgentIDs: [UUID] = project.workflows.flatMap { workflow in
+            workflow.nodes.compactMap { node in
+                guard node.type == .agent else { return nil }
+                return node.agentID
+            }
+        }
+        let nodeBoundAgents = Set(nodeBoundAgentIDs)
+        return explicitBackups
+            .union(configuredPaths)
+            .union(nodeBoundAgents)
     }
 
     private func makeRateStatus(_ rate: Double?, healthy: Double, warning: Double) -> OpsHealthStatus {

@@ -11,18 +11,29 @@ Completed:
 - design-state split persistence and assembled-project loading
 - node-local `agent.json`, `binding.json`, `SOUL.md`
 - node-local OpenClaw workspace scaffold documents and state files
+- remaining runtime/UI call sites no longer expose legacy workspace roots as the default path surface
+- node-local OpenClaw `skills/` and `memory/` switched to full mirrored storage inside the managed project
+- node/workbench read-side resolution now prefers node-local managed OpenClaw workspace artifacts
+- runtime guardrails, path resolution, and dashboard file-root aggregation now consume project-managed/node-local workspaces first
+- workflow editor collection snapshots and skills management now resolve agent files from the unified managed-workspace path surface
+- workflow apply no longer back-propagates session mirror paths into project-owned agent state
+- OpenClaw agent import now repoints imported `SOUL.md`, `skills/`, and workspace metadata to the managed project copy
+- imported OpenClaw `private/` state is no longer polluted by copying the entire external agent root
+- imported OpenClaw agents now establish `lastImportedSoul*` baselines from the managed project copy
+- session mirror/backup resolution now prefers managed project session roots before persisted legacy path snapshots
 - collaboration/runtime/execution split persistence
 - tasks/workspace index consolidation under managed project root
 - OpenClaw session root migration to managed project root
 - analytics sqlite migration to managed project root
 - analytics projection files under `analytics/projections`
 - duplicate node-agent binding validation and regression coverage
+- legacy workspace/OpenClaw/analytics path migration regression coverage
+- workspace index hydration now resolves workspace roots from explicit project context
 
 Remaining:
 
-- broaden regression coverage around legacy-path migration edge cases
-- decide whether node-local `skills/` and `memory/` should stay scaffold-only or mirror external artifacts
-- continue tightening any remaining call sites that still assume legacy layout details
+ - continue auditing the remaining import/export and session-sync flows for any residual external-path-first assumptions
+ - decide whether the unused OpenClaw import loader should be repointed to the same workspace-resolution helper surface or removed entirely
 
 ## Goal
 
@@ -118,6 +129,8 @@ Application Support/Multi-Agent-Flow/Projects/<project-id>/
                 BOOTSTRAP.md
                 MEMORY.md
                 memory/
+                  workspace/
+                  backup/
                 skills/
               mirror/
                 source-map.json
@@ -206,6 +219,8 @@ Deliverables:
 - workflow, node, edge, boundary split files
 - node-local `agent.json`
 - node-local OpenClaw workspace mirror
+- mirrored `skills/`
+- mirrored `memory/workspace/` and `memory/backup/`
 
 Rules:
 

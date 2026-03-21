@@ -915,6 +915,7 @@ class OpenClawService: ObservableObject {
         _ workflow: Workflow,
         agents: [Agent],
         prompt: String? = nil,
+        projectID: UUID? = nil,
         projectRuntimeSessionID: String? = nil,
         startingNodes: [WorkflowNode]? = nil,
         entryNodeIDsOverride: Set<UUID>? = nil,
@@ -987,6 +988,7 @@ class OpenClawService: ObservableObject {
             workflow: workflow,
             agents: agents,
             prompt: prompt,
+            projectID: projectID,
             projectRuntimeSessionID: projectRuntimeSessionID,
             entryNodeIDs: effectiveEntryNodeIDs,
             seedResults: preloadedResults,
@@ -1018,6 +1020,7 @@ class OpenClawService: ObservableObject {
         workflow: Workflow,
         agents: [Agent],
         prompt: String,
+        projectID: UUID? = nil,
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel = .off,
         onStream: ((String) -> Void)? = nil,
@@ -1080,6 +1083,7 @@ class OpenClawService: ObservableObject {
             for: agent,
             node: node,
             workflow: workflow,
+            projectID: projectID,
             outgoingEdges: outgoingEdges,
             agents: agents
         )
@@ -1242,6 +1246,7 @@ class OpenClawService: ObservableObject {
         workflow: Workflow,
         agents: [Agent],
         prompt: String?,
+        projectID: UUID?,
         projectRuntimeSessionID: String?,
         entryNodeIDs: Set<UUID>,
         seedResults: [ExecutionResult] = [],
@@ -1339,6 +1344,7 @@ class OpenClawService: ObservableObject {
                 for: agent,
                 node: node,
                 workflow: workflow,
+                projectID: projectID,
                 outgoingEdges: outgoingEdges,
                 agents: agents
             )
@@ -2015,6 +2021,7 @@ class OpenClawService: ObservableObject {
         for agent: Agent,
         node: WorkflowNode,
         workflow: Workflow,
+        projectID: UUID?,
         outgoingEdges: [UUID: [WorkflowEdge]],
         agents: [Agent]
     ) -> RuntimeDispatchGuardrails {
@@ -2027,7 +2034,12 @@ class OpenClawService: ObservableObject {
         return RuntimeDispatchGuardrails(
             directTargets: buckets.directTargets,
             approvalRequiredTargets: buckets.approvalTargets,
-            writeScope: runtimeWriteScope(for: agent),
+            writeScope: runtimeWriteScope(
+                for: agent,
+                workflowID: workflow.id,
+                nodeID: node.id,
+                projectID: projectID
+            ),
             toolScope: runtimeToolScope(for: agent, directTargets: buckets.directTargets, approvalTargets: buckets.approvalTargets),
             fallbackRoutingPolicy: workflow.fallbackRoutingPolicy
         )
@@ -2046,6 +2058,31 @@ class OpenClawService: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !memoryBackupPath.isEmpty {
             scopes.append(memoryBackupPath)
+        }
+
+        return Array(Set(scopes)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func runtimeWriteScope(
+        for agent: Agent,
+        workflowID: UUID,
+        nodeID: UUID,
+        projectID: UUID?
+    ) -> [String] {
+        var scopes = runtimeWriteScope(for: agent)
+
+        if let projectID {
+            let managedWorkspacePath = ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+                for: nodeID,
+                workflowID: workflowID,
+                projectID: projectID,
+                under: ProjectManager.shared.appSupportRootDirectory
+            ).path.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !managedWorkspacePath.isEmpty {
+                scopes.append(managedWorkspacePath)
+            }
         }
 
         return Array(Set(scopes)).sorted {

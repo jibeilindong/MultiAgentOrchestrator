@@ -455,6 +455,7 @@ struct WorkflowEditorView: View {
         appState.openClawService.executeWorkflow(
             workflow,
             agents: project.agents,
+            projectID: project.id,
             projectRuntimeSessionID: project.runtimeState.sessionID
         ) { results in
             DispatchQueue.main.async {
@@ -1984,6 +1985,7 @@ private struct AgentCollectionSnapshotContext {
     let project: MAProject
     let detectedRecords: [ProjectOpenClawDetectedAgentRecord]
     let mirrorRootPaths: [String]
+    let managedWorkspacePathsByAgentID: [UUID: String]
     let workspacePathsByAgentID: [UUID: String]
 }
 
@@ -2023,7 +2025,9 @@ private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentColl
         : project.openClaw.detectedAgents
 
     var mirrorRootPaths: [String] = []
+    var managedWorkspacePathsByAgentID: [UUID: String] = [:]
     var workspacePathsByAgentID: [UUID: String] = [:]
+    managedWorkspacePathsByAgentID.reserveCapacity(project.agents.count)
     workspacePathsByAgentID.reserveCapacity(project.agents.count)
 
     let preferredMirrorRoot = ProjectManager.shared.openClawMirrorDirectory(for: project.id).path
@@ -2035,12 +2039,22 @@ private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentColl
     }
 
     for agent in project.agents {
-        let candidateNames = [
-            agent.openClawDefinition.agentIdentifier,
-            agent.name
-        ]
-        if let workspacePath = appState.openClawManager.localAgentWorkspacePath(matching: candidateNames) {
+        if let workspacePath = appState.openClawManager.resolvedWorkspacePath(for: agent) {
             workspacePathsByAgentID[agent.id] = workspacePath
+        }
+    }
+
+    for workflow in project.workflows {
+        for node in workflow.nodes where node.type == .agent {
+            guard let agentID = node.agentID, managedWorkspacePathsByAgentID[agentID] == nil else { continue }
+
+            let managedWorkspaceURL = ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
+                for: node.id,
+                workflowID: workflow.id,
+                projectID: project.id,
+                under: ProjectManager.shared.appSupportRootDirectory
+            )
+            managedWorkspacePathsByAgentID[agentID] = managedWorkspaceURL.path
         }
     }
 
@@ -2048,6 +2062,7 @@ private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentColl
         project: project,
         detectedRecords: detectedRecords,
         mirrorRootPaths: mirrorRootPaths,
+        managedWorkspacePathsByAgentID: managedWorkspacePathsByAgentID,
         workspacePathsByAgentID: workspacePathsByAgentID
     )
 }
@@ -2133,6 +2148,11 @@ private func fastAgentCollectionSoulSourcePath(
     let candidateNames = [agent.openClawDefinition.agentIdentifier, agent.name]
         .map(normalizeAgentCollectionKey)
         .filter { !$0.isEmpty }
+
+    if let managedWorkspacePath = context.managedWorkspacePathsByAgentID[agent.id],
+       let soulURL = fastExistingAgentCollectionSoulURL(in: URL(fileURLWithPath: managedWorkspacePath, isDirectory: true)) {
+        return soulURL.path
+    }
 
     if let directPath = agent.openClawDefinition.soulSourcePath?.trimmingCharacters(in: .whitespacesAndNewlines),
        !directPath.isEmpty {
@@ -4948,14 +4968,34 @@ struct SkillsManagementSheet: View {
     }
     
     private func loadSkills() {
-        // Load from OpenClaw skills directory
-        let skillsPath = NSHomeDirectory() + "/.openclaw/agents/" + agent.name + "/skills"
-        if let contents = try? FileManager.default.contentsOfDirectory(atPath: skillsPath) {
+        if let skillsDirectoryURL = resolvedSkillsDirectoryURL(),
+           let contents = try? FileManager.default.contentsOfDirectory(atPath: skillsDirectoryURL.path) {
             availableSkills = contents.filter { $0.hasSuffix(".md") }
+        } else {
+            availableSkills = []
         }
-        
-        // Current skills from agent
+
         selectedSkills = Set(agent.capabilities)
+    }
+
+    private func resolvedSkillsDirectoryURL() -> URL? {
+        guard let workspaceURL = appState.agentWorkspaceURL(for: agent.id) else {
+            return nil
+        }
+
+        let directSkillsURL = workspaceURL.appendingPathComponent("skills", isDirectory: true)
+        if FileManager.default.fileExists(atPath: directSkillsURL.path) {
+            return directSkillsURL
+        }
+
+        let nestedSkillsURL = workspaceURL
+            .appendingPathComponent("agent", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+        if FileManager.default.fileExists(atPath: nestedSkillsURL.path) {
+            return nestedSkillsURL
+        }
+
+        return nil
     }
     
     private func saveSkills() {
