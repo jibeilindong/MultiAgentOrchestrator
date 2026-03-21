@@ -585,6 +585,10 @@ class AppState: ObservableObject {
 
         if var project = currentProject {
             project.runtimeState.messageQueue.removeAll()
+            project.runtimeState.dispatchQueue.removeAll()
+            project.runtimeState.inflightDispatches.removeAll()
+            project.runtimeState.completedDispatches.removeAll()
+            project.runtimeState.failedDispatches.removeAll()
             project.runtimeState.agentStates.removeAll()
             project.runtimeState.lastUpdated = Date()
             currentProject = project
@@ -2891,6 +2895,15 @@ class AppState: ObservableObject {
 
             if var mutableProject = self.currentProject {
                 mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
+                if let runtimeEvent = userMessage.runtimeEvent {
+                    mutableProject.runtimeState.dispatchQueue.removeAll { $0.id == runtimeEvent.id }
+                    mutableProject.runtimeState.dispatchQueue.append(
+                        self.makeRuntimeDispatchRecord(
+                            from: runtimeEvent,
+                            status: .dispatched
+                        )
+                    )
+                }
                 mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
                 mutableProject.runtimeState.lastUpdated = Date()
                 mutableProject.updatedAt = Date()
@@ -3008,9 +3021,44 @@ class AppState: ObservableObject {
                     if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: trimmedPrompt) {
                         mutableProject.runtimeState.messageQueue.remove(at: queueIndex)
                     }
+                    if let dispatchEventID = userMessage.runtimeEvent?.id {
+                        mutableProject.runtimeState.dispatchQueue.removeAll { $0.id == dispatchEventID }
+                        mutableProject.runtimeState.inflightDispatches.removeAll { $0.id == dispatchEventID }
+                    }
 
                     for result in results {
                         mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
+                    }
+                    let completedAt = Date()
+                    let terminalDispatches = results
+                        .flatMap(\.runtimeEvents)
+                        .filter { event in
+                            event.eventType == .taskResult || event.eventType == .taskError
+                        }
+                        .map { event in
+                            self.makeRuntimeDispatchRecord(
+                                from: event,
+                                status: event.eventType == .taskError ? .failed : .completed,
+                                completedAt: completedAt,
+                                errorMessage: event.eventType == .taskError ? event.payload["message"] : nil
+                            )
+                        }
+                    let failedIDs = Set(
+                        terminalDispatches
+                            .filter { $0.status == .failed || $0.status == .aborted || $0.status == .expired }
+                            .map(\.id)
+                    )
+                    let completedDispatches = terminalDispatches.filter { !failedIDs.contains($0.id) }
+                    let failedDispatches = terminalDispatches.filter { failedIDs.contains($0.id) }
+                    if !completedDispatches.isEmpty {
+                        let completedIDs = Set(completedDispatches.map(\.id))
+                        mutableProject.runtimeState.completedDispatches.removeAll { completedIDs.contains($0.id) }
+                        mutableProject.runtimeState.completedDispatches.append(contentsOf: completedDispatches)
+                    }
+                    if !failedDispatches.isEmpty {
+                        let failedRecordIDs = Set(failedDispatches.map(\.id))
+                        mutableProject.runtimeState.failedDispatches.removeAll { failedRecordIDs.contains($0.id) }
+                        mutableProject.runtimeState.failedDispatches.append(contentsOf: failedDispatches)
                     }
                     mutableProject.runtimeState.runtimeEvents.append(contentsOf: results.flatMap(\.runtimeEvents))
                     mutableProject.runtimeState.lastUpdated = Date()
@@ -3744,6 +3792,34 @@ class AppState: ObservableObject {
             target: target,
             transport: OpenClawRuntimeTransport(kind: .gatewayChat, deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue),
             payload: payload
+        )
+    }
+
+    private func makeRuntimeDispatchRecord(
+        from event: OpenClawRuntimeEvent,
+        status: RuntimeDispatchStatus,
+        completedAt: Date? = nil,
+        errorMessage: String? = nil
+    ) -> RuntimeDispatchRecord {
+        RuntimeDispatchRecord(
+            id: event.id,
+            eventID: event.id,
+            parentEventID: event.parentEventId,
+            runID: event.runId,
+            workflowID: event.workflowId,
+            nodeID: event.nodeId,
+            sourceAgentID: event.source.agentId,
+            targetAgentID: event.target.agentId,
+            summary: event.summaryText,
+            sessionKey: event.sessionKey,
+            idempotencyKey: event.idempotencyKey,
+            attempt: event.attempt ?? 1,
+            status: status,
+            transportKind: event.transport.kind,
+            queuedAt: event.timestamp,
+            updatedAt: completedAt ?? event.timestamp,
+            completedAt: completedAt,
+            errorMessage: errorMessage
         )
     }
 

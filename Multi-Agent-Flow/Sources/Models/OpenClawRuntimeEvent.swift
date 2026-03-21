@@ -158,6 +158,30 @@ struct OpenClawRuntimeEvent: Codable, Hashable, Identifiable {
 }
 
 extension OpenClawRuntimeEvent {
+    var participantsText: String {
+        let sourceName = source.agentName ?? source.agentId
+        let targetName = target.agentName ?? target.agentId
+        return "\(sourceName) -> \(targetName)"
+    }
+
+    var refsText: String? {
+        let items = refs.map { ref in
+            if let path = ref.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !path.isEmpty {
+                return "\(ref.kind.rawValue): \(path)"
+            }
+
+            if !ref.locator.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "\(ref.kind.rawValue): \(ref.locator)"
+            }
+
+            return ref.kind.rawValue
+        }
+
+        guard !items.isEmpty else { return nil }
+        return items.joined(separator: ", ")
+    }
+
     var summaryText: String {
         if let summary = payload["summary"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !summary.isEmpty {
@@ -197,7 +221,8 @@ extension OpenClawRuntimeEvent {
     }
 
     var summaryLine: String {
-        let actorName = source.agentName ?? target.agentName ?? source.agentId
-        return "\(eventType.rawValue) | \(actorName) | \(summaryText)"
+        let base = "\(eventType.rawValue) | \(participantsText) | \(summaryText)"
+        guard let refsText else { return base }
+        return "\(base) | refs: \(refsText)"
     }
 }

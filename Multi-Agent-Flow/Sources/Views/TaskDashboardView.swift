@@ -3639,10 +3639,26 @@ private struct OpsTraceDetailSheet: View {
     private var visibleAttributeKeys: [String] {
         detail.attributes.keys
             .filter { key in
-                !["output_text", "preview_text"].contains(key)
+                !["output_text", "preview_text", "protocol_event_count", "protocol_ref_count", "protocol_event_types"].contains(key)
             }
             .sorted()
     }
+    private var protocolEventCount: Int? {
+        if let count = detail.attributes["protocol_event_count"].flatMap(Int.init) {
+            return count
+        }
+        return detail.eventsText?.split(separator: "\n").count
+    }
+
+    private var protocolRefCount: Int? {
+        detail.attributes["protocol_ref_count"].flatMap(Int.init)
+    }
+
+    private var protocolEventTypes: String? {
+        let value = detail.attributes["protocol_event_types"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
     private var filteredTimelineEntries: [OpsTraceTimelineEntry] {
         let normalizedSearch = spanSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let spans = detail.relatedSpans.filter { span in
@@ -3737,6 +3753,12 @@ private struct OpsTraceDetailSheet: View {
                     detailCard(title: "Duration", value: detail.duration.map(formatOpsDuration) ?? "N/A")
                     detailCard(title: "Started", value: detail.startedAt.formatted(date: .abbreviated, time: .standard))
                     detailCard(title: "Completed", value: detail.completedAt?.formatted(date: .abbreviated, time: .standard) ?? "In progress")
+                    if let protocolEventCount, protocolEventCount > 0 {
+                        detailCard(title: "Protocol Events", value: String(protocolEventCount))
+                    }
+                    if let protocolRefCount, protocolRefCount > 0 {
+                        detailCard(title: "Protocol Refs", value: String(protocolRefCount))
+                    }
                 }
 
                 if let reason = detail.routingReason, !reason.isEmpty {
@@ -3930,7 +3952,11 @@ private struct OpsTraceDetailSheet: View {
                 }
 
                 if let eventsText = detail.eventsText, !eventsText.isEmpty {
-                    detailSection(title: LocalizedString.text("events"), text: eventsText, monospaced: true)
+                    detailSection(title: "Protocol Events", text: eventsText, monospaced: true)
+                }
+
+                if let protocolEventTypes {
+                    detailSection(title: "Protocol Event Types", text: protocolEventTypes)
                 }
 
                 if !panel.relatedLogs.isEmpty {

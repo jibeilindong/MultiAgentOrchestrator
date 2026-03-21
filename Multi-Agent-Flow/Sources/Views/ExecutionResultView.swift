@@ -213,10 +213,54 @@ struct ExecutionResultView: View {
                     .background(Color.purple.opacity(0.16))
                     .foregroundColor(.purple)
                     .clipShape(Capsule())
+
+                if result.runtimeRefCount > 0 {
+                    Text("\(result.runtimeRefCount) ref(s)")
+                        .font(.caption2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.purple.opacity(0.10))
+                        .foregroundColor(.purple)
+                        .clipShape(Capsule())
+                }
             }
 
-            ForEach(Array(result.runtimeEvents.prefix(3))) { event in
-                Text("\(event.eventType.rawValue) · \(event.timestamp.formatted(date: .omitted, time: .shortened))")
+            ForEach(Array(result.runtimeEvents.prefix(5))) { event in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(event.eventType.rawValue)
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundColor(.purple)
+
+                        Spacer()
+
+                        Text(event.timestamp.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Text(event.summaryText)
+                        .font(.caption2)
+
+                    Text(event.participantsText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+
+                    if let refsText = event.refsText {
+                        Text("Refs: \(refsText)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(8)
+                .background(Color.white.opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            if result.runtimeEvents.count > 5 {
+                Text("+\(result.runtimeEvents.count - 5) more event(s)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

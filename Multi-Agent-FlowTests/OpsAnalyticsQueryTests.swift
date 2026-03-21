@@ -532,6 +532,201 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         XCTAssertEqual(detail.relatedSpans.last?.summaryText, "search.web: timeout")
     }
 
+    func testRefreshPersistsRuntimeProtocolMetadataForExecutionResults() throws {
+        var project = makeProject(name: "Runtime Protocol Acceptance")
+        try prepareEmptyAnalyticsDatabase(for: project.id)
+
+        let agent = Agent(name: "Planner")
+        project.agents = [agent]
+
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = "Planner Node"
+        project.workflows[0].nodes = [node]
+
+        let startedAt = Date().addingTimeInterval(-120)
+        let completedAt = startedAt.addingTimeInterval(0.84)
+        let artifactPath = "/tmp/runtime-artifact.md"
+
+        let dispatchEvent = OpenClawRuntimeEvent(
+            eventType: .taskDispatch,
+            timestamp: startedAt,
+            projectId: project.id.uuidString,
+            workflowId: project.workflows[0].id.uuidString,
+            nodeId: node.id.uuidString,
+            runId: "runtime-acceptance-run",
+            sessionKey: "session:runtime-acceptance",
+            source: OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User"),
+            target: OpenClawRuntimeActor(kind: .agent, agentId: agent.id.uuidString, agentName: agent.name),
+            transport: OpenClawRuntimeTransport(kind: .gatewayAgent, deploymentKind: "container"),
+            payload: [
+                "summary": "Drafted execution request",
+                "intent": "respond"
+            ]
+        )
+
+        let resultEvent = OpenClawRuntimeEvent(
+            eventType: .taskResult,
+            timestamp: completedAt,
+            projectId: project.id.uuidString,
+            workflowId: project.workflows[0].id.uuidString,
+            nodeId: node.id.uuidString,
+            runId: "runtime-acceptance-run",
+            sessionKey: "session:runtime-acceptance",
+            parentEventId: dispatchEvent.id,
+            source: OpenClawRuntimeActor(kind: .agent, agentId: agent.id.uuidString, agentName: agent.name),
+            target: OpenClawRuntimeActor(kind: .orchestrator, agentId: "orchestrator", agentName: "Orchestrator"),
+            transport: OpenClawRuntimeTransport(kind: .gatewayAgent, deploymentKind: "container"),
+            payload: [
+                "summary": "Prepared runtime summary",
+                "outputType": ExecutionOutputType.agentFinalResponse.rawValue,
+                "status": "success"
+            ],
+            refs: [
+                OpenClawRuntimeRef(
+                    refId: "artifact-1",
+                    kind: .workspaceFile,
+                    locator: "artifact://runtime-artifact",
+                    path: artifactPath,
+                    contentType: "text/markdown",
+                    hash: "sha256:runtime-artifact"
+                )
+            ]
+        )
+
+        let routeEvent = OpenClawRuntimeEvent(
+            eventType: .taskRoute,
+            timestamp: completedAt,
+            projectId: project.id.uuidString,
+            workflowId: project.workflows[0].id.uuidString,
+            nodeId: node.id.uuidString,
+            runId: "runtime-acceptance-run",
+            sessionKey: "session:runtime-acceptance",
+            parentEventId: resultEvent.id,
+            source: OpenClawRuntimeActor(kind: .agent, agentId: agent.id.uuidString, agentName: agent.name),
+            target: OpenClawRuntimeActor(kind: .agent, agentId: "reviewer", agentName: "Reviewer"),
+            transport: OpenClawRuntimeTransport(kind: .gatewayAgent, deploymentKind: "container"),
+            payload: [
+                "action": "selected",
+                "reason": "Escalate for verification"
+            ]
+        )
+
+        let result = ExecutionResult(
+            nodeID: node.id,
+            agentID: agent.id,
+            status: .completed,
+            output: "Detailed body\nWith trace context",
+            outputType: .agentFinalResponse,
+            sessionID: "runtime-acceptance-session",
+            transportKind: "gateway_agent",
+            firstChunkLatencyMs: 120,
+            completionLatencyMs: 840,
+            routingAction: "selected",
+            routingTargets: ["Reviewer"],
+            routingReason: "Escalate for verification",
+            runtimeEvents: [dispatchEvent, resultEvent, routeEvent],
+            primaryRuntimeEvent: resultEvent,
+            startedAt: startedAt,
+            completedAt: completedAt
+        )
+
+        service.refresh(
+            project: project,
+            tasks: [],
+            executionResults: [result],
+            executionLogs: [],
+            activeAgents: [:],
+            isConnected: true
+        )
+
+        let traceRow = try XCTUnwrap(service.snapshot.traceRows.first(where: { $0.id == result.id }))
+        XCTAssertEqual(traceRow.agentName, "Planner")
+        XCTAssertEqual(traceRow.status, .completed)
+        XCTAssertEqual(traceRow.outputType, .agentFinalResponse)
+        XCTAssertEqual(traceRow.sourceLabel, "Runtime")
+        XCTAssertEqual(traceRow.previewText, "Prepared runtime summary")
+
+        let detail = try XCTUnwrap(service.traceDetail(projectID: project.id, traceID: result.id))
+        XCTAssertEqual(detail.id, result.id)
+        XCTAssertEqual(detail.service, "multi-agent-flow.execution")
+        XCTAssertEqual(detail.agentName, "Planner")
+        XCTAssertEqual(detail.executionStatus, .completed)
+        XCTAssertEqual(detail.outputType, .agentFinalResponse)
+        XCTAssertEqual(detail.routingAction, "selected")
+        XCTAssertEqual(detail.routingReason, "Escalate for verification")
+        XCTAssertEqual(detail.routingTargets, ["Reviewer"])
+        XCTAssertEqual(detail.nodeID, node.id)
+        XCTAssertEqual(detail.previewText, "Prepared runtime summary")
+        XCTAssertEqual(detail.outputText, "Prepared runtime summary\n\nDetailed body\nWith trace context")
+        XCTAssertEqual(detail.attributes["protocol_event_count"], "3")
+        XCTAssertEqual(detail.attributes["protocol_ref_count"], "1")
+        XCTAssertEqual(detail.attributes["protocol_event_types"], "task.dispatch, task.result, task.route")
+        XCTAssertEqual(detail.attributes["transport_kind"], "gateway_agent")
+        XCTAssertEqual(detail.attributes["session_id"], "runtime-acceptance-session")
+        XCTAssertEqual(detail.eventsText?.components(separatedBy: "\n").count, 3)
+        XCTAssertTrue(detail.eventsText?.contains("task.dispatch | User -> Planner | Drafted execution request") == true)
+        XCTAssertTrue(detail.eventsText?.contains("task.result | Planner -> Orchestrator | Prepared runtime summary | refs: workspace_file: \(artifactPath)") == true)
+        XCTAssertTrue(detail.eventsText?.contains("task.route | Planner -> Reviewer | Escalate for verification") == true)
+    }
+
+    func testTraceDetailFallsBackToEventsWhenPreviewAndOutputAreMissing() throws {
+        let project = makeProject(name: "Runtime Events Fallback")
+        try prepareEmptyAnalyticsDatabase(for: project.id)
+
+        let spanID = UUID()
+        let traceID = spanID.uuidString.replacingOccurrences(of: "-", with: "")
+        let startedAt = Date().addingTimeInterval(-45)
+        let eventsText = """
+        task.dispatch | User -> Planner | Drafted execution request
+        task.result | Planner -> Orchestrator | Prepared runtime summary
+        """
+
+        try withDatabase(for: project.id) { db in
+            try insertSpan(
+                db: db,
+                projectID: project.id,
+                spanID: spanID,
+                traceID: traceID,
+                name: "Runtime Events Only",
+                service: "multi-agent-flow.execution",
+                status: "ok",
+                startedAt: startedAt,
+                durationMs: 320,
+                attributes: [
+                    "agent_name": "Planner",
+                    "execution_status": ExecutionStatus.completed.rawValue,
+                    "output_type": ExecutionOutputType.agentFinalResponse.rawValue
+                ],
+                events: eventsText
+            )
+        }
+
+        service.refresh(
+            project: project,
+            tasks: [],
+            executionResults: [],
+            executionLogs: [],
+            activeAgents: [:],
+            isConnected: true
+        )
+
+        let traceRow = try XCTUnwrap(service.snapshot.traceRows.first(where: { $0.id == spanID }))
+        XCTAssertEqual(traceRow.agentName, "Planner")
+        XCTAssertEqual(traceRow.status, .completed)
+        XCTAssertEqual(traceRow.outputType, .agentFinalResponse)
+        XCTAssertEqual(traceRow.sourceLabel, "Runtime")
+        XCTAssertEqual(traceRow.previewText, eventsText.compactSingleLinePreview(limit: 160))
+
+        let detail = try XCTUnwrap(service.traceDetail(projectID: project.id, traceID: spanID))
+        XCTAssertEqual(detail.id, spanID)
+        XCTAssertEqual(detail.previewText, eventsText.compactSingleLinePreview(limit: 160))
+        XCTAssertEqual(detail.outputText, eventsText)
+        XCTAssertEqual(detail.eventsText, eventsText)
+        XCTAssertNil(detail.attributes["preview_text"])
+        XCTAssertNil(detail.attributes["output_text"])
+    }
+
     func testRefreshSnapshotIncludesSortedAnomaliesAndLinkedCronMetadata() throws {
         var project = makeProject(name: "Ops Snapshot")
         try prepareEmptyAnalyticsDatabase(for: project.id)

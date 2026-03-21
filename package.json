@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @multi-agent-flow/desktop",
     "validate:compat": "npm run validate:compat --workspace @multi-agent-flow/core",
+    "validate:openclaw-runtime": "./scripts/validate-openclaw-runtime.sh",
     "desktop:pack": "npm run pack --workspace @multi-agent-flow/desktop",
     "desktop:dist": "npm run dist --workspace @multi-agent-flow/desktop",
     "desktop:dist:mac": "npm run dist:mac --workspace @multi-agent-flow/desktop",

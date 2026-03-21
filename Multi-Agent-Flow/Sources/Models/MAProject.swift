@@ -8,10 +8,89 @@
 import Foundation
 import CoreGraphics
 
+enum RuntimeDispatchStatus: String, Codable, CaseIterable, Hashable {
+    case created
+    case dispatched
+    case accepted
+    case running
+    case waitingApproval = "waiting_approval"
+    case waitingDependency = "waiting_dependency"
+    case completed
+    case failed
+    case aborted
+    case expired
+    case partial
+}
+
+struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
+    let id: String
+    var eventID: String
+    var parentEventID: String?
+    var runID: String?
+    var workflowID: String?
+    var nodeID: String?
+    var sourceAgentID: String
+    var targetAgentID: String
+    var summary: String
+    var sessionKey: String?
+    var idempotencyKey: String?
+    var attempt: Int
+    var status: RuntimeDispatchStatus
+    var transportKind: OpenClawRuntimeTransportKind
+    var queuedAt: Date
+    var updatedAt: Date
+    var completedAt: Date?
+    var errorMessage: String?
+
+    init(
+        id: String = UUID().uuidString,
+        eventID: String,
+        parentEventID: String? = nil,
+        runID: String? = nil,
+        workflowID: String? = nil,
+        nodeID: String? = nil,
+        sourceAgentID: String,
+        targetAgentID: String,
+        summary: String,
+        sessionKey: String? = nil,
+        idempotencyKey: String? = nil,
+        attempt: Int = 1,
+        status: RuntimeDispatchStatus,
+        transportKind: OpenClawRuntimeTransportKind,
+        queuedAt: Date = Date(),
+        updatedAt: Date = Date(),
+        completedAt: Date? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.id = id
+        self.eventID = eventID
+        self.parentEventID = parentEventID
+        self.runID = runID
+        self.workflowID = workflowID
+        self.nodeID = nodeID
+        self.sourceAgentID = sourceAgentID
+        self.targetAgentID = targetAgentID
+        self.summary = summary
+        self.sessionKey = sessionKey
+        self.idempotencyKey = idempotencyKey
+        self.attempt = attempt
+        self.status = status
+        self.transportKind = transportKind
+        self.queuedAt = queuedAt
+        self.updatedAt = updatedAt
+        self.completedAt = completedAt
+        self.errorMessage = errorMessage
+    }
+}
+
 // 运行时状态
 struct RuntimeState: Codable {
     var sessionID: String
     var messageQueue: [String]
+    var dispatchQueue: [RuntimeDispatchRecord]
+    var inflightDispatches: [RuntimeDispatchRecord]
+    var completedDispatches: [RuntimeDispatchRecord]
+    var failedDispatches: [RuntimeDispatchRecord]
     var agentStates: [String: String]
     var runtimeEvents: [OpenClawRuntimeEvent]
     var lastUpdated: Date
@@ -19,6 +98,10 @@ struct RuntimeState: Codable {
     enum CodingKeys: String, CodingKey {
         case sessionID
         case messageQueue
+        case dispatchQueue
+        case inflightDispatches
+        case completedDispatches
+        case failedDispatches
         case agentStates
         case runtimeEvents
         case lastUpdated
@@ -27,6 +110,10 @@ struct RuntimeState: Codable {
     init() {
         self.sessionID = UUID().uuidString
         self.messageQueue = []
+        self.dispatchQueue = []
+        self.inflightDispatches = []
+        self.completedDispatches = []
+        self.failedDispatches = []
         self.agentStates = [:]
         self.runtimeEvents = []
         self.lastUpdated = Date()
@@ -36,6 +123,10 @@ struct RuntimeState: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? UUID().uuidString
         messageQueue = try container.decodeIfPresent([String].self, forKey: .messageQueue) ?? []
+        dispatchQueue = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .dispatchQueue) ?? []
+        inflightDispatches = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .inflightDispatches) ?? []
+        completedDispatches = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .completedDispatches) ?? []
+        failedDispatches = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .failedDispatches) ?? []
         agentStates = try container.decodeIfPresent([String: String].self, forKey: .agentStates) ?? [:]
         runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
         lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? Date()
@@ -45,6 +136,10 @@ struct RuntimeState: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sessionID, forKey: .sessionID)
         try container.encode(messageQueue, forKey: .messageQueue)
+        try container.encode(dispatchQueue, forKey: .dispatchQueue)
+        try container.encode(inflightDispatches, forKey: .inflightDispatches)
+        try container.encode(completedDispatches, forKey: .completedDispatches)
+        try container.encode(failedDispatches, forKey: .failedDispatches)
         try container.encode(agentStates, forKey: .agentStates)
         try container.encode(runtimeEvents, forKey: .runtimeEvents)
         try container.encode(lastUpdated, forKey: .lastUpdated)

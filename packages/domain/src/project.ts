@@ -6,11 +6,40 @@ import type { Permission } from "./permission";
 import type { Task } from "./task";
 import type { SwiftDate } from "./types";
 import type { Workflow } from "./workflow";
-import type { OpenClawRuntimeEvent } from "./openclaw-runtime";
+import type {
+  OpenClawRuntimeEvent,
+  OpenClawRuntimeTaskStatus,
+  OpenClawRuntimeTransportKind
+} from "./openclaw-runtime";
+
+export interface RuntimeDispatchRecord {
+  id: string;
+  eventID: string;
+  parentEventID?: string | null;
+  runID?: string | null;
+  workflowID?: string | null;
+  nodeID?: string | null;
+  sourceAgentID: string;
+  targetAgentID: string;
+  summary: string;
+  sessionKey?: string | null;
+  idempotencyKey?: string | null;
+  attempt: number;
+  status: OpenClawRuntimeTaskStatus;
+  transportKind: OpenClawRuntimeTransportKind;
+  queuedAt: SwiftDate;
+  updatedAt: SwiftDate;
+  completedAt?: SwiftDate | null;
+  errorMessage?: string | null;
+}
 
 export interface RuntimeState {
   sessionID: string;
   messageQueue: string[];
+  dispatchQueue: RuntimeDispatchRecord[];
+  inflightDispatches: RuntimeDispatchRecord[];
+  completedDispatches: RuntimeDispatchRecord[];
+  failedDispatches: RuntimeDispatchRecord[];
   agentStates: Record<string, string>;
   runtimeEvents: OpenClawRuntimeEvent[];
   lastUpdated: SwiftDate;

@@ -1,0 +1,335 @@
+{
+  "id": "fixture-runtime-protocol",
+  "fileVersion": "2.0",
+  "name": "Runtime Protocol Fixture",
+  "agents": [
+    {
+      "id": "agent-planner",
+      "name": "Planner",
+      "identity": "planner",
+      "description": "Protocol-aware planning agent",
+      "soulMD": "# Planner",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "createdAt": 0,
+      "updatedAt": 60,
+      "capabilities": [
+        "planning"
+      ],
+      "openClawDefinition": {
+        "agentIdentifier": "planner",
+        "modelIdentifier": "gpt-5.4",
+        "runtimeProfile": "default",
+        "environment": {}
+      }
+    }
+  ],
+  "workflows": [
+    {
+      "id": "workflow-runtime",
+      "name": "Runtime Workflow",
+      "fallbackRoutingPolicy": "stop",
+      "launchTestCases": [],
+      "lastLaunchVerificationReport": null,
+      "nodes": [
+        {
+          "id": "node-planner",
+          "agentID": "agent-planner",
+          "type": "agent",
+          "position": {
+            "x": 120,
+            "y": 80
+          },
+          "title": "Planner Node",
+          "conditionExpression": "",
+          "loopEnabled": false,
+          "maxIterations": 1,
+          "inputParameters": [],
+          "outputParameters": []
+        }
+      ],
+      "edges": [],
+      "boundaries": [],
+      "colorGroups": [],
+      "createdAt": 0,
+      "parentNodeID": null,
+      "inputSchema": [],
+      "outputSchema": []
+    }
+  ],
+  "permissions": [],
+  "openClaw": {
+    "isConnected": true,
+    "config": {
+      "deploymentKind": "container",
+      "host": "gateway.internal",
+      "defaultAgent": "planner"
+    },
+    "availableAgents": [
+      "planner"
+    ],
+    "activeAgents": [],
+    "detectedAgents": [],
+    "lastSyncedAt": 120
+  },
+  "taskData": {
+    "workspaceRootPath": null,
+    "organizationMode": "project/task",
+    "lastUpdatedAt": 120
+  },
+  "tasks": [],
+  "messages": [
+    {
+      "id": "message-dispatch",
+      "fromAgentID": "agent-planner",
+      "toAgentID": "agent-planner",
+      "type": "Task",
+      "content": "Investigate runtime protocol coverage.",
+      "timestamp": 120,
+      "status": "Read",
+      "metadata": {
+        "channel": "workbench",
+        "role": "user",
+        "kind": "input"
+      },
+      "runtimeEvent": {
+        "version": "openclaw.runtime.v1",
+        "eventId": "event-dispatch",
+        "eventType": "task.dispatch",
+        "timestamp": "2026-03-21T00:00:00.000Z",
+        "projectId": "fixture-runtime-protocol",
+        "workflowId": "workflow-runtime",
+        "nodeId": "node-planner",
+        "runId": "run-runtime",
+        "sessionKey": "session:fixture-runtime",
+        "source": {
+          "kind": "user",
+          "agentId": "user",
+          "agentName": "User"
+        },
+        "target": {
+          "kind": "agent",
+          "agentId": "agent-planner",
+          "agentName": "Planner"
+        },
+        "transport": {
+          "kind": "gateway_agent",
+          "deploymentKind": "container"
+        },
+        "payload": {
+          "intent": "respond",
+          "summary": "Investigate runtime protocol coverage.",
+          "expectedOutput": "agent_final_response"
+        },
+        "refs": [
+          {
+            "refId": "workspace-1",
+            "kind": "workspace_file",
+            "locator": "workspace://notes.md",
+            "path": "/tmp/notes.md",
+            "contentType": "text/markdown",
+            "hash": "sha256:notes"
+          }
+        ],
+        "constraints": {},
+        "control": {}
+      },
+      "requiresApproval": false
+    }
+  ],
+  "executionResults": [
+    {
+      "id": "result-runtime",
+      "nodeID": "node-planner",
+      "agentID": "agent-planner",
+      "status": "Completed",
+      "output": "Detailed runtime output body",
+      "outputType": "agent_final_response",
+      "routingAction": "selected",
+      "routingTargets": [
+        "Reviewer"
+      ],
+      "routingReason": "Escalate for verification",
+      "runtimeEvents": [
+        {
+          "version": "openclaw.runtime.v1",
+          "eventId": "event-dispatch",
+          "eventType": "task.dispatch",
+          "timestamp": "2026-03-21T00:00:00.000Z",
+          "projectId": "fixture-runtime-protocol",
+          "workflowId": "workflow-runtime",
+          "nodeId": "node-planner",
+          "runId": "run-runtime",
+          "sessionKey": "session:fixture-runtime",
+          "source": {
+            "kind": "user",
+            "agentId": "user",
+            "agentName": "User"
+          },
+          "target": {
+            "kind": "agent",
+            "agentId": "agent-planner",
+            "agentName": "Planner"
+          },
+          "transport": {
+            "kind": "gateway_agent",
+            "deploymentKind": "container"
+          },
+          "payload": {
+            "intent": "respond",
+            "summary": "Investigate runtime protocol coverage.",
+            "expectedOutput": "agent_final_response"
+          },
+          "refs": [],
+          "constraints": {},
+          "control": {}
+        },
+        {
+          "version": "openclaw.runtime.v1",
+          "eventId": "event-result",
+          "eventType": "task.result",
+          "timestamp": "2026-03-21T00:00:02.000Z",
+          "projectId": "fixture-runtime-protocol",
+          "workflowId": "workflow-runtime",
+          "nodeId": "node-planner",
+          "runId": "run-runtime",
+          "sessionKey": "session:fixture-runtime",
+          "parentEventId": "event-dispatch",
+          "source": {
+            "kind": "agent",
+            "agentId": "agent-planner",
+            "agentName": "Planner"
+          },
+          "target": {
+            "kind": "orchestrator",
+            "agentId": "orchestrator",
+            "agentName": "Orchestrator"
+          },
+          "transport": {
+            "kind": "gateway_agent",
+            "deploymentKind": "container"
+          },
+          "payload": {
+            "status": "success",
+            "outputType": "agent_final_response",
+            "summary": "Prepared runtime summary",
+            "artifactRefIds": "artifact-runtime"
+          },
+          "refs": [
+            {
+              "refId": "artifact-runtime",
+              "kind": "workspace_file",
+              "locator": "artifact://runtime-summary",
+              "path": "/tmp/runtime-summary.md",
+              "contentType": "text/markdown",
+              "hash": "sha256:runtime-summary"
+            }
+          ],
+          "constraints": {},
+          "control": {}
+        }
+      ],
+      "primaryRuntimeEvent": {
+        "version": "openclaw.runtime.v1",
+        "eventId": "event-result",
+        "eventType": "task.result",
+        "timestamp": "2026-03-21T00:00:02.000Z",
+        "projectId": "fixture-runtime-protocol",
+        "workflowId": "workflow-runtime",
+        "nodeId": "node-planner",
+        "runId": "run-runtime",
+        "sessionKey": "session:fixture-runtime",
+        "parentEventId": "event-dispatch",
+        "source": {
+          "kind": "agent",
+          "agentId": "agent-planner",
+          "agentName": "Planner"
+        },
+        "target": {
+          "kind": "orchestrator",
+          "agentId": "orchestrator",
+          "agentName": "Orchestrator"
+        },
+        "transport": {
+          "kind": "gateway_agent",
+          "deploymentKind": "container"
+        },
+        "payload": {
+          "status": "success",
+          "outputType": "agent_final_response",
+          "summary": "Prepared runtime summary",
+          "artifactRefIds": "artifact-runtime"
+        },
+        "refs": [
+          {
+            "refId": "artifact-runtime",
+            "kind": "workspace_file",
+            "locator": "artifact://runtime-summary",
+            "path": "/tmp/runtime-summary.md",
+            "contentType": "text/markdown",
+            "hash": "sha256:runtime-summary"
+          }
+        ],
+        "constraints": {},
+        "control": {}
+      },
+      "startedAt": 120,
+      "completedAt": 122,
+      "duration": 2
+    }
+  ],
+  "executionLogs": [],
+  "workspaceIndex": [],
+  "memoryData": {
+    "backupOnly": true,
+    "taskExecutionMemories": [],
+    "agentMemories": [],
+    "lastBackupAt": null
+  },
+  "runtimeState": {
+    "sessionID": "session-runtime-fixture",
+    "messageQueue": [],
+    "agentStates": {
+      "agent-planner": "completed"
+    },
+    "runtimeEvents": [
+      {
+        "version": "openclaw.runtime.v1",
+        "eventId": "event-session-sync",
+        "eventType": "session.sync",
+        "timestamp": "2026-03-21T00:00:03.000Z",
+        "projectId": "fixture-runtime-protocol",
+        "workflowId": "workflow-runtime",
+        "nodeId": "node-planner",
+        "runId": "run-runtime",
+        "sessionKey": "session:fixture-runtime",
+        "source": {
+          "kind": "system",
+          "agentId": "system",
+          "agentName": "System"
+        },
+        "target": {
+          "kind": "agent",
+          "agentId": "agent-planner",
+          "agentName": "Planner"
+        },
+        "transport": {
+          "kind": "runtime_channel",
+          "deploymentKind": "container"
+        },
+        "payload": {
+          "action": "snapshot",
+          "summary": "Captured runtime snapshot"
+        },
+        "refs": [],
+        "constraints": {},
+        "control": {}
+      }
+    ],
+    "lastUpdated": 180
+  },
+  "createdAt": 0,
+  "updatedAt": 180
+}

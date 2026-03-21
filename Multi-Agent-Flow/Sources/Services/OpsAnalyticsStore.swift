@@ -739,6 +739,9 @@ final class OpsAnalyticsStore {
                 "routing_action": result.routingAction ?? "",
                 "routing_reason": result.routingReason ?? "",
                 "routing_targets": result.routingTargets.joined(separator: ", "),
+                "protocol_event_count": String(result.runtimeEvents.count),
+                "protocol_ref_count": String(result.runtimeRefCount),
+                "protocol_event_types": result.runtimeEventTypesSummary,
                 "output_text": result.renderedOutputText,
                 "preview_text": result.previewText
             ]

@@ -43,6 +43,15 @@ const EXPECTATIONS = new Map<string, FixtureExpectation>([
       totalNodes: 3,
       totalEdges: 2
     }
+  ],
+  [
+    "runtime-protocol.maoproj",
+    {
+      agents: 1,
+      workflows: 1,
+      totalNodes: 1,
+      totalEdges: 0
+    }
   ]
 ]);
 
@@ -122,6 +131,24 @@ async function validateFixture(filePath: string) {
     assert.ok(Array.isArray(parsed.openClaw.availableAgents), "OpenClaw availableAgents should default to an array");
     assert.ok(Array.isArray(parsed.openClaw.activeAgents), "OpenClaw activeAgents should default to an array");
     assert.ok(Array.isArray(parsed.openClaw.detectedAgents), "OpenClaw detectedAgents should default to an array");
+  }
+
+  if (fileName === "runtime-protocol.maoproj") {
+    assert.equal(parsed.messages.length, 1, "runtime-protocol.maoproj should preserve messages");
+    assert.equal(parsed.executionResults.length, 1, "runtime-protocol.maoproj should preserve execution results");
+    assert.equal(parsed.runtimeState.runtimeEvents.length, 1, "runtime-protocol.maoproj should preserve runtime state events");
+    assert.equal(parsed.messages[0]?.runtimeEvent?.eventType, "task.dispatch");
+    assert.equal(parsed.messages[0]?.runtimeEvent?.refs[0]?.kind, "workspace_file");
+    assert.equal(parsed.executionResults[0]?.runtimeEvents?.length, 2);
+    assert.equal(parsed.executionResults[0]?.primaryRuntimeEvent?.eventType, "task.result");
+    assert.equal(
+      (parsed.executionResults[0]?.primaryRuntimeEvent?.payload as { summary?: string } | undefined)?.summary,
+      "Prepared runtime summary"
+    );
+    assert.equal(parsed.executionResults[0]?.routingAction, "selected");
+    assert.deepEqual(parsed.executionResults[0]?.routingTargets, ["Reviewer"]);
+    assert.equal(parsed.executionResults[0]?.routingReason, "Escalate for verification");
+    assert.equal(parsed.runtimeState.runtimeEvents[0]?.eventType, "session.sync");
   }
 
   console.log(

@@ -200,6 +200,16 @@ struct ExecutionResult: Codable, Identifiable {
 }
 
 extension ExecutionResult {
+    var runtimeRefCount: Int {
+        runtimeEvents.reduce(0) { $0 + $1.refs.count }
+    }
+
+    var runtimeEventTypesSummary: String {
+        Array(Set(runtimeEvents.map(\.eventType.rawValue)))
+            .sorted()
+            .joined(separator: ", ")
+    }
+
     var summaryText: String {
         if let primaryRuntimeEvent,
            !primaryRuntimeEvent.summaryText.isEmpty {
