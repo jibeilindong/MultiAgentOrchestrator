@@ -38,8 +38,6 @@ struct WorkflowEditorView: View {
     @State private var copiedEdges: [WorkflowEdge] = []
     @State private var copiedBoundaries: [WorkflowBoundary] = []
     @State private var connectionType: ConnectionType = .bidirectional
-    @State private var testExecution: WorkflowTestExecution?
-    @State private var isRunning: Bool = false
     @State private var refreshKey: Int = 0  // 用于刷新Agent库
     @State private var agentCollectionSnapshot: AgentCollectionSnapshot = .empty
     @State private var agentCollectionRefreshWorkItem: DispatchWorkItem?
@@ -95,7 +93,6 @@ struct WorkflowEditorView: View {
                 selectedNodeIDs: $selectedNodeIDs,
                 selectedEdgeID: $selectedEdgeID,
                 selectedBoundaryIDs: $selectedBoundaryIDs,
-                isRunning: isRunning,
                 isConnectMode: $isConnectMode,
                 isBatchConnectMode: $isBatchConnectMode,
                 isLassoMode: $isLassoMode,
@@ -118,8 +115,6 @@ struct WorkflowEditorView: View {
                 onDistributeSelected: distributeSelectedElements,
                 onOrganizeConnections: organizeConnections,
                 onGenerateTasks: generateTasksFromWorkflow,
-                onRunTest: runTest,
-                onStopTest: stopTest,
                 onToggleBatchConnectMode: toggleBatchConnectMode,
                 onAssignBatchSources: assignBatchSourcesFromSelection,
                 onAssignBatchTargets: assignBatchTargetsFromSelection,
@@ -166,6 +161,7 @@ struct WorkflowEditorView: View {
                     connectionType: $connectionType,
                     selectedNodeID: $selectedNodeID,
                     selectedNodeIDs: $selectedNodeIDs,
+                    selectedAgentID: $selectedAgentID,
                     selectedEdgeID: $selectedEdgeID,
                     selectedBoundaryIDs: $selectedBoundaryIDs,
                     isLassoMode: $isLassoMode,
@@ -185,8 +181,7 @@ struct WorkflowEditorView: View {
                     onCommitBatchConnections: commitBatchConnections,
                     onCancelBatchConnections: cancelBatchConnectionMode,
                     onUndoBatchConnections: undoLastBatchConnection,
-                    onConnect: handleAgentConnection,
-                    testExecution: testExecution
+                    onConnect: handleAgentConnection
                 )
                 .modifier(EditorPaneVisibility(isVisible: viewMode == .architecture))
 
@@ -215,12 +210,6 @@ struct WorkflowEditorView: View {
                     )
                     .modifier(EditorPaneVisibility(isVisible: viewMode == .grid))
                 }
-            }
-            
-            // 测试执行面板
-            if let execution = testExecution {
-                Divider()
-                TestExecutionPanel(execution: execution)
             }
         }
         .onChange(of: viewMode) { _, newValue in
@@ -471,40 +460,6 @@ struct WorkflowEditorView: View {
         }
     }
     
-    private func runTest() {
-        guard let project = appState.currentProject,
-              let workflow = project.workflows.first else { return }
-        
-        isRunning = true
-        
-        // 显示执行进度
-        testExecution = WorkflowTestExecution(workflow: workflow, agents: project.agents)
-        
-        // 调用OpenClaw执行工作流
-        appState.openClawService.executeWorkflow(
-            workflow,
-            agents: project.agents,
-            projectID: project.id,
-            projectRuntimeSessionID: project.runtimeState.sessionID
-        ) { results in
-            DispatchQueue.main.async {
-                self.isRunning = false
-                // 显示执行结果
-                for result in results {
-                    print("Agent executed: \(result.status) - \(result.summaryText)")
-                }
-            }
-        }
-        
-        // 同时显示模拟的执行进度（实时反馈）
-        simulateWorkflowExecution(workflow: workflow, agents: project.agents)
-    }
-    
-    private func stopTest() {
-        isRunning = false
-        testExecution = nil
-    }
-
     private func currentWorkflow() -> Workflow? {
         appState.currentProject?.workflows.first
     }
@@ -555,6 +510,8 @@ struct WorkflowEditorView: View {
         let sourceAgentIDs = copiedNodes.compactMap(\.agentID)
         let duplicatedAgentIDs = appState.duplicateAgentsForWorkflowPaste(sourceAgentIDs)
         let agentNamesByID = Dictionary(uniqueKeysWithValues: (appState.currentProject?.agents ?? []).map { ($0.id, $0.name) })
+        var createdNodeIDs: [UUID] = []
+        var createdPrimaryAgentID: UUID?
 
         appState.updateMainWorkflow { workflow in
             var nodeIDMapping: [UUID: UUID] = [:]
@@ -588,6 +545,10 @@ struct WorkflowEditorView: View {
                 newNode.outputParameters = sourceNode.outputParameters
                 workflow.nodes.append(newNode)
                 nodeIDMapping[sourceNode.id] = newNode.id
+                createdNodeIDs.append(newNode.id)
+                if createdPrimaryAgentID == nil, let agentID = newNode.agentID {
+                    createdPrimaryAgentID = agentID
+                }
             }
 
             for sourceEdge in copiedEdges {
@@ -615,6 +576,21 @@ struct WorkflowEditorView: View {
                 newBoundary.updatedAt = Date()
                 workflow.boundaries.append(newBoundary)
             }
+        }
+
+        selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
+
+        if createdNodeIDs.count == 1, let nodeID = createdNodeIDs.first {
+            selectedNodeID = nodeID
+            selectedNodeIDs.removeAll()
+            selectedAgentID = createdPrimaryAgentID
+            shouldPresentNewNodeProperties = true
+        } else if !createdNodeIDs.isEmpty {
+            selectedNodeID = nil
+            selectedNodeIDs = Set(createdNodeIDs)
+            selectedAgentID = nil
+            shouldPresentNewNodeProperties = false
         }
     }
 
@@ -906,76 +882,6 @@ struct WorkflowEditorView: View {
         appState.taskManager.generateTasks(from: workflow, projectAgents: agents)
     }
 
-    private func simulateWorkflowExecution(workflow: Workflow, agents: [Agent]) {
-        guard var execution = testExecution else { return }
-        
-        let agentNodes = appState.openClawService.executionPlan(for: workflow)
-        
-        for (index, node) in agentNodes.enumerated() {
-            guard let agentID = node.agentID,
-                  let agent = agents.first(where: { $0.id == agentID }) else { continue }
-            
-            // 添加执行步骤
-            let step = WorkflowTestStep(
-                stepNumber: index + 1,
-                agentID: agentID,
-                agentName: agent.name,
-                action: getAgentAction(agent: agent, index: index, total: agentNodes.count),
-                status: .pending,
-                timestamp: Date()
-            )
-            execution.steps.append(step)
-        }
-        
-        self.testExecution = execution
-        
-        // 逐步执行
-        executeSteps(index: 0)
-    }
-    
-    private func executeSteps(index: Int) {
-        guard var execution = testExecution, index < execution.steps.count else {
-            isRunning = false
-            return
-        }
-        
-        // 更新当前步骤状态
-        execution.steps[index].status = .running
-        execution.currentStep = index + 1
-        testExecution = execution
-        
-        // 模拟执行延迟 - 使用简单的递归调用
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            self.completeStep(index: index)
-        }
-    }
-    
-    private func completeStep(index: Int) {
-        guard var execution = testExecution, index < execution.steps.count else {
-            isRunning = false
-            return
-        }
-        
-        execution.steps[index].status = .completed
-        execution.steps[index].completedAt = Date()
-        testExecution = execution
-        
-        // 执行下一步
-        executeSteps(index: index + 1)
-    }
-    
-    private func getAgentAction(agent: Agent, index: Int, total: Int) -> String {
-        if index == 0 {
-            return "任务分解 - 分析需求，拆分子任务"
-        } else if index == total - 1 {
-            return "结果汇总 - 收集整理，最终输出"
-        } else if index % 2 == 1 {
-            return "执行处理 - 处理子任务"
-        } else {
-            return "校验确认 - 验证结果准确性"
-        }
-    }
-
     private func resolveNodeID(for identifier: UUID, preferredIndex: Int) -> UUID? {
         guard let workflow = appState.currentProject?.workflows.first else { return nil }
 
@@ -1012,7 +918,6 @@ struct EditorToolbar: View {
     @Binding var selectedNodeIDs: Set<UUID>
     @Binding var selectedEdgeID: UUID?
     @Binding var selectedBoundaryIDs: Set<UUID>
-    let isRunning: Bool
     @Binding var isConnectMode: Bool
     @Binding var isBatchConnectMode: Bool
     @Binding var isLassoMode: Bool
@@ -1035,8 +940,6 @@ struct EditorToolbar: View {
     var onDistributeSelected: (WorkflowEditorView.DistributionAxis) -> Void
     var onOrganizeConnections: () -> Void
     var onGenerateTasks: () -> Void
-    var onRunTest: () -> Void
-    var onStopTest: () -> Void
     var onToggleBatchConnectMode: () -> Void
     var onAssignBatchSources: () -> Void
     var onAssignBatchTargets: () -> Void
@@ -1092,7 +995,7 @@ struct EditorToolbar: View {
                 }
             }
 
-            WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_execution")) {
+            WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_editing")) {
                 HStack(spacing: 8) {
                     Group {
                         TemplatePickerButton(
@@ -1289,27 +1192,6 @@ struct EditorToolbar: View {
                         action: onGenerateTasks,
                         tooltip: LocalizedString.text("generate_tasks_tooltip")
                     )
-
-                    Button(action: isRunning ? onStopTest : onRunTest) {
-                        HStack(spacing: 8) {
-                            Image(systemName: isRunning ? "stop.circle" : "play.circle")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text(isRunning ? LocalizedString.text("stop_action") : LocalizedString.text("run_action"))
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .lineLimit(1)
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 14)
-                        .frame(minWidth: 84)
-                        .frame(height: 38)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(isRunning ? Color.red : Color.accentColor)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help(isRunning ? LocalizedString.text("stop_test_tooltip") : LocalizedString.text("run_test_tooltip"))
 
                     toolbarIconButton(
                         systemName: appState.hasPendingWorkflowConfiguration ? "checkmark.seal.fill" : "checkmark.seal",
@@ -2075,10 +1957,7 @@ private struct AgentCollectionSnapshot {
 
 private struct AgentCollectionSnapshotContext {
     let project: MAProject
-    let detectedRecords: [ProjectOpenClawDetectedAgentRecord]
-    let mirrorRootPaths: [String]
     let managedWorkspacePathsByAgentID: [UUID: String]
-    let workspacePathsByAgentID: [UUID: String]
 }
 
 private struct AgentCollectionSignature: Equatable {
@@ -2112,29 +1991,8 @@ private func makeAgentCollectionSignature(project: MAProject?) -> AgentCollectio
 private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentCollectionSnapshotContext? {
     guard let project = appState.currentProject else { return nil }
 
-    let detectedRecords = project.openClaw.detectedAgents.isEmpty
-        ? appState.openClawManager.discoveryResults
-        : project.openClaw.detectedAgents
-
-    var mirrorRootPaths: [String] = []
     var managedWorkspacePathsByAgentID: [UUID: String] = [:]
-    var workspacePathsByAgentID: [UUID: String] = [:]
     managedWorkspacePathsByAgentID.reserveCapacity(project.agents.count)
-    workspacePathsByAgentID.reserveCapacity(project.agents.count)
-
-    let preferredMirrorRoot = ProjectManager.shared.openClawMirrorDirectory(for: project.id).path
-    mirrorRootPaths.append(preferredMirrorRoot)
-    if let previousMirrorPath = project.openClaw.sessionMirrorPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !previousMirrorPath.isEmpty,
-       !mirrorRootPaths.contains(previousMirrorPath) {
-        mirrorRootPaths.append(previousMirrorPath)
-    }
-
-    for agent in project.agents {
-        if let workspacePath = appState.openClawManager.resolvedWorkspacePath(for: agent) {
-            workspacePathsByAgentID[agent.id] = workspacePath
-        }
-    }
 
     for workflow in project.workflows {
         for node in workflow.nodes where node.type == .agent {
@@ -2152,10 +2010,7 @@ private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentColl
 
     return AgentCollectionSnapshotContext(
         project: project,
-        detectedRecords: detectedRecords,
-        mirrorRootPaths: mirrorRootPaths,
-        managedWorkspacePathsByAgentID: managedWorkspacePathsByAgentID,
-        workspacePathsByAgentID: workspacePathsByAgentID
+        managedWorkspacePathsByAgentID: managedWorkspacePathsByAgentID
     )
 }
 
@@ -2214,140 +2069,31 @@ private func makeAgentCollectionSnapshot(context: AgentCollectionSnapshotContext
 
 private func makeAgentCollectionSoulSourcePaths(context: AgentCollectionSnapshotContext) -> [UUID: String?] {
     let project = context.project
-    let detectedRecords = context.detectedRecords
-    let detectedRootsByNormalizedName = Dictionary(
-        grouping: detectedRecords,
-        by: { normalizeAgentCollectionKey($0.name) }
-    )
 
     return Dictionary(uniqueKeysWithValues: project.agents.map { agent in
         (
             agent.id,
-            fastAgentCollectionSoulSourcePath(
-                for: agent,
-                context: context,
-                detectedRootsByNormalizedName: detectedRootsByNormalizedName
-            )
+            fastAgentCollectionSoulSourcePath(for: agent, context: context)
         )
     })
 }
 
 private func fastAgentCollectionSoulSourcePath(
     for agent: Agent,
-    context: AgentCollectionSnapshotContext,
-    detectedRootsByNormalizedName: [String: [ProjectOpenClawDetectedAgentRecord]]
+    context: AgentCollectionSnapshotContext
 ) -> String? {
-    let candidateNames = [agent.openClawDefinition.agentIdentifier, agent.name]
-        .map(normalizeAgentCollectionKey)
-        .filter { !$0.isEmpty }
-
     if let managedWorkspacePath = context.managedWorkspacePathsByAgentID[agent.id],
-       let soulURL = fastExistingAgentCollectionSoulURL(in: URL(fileURLWithPath: managedWorkspacePath, isDirectory: true)) {
-        return soulURL.path
-    }
-
-    if let directPath = agent.openClawDefinition.soulSourcePath?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !directPath.isEmpty {
-        let directURL = URL(fileURLWithPath: directPath, isDirectory: false)
-        if FileManager.default.fileExists(atPath: directURL.path) {
-            return directURL.path
-        }
-        if let nearbySoulURL = fastExistingAgentCollectionSoulURL(in: directURL.deletingLastPathComponent()) {
-            return nearbySoulURL.path
-        }
-    }
-
-    for mirrorPath in fastMirrorSoulCandidatePaths(for: agent, mirrorRootPaths: context.mirrorRootPaths) {
-        if FileManager.default.fileExists(atPath: mirrorPath) {
-            return mirrorPath
-        }
-    }
-
-    for name in candidateNames {
-        if let records = detectedRootsByNormalizedName[name] {
-            for record in records {
-                let roots = [
-                    record.soulPath.map { URL(fileURLWithPath: $0, isDirectory: false).deletingLastPathComponent().path },
-                    record.copiedToProjectPath,
-                    record.directoryPath,
-                    record.workspacePath
-                ]
-                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                    .map { URL(fileURLWithPath: $0, isDirectory: true) }
-
-                for root in roots {
-                    if let soulURL = fastExistingAgentCollectionSoulURL(in: root) {
-                        return soulURL.path
-                    }
-                }
+       FileManager.default.fileExists(atPath: managedWorkspacePath) {
+        let managedWorkspaceURL = URL(fileURLWithPath: managedWorkspacePath, isDirectory: true)
+        for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles {
+            let documentURL = managedWorkspaceURL.appendingPathComponent(fileName, isDirectory: false)
+            if FileManager.default.fileExists(atPath: documentURL.path) {
+                return documentURL.path
             }
-        }
-    }
-
-    if let workspacePath = context.workspacePathsByAgentID[agent.id],
-       let soulURL = fastExistingAgentCollectionSoulURL(in: URL(fileURLWithPath: workspacePath, isDirectory: true)) {
-        return soulURL.path
-    }
-
-    if let memoryBackupPath = agent.openClawDefinition.memoryBackupPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !memoryBackupPath.isEmpty {
-        let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
-        let rootURL = privateURL.lastPathComponent == "private" ? privateURL.deletingLastPathComponent() : privateURL
-        if let soulURL = fastExistingAgentCollectionSoulURL(in: rootURL) {
-            return soulURL.path
         }
     }
 
     return nil
-}
-
-private func fastExistingAgentCollectionSoulURL(in rootURL: URL) -> URL? {
-    existingOpenClawSoulURL(in: rootURL, maxAncestorDepth: 2)
-}
-
-private func fastMirrorSoulCandidatePaths(for agent: Agent, mirrorRootPaths: [String]) -> [String] {
-    let identifiers = [
-        fastNormalizedTargetIdentifier(for: agent),
-        agent.name
-    ]
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-
-    var candidatePaths: [String] = []
-    var seen = Set<String>()
-
-    for mirrorRootPath in mirrorRootPaths {
-        let mirrorRootURL = URL(fileURLWithPath: mirrorRootPath, isDirectory: true)
-        for identifier in identifiers {
-            let path = mirrorRootURL
-                .appendingPathComponent("agents", isDirectory: true)
-                .appendingPathComponent(fastSafeAgentCollectionPathComponent(identifier), isDirectory: true)
-                .appendingPathComponent("SOUL.md", isDirectory: false)
-                .path
-            if seen.insert(path).inserted {
-                candidatePaths.append(path)
-            }
-        }
-    }
-
-    return candidatePaths
-}
-
-private func fastNormalizedTargetIdentifier(for agent: Agent) -> String {
-    let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-    return identifier.isEmpty ? agent.name : identifier
-}
-
-private func fastSafeAgentCollectionPathComponent(_ value: String) -> String {
-    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-    let cleaned = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-    let result = String(cleaned)
-    return result.isEmpty ? "agent" : result
-}
-
-private func normalizeAgentCollectionKey(_ value: String) -> String {
-    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
 private func runtimePresentation(for rawStatus: String?) -> (label: String, systemImage: String, color: Color, isProblem: Bool) {
@@ -2551,9 +2297,8 @@ private struct AgentContextMenuContent: View {
     let item: AgentCollectionItem
     let canPaste: Bool
     var onOpen: () -> Void
-    var onRevealSoul: () -> Void
+    var onRevealManagedConfig: () -> Void
     var onOpenWorkspace: () -> Void
-    var onReloadSoul: () -> Void
     var onEdit: () -> Void
     var onManageSkills: () -> Void
     var onConfigurePermissions: () -> Void
@@ -2574,16 +2319,12 @@ private struct AgentContextMenuContent: View {
             Label(LocalizedString.text("edit_soul_md"), systemImage: "pencil.and.outline")
         }
 
-        Button(action: onRevealSoul) {
+        Button(action: onRevealManagedConfig) {
             Label(item.hasSoulFile ? LocalizedString.text("reveal_soul_md") : LocalizedString.text("reveal_expected_soul"), systemImage: "doc.text.magnifyingglass")
         }
 
         Button(action: onOpenWorkspace) {
             Label(LocalizedString.text("open_workspace"), systemImage: "folder")
-        }
-
-        Button(action: onReloadSoul) {
-            Label(LocalizedString.text("reload_soul_disk"), systemImage: "arrow.clockwise")
         }
 
         Divider()
@@ -2700,7 +2441,7 @@ private struct AgentListView: View {
                                 onSelect: { selectAgent(item.agent.id, focusNode: false) },
                                 onOpen: { selectAgent(item.agent.id, focusNode: true) },
                                 onEdit: { beginEditing(item.agent.id) },
-                                onRevealSoul: { revealSoul(for: item.agent.id) },
+                                onRevealSoul: { revealManagedConfigFile(for: item.agent.id) },
                                 onDuplicate: { duplicateAgent(item.agent.id) },
                                 onDelete: { deleteCandidate = currentAgent(id: item.agent.id) ?? item.agent },
                                 onConnect: { targetID in connect(sourceID: connectFromAgentID, targetID: targetID) }
@@ -2710,9 +2451,8 @@ private struct AgentListView: View {
                                     item: item,
                                     canPaste: canPasteFromPasteboard,
                                     onOpen: { selectAgent(item.agent.id, focusNode: true) },
-                                    onRevealSoul: { revealSoul(for: item.agent.id) },
+                                    onRevealManagedConfig: { revealManagedConfigFile(for: item.agent.id) },
                                     onOpenWorkspace: { openWorkspace(for: item.agent.id) },
-                                    onReloadSoul: { reloadSoul(for: item.agent.id) },
                                     onEdit: { beginEditing(item.agent.id) },
                                     onManageSkills: { skillsAgent = currentAgent(id: item.agent.id) ?? item.agent },
                                     onConfigurePermissions: { permissionsAgent = currentAgent(id: item.agent.id) ?? item.agent },
@@ -2807,7 +2547,8 @@ private struct AgentListView: View {
     }
 
     private func beginEditing(_ agentID: UUID) {
-        guard let agent = currentAgent(id: agentID) else { return }
+        guard appState.ensureAgentNode(agentID: agentID, suggestedPosition: .zero) != nil,
+              let agent = currentAgent(id: agentID) else { return }
         selectAgent(agentID, focusNode: false)
         editingAgent = agent
     }
@@ -2817,10 +2558,10 @@ private struct AgentListView: View {
         onConnect(sourceID, targetID)
     }
 
-    private func revealSoul(for agentID: UUID) {
-        if let soulURL = appState.agentSoulFileURL(for: agentID) {
-            NSWorkspace.shared.activateFileViewerSelecting([soulURL])
-            showFeedback(LocalizedString.format("revealed_file", soulURL.lastPathComponent), isError: false)
+    private func revealManagedConfigFile(for agentID: UUID) {
+        if let configURL = appState.managedAgentPrimaryConfigURL(for: agentID) {
+            NSWorkspace.shared.activateFileViewerSelecting([configURL])
+            showFeedback(LocalizedString.format("revealed_file", configURL.lastPathComponent), isError: false)
         } else {
             showFeedback(LocalizedString.text("no_real_soul_file"), isError: true)
         }
@@ -2832,14 +2573,6 @@ private struct AgentListView: View {
             showFeedback(LocalizedString.format("opened_workspace", workspaceURL.lastPathComponent), isError: false)
         } else {
             showFeedback(LocalizedString.text("no_workspace_directory"), isError: true)
-        }
-    }
-
-    private func reloadSoul(for agentID: UUID) {
-        let result = appState.refreshAgentSoulMDFromSource(agentID: agentID)
-        showFeedback(result.message, isError: !result.success)
-        if result.success, editingAgent?.id == agentID {
-            editingAgent = currentAgent(id: agentID)
         }
     }
 
@@ -3111,7 +2844,7 @@ private struct AgentGridView: View {
                                 onSelect: { selectedAgentID = item.agent.id },
                                 onOpen: { focusAgent(item.agent.id) },
                                 onEdit: { beginEditing(item.agent.id) },
-                                onRevealSoul: { revealSoul(for: item.agent.id) },
+                                onRevealSoul: { revealManagedConfigFile(for: item.agent.id) },
                                 onOpenWorkspace: { openWorkspace(for: item.agent.id) },
                                 onDuplicate: { duplicateAgent(item.agent.id) },
                                 onDelete: { deleteCandidate = currentAgent(id: item.agent.id) ?? item.agent },
@@ -3125,9 +2858,8 @@ private struct AgentGridView: View {
                                     item: item,
                                     canPaste: canPasteFromPasteboard,
                                     onOpen: { focusAgent(item.agent.id) },
-                                    onRevealSoul: { revealSoul(for: item.agent.id) },
+                                    onRevealManagedConfig: { revealManagedConfigFile(for: item.agent.id) },
                                     onOpenWorkspace: { openWorkspace(for: item.agent.id) },
-                                    onReloadSoul: { reloadSoul(for: item.agent.id) },
                                     onEdit: { beginEditing(item.agent.id) },
                                     onManageSkills: { skillsAgent = currentAgent(id: item.agent.id) ?? item.agent },
                                     onConfigurePermissions: { permissionsAgent = currentAgent(id: item.agent.id) ?? item.agent },
@@ -3220,15 +2952,16 @@ private struct AgentGridView: View {
     }
 
     private func beginEditing(_ agentID: UUID) {
-        guard let agent = currentAgent(id: agentID) else { return }
+        guard appState.ensureAgentNode(agentID: agentID, suggestedPosition: .zero) != nil,
+              let agent = currentAgent(id: agentID) else { return }
         selectedAgentID = agentID
         editingAgent = agent
     }
 
-    private func revealSoul(for agentID: UUID) {
-        if let soulURL = appState.agentSoulFileURL(for: agentID) {
-            NSWorkspace.shared.activateFileViewerSelecting([soulURL])
-            showFeedback(LocalizedString.format("revealed_file", soulURL.lastPathComponent), isError: false)
+    private func revealManagedConfigFile(for agentID: UUID) {
+        if let configURL = appState.managedAgentPrimaryConfigURL(for: agentID) {
+            NSWorkspace.shared.activateFileViewerSelecting([configURL])
+            showFeedback(LocalizedString.format("revealed_file", configURL.lastPathComponent), isError: false)
         } else {
             showFeedback(LocalizedString.text("no_real_soul_file"), isError: true)
         }
@@ -3240,14 +2973,6 @@ private struct AgentGridView: View {
             showFeedback(LocalizedString.format("opened_workspace", workspaceURL.lastPathComponent), isError: false)
         } else {
             showFeedback(LocalizedString.text("no_workspace_directory"), isError: true)
-        }
-    }
-
-    private func reloadSoul(for agentID: UUID) {
-        let result = appState.refreshAgentSoulMDFromSource(agentID: agentID)
-        showFeedback(result.message, isError: !result.success)
-        if result.success, editingAgent?.id == agentID {
-            editingAgent = currentAgent(id: agentID)
         }
     }
 
@@ -3461,6 +3186,7 @@ struct ArchitectureView: View {
     @Binding var connectionType: WorkflowEditorView.ConnectionType
     @Binding var selectedNodeID: UUID?
     @Binding var selectedNodeIDs: Set<UUID>
+    @Binding var selectedAgentID: UUID?
     @Binding var selectedEdgeID: UUID?
     @Binding var selectedBoundaryIDs: Set<UUID>
     @Binding var isLassoMode: Bool
@@ -3481,7 +3207,6 @@ struct ArchitectureView: View {
     var onCancelBatchConnections: () -> Void
     var onUndoBatchConnections: () -> Void
     var onConnect: (UUID, UUID) -> Void
-    var testExecution: WorkflowTestExecution?
     
     @State private var showNodePropertyPanel = false
     @State private var selectedNodeForProperty: WorkflowNode?
@@ -3528,6 +3253,14 @@ struct ArchitectureView: View {
                     },
                     onDropAgent: { agentName, location in
                         self.addAgentNodeToCanvas(agentName: agentName, at: location)
+                    },
+                    onAgentNodeInstantiated: { nodeID, agentID in
+                        selectedNodeID = nodeID
+                        selectedNodeIDs.removeAll()
+                        selectedEdgeID = nil
+                        selectedBoundaryIDs.removeAll()
+                        self.selectedAgentID = agentID
+                        self.shouldPresentSelectedNodeProperties = true
                     },
                     onAssignBatchSources: onAssignBatchSources,
                     onAssignBatchTargets: onAssignBatchTargets
@@ -3586,7 +3319,17 @@ struct ArchitectureView: View {
     }
     
     private func addAgentNodeToCanvas(agentName: String, at _: CGPoint) {
-        appState.addAgentNode(agentName: agentName, position: CGPoint(x: 300, y: 200))
+        guard let instantiated = appState.instantiateAgentNodeFromPalettePayload(
+            agentName,
+            position: CGPoint(x: 300, y: 200)
+        ) else { return }
+
+        selectedNodeID = instantiated.nodeID
+        selectedNodeIDs.removeAll()
+        selectedEdgeID = nil
+        selectedBoundaryIDs.removeAll()
+        selectedAgentID = instantiated.agent.id
+        shouldPresentSelectedNodeProperties = true
     }
     
     // 处理连接模式下的节点点击
@@ -3715,7 +3458,10 @@ struct AgentLibrarySidebar: View {
 
                         if openClawExpanded {
                             ForEach(openClawAgents, id: \.self) { agentName in
-                                DraggableAgentItem(name: agentName)
+                                DraggableAgentItem(
+                                    name: agentName,
+                                    dragPayload: "detectedAgent:\(agentName)"
+                                )
                                     .padding(.horizontal, 4)
                             }
                         }
@@ -3775,7 +3521,11 @@ struct AgentLibrarySidebar: View {
                     
                     if projectExpanded {
                         ForEach(projectAgents) { agent in
-                            DraggableAgentItem(name: agent.name, agent: agent)
+                            DraggableAgentItem(
+                                name: agent.name,
+                                agent: agent,
+                                dragPayload: "projectAgent:\(agent.id.uuidString)"
+                            )
                                 .padding(.horizontal, 4)
                         }
                     }
@@ -3862,14 +3612,19 @@ struct AgentLibrarySidebar: View {
     }
 
     private func addTemplateNode(_ template: AgentTemplate) {
-        guard let agent = appState.addNewAgent(templateID: template.id) else { return }
-        appState.addAgentNode(agentName: agent.name, position: CGPoint(x: 300, y: 200))
+        guard let instantiated = appState.instantiateAgentNodeFromPalettePayload(
+            "template:\(template.id)",
+            position: CGPoint(x: 300, y: 200)
+        ) else { return }
+
+        appState.selectedNodeID = instantiated.nodeID
     }
 }
 
 struct DraggableAgentItem: View {
     let name: String
     var agent: Agent?
+    var dragPayload: String?
     
     var body: some View {
         HStack {
@@ -3887,7 +3642,7 @@ struct DraggableAgentItem: View {
         .padding(8)
         .background(Color(.controlBackgroundColor))
         .cornerRadius(6)
-        .onDrag { NSItemProvider(object: name as NSString) }
+        .onDrag { NSItemProvider(object: (dragPayload ?? name) as NSString) }
     }
 }
 
@@ -4191,7 +3946,7 @@ struct NodePropertyPanel: View {
 
         if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agentID, fileName: fileName) {
             managedConfigDrafts[fileName] = loaded.content
-            selectedConfigFilePath = loaded.sourcePath
+            selectedConfigFilePath = loaded.documentPath
         } else {
             managedConfigDrafts[fileName] = ""
             selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
@@ -4686,7 +4441,7 @@ struct AgentContextMenu: View {
         }
         .foregroundColor(.red)
         
-        // Edit SOUL.md Sheet
+        // Edit managed config sheet
         if showEditSheet {
             AgentEditSheet(agent: agent, isPresented: $showEditSheet)
         }
@@ -4979,7 +4734,7 @@ struct AgentEditSheet: View {
 
         if let loaded = appState.loadManagedAgentWorkspaceDocument(agentID: agent.id, fileName: fileName) {
             managedConfigDrafts[fileName] = loaded.content
-            selectedConfigFilePath = loaded.sourcePath
+            selectedConfigFilePath = loaded.documentPath
         } else {
             managedConfigDrafts[fileName] = ""
             selectedConfigFilePath = managedConfigFiles.first(where: { $0.fileName == fileName })?.absolutePath
@@ -5245,100 +5000,6 @@ struct DeleteConfirmation: View {
     }
 }
 
-// MARK: - 测试执行
-struct WorkflowTestExecution: Identifiable {
-    let id = UUID()
-    var workflow: Workflow
-    var agents: [Agent]
-    var steps: [WorkflowTestStep] = []
-    var currentStep: Int = 0
-}
-
-struct WorkflowTestStep: Identifiable {
-    let id = UUID()
-    var stepNumber: Int
-    var agentID: UUID
-    var agentName: String
-    var action: String
-    var status: StepStatus
-    var timestamp: Date
-    var completedAt: Date?
-    
-    enum StepStatus {
-        case pending, running, completed, failed
-    }
-}
-
-struct TestExecutionPanel: View {
-    var execution: WorkflowTestExecution
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(LocalizedString.text("workflow_test_execution"))
-                    .font(.headline)
-                Spacer()
-                Text(LocalizedString.format("step_of_total", execution.currentStep, execution.steps.count))
-                    .foregroundColor(.secondary)
-            }
-            
-            ScrollView {
-                VStack(spacing: 4) {
-                    ForEach(execution.steps) { step in
-                        TestStepRow(step: step)
-                    }
-                }
-            }
-        }
-        .padding()
-        .frame(height: 200)
-        .background(Color(.controlBackgroundColor))
-    }
-}
-
-struct TestStepRow: View {
-    let step: WorkflowTestStep
-    
-    var body: some View {
-        HStack {
-            // 状态图标
-            switch step.status {
-            case .pending:
-                Circle()
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(width: 20, height: 20)
-            case .running:
-                ProgressView()
-                    .scaleEffect(0.6)
-            case .completed:
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-            case .failed:
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.red)
-            }
-            
-            Text("\(step.stepNumber).")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 24)
-            
-            Text(step.agentName)
-                .font(.caption)
-                .fontWeight(.medium)
-            
-            Spacer()
-            
-            Text(step.action)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(step.status == .running ? Color.blue.opacity(0.1) : Color.clear)
-    }
-}
 
 private struct BatchFeedbackBanner: View {
     let message: String

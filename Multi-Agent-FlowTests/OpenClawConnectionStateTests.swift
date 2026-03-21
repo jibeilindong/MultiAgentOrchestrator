@@ -91,4 +91,40 @@ final class OpenClawConnectionStateTests: XCTestCase {
             return XCTFail("Expected idle manager to stay disconnected.")
         }
     }
+
+    func testLegacyProbeReportSnapshotDecodesWithoutLayers() throws {
+        let json = """
+        {
+          "success": true,
+          "deploymentKind": "local",
+          "endpoint": "http://127.0.0.1:18789",
+          "capabilities": {
+            "cliAvailable": true,
+            "gatewayReachable": true,
+            "gatewayAuthenticated": true,
+            "agentListingAvailable": true,
+            "sessionHistoryAvailable": true,
+            "gatewayAgentAvailable": true,
+            "gatewayChatAvailable": true,
+            "projectAttachmentSupported": true
+          },
+          "health": {
+            "lastMessage": "connected"
+          },
+          "availableAgents": ["planner"],
+          "message": "Connected.",
+          "warnings": [],
+          "sourceOfTruth": "probe",
+          "observedDefaultTransports": ["cli", "ws"]
+        }
+        """
+
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let report = try JSONDecoder().decode(OpenClawProbeReportSnapshot.self, from: data)
+
+        XCTAssertTrue(report.success)
+        XCTAssertEqual(report.endpoint, "http://127.0.0.1:18789")
+        XCTAssertNil(report.layers)
+        XCTAssertEqual(report.availableAgents, ["planner"])
+    }
 }

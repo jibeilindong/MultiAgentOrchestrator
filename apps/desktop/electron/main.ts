@@ -9,6 +9,15 @@ import { existsSync, promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import {
+  buildConnectionStateFromProbeReport,
+  buildDetachedOpenClawConnectionState,
+  buildOpenClawProbeContract,
+  createDefaultOpenClawCapabilities,
+  createDefaultOpenClawHealth,
+  formatOpenClawProbeLayers,
+  type GatewayTransportProbeResult
+} from "./openclaw-connection-state";
+import {
   buildOpenClawGovernanceAuditReport,
   assessOpenClawSandboxSecurityFromText,
   createEmptyProject,
@@ -97,14 +106,6 @@ interface OpenClawActionResult {
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
   connectionState?: OpenClawConnectionStateSnapshot;
   probeReport?: OpenClawProbeReportSnapshot | null;
-}
-
-interface GatewayTransportProbeResult {
-  reachable: boolean;
-  authenticated: boolean;
-  latencyMs: number | null;
-  message: string;
-  warnings: string[];
 }
 
 interface DesktopGatewayDeviceIdentity {
@@ -515,56 +516,6 @@ function buildActiveAgentRecords(names: string[]): ProjectOpenClawAgentRecord[] 
     status: "available",
     lastReloadedAt: timestamp
   }));
-}
-
-function createDefaultOpenClawCapabilities(): OpenClawConnectionCapabilitiesSnapshot {
-  return {
-    cliAvailable: false,
-    gatewayReachable: false,
-    gatewayAuthenticated: false,
-    agentListingAvailable: false,
-    sessionHistoryAvailable: false,
-    gatewayAgentAvailable: false,
-    gatewayChatAvailable: false,
-    projectAttachmentSupported: false
-  };
-}
-
-function createDefaultOpenClawHealth(message: string | null = null): OpenClawConnectionHealthSnapshot {
-  return {
-    lastProbeAt: null,
-    lastHeartbeatAt: null,
-    latencyMs: null,
-    degradationReason: null,
-    lastMessage: message
-  };
-}
-
-function createOpenClawConnectionState(
-  deploymentKind: OpenClawConfig["deploymentKind"],
-  phase: OpenClawConnectionPhase,
-  capabilities: OpenClawConnectionCapabilitiesSnapshot,
-  health: OpenClawConnectionHealthSnapshot
-): OpenClawConnectionStateSnapshot {
-  return {
-    phase,
-    deploymentKind,
-    capabilities,
-    health
-  };
-}
-
-function inferProbePhase(
-  report: OpenClawProbeReportSnapshot,
-  successPhase: OpenClawConnectionPhase = "probed"
-): OpenClawConnectionPhase {
-  if (report.success) {
-    return successPhase;
-  }
-
-  return report.capabilities.cliAvailable || report.capabilities.gatewayReachable || report.availableAgents.length > 0
-    ? "degraded"
-    : "failed";
 }
 
 function tryParseWebSocketTextFrame(
@@ -2617,31 +2568,31 @@ async function probeGatewayEndpoint(config: OpenClawConfig): Promise<GatewayTran
 
 async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeReportSnapshot> {
   const normalizedConfig = normalizeOpenClawConfig(config);
-  const capabilities = createDefaultOpenClawCapabilities();
-  const health = createDefaultOpenClawHealth("Probing OpenClaw connection...");
   const availableAgents: string[] = [];
-  const warnings: string[] = [];
   const endpoint = buildOpenClawBaseUrl(normalizedConfig);
   let cliFailureMessage: string | null = null;
+  let cliAvailable = false;
+  let agentListingAvailable = false;
 
   if (normalizedConfig.deploymentKind === "container" && !normalizedConfig.container.containerName.trim()) {
     const failureMessage = "Container name is required.";
+    const capabilities = createDefaultOpenClawCapabilities();
     const failedHealth = {
-      ...health,
+      ...createDefaultOpenClawHealth(failureMessage),
       lastProbeAt: toSwiftDate(),
-      degradationReason: failureMessage,
-      lastMessage: failureMessage
+      degradationReason: failureMessage
     };
 
     return {
       success: false,
       deploymentKind: normalizedConfig.deploymentKind,
       endpoint,
+      layers: null,
       capabilities,
       health: failedHealth,
       availableAgents: [],
       message: failureMessage,
-      warnings,
+      warnings: [],
       sourceOfTruth: OPENCLAW_PROBE_SOURCE,
       observedDefaultTransports: []
     };
@@ -2654,93 +2605,102 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
       });
       const listedAgents = parseAgentNamesFromOutput(`${stdout ?? ""}\n${stderr ?? ""}`);
       availableAgents.push(...listedAgents);
-      capabilities.cliAvailable = true;
-      capabilities.agentListingAvailable = true;
+      cliAvailable = true;
+      agentListingAvailable = true;
     } catch (error) {
       cliFailureMessage = error instanceof Error ? error.message : String(error);
-      warnings.push(`CLI probe failed: ${cliFailureMessage}`);
     }
   }
-
-  let gatewayProbe: GatewayTransportProbeResult = {
-    reachable: false,
-    authenticated: false,
-    latencyMs: null,
-    message: "Gateway probe skipped.",
-    warnings: []
-  };
-
-  if (normalizedConfig.deploymentKind !== "container") {
-    gatewayProbe = await probeGatewayEndpoint(normalizedConfig);
-    warnings.push(...gatewayProbe.warnings);
-    capabilities.gatewayReachable = gatewayProbe.reachable;
-    capabilities.gatewayAuthenticated = gatewayProbe.authenticated;
-    capabilities.gatewayAgentAvailable = gatewayProbe.authenticated;
-    capabilities.gatewayChatAvailable = gatewayProbe.authenticated;
-    capabilities.sessionHistoryAvailable = gatewayProbe.authenticated;
-  } else {
-    warnings.push("Container desktop probe currently validates CLI and container-backed config discovery; host-side gateway handshake is not required.");
-  }
-
-  capabilities.projectAttachmentSupported =
-    normalizedConfig.deploymentKind !== "remoteServer" && capabilities.cliAvailable;
 
   const probedAt = toSwiftDate();
-  const nextHealth: OpenClawConnectionHealthSnapshot = {
-    lastProbeAt: probedAt,
-    lastHeartbeatAt: gatewayProbe.authenticated ? probedAt : null,
-    latencyMs: gatewayProbe.latencyMs,
-    degradationReason: null,
-    lastMessage: gatewayProbe.message
+  const gatewayProbe = normalizedConfig.deploymentKind === "container"
+    ? null
+    : await probeGatewayEndpoint(normalizedConfig);
+  const probeContract = buildOpenClawProbeContract({
+    config: normalizedConfig,
+    endpoint,
+    availableAgents,
+    cliAvailable,
+    agentListingAvailable,
+    cliFailureMessage,
+    gatewayProbe,
+    probedAt
+  });
+
+  return {
+    success: probeContract.success,
+    deploymentKind: normalizedConfig.deploymentKind,
+    endpoint,
+    layers: probeContract.layers,
+    capabilities: probeContract.capabilities,
+    health: probeContract.health,
+    availableAgents,
+    message: probeContract.message,
+    warnings: probeContract.warnings,
+    sourceOfTruth: OPENCLAW_PROBE_SOURCE,
+    observedDefaultTransports: probeContract.observedDefaultTransports
   };
+}
 
-  const success =
-    normalizedConfig.deploymentKind === "remoteServer"
-      ? capabilities.gatewayAuthenticated
-      : normalizedConfig.deploymentKind === "container"
-        ? capabilities.cliAvailable && capabilities.agentListingAvailable
-        : capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated;
+function buildConnectOpenClawResult(
+  config: OpenClawConfig,
+  probeReport: OpenClawProbeReportSnapshot,
+  detectedAgents: ProjectOpenClawDetectedAgentRecord[]
+): OpenClawActionResult {
+  const availableAgents =
+    probeReport.availableAgents.length > 0 ? probeReport.availableAgents : detectedAgents.map((item) => item.name);
 
-  if (!success) {
-    const reasons: string[] = [];
-    if (normalizedConfig.deploymentKind !== "remoteServer" && !capabilities.cliAvailable) {
-      reasons.push(cliFailureMessage || "OpenClaw CLI probe failed.");
-    }
-    if (normalizedConfig.deploymentKind !== "container") {
-      if (!capabilities.gatewayReachable) {
-        reasons.push(gatewayProbe.message || "OpenClaw gateway is unreachable.");
-      } else if (!capabilities.gatewayAuthenticated) {
-        reasons.push(gatewayProbe.message || "OpenClaw gateway authentication failed.");
-      }
-    }
-    nextHealth.degradationReason = reasons.join(" ").trim() || "OpenClaw probe failed.";
-  }
+  return {
+    success: probeReport.success,
+    message: probeReport.success
+      ? `Connected to OpenClaw. Found ${availableAgents.length} agent(s).`
+      : probeReport.layers
+        ? `${probeReport.message} (${formatOpenClawProbeLayers(probeReport.layers)})`
+        : probeReport.message,
+    isConnected: probeReport.success,
+    availableAgents,
+    activeAgents: probeReport.success ? buildActiveAgentRecords(availableAgents) : [],
+    detectedAgents,
+    connectionState: buildConnectionStateFromProbeReport({
+      deploymentKind: config.deploymentKind,
+      report: probeReport,
+      successPhase: "ready"
+    }),
+    probeReport
+  };
+}
 
-  const message = success
-    ? normalizedConfig.deploymentKind === "remoteServer"
-      ? `Connected to remote OpenClaw gateway at ${endpoint}.`
-      : `Connected to OpenClaw CLI and gateway. Found ${availableAgents.length} agent(s).`
-    : nextHealth.degradationReason ?? gatewayProbe.message;
-
-  const observedDefaultTransports = [
-    ...(capabilities.cliAvailable ? ["cli"] : []),
-    ...(capabilities.gatewayReachable ? ["ws"] : [])
-  ];
+function buildDetectOpenClawResult(
+  config: OpenClawConfig,
+  probeReport: OpenClawProbeReportSnapshot,
+  detectedAgents: ProjectOpenClawDetectedAgentRecord[]
+): OpenClawActionResult {
+  const availableAgents =
+    probeReport.availableAgents.length > 0 ? probeReport.availableAgents : detectedAgents.map((item) => item.name);
+  const success = probeReport.success || detectedAgents.length > 0 || availableAgents.length > 0;
+  const message = detectedAgents.length > 0
+    ? `Detected ${detectedAgents.length} OpenClaw agent(s).`
+    : probeReport.success
+      ? "OpenClaw probe succeeded, but no agents were detected."
+      : probeReport.layers
+        ? `${probeReport.message} (${formatOpenClawProbeLayers(probeReport.layers)})`
+        : probeReport.message;
 
   return {
     success,
-    deploymentKind: normalizedConfig.deploymentKind,
-    endpoint,
-    capabilities,
-    health: {
-      ...nextHealth,
-      lastMessage: message
-    },
-    availableAgents,
     message,
-    warnings,
-    sourceOfTruth: OPENCLAW_PROBE_SOURCE,
-    observedDefaultTransports
+    isConnected: false,
+    availableAgents,
+    activeAgents: [],
+    detectedAgents,
+    connectionState: buildConnectionStateFromProbeReport({
+      deploymentKind: config.deploymentKind,
+      report: probeReport,
+      successPhase: "probed",
+      fallbackPhase: success ? "degraded" : undefined,
+      messageOverride: message
+    }),
+    probeReport
   };
 }
 
@@ -2750,59 +2710,14 @@ async function connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionRe
   const detectedAgents = probeReport.success
     ? await inspectOpenClawAgents(normalizedConfig, probeReport.availableAgents)
     : [];
-  const availableAgents =
-    probeReport.availableAgents.length > 0 ? probeReport.availableAgents : detectedAgents.map((item) => item.name);
-
-  return {
-    success: probeReport.success,
-    message: probeReport.success
-      ? `Connected to OpenClaw. Found ${availableAgents.length} agent(s).`
-      : probeReport.message,
-    isConnected: probeReport.success,
-    availableAgents,
-    activeAgents: probeReport.success ? buildActiveAgentRecords(availableAgents) : [],
-    detectedAgents,
-    connectionState: createOpenClawConnectionState(
-      normalizedConfig.deploymentKind,
-      inferProbePhase(probeReport, probeReport.success ? "ready" : "failed"),
-      probeReport.capabilities,
-      probeReport.health
-    ),
-    probeReport
-  };
+  return buildConnectOpenClawResult(normalizedConfig, probeReport, detectedAgents);
 }
 
 async function detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult> {
   const normalizedConfig = normalizeOpenClawConfig(config);
   const probeReport = await probeOpenClaw(normalizedConfig);
   const detectedAgents = await inspectOpenClawAgents(normalizedConfig, probeReport.availableAgents);
-  const availableAgents =
-    probeReport.availableAgents.length > 0 ? probeReport.availableAgents : detectedAgents.map((item) => item.name);
-  const success = probeReport.success || detectedAgents.length > 0 || availableAgents.length > 0;
-  const message = detectedAgents.length > 0
-    ? `Detected ${detectedAgents.length} OpenClaw agent(s).`
-    : probeReport.success
-      ? "OpenClaw probe succeeded, but no agents were detected."
-      : probeReport.message;
-
-  return {
-    success,
-    message,
-    isConnected: false,
-    availableAgents,
-    activeAgents: [],
-    detectedAgents,
-    connectionState: createOpenClawConnectionState(
-      normalizedConfig.deploymentKind,
-      probeReport.success ? "probed" : success ? "degraded" : inferProbePhase(probeReport),
-      probeReport.capabilities,
-      {
-        ...probeReport.health,
-        lastMessage: message
-      }
-    ),
-    probeReport
-  };
+  return buildDetectOpenClawResult(normalizedConfig, probeReport, detectedAgents);
 }
 
 function createWindow(): BrowserWindow {
@@ -2935,7 +2850,6 @@ function registerProjectIpcHandlers() {
 
   ipcMain.handle("openClaw:disconnect", async (_event, config: OpenClawConfig): Promise<OpenClawActionResult> => {
     const normalizedConfig = normalizeOpenClawConfig(config);
-    const health = createDefaultOpenClawHealth("OpenClaw session detached.");
     return {
       success: true,
       message: "Disconnected from OpenClaw.",
@@ -2943,14 +2857,10 @@ function registerProjectIpcHandlers() {
       availableAgents: [],
       activeAgents: [],
       detectedAgents: [],
-      connectionState: createOpenClawConnectionState(
+      connectionState: buildDetachedOpenClawConnectionState(
         normalizedConfig.deploymentKind,
-        "detached",
-        createDefaultOpenClawCapabilities(),
-        {
-          ...health,
-          lastProbeAt: toSwiftDate()
-        }
+        toSwiftDate(),
+        "OpenClaw session detached."
       ),
       probeReport: null
     };

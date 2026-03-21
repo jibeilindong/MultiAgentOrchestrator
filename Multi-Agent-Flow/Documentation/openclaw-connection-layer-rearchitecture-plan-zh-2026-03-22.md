@@ -344,3 +344,10 @@ OpenClawDeploymentAdapter
 - 容器模式的 agent 发现优先改为读取容器内 `openclaw config file` 指向的真实配置，减少宿主机挂载路径猜测带来的偏差
 - Swift 侧 probe / CLI 与容器快照打包解包主链路切换到带双管道并发读取与超时终止的安全执行器，避免连接测试或归档过程因 Pipe 缓冲区写满而挂死
 - 桌面端 Gateway probe 从 HTTP `fetch()` 提升为 WebSocket upgrade + `connect.challenge` + `connect` RPC 校验，并补上持久化 device identity 签名载荷，远程/本地模式继续向 Swift Gateway 语义对齐
+- 桌面端已抽出纯 `connection-state` 判定 helper，并补齐 `ready / degraded / detached / failed` 回归测试，开始把连接状态机从实现细节升级为可验证契约
+- 桌面端 `connection-state` helper 已继续细化为 `transport / authentication / session / inventory` 四层状态判断，并覆盖本地、容器、远程、彻底失败四类回归场景
+- `transport / authentication / session / inventory` 四层状态已正式进入 `ProbeReport` 结构化字段，Electron `connect` / `detect` 开始复用共享结果构造器；Swift 项目快照也补上兼容旧存档的 `layers` 解码路径
+- 桌面端已新增运行时 readiness helper，把四层状态接入 OpenClaw 配置面板、Operations dashboard 与 live workflow preflight；其中 `transport / authentication / session` 降级现在会阻断高速实时执行，`inventory` 降级则保留为可恢复告警
+- launch verification 与审批后的下游 live continuation 现已复用同一套 readiness gating：runtime 被阻断时不再静默退回 synthetic 路径，而是将阻断原因写回 verification / workbench 状态
+- readiness helper 已进一步映射出结构化 recovery actions，诊断面板可直接触发 `Connect` / `Detect agents`，并对需要人工修正的 host、container、credential 配置给出明确修复建议
+- 桌面端已支持半自动 recovery plan 编排：当恢复链路安全时可按顺序执行 `Connect -> Detect agents`，并在需要人工修正配置时中途暂停并输出明确的接力提示

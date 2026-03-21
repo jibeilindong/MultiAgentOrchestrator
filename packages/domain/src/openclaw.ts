@@ -87,10 +87,21 @@ export interface OpenClawConnectionStateSnapshot {
   health: OpenClawConnectionHealthSnapshot;
 }
 
+export const OPENCLAW_PROBE_LAYER_STATES = ["ready", "degraded", "unavailable", "not_required"] as const;
+export type OpenClawProbeLayerState = (typeof OPENCLAW_PROBE_LAYER_STATES)[number];
+
+export interface OpenClawProbeLayersSnapshot {
+  transport: OpenClawProbeLayerState;
+  authentication: OpenClawProbeLayerState;
+  session: OpenClawProbeLayerState;
+  inventory: OpenClawProbeLayerState;
+}
+
 export interface OpenClawProbeReportSnapshot {
   success: boolean;
   deploymentKind: OpenClawDeploymentKind;
   endpoint: string;
+  layers?: OpenClawProbeLayersSnapshot | null;
   capabilities: OpenClawConnectionCapabilitiesSnapshot;
   health: OpenClawConnectionHealthSnapshot;
   availableAgents: string[];

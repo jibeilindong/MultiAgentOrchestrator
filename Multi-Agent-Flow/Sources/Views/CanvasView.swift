@@ -40,6 +40,7 @@ struct CanvasView: View {
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
     var onDropAgent: ((String, CGPoint) -> Void)?
+    var onAgentNodeInstantiated: ((UUID, UUID) -> Void)?
     var onAssignBatchSources: (() -> Void)?
     var onAssignBatchTargets: (() -> Void)?
 
@@ -67,6 +68,7 @@ struct CanvasView: View {
         onEdgeSelected: ((WorkflowEdge) -> Void)? = nil,
         onEdgeSecondarySelected: ((WorkflowEdge) -> Void)? = nil,
         onDropAgent: ((String, CGPoint) -> Void)? = nil,
+        onAgentNodeInstantiated: ((UUID, UUID) -> Void)? = nil,
         onAssignBatchSources: (() -> Void)? = nil,
         onAssignBatchTargets: (() -> Void)? = nil
     ) {
@@ -93,6 +95,7 @@ struct CanvasView: View {
         self.onEdgeSelected = onEdgeSelected
         self.onEdgeSecondarySelected = onEdgeSecondarySelected
         self.onDropAgent = onDropAgent
+        self.onAgentNodeInstantiated = onAgentNodeInstantiated
         self.onAssignBatchSources = onAssignBatchSources
         self.onAssignBatchTargets = onAssignBatchTargets
     }
@@ -141,6 +144,7 @@ struct CanvasView: View {
                         suppressCanvasTapClear = true
                         onEdgeSecondarySelected?(edge)
                     },
+                    onAgentNodeInstantiated: onAgentNodeInstantiated,
                     onAssignBatchSources: onAssignBatchSources,
                     onAssignBatchTargets: onAssignBatchTargets
                 )

@@ -36,6 +36,7 @@ struct CanvasContentView: View {
     var onNodeSecondarySelected: ((WorkflowNode) -> Void)?
     var onEdgeSelected: ((WorkflowEdge) -> Void)?
     var onEdgeSecondarySelected: ((WorkflowEdge) -> Void)?
+    var onAgentNodeInstantiated: ((UUID, UUID) -> Void)?
     var onAssignBatchSources: (() -> Void)?
     var onAssignBatchTargets: (() -> Void)?
 
@@ -491,11 +492,8 @@ struct CanvasContentView: View {
                             let rawType = String(agentName.dropFirst("nodeType:".count))
                             let nodeType = WorkflowNode.NodeType(rawValue: rawType) ?? WorkflowNode.NodeType.decoded(from: rawType)
                             addWorkflowNodeToCanvas(type: nodeType, at: location, geometry: geometry)
-                        } else if agentName.hasPrefix("template:") {
-                            let templateID = String(agentName.dropFirst("template:".count))
-                            addTemplateNodeToCanvas(templateID: templateID, at: location, geometry: geometry)
                         } else {
-                            addAgentNodeToCanvas(agentName: agentName, at: location, geometry: geometry)
+                            addAgentNodeToCanvas(payload: agentName, at: location, geometry: geometry)
                         }
                     }
                 }
@@ -559,7 +557,7 @@ struct CanvasContentView: View {
         appState.addNode(type: type, position: position)
     }
 
-    private func addAgentNodeToCanvas(agentName: String, at location: CGPoint, geometry: GeometryProxy) {
+    private func addAgentNodeToCanvas(payload: String, at location: CGPoint, geometry: GeometryProxy) {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
         let rawPosition = CGPoint(
@@ -567,20 +565,8 @@ struct CanvasContentView: View {
             y: (location.y - centerY - offset.height) / scale
         )
         let position = appState.snapPointToGrid(rawPosition)
-        appState.addAgentNode(agentName: agentName, position: position)
-    }
-
-    private func addTemplateNodeToCanvas(templateID: String, at location: CGPoint, geometry: GeometryProxy) {
-        let centerX = geometry.size.width / 2
-        let centerY = geometry.size.height / 2
-        let rawPosition = CGPoint(
-            x: (location.x - centerX - offset.width) / scale,
-            y: (location.y - centerY - offset.height) / scale
-        )
-        let position = appState.snapPointToGrid(rawPosition)
-
-        guard let agent = appState.addNewAgent(templateID: templateID) else { return }
-        appState.addAgentNode(agentName: agent.name, position: position)
+        guard let instantiated = appState.instantiateAgentNodeFromPalettePayload(payload, position: position) else { return }
+        onAgentNodeInstantiated?(instantiated.nodeID, instantiated.agent.id)
     }
 
     private func lassoGesture(

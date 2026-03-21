@@ -329,10 +329,37 @@ struct OpenClawConnectionStateSnapshot: Codable {
     }
 }
 
+enum OpenClawProbeLayerState: String, Codable {
+    case ready
+    case degraded
+    case unavailable
+    case notRequired = "not_required"
+}
+
+struct OpenClawProbeLayersSnapshot: Codable {
+    var transport: OpenClawProbeLayerState
+    var authentication: OpenClawProbeLayerState
+    var session: OpenClawProbeLayerState
+    var inventory: OpenClawProbeLayerState
+
+    init(
+        transport: OpenClawProbeLayerState = .unavailable,
+        authentication: OpenClawProbeLayerState = .unavailable,
+        session: OpenClawProbeLayerState = .unavailable,
+        inventory: OpenClawProbeLayerState = .unavailable
+    ) {
+        self.transport = transport
+        self.authentication = authentication
+        self.session = session
+        self.inventory = inventory
+    }
+}
+
 struct OpenClawProbeReportSnapshot: Codable {
     var success: Bool
     var deploymentKind: OpenClawDeploymentKind
     var endpoint: String
+    var layers: OpenClawProbeLayersSnapshot?
     var capabilities: OpenClawConnectionCapabilitiesSnapshot
     var health: OpenClawConnectionHealthSnapshot
     var availableAgents: [String]
@@ -341,10 +368,25 @@ struct OpenClawProbeReportSnapshot: Codable {
     var sourceOfTruth: String
     var observedDefaultTransports: [String]
 
+    enum CodingKeys: String, CodingKey {
+        case success
+        case deploymentKind
+        case endpoint
+        case layers
+        case capabilities
+        case health
+        case availableAgents
+        case message
+        case warnings
+        case sourceOfTruth
+        case observedDefaultTransports
+    }
+
     init(
         success: Bool = false,
         deploymentKind: OpenClawDeploymentKind = .local,
         endpoint: String = "",
+        layers: OpenClawProbeLayersSnapshot? = nil,
         capabilities: OpenClawConnectionCapabilitiesSnapshot = OpenClawConnectionCapabilitiesSnapshot(),
         health: OpenClawConnectionHealthSnapshot = OpenClawConnectionHealthSnapshot(),
         availableAgents: [String] = [],
@@ -356,6 +398,7 @@ struct OpenClawProbeReportSnapshot: Codable {
         self.success = success
         self.deploymentKind = deploymentKind
         self.endpoint = endpoint
+        self.layers = layers
         self.capabilities = capabilities
         self.health = health
         self.availableAgents = availableAgents
@@ -363,6 +406,38 @@ struct OpenClawProbeReportSnapshot: Codable {
         self.warnings = warnings
         self.sourceOfTruth = sourceOfTruth
         self.observedDefaultTransports = observedDefaultTransports
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decodeIfPresent(Bool.self, forKey: .success) ?? false
+        deploymentKind = try container.decodeIfPresent(OpenClawDeploymentKind.self, forKey: .deploymentKind) ?? .local
+        endpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
+        layers = try container.decodeIfPresent(OpenClawProbeLayersSnapshot.self, forKey: .layers)
+        capabilities = try container.decodeIfPresent(OpenClawConnectionCapabilitiesSnapshot.self, forKey: .capabilities)
+            ?? OpenClawConnectionCapabilitiesSnapshot()
+        health = try container.decodeIfPresent(OpenClawConnectionHealthSnapshot.self, forKey: .health)
+            ?? OpenClawConnectionHealthSnapshot()
+        availableAgents = try container.decodeIfPresent([String].self, forKey: .availableAgents) ?? []
+        message = try container.decodeIfPresent(String.self, forKey: .message) ?? ""
+        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        sourceOfTruth = try container.decodeIfPresent(String.self, forKey: .sourceOfTruth) ?? ""
+        observedDefaultTransports = try container.decodeIfPresent([String].self, forKey: .observedDefaultTransports) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(success, forKey: .success)
+        try container.encode(deploymentKind, forKey: .deploymentKind)
+        try container.encode(endpoint, forKey: .endpoint)
+        try container.encodeIfPresent(layers, forKey: .layers)
+        try container.encode(capabilities, forKey: .capabilities)
+        try container.encode(health, forKey: .health)
+        try container.encode(availableAgents, forKey: .availableAgents)
+        try container.encode(message, forKey: .message)
+        try container.encode(warnings, forKey: .warnings)
+        try container.encode(sourceOfTruth, forKey: .sourceOfTruth)
+        try container.encode(observedDefaultTransports, forKey: .observedDefaultTransports)
     }
 }
 

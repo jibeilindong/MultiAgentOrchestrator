@@ -2,6 +2,8 @@ import Foundation
 import SwiftUI
 
 enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
+    case threads
+    case signals
     case liveRun
     case sessions
     case workflowMap
@@ -11,6 +13,10 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .threads:
+            return "Threads"
+        case .signals:
+            return "Signals"
         case .liveRun:
             return "Live Run"
         case .sessions:
@@ -24,6 +30,10 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
+        case .threads:
+            return "Thread-first frontline, hotspots, and operator drill-down"
+        case .signals:
+            return "Cron, tool, and projection observability front line"
         case .liveRun:
             return "Immediate runtime posture and bottlenecks"
         case .sessions:
@@ -37,6 +47,10 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .threads:
+            return "text.line.first.and.arrowtriangle.forward"
+        case .signals:
+            return "dot.radiowaves.left.and.right"
         case .liveRun:
             return "play.rectangle.on.rectangle"
         case .sessions:

@@ -383,6 +383,7 @@ final class AgentTemplateLibraryStore: ObservableObject {
     static let shared = AgentTemplateLibraryStore()
 
     @Published private(set) var templates: [AgentTemplate] = []
+    @Published private(set) var draftSessions: [String: TemplateDraftSession] = [:]
 
     private let templateFileSystem: TemplateFileSystem
     private let appSupportRootDirectory: URL
@@ -603,6 +604,8 @@ final class AgentTemplateLibraryStore: ObservableObject {
     func deleteCustomTemplate(_ templateID: String) {
         guard !isBuiltInTemplate(templateID) else { return }
 
+        draftSessions.removeValue(forKey: templateID)
+        try? templateFileSystem.removeTemplateDraft(for: templateID, under: appSupportRootDirectory)
         customTemplateDocuments.removeValue(forKey: templateID)
         customTemplateLineages.removeValue(forKey: templateID)
         try? templateFileSystem.removeTemplateAsset(for: templateID, under: appSupportRootDirectory)
@@ -625,6 +628,60 @@ final class AgentTemplateLibraryStore: ObservableObject {
         }
 
         return nil
+    }
+
+    func templateDraftDirectoryURL(for templateID: String) -> URL? {
+        let draftURL = templateFileSystem.templateDraftRootDirectory(for: templateID, under: appSupportRootDirectory)
+        guard FileManager.default.fileExists(atPath: draftURL.path) else { return nil }
+        return draftURL
+    }
+
+    func draftSession(for templateID: String) -> TemplateDraftSession? {
+        draftSessions[templateID]
+    }
+
+    @discardableResult
+    func openDraftSession(for templateID: String) throws -> TemplateDraftSession {
+        guard template(withID: templateID) != nil else {
+            throw AgentTemplateLibraryStoreError.missingTemplate(templateID)
+        }
+
+        if let existingSession = draftSessions[templateID],
+           FileManager.default.fileExists(atPath: existingSession.draftRootURL.path) {
+            return existingSession
+        }
+
+        guard let sourceAssetURL = templateAssetDirectoryURL(for: templateID) else {
+            throw AgentTemplateLibraryStoreError.missingTemplate(templateID)
+        }
+
+        let draftRootURL: URL
+        if let existingDraftURL = templateDraftDirectoryURL(for: templateID) {
+            draftRootURL = existingDraftURL
+        } else {
+            draftRootURL = try templateFileSystem.createTemplateDraftDirectory(
+                for: templateID,
+                from: sourceAssetURL,
+                under: appSupportRootDirectory
+            )
+        }
+
+        let session = TemplateDraftSession(
+            templateID: templateID,
+            sourceAssetURL: sourceAssetURL,
+            draftRootURL: draftRootURL
+        )
+        draftSessions[templateID] = session
+        return session
+    }
+
+    func closeDraftSession(for templateID: String) {
+        draftSessions.removeValue(forKey: templateID)
+    }
+
+    func discardDraftSession(for templateID: String) throws {
+        draftSessions.removeValue(forKey: templateID)
+        try templateFileSystem.removeTemplateDraft(for: templateID, under: appSupportRootDirectory)
     }
 
     func preflightImportTemplateAssets(from urls: [URL]) throws -> TemplateAssetImportPreviewReport {
@@ -767,6 +824,7 @@ final class AgentTemplateLibraryStore: ObservableObject {
         try? templateFileSystem.ensureBaseDirectories(under: appSupportRootDirectory)
         preferences = templateFileSystem.loadPreferences(under: appSupportRootDirectory) ?? TemplateLibraryPreferences()
         manifest = templateFileSystem.loadManifest(under: appSupportRootDirectory) ?? TemplateLibraryManifest()
+        draftSessions = [:]
 
         var documents: [String: TemplateAssetDocument] = [:]
         var lineages: [String: TemplateLineage] = [:]

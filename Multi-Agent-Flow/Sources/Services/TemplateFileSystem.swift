@@ -46,6 +46,16 @@ struct TemplateFileSystem {
             .appendingPathComponent("Indexes", isDirectory: true)
     }
 
+    func templateDraftsRootDirectory(under appSupportRootDirectory: URL) -> URL {
+        templateLibraryRootDirectory(under: appSupportRootDirectory)
+            .appendingPathComponent("Drafts", isDirectory: true)
+    }
+
+    func templateDraftRootDirectory(for templateID: String, under appSupportRootDirectory: URL) -> URL {
+        templateDraftsRootDirectory(under: appSupportRootDirectory)
+            .appendingPathComponent(templateID, isDirectory: true)
+    }
+
     func templateRootDirectory(for templateID: String, under appSupportRootDirectory: URL) -> URL {
         templateLibraryRootDirectory(under: appSupportRootDirectory)
             .appendingPathComponent(templateID, isDirectory: true)
@@ -179,6 +189,10 @@ struct TemplateFileSystem {
             at: templateIndexesRootDirectory(under: appSupportRootDirectory),
             withIntermediateDirectories: true
         )
+        try fileManager.createDirectory(
+            at: templateDraftsRootDirectory(under: appSupportRootDirectory),
+            withIntermediateDirectories: true
+        )
     }
 
     func ensureTemplateScaffold(for templateID: String, under appSupportRootDirectory: URL) throws {
@@ -250,9 +264,11 @@ struct TemplateFileSystem {
 
         return contents.compactMap { url in
             guard url.lastPathComponent != "Indexes" else { return nil }
+            guard url.lastPathComponent != "Drafts" else { return nil }
 
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
             guard values?.isDirectory == true else { return nil }
+            guard isTemplateAssetDirectory(url) else { return nil }
             return url.lastPathComponent
         }
         .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
@@ -410,6 +426,36 @@ struct TemplateFileSystem {
         }
         try fileManager.copyItem(at: sourceRootDirectory, to: destinationURL)
         return destinationURL
+    }
+
+    func hasTemplateDraft(for templateID: String, under appSupportRootDirectory: URL) -> Bool {
+        fileManager.fileExists(
+            atPath: templateDraftRootDirectory(for: templateID, under: appSupportRootDirectory).path
+        )
+    }
+
+    func createTemplateDraftDirectory(
+        for templateID: String,
+        from sourceRootDirectory: URL,
+        under appSupportRootDirectory: URL
+    ) throws -> URL {
+        try ensureBaseDirectories(under: appSupportRootDirectory)
+        let draftsRootURL = templateDraftsRootDirectory(under: appSupportRootDirectory)
+        let destinationURL = templateDraftRootDirectory(for: templateID, under: appSupportRootDirectory)
+
+        try fileManager.createDirectory(at: draftsRootURL, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        try fileManager.copyItem(at: sourceRootDirectory, to: destinationURL)
+        return destinationURL
+    }
+
+    func removeTemplateDraft(for templateID: String, under appSupportRootDirectory: URL) throws {
+        let draftURL = templateDraftRootDirectory(for: templateID, under: appSupportRootDirectory)
+        guard fileManager.fileExists(atPath: draftURL.path) else { return }
+        try fileManager.removeItem(at: draftURL)
     }
 
     func exportTemplateAssetDirectory(

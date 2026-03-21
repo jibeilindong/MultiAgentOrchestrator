@@ -221,6 +221,48 @@ final class TemplateAssetFileSystemTests: XCTestCase {
         XCTAssertEqual(secondExportURL.lastPathComponent, "\(template.id)-2")
     }
 
+    func testCreateTemplateDraftDirectoryCopiesAssetAndDoesNotPolluteTemplateIndex() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 1,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test draft directory creation."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let sourceURL = fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        let draftURL = try fileSystem.createTemplateDraftDirectory(
+            for: template.id,
+            from: sourceURL,
+            under: rootURL
+        )
+
+        XCTAssertTrue(fileSystem.hasTemplateDraft(for: template.id, under: rootURL))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: draftURL.appendingPathComponent("template.json", isDirectory: false).path
+            )
+        )
+        XCTAssertEqual(fileSystem.listTemplateAssetIDs(under: rootURL), [template.id])
+
+        try fileSystem.removeTemplateDraft(for: template.id, under: rootURL)
+
+        XCTAssertFalse(fileSystem.hasTemplateDraft(for: template.id, under: rootURL))
+    }
+
     func testBuiltInTemplateAssetCatalogMaterializesStandardAssets() throws {
         let rootURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }

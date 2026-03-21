@@ -9,7 +9,7 @@ struct OpsCenterDashboardView: View {
 
     private let projectionRefreshTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
-    @State private var selectedPage: OpsCenterConsolePage = .liveRun
+    @State private var selectedPage: OpsCenterConsolePage = .threads
     @State private var selectedWorkflowID: UUID?
     @State private var selectedInvestigation: OpsCenterInvestigationTarget?
     @State private var projections: OpsCenterProjectionBundle?
@@ -39,7 +39,7 @@ struct OpsCenterDashboardView: View {
                 ContentUnavailableView(
                     "Open a project to inspect workflow runtime",
                     systemImage: "gauge.with.dots.needle.33percent",
-                    description: Text("Ops Center now focuses on live runtime investigation, sessions, workflow structure, and history.")
+                    description: Text("Ops Center now focuses on thread-first runtime investigation, live execution, workflow structure, and history.")
                 )
             } else {
                 VStack(spacing: 0) {
@@ -113,7 +113,7 @@ struct OpsCenterDashboardView: View {
 
             Picker("Ops Center Page", selection: $selectedPage) {
                 ForEach(OpsCenterConsolePage.allCases) { page in
-                    Label(page.title, systemImage: page.systemImage).tag(page)
+                    Text(page.title).tag(page)
                 }
             }
             .pickerStyle(.segmented)
@@ -125,6 +125,23 @@ struct OpsCenterDashboardView: View {
     @ViewBuilder
     private var pageContent: some View {
         switch selectedPage {
+        case .threads:
+            OpsCenterThreadsDashboardView(
+                workflow: selectedWorkflow,
+                projections: projections,
+                onSelectThread: openThreadInvestigation,
+                onSelectSession: openSessionInvestigation
+            )
+        case .signals:
+            OpsCenterSignalsDashboardView(
+                workflow: selectedWorkflow,
+                projections: projections,
+                onSelectCron: openCronInvestigation,
+                onSelectTool: openToolInvestigation,
+                onSelectArchiveProjection: openArchiveProjectionInvestigation,
+                onSelectSession: openSessionInvestigation,
+                onSelectThread: openThreadInvestigation
+            )
         case .liveRun:
             OpsCenterLiveRunDashboardView(
                 workflow: selectedWorkflow,
@@ -903,6 +920,1178 @@ struct OpsCenterDashboardView: View {
     }
 }
 
+private struct OpsCenterSignalsDashboardView: View {
+    @EnvironmentObject var appState: AppState
+    let workflow: Workflow?
+    let projections: OpsCenterProjectionBundle?
+    let onSelectCron: (String) -> Void
+    let onSelectTool: (String) -> Void
+    let onSelectArchiveProjection: () -> Void
+    let onSelectSession: (String) -> Void
+    let onSelectThread: (String) -> Void
+
+    @State private var searchText = ""
+    @State private var selectedFilter: OpsCenterSignalListFilter = .all
+    @State private var selectedSort: OpsCenterSignalSort = .priority
+
+    private var snapshot: OpsAnalyticsSnapshot {
+        appState.opsAnalytics.snapshot
+    }
+
+    private var executionResultsByID: [UUID: ExecutionResult] {
+        Dictionary(uniqueKeysWithValues: appState.openClawService.executionResults.map { ($0.id, $0) })
+    }
+
+    private var sessionSummaries: [OpsCenterSessionSummary] {
+        OpsCenterSnapshotBuilder.buildSessionSummaries(
+            project: appState.currentProject,
+            workflow: workflow,
+            tasks: appState.taskManager.tasks,
+            messages: appState.messageManager.messages,
+            executionResults: appState.openClawService.executionResults
+        )
+    }
+
+    private var effectiveSessions: [OpsCenterSessionSummary] {
+        sessionSummaries.isEmpty ? (projections?.sessionSummaries(for: workflow?.id) ?? []) : sessionSummaries
+    }
+
+    private var threadSummaries: [OpsCenterThreadSummary] {
+        opsBuildThreadSummaries(
+            project: appState.currentProject,
+            workflow: workflow,
+            messages: appState.messageManager.messages,
+            tasks: appState.taskManager.tasks,
+            sessionSummaries: effectiveSessions,
+            projections: projections
+        )
+    }
+
+    private var leadThreadBySessionID: [String: OpsCenterThreadSummary] {
+        Dictionary(
+            grouping: threadSummaries.compactMap { thread -> (String, OpsCenterThreadSummary)? in
+                guard let sessionID = opsNormalizedSessionID(thread.relatedSession?.sessionID) else { return nil }
+                return (sessionID, thread)
+            },
+            by: { $0.0 }
+        )
+        .compactMapValues { items in
+            items.map(\.1).max(by: { lhs, rhs in
+                if lhs.hotspotScore != rhs.hotspotScore {
+                    return lhs.hotspotScore < rhs.hotspotScore
+                }
+                return (lhs.lastUpdatedAt ?? .distantPast) < (rhs.lastUpdatedAt ?? .distantPast)
+            })
+        }
+    }
+
+    private var effectiveCronSummary: OpsCronReliabilitySummary? {
+        snapshot.cronSummary ?? projections?.cronSummary
+    }
+
+    private var recentCronRuns: [OpsCronRunRow] {
+        let liveRuns = snapshot.cronRuns
+        let projectedRuns = projections?.recentCronRuns() ?? []
+
+        return Array(
+            (liveRuns + projectedRuns).reduce(into: [String: OpsCronRunRow]()) { partial, item in
+                let key = item.id
+                guard let existing = partial[key] else {
+                    partial[key] = item
+                    return
+                }
+                if item.runAt > existing.runAt {
+                    partial[key] = item
+                }
+            }
+            .values
+        )
+        .sorted { lhs, rhs in
+            if lhs.runAt != rhs.runAt {
+                return lhs.runAt > rhs.runAt
+            }
+            return lhs.id > rhs.id
+        }
+    }
+
+    private var toolHotspots: [OpsCenterToolHotspotDigest] {
+        let anomalyPairs: [(String, OpsAnomalyRow)] = snapshot.anomalyRows.compactMap { anomaly in
+            guard let identifier = opsToolIdentifier(from: anomaly) else { return nil }
+            return (identifier, anomaly)
+        }
+        let groupedLiveHotspots = Dictionary(grouping: anomalyPairs, by: { $0.0 })
+        let liveHotspots: [OpsCenterToolHotspotDigest] = groupedLiveHotspots.compactMap { identifier, items in
+            let anomalies = items.map { $0.1 }
+            guard let latestAnomaly = anomalies.max(by: { $0.occurredAt < $1.occurredAt }) else {
+                return nil
+            }
+            let timeoutCount = anomalies.filter {
+                $0.statusText.lowercased().contains("timeout")
+                    || $0.detailText.lowercased().contains("timeout")
+            }.count
+            return OpsCenterToolHotspotDigest(
+                toolIdentifier: identifier,
+                failureCount: anomalies.count,
+                timeoutCount: timeoutCount,
+                latestAt: latestAnomaly.occurredAt,
+                latestDetailText: latestAnomaly.detailText,
+                status: anomalies.contains(where: { $0.status == .critical }) ? .critical : .warning
+            )
+        }
+
+        let projectedHotspots: [OpsCenterToolHotspotDigest] = projections?.toolEntries().compactMap { entry in
+            let anomalies = entry.anomalies.map { $0.anomalyRow() }
+            let spans = entry.spans.map { $0.spanRow() }
+            let latestAt = (anomalies.map(\.occurredAt) + spans.map(\.startedAt)).max()
+            let latestDetailText = anomalies.first?.detailText ?? spans.first?.summaryText
+            let timeoutCount = anomalies.filter {
+                $0.statusText.lowercased().contains("timeout")
+                    || $0.detailText.lowercased().contains("timeout")
+            }.count
+            let failureCount = max(anomalies.count, spans.filter { $0.statusText.lowercased() != "ok" }.count)
+            guard let latestAt, failureCount > 0 || timeoutCount > 0 else { return nil }
+
+            return OpsCenterToolHotspotDigest(
+                toolIdentifier: entry.toolIdentifier,
+                failureCount: failureCount,
+                timeoutCount: timeoutCount,
+                latestAt: latestAt,
+                latestDetailText: latestDetailText ?? "Persisted tool posture is available.",
+                status: anomalies.contains(where: { $0.status == .critical }) ? .critical : .warning
+            )
+        } ?? []
+
+        let mergedByIdentifier = (liveHotspots + projectedHotspots).reduce(into: [String: OpsCenterToolHotspotDigest]()) { partial, item in
+            let key = item.toolIdentifier.lowercased()
+            guard let existing = partial[key] else {
+                partial[key] = item
+                return
+            }
+
+            if item.failureCount > existing.failureCount
+                || (item.failureCount == existing.failureCount && item.latestAt > existing.latestAt) {
+                partial[key] = item
+            }
+        }
+
+        return Array(mergedByIdentifier.values).sorted { lhs, rhs in
+            if lhs.failureCount != rhs.failureCount {
+                return lhs.failureCount > rhs.failureCount
+            }
+            if lhs.latestAt != rhs.latestAt {
+                return lhs.latestAt > rhs.latestAt
+            }
+            return lhs.toolIdentifier < rhs.toolIdentifier
+        }
+    }
+
+    private var archiveProjectionInvestigation: OpsCenterArchiveProjectionInvestigation? {
+        OpsCenterSnapshotBuilder.buildArchiveProjectionInvestigation(
+            project: appState.currentProject,
+            workflow: workflow,
+            projections: projections
+        )
+    }
+
+    private var loadedProjectionDigests: [OpsCenterArchiveProjectionDocumentDigest] {
+        guard let archiveProjectionInvestigation else { return [] }
+        return archiveProjectionInvestigation.documentDigests
+            .filter { $0.generatedAt != nil }
+            .sorted { lhs, rhs in
+                let lhsRank = opsHealthStatusRank(lhs.status)
+                let rhsRank = opsHealthStatusRank(rhs.status)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+                return (lhs.generatedAt ?? .distantPast) > (rhs.generatedAt ?? .distantPast)
+            }
+    }
+
+    private var observedCronCount: Int {
+        max(Set(recentCronRuns.map(\.cronName)).count, projections?.cronEntries().count ?? 0)
+    }
+
+    private var observedToolCount: Int {
+        max(toolHotspots.count, projections?.toolEntries().count ?? 0)
+    }
+
+    private var projectionSummaryText: String? {
+        guard let freshestProjectionAt = projections?.freshestGeneratedAt else { return nil }
+        return "Persisted analytics projection refreshed at \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened))."
+    }
+
+    private var cronFrontline: [OpsCenterSignalFrontlineDigest] {
+        let grouped = Dictionary(grouping: recentCronRuns, by: \.cronName)
+
+        return grouped.compactMap { cronName, runs -> OpsCenterSignalFrontlineDigest? in
+            guard let latestRun = runs.max(by: { $0.runAt < $1.runAt }) else { return nil }
+            let failureCount = runs.filter { opsCronRunIsFailure($0) }.count
+            let status: OpsHealthStatus = failureCount > 0 ? .warning : .healthy
+            let priorityScore = (failureCount * 6) + runs.count
+            let linkedSessionID = opsLeadLinkedSessionID(
+                spanIDs: runs.compactMap(\.linkedSessionSpanID),
+                executionResultsByID: executionResultsByID
+            )
+            let linkedThreadID = linkedSessionID.flatMap { leadThreadBySessionID[$0]?.threadID }
+
+            return OpsCenterSignalFrontlineDigest(
+                id: "cron-\(cronName)",
+                kind: .cron,
+                title: cronName,
+                subtitleText: "Cron",
+                detailText: latestRun.summaryText,
+                metricText: "\(runs.count) runs • \(failureCount) failures",
+                timestamp: latestRun.runAt,
+                status: status,
+                priorityScore: priorityScore,
+                actionTitle: "Open Cron",
+                action: { onSelectCron(cronName) },
+                linkedSessionID: linkedSessionID,
+                linkedThreadID: linkedThreadID
+            )
+        }
+    }
+
+    private var toolFrontline: [OpsCenterSignalFrontlineDigest] {
+        toolHotspots.map { tool -> OpsCenterSignalFrontlineDigest in
+            let linkedSessionID = opsLeadLinkedSessionID(
+                spanIDs: opsLinkedToolSpanIDs(
+                    toolIdentifier: tool.toolIdentifier,
+                    snapshot: snapshot,
+                    projections: projections
+                ),
+                executionResultsByID: executionResultsByID
+            )
+            let linkedThreadID = linkedSessionID.flatMap { leadThreadBySessionID[$0]?.threadID }
+
+            return OpsCenterSignalFrontlineDigest(
+                id: "tool-\(tool.toolIdentifier)",
+                kind: .tool,
+                title: tool.toolIdentifier,
+                subtitleText: "Tool",
+                detailText: tool.latestDetailText,
+                metricText: "Failures \(tool.failureCount) • Timeouts \(tool.timeoutCount)",
+                timestamp: tool.latestAt,
+                status: tool.status,
+                priorityScore: (tool.failureCount * 6) + (tool.timeoutCount * 3),
+                actionTitle: "Open Tool",
+                action: { onSelectTool(tool.toolIdentifier) },
+                linkedSessionID: linkedSessionID,
+                linkedThreadID: linkedThreadID
+            )
+        }
+    }
+
+    private var projectionFrontline: [OpsCenterSignalFrontlineDigest] {
+        loadedProjectionDigests.map { document -> OpsCenterSignalFrontlineDigest in
+            return OpsCenterSignalFrontlineDigest(
+                id: "projection-\(document.id)",
+                kind: .projection,
+                title: document.title,
+                subtitleText: "Projection",
+                detailText: document.detailText,
+                metricText: document.valueText,
+                timestamp: document.generatedAt,
+                status: document.status,
+                priorityScore: opsProjectionDigestPriorityScore(document),
+                actionTitle: "Open Projection",
+                action: onSelectArchiveProjection,
+                linkedSessionID: nil,
+                linkedThreadID: nil
+            )
+        }
+    }
+
+    private var signalFrontline: [OpsCenterSignalFrontlineDigest] {
+        (cronFrontline + toolFrontline + projectionFrontline)
+            .filter(matchesSignalFilter)
+            .filter(matchesSignalSearch)
+            .sorted(by: sortSignals)
+    }
+
+    private var leadSignal: OpsCenterSignalFrontlineDigest? {
+        signalFrontline.first
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                sectionTitle("Signals Frontline")
+                Text("Signals promotes cron reliability, tool hotspots, and archive projection health into direct operator-facing objects. Use this page when the system is running but you need to know which support layer is deforming first.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                    opsMetricCard(title: "Observed Crons", value: "\(observedCronCount)", detail: effectiveCronSummary.map { "\($0.successfulRuns) ok / \($0.failedRuns) failed in retained cron history" } ?? "No retained cron reliability window is currently available", color: (effectiveCronSummary?.failedRuns ?? 0) > 0 ? .orange : .green)
+                    opsMetricCard(title: "Lead Cron", value: recentCronRuns.first?.cronName ?? "None", detail: recentCronRuns.first?.summaryText ?? "No recent cron execution is currently retained", color: recentCronRuns.isEmpty ? .secondary : opsHistoryStatusColor(recentCronRuns.first?.statusText ?? ""))
+                    opsMetricCard(title: "Observed Tools", value: "\(observedToolCount)", detail: toolHotspots.first.map { "\($0.toolIdentifier) has \($0.failureCount) recent anomaly signals" } ?? "No tool hotspot is currently retained", color: toolHotspots.isEmpty ? .green : .orange)
+                    opsMetricCard(title: "Lead Tool", value: toolHotspots.first?.toolIdentifier ?? "None", detail: toolHotspots.first?.latestDetailText ?? "No recent tool anomaly is currently retained", color: toolHotspots.first.map { opsHistoryHealthColor($0.status) } ?? .secondary)
+                    opsMetricCard(title: "Projection Docs", value: "\(loadedProjectionDigests.count)", detail: archiveProjectionInvestigation?.freshestGeneratedAt.map { "Freshest projection \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "No archive projection bundle loaded", color: loadedProjectionDigests.isEmpty ? .orange : .blue)
+                    opsMetricCard(title: "Projection Scope", value: archiveProjectionInvestigation?.scopeTitle ?? "Unavailable", detail: archiveProjectionInvestigation?.liveRunSummary ?? archiveProjectionInvestigation?.workflowHealthSummary ?? "Projection scope summary is not yet available", color: archiveProjectionInvestigation == nil ? .secondary : .blue)
+                }
+
+                if let projectionSummaryText {
+                    Text(projectionSummaryText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
+                        TextField("Search cron, tool, projection, or anomaly context", text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+
+                        Picker("Filter", selection: $selectedFilter) {
+                            ForEach(OpsCenterSignalListFilter.allCases) { filter in
+                                Text(filter.title).tag(filter)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 320)
+                    }
+
+                    HStack(alignment: .center, spacing: 12) {
+                        Picker("Sort", selection: $selectedSort) {
+                            ForEach(OpsCenterSignalSort.allCases) { sort in
+                                Text(sort.title).tag(sort)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 180)
+
+                        Spacer()
+
+                        Text("\(signalFrontline.count) frontline objects visible.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                sectionTitle("Signal Queue")
+                if signalFrontline.isEmpty {
+                    opsInlineEmptyState("No cron, tool, or projection object matches the current search and filter scope.")
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(signalFrontline.prefix(10))) { item in
+                            signalQueueRow(item)
+                        }
+                    }
+                }
+
+                if let leadSignal {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Lead Signal")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.secondary)
+                            Text("\(leadSignal.kind.title): \(leadSignal.title)")
+                                .font(.subheadline.weight(.semibold))
+                            Text(leadSignal.detailText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                        signalActionButton(title: leadSignal.actionTitle, action: leadSignal.action)
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                sectionTitle("Cron Frontline")
+                if recentCronRuns.isEmpty && effectiveCronSummary == nil {
+                    opsInlineEmptyState("No cron reliability data is currently available in retained analytics.")
+                } else {
+                    if let cronSummary = effectiveCronSummary {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Success Rate \(Int(cronSummary.successRate.rounded()))%")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("\(cronSummary.successfulRuns) ok • \(cronSummary.failedRuns) failed")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                if let latestRunAt = cronSummary.latestRunAt {
+                                    Text("Latest run \(latestRunAt.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Spacer()
+                            if let leadCronName = recentCronRuns.first?.cronName {
+                                signalActionButton(title: "Open Cron") {
+                                    onSelectCron(leadCronName)
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .background(Color(.controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+
+                    VStack(spacing: 8) {
+                        ForEach(Array(recentCronRuns.prefix(6))) { run in
+                            HStack(alignment: .top, spacing: 12) {
+                                opsStatusPill(title: run.statusText, color: opsHistoryStatusColor(run.statusText))
+                                    .frame(width: 96, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(run.cronName)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(run.summaryText)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(2)
+                                    Text([run.jobID, run.sourcePath].compactMap { $0 }.joined(separator: " • "))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 6) {
+                                    signalActionButton(title: "Open Cron") {
+                                        onSelectCron(run.cronName)
+                                    }
+                                    if let duration = run.duration {
+                                        Text(opsDurationText(duration))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Text(run.runAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color(.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                }
+
+                sectionTitle("Tool Frontline")
+                if toolHotspots.isEmpty {
+                    opsInlineEmptyState("No tool-specific hotspot is currently retained in anomaly history.")
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(toolHotspots.prefix(6))) { tool in
+                            HStack(alignment: .top, spacing: 12) {
+                                opsStatusPill(title: tool.failureCount > 1 ? "Tool Hotspot" : "Tool Watch", color: opsHistoryHealthColor(tool.status))
+                                    .frame(width: 96, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(tool.toolIdentifier)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(tool.latestDetailText)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(3)
+                                    Text("Failures \(tool.failureCount) • Timeouts \(tool.timeoutCount)")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 6) {
+                                    signalActionButton(title: "Open Tool") {
+                                        onSelectTool(tool.toolIdentifier)
+                                    }
+                                    Text(tool.latestAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color(.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                }
+
+                sectionTitle("Projection Frontline")
+                if let archiveProjectionInvestigation {
+                    VStack(spacing: 8) {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(archiveProjectionInvestigation.scopeTitle)
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Sessions \(archiveProjectionInvestigation.sessionCount) • Nodes \(archiveProjectionInvestigation.nodeCount) • Traces \(archiveProjectionInvestigation.traceCount) • Anomalies \(archiveProjectionInvestigation.anomalyCount)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(archiveProjectionInvestigation.liveRunSummary ?? archiveProjectionInvestigation.workflowHealthSummary ?? "Projection bundle is loaded but no scope-specific summary is available yet.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(3)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 6) {
+                                signalActionButton(title: "Open Projection") {
+                                    onSelectArchiveProjection()
+                                }
+                                if let freshestGeneratedAt = archiveProjectionInvestigation.freshestGeneratedAt {
+                                    Text(freshestGeneratedAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .background(Color(.controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                        ForEach(loadedProjectionDigests) { document in
+                            HStack(alignment: .top, spacing: 12) {
+                                opsStatusPill(title: document.title, color: opsHistoryHealthColor(document.status))
+                                    .frame(width: 110, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(document.valueText)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(document.detailText)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(3)
+                                }
+
+                                Spacer()
+
+                                if let generatedAt = document.generatedAt {
+                                    Text(generatedAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color(.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                } else {
+                    opsInlineEmptyState("No persisted archive projection bundle is currently loaded.")
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func signalActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundColor(.blue)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.blue.opacity(0.10))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func matchesSignalFilter(_ item: OpsCenterSignalFrontlineDigest) -> Bool {
+        switch selectedFilter {
+        case .all:
+            return true
+        case .crons:
+            return item.kind == .cron
+        case .tools:
+            return item.kind == .tool
+        case .projections:
+            return item.kind == .projection
+        }
+    }
+
+    private func matchesSignalSearch(_ item: OpsCenterSignalFrontlineDigest) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.isEmpty == false else { return true }
+
+        return [
+            item.title,
+            item.subtitleText,
+            item.detailText,
+            item.metricText
+        ].contains { value in
+            value.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func sortSignals(lhs: OpsCenterSignalFrontlineDigest, rhs: OpsCenterSignalFrontlineDigest) -> Bool {
+        switch selectedSort {
+        case .priority:
+            if lhs.priorityScore != rhs.priorityScore {
+                return lhs.priorityScore > rhs.priorityScore
+            }
+        case .recent:
+            if lhs.timestamp != rhs.timestamp {
+                return (lhs.timestamp ?? .distantPast) > (rhs.timestamp ?? .distantPast)
+            }
+        case .name:
+            if lhs.title != rhs.title {
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+        }
+
+        let lhsRank = opsHealthStatusRank(lhs.status)
+        let rhsRank = opsHealthStatusRank(rhs.status)
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+
+        if lhs.timestamp != rhs.timestamp {
+            return (lhs.timestamp ?? .distantPast) > (rhs.timestamp ?? .distantPast)
+        }
+
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private func signalQueueRow(_ item: OpsCenterSignalFrontlineDigest) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            opsStatusPill(title: item.kind.title, color: opsHistoryHealthColor(item.status))
+                .frame(width: 96, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text(item.detailText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(3)
+                Text("\(item.subtitleText) • \(item.metricText)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 6) {
+                signalActionButton(title: item.actionTitle, action: item.action)
+                if let sessionID = item.linkedSessionID {
+                    signalActionButton(title: "Session") {
+                        onSelectSession(sessionID)
+                    }
+                }
+                if let threadID = item.linkedThreadID {
+                    signalActionButton(title: "Thread") {
+                        onSelectThread(threadID)
+                    }
+                }
+                if let timestamp = item.timestamp {
+                    Text(timestamp.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct OpsCenterThreadsDashboardView: View {
+    @EnvironmentObject var appState: AppState
+    let workflow: Workflow?
+    let projections: OpsCenterProjectionBundle?
+    let onSelectThread: (String) -> Void
+    let onSelectSession: (String) -> Void
+
+    @State private var searchText = ""
+    @State private var selectedFilter: OpsCenterThreadListFilter = .all
+    @State private var selectedFocus: OpsCenterThreadFocus = .all
+    @State private var selectedSort: OpsCenterThreadSort = .hotspot
+
+    private var sessionSummaries: [OpsCenterSessionSummary] {
+        OpsCenterSnapshotBuilder.buildSessionSummaries(
+            project: appState.currentProject,
+            workflow: workflow,
+            tasks: appState.taskManager.tasks,
+            messages: appState.messageManager.messages,
+            executionResults: appState.openClawService.executionResults
+        )
+    }
+
+    private var effectiveSessions: [OpsCenterSessionSummary] {
+        sessionSummaries.isEmpty ? (projections?.sessionSummaries(for: workflow?.id) ?? []) : sessionSummaries
+    }
+
+    private var threadSummaries: [OpsCenterThreadSummary] {
+        opsBuildThreadSummaries(
+            project: appState.currentProject,
+            workflow: workflow,
+            messages: appState.messageManager.messages,
+            tasks: appState.taskManager.tasks,
+            sessionSummaries: effectiveSessions,
+            projections: projections
+        )
+    }
+
+    private var hotspotThreads: [OpsCenterThreadSummary] {
+        threadSummaries.filter(opsThreadIsHotspot)
+    }
+
+    private var approvalThreads: [OpsCenterThreadSummary] {
+        threadSummaries.filter { $0.pendingApprovalCount > 0 }
+    }
+
+    private var blockedThreads: [OpsCenterThreadSummary] {
+        threadSummaries.filter { $0.blockedTaskCount > 0 || $0.status == "blocked" }
+    }
+
+    private var runtimeLinkedThreads: [OpsCenterThreadSummary] {
+        threadSummaries.filter(opsThreadHasRuntimePressure)
+    }
+
+    private var leadHotspotThread: OpsCenterThreadSummary? {
+        hotspotThreads.first
+    }
+
+    private var hotspotLanes: [OpsCenterThreadClusterDigest] {
+        opsBuildThreadClusterDigests(displayedThreads)
+    }
+
+    private var leadHotspotLane: OpsCenterThreadClusterDigest? {
+        hotspotLanes.first
+    }
+
+    private var pressureModes: [OpsCenterThreadPressureDigest] {
+        opsBuildThreadPressureDigests(displayedThreads)
+    }
+
+    private var leadPressureMode: OpsCenterThreadPressureDigest? {
+        pressureModes.first
+    }
+
+    private var sessionHotspots: [OpsCenterThreadSessionDigest] {
+        opsBuildThreadSessionDigests(displayedThreads.filter { $0.relatedSession != nil })
+    }
+
+    private var leadSessionHotspot: OpsCenterThreadSessionDigest? {
+        sessionHotspots.first
+    }
+
+    private var projectionContextText: String? {
+        guard threadSummaries.isEmpty == false,
+              sessionSummaries.isEmpty,
+              let freshestProjectionAt = projections?.freshestGeneratedAt else {
+            return nil
+        }
+        return "Using persisted session and thread projections from \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)) while live workbench evidence is still sparse."
+    }
+
+    private var filteredThreads: [OpsCenterThreadSummary] {
+        threadSummaries.filter { thread in
+            matchesThreadFilter(thread) && matchesThreadSearch(thread)
+        }
+    }
+
+    private var displayedThreads: [OpsCenterThreadSummary] {
+        let focusFiltered: [OpsCenterThreadSummary]
+        switch selectedFocus {
+        case .all:
+            focusFiltered = filteredThreads
+        case .hotspots:
+            focusFiltered = filteredThreads.filter(opsThreadIsHotspot)
+        case .approval:
+            focusFiltered = filteredThreads.filter { $0.pendingApprovalCount > 0 }
+        }
+
+        return focusFiltered.sorted(by: sortThreads)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if threadSummaries.isEmpty {
+                    opsEmptyState(
+                        title: "No workbench threads captured yet",
+                        detail: "Threads will appear after workbench-linked messages, tasks, or persisted projections land in the current workflow scope."
+                    )
+                } else {
+                    sectionTitle("Thread Frontline")
+                    Text("Threads are now the operator-facing front door. Approval stalls, blocked work, and runtime-linked pressure surface here before node or session deep dives.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                        opsMetricCard(title: "Visible Threads", value: "\(threadSummaries.count)", detail: "Merged from live workbench evidence and scoped projections", color: .blue)
+                        opsMetricCard(title: "Hotspot Queue", value: "\(hotspotThreads.count)", detail: hotspotThreads.first.map(opsThreadHotspotReason) ?? "No thread currently requires immediate operator intervention", color: hotspotThreads.isEmpty ? .green : .orange)
+                        opsMetricCard(title: "Approval Pressure", value: "\(approvalThreads.reduce(0) { $0 + $1.pendingApprovalCount })", detail: "\(approvalThreads.count) threads are waiting on approval to continue", color: approvalThreads.isEmpty ? .green : .yellow)
+                        opsMetricCard(title: "Blocked Threads", value: "\(blockedThreads.count)", detail: "Workbench tasks are blocked inside these threads", color: blockedThreads.isEmpty ? .green : .red)
+                        opsMetricCard(title: "Runtime-linked", value: "\(runtimeLinkedThreads.count)", detail: "Threads still coupled to queued, inflight, failed, or primary runtime sessions", color: runtimeLinkedThreads.isEmpty ? .green : .orange)
+                        opsMetricCard(title: "Hotspot Lanes", value: "\(hotspotLanes.count)", detail: leadHotspotLane.map { "\($0.title) is the densest thread lane right now" } ?? "No thread lane currently concentrates pressure", color: hotspotLanes.isEmpty ? .green : .orange)
+                        opsMetricCard(title: "Pressure Modes", value: "\(pressureModes.count)", detail: leadPressureMode.map { "\($0.mode.title) is leading the intervention stack" } ?? "No pressure mode currently dominates the visible queue", color: leadPressureMode?.mode.color ?? .green)
+                        opsMetricCard(title: "Session Families", value: "\(sessionHotspots.count)", detail: leadSessionHotspot.map { "\($0.title) is the hottest runtime-coupled session family" } ?? "No runtime-coupled session family is currently visible", color: leadSessionHotspot == nil ? .green : .orange)
+                        opsMetricCard(title: "Lead Thread", value: leadHotspotThread.map { String($0.threadID.prefix(12)) } ?? "None", detail: leadHotspotThread.map(opsThreadHotspotReason) ?? "No lead hotspot is active in the current scope", color: leadHotspotThread == nil ? .green : .red)
+                        opsMetricCard(title: "Lead Lane", value: leadHotspotLane?.title ?? "None", detail: leadHotspotLane.map { "\($0.hotspotThreadCount) hotspot • \($0.approvalPressure) approvals • \($0.blockedThreadCount) blocked" } ?? "No concentrated lane is active in the current scope", color: leadHotspotLane == nil ? .green : .red)
+                        opsMetricCard(title: "Lead Mode", value: leadPressureMode?.mode.shortTitle ?? "None", detail: leadPressureMode.map { "\($0.threadCount) threads • \($0.runtimeBacklogCount) runtime backlog • \($0.runtimeFailureCount) failures" } ?? "No pressure mode currently requires operator triage", color: leadPressureMode?.mode.color ?? .green)
+                        opsMetricCard(title: "Lead Session", value: leadSessionHotspot?.title ?? "None", detail: leadSessionHotspot.map { "\($0.threadCount) threads • Q \($0.queuedDispatchCount) • R \($0.inflightDispatchCount) • F \($0.failedDispatchCount)" } ?? "No session family currently dominates the visible queue", color: leadSessionHotspot == nil ? .green : .orange)
+                    }
+
+                    if let projectionContextText {
+                        Text(projectionContextText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 12) {
+                            TextField("Search thread ID, workflow, agent, participant, or hotspot context", text: $searchText)
+                                .textFieldStyle(.roundedBorder)
+
+                            Picker("Filter", selection: $selectedFilter) {
+                                ForEach(OpsCenterThreadListFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 260)
+                        }
+
+                        HStack(alignment: .center, spacing: 12) {
+                            Picker("Focus", selection: $selectedFocus) {
+                                ForEach(OpsCenterThreadFocus.allCases) { focus in
+                                    Text(focus.title).tag(focus)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 260)
+
+                            Picker("Sort", selection: $selectedSort) {
+                                ForEach(OpsCenterThreadSort.allCases) { sort in
+                                    Text(sort.title).tag(sort)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 180)
+
+                            Spacer()
+
+                            Text("\(displayedThreads.count) of \(threadSummaries.count) threads visible in current scope.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    sectionTitle("Hotspot Lanes")
+                    if hotspotLanes.isEmpty {
+                        opsInlineEmptyState("No thread lane matches the current search, filter, or focus mode.")
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(Array(hotspotLanes.prefix(5))) { lane in
+                                Button {
+                                    onSelectThread(lane.leadThreadID)
+                                } label: {
+                                    hotspotLaneRow(lane)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    sectionTitle("Pressure Modes")
+                    if pressureModes.isEmpty {
+                        opsInlineEmptyState("No pressure mode is currently visible in the selected thread scope.")
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(pressureModes) { mode in
+                                Button {
+                                    onSelectThread(mode.leadThreadID)
+                                } label: {
+                                    pressureModeRow(mode)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    sectionTitle("Session Hotspots")
+                    if sessionHotspots.isEmpty {
+                        opsInlineEmptyState("No runtime-linked session family is currently visible in the selected thread scope.")
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(sessionHotspots) { session in
+                                Button {
+                                    if let sessionID = session.sessionID {
+                                        onSelectSession(sessionID)
+                                    } else {
+                                        onSelectThread(session.leadThreadID)
+                                    }
+                                } label: {
+                                    sessionHotspotRow(session)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    if let sessionID = session.sessionID {
+                                        Button("Open Lead Session") {
+                                            onSelectSession(sessionID)
+                                        }
+                                    }
+                                    Button("Open Lead Thread") {
+                                        onSelectThread(session.leadThreadID)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    sectionTitle("Hotspot Queue")
+                    if hotspotThreads.isEmpty {
+                        opsInlineEmptyState("No thread hotspot is currently visible in the selected scope.")
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(Array(hotspotThreads.prefix(6))) { thread in
+                                Button {
+                                    onSelectThread(thread.threadID)
+                                } label: {
+                                    opsThreadRow(thread, emphasis: .hotspot)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    if let sessionID = thread.relatedSession?.sessionID {
+                                        Button("Open Linked Session") {
+                                            onSelectSession(sessionID)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !approvalThreads.isEmpty {
+                        sectionTitle("Approval Queue")
+                        VStack(spacing: 8) {
+                            ForEach(Array(approvalThreads.prefix(4))) { thread in
+                                Button {
+                                    onSelectThread(thread.threadID)
+                                } label: {
+                                    opsThreadRow(thread, emphasis: .standard)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    sectionTitle("Thread Inventory")
+                    if displayedThreads.isEmpty {
+                        opsInlineEmptyState("No threads match the current search, filter, or focus mode.")
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(displayedThreads) { thread in
+                                Button {
+                                    onSelectThread(thread.threadID)
+                                } label: {
+                                    opsThreadRow(thread, emphasis: opsThreadIsHotspot(thread) ? .hotspot : .standard)
+                                }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    if let sessionID = thread.relatedSession?.sessionID {
+                                        Button("Open Linked Session") {
+                                            onSelectSession(sessionID)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func matchesThreadFilter(_ thread: OpsCenterThreadSummary) -> Bool {
+        switch selectedFilter {
+        case .all:
+            return true
+        case .active:
+            return opsThreadIsActive(thread)
+        case .blocked:
+            return thread.blockedTaskCount > 0 || thread.status == "blocked"
+        }
+    }
+
+    private func matchesThreadSearch(_ thread: OpsCenterThreadSummary) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.isEmpty == false else { return true }
+
+        let haystacks = [
+            thread.threadID,
+            thread.workflowName,
+            thread.entryAgentName ?? "",
+            thread.participantNames.joined(separator: " "),
+            thread.relatedSession?.latestFailureText ?? "",
+            opsThreadHotspotReason(thread)
+        ]
+
+        return haystacks.contains { value in
+            value.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func sortThreads(lhs: OpsCenterThreadSummary, rhs: OpsCenterThreadSummary) -> Bool {
+        switch selectedSort {
+        case .hotspot:
+            if lhs.hotspotScore != rhs.hotspotScore {
+                return lhs.hotspotScore > rhs.hotspotScore
+            }
+        case .recent:
+            break
+        case .approval:
+            if lhs.pendingApprovalCount != rhs.pendingApprovalCount {
+                return lhs.pendingApprovalCount > rhs.pendingApprovalCount
+            }
+        case .messages:
+            let lhsLoad = lhs.messageCount + lhs.taskCount
+            let rhsLoad = rhs.messageCount + rhs.taskCount
+            if lhsLoad != rhsLoad {
+                return lhsLoad > rhsLoad
+            }
+        }
+
+        let lhsDate = lhs.lastUpdatedAt ?? .distantPast
+        let rhsDate = rhs.lastUpdatedAt ?? .distantPast
+        if lhsDate != rhsDate {
+            return lhsDate > rhsDate
+        }
+
+        if lhs.hotspotScore != rhs.hotspotScore {
+            return lhs.hotspotScore > rhs.hotspotScore
+        }
+
+        return lhs.threadID.localizedCaseInsensitiveCompare(rhs.threadID) == .orderedAscending
+    }
+
+    private func hotspotLaneRow(_ lane: OpsCenterThreadClusterDigest) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            opsStatusPill(
+                title: lane.hotspotThreadCount > 0 ? "Pressure Lane" : "Stable Lane",
+                color: lane.hotspotThreadCount > 0 ? .orange : .green
+            )
+            .frame(width: 104, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(lane.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text(lane.detailText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text(lane.subtitleText)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("T \(lane.threadCount) • H \(lane.hotspotThreadCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("A \(lane.approvalPressure) • B \(lane.blockedThreadCount) • R \(lane.runtimeLinkedThreadCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if let latestAt = lane.latestAt {
+                    Text(latestAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func pressureModeRow(_ mode: OpsCenterThreadPressureDigest) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            opsStatusPill(title: mode.mode.shortTitle, color: mode.mode.color)
+                .frame(width: 104, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(mode.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text(mode.detailText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text("\(mode.threadCount) threads • \(mode.hotspotThreadCount) hotspots • score \(mode.totalHotspotScore)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("A \(mode.approvalPressure) • B \(mode.blockedThreadCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("F \(mode.runtimeFailureCount) • Q \(mode.runtimeBacklogCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if let latestAt = mode.latestAt {
+                    Text(latestAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func sessionHotspotRow(_ session: OpsCenterThreadSessionDigest) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            opsStatusPill(
+                title: session.failedDispatchCount > 0 ? "Session Failure" : "Session Watch",
+                color: session.failedDispatchCount > 0 ? .red : .orange
+            )
+            .frame(width: 104, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text(session.detailText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text("\(session.threadCount) threads • \(session.hotspotThreadCount) hotspots • A \(session.approvalPressure)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("Q \(session.queuedDispatchCount) • R \(session.inflightDispatchCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("F \(session.failedDispatchCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if let latestAt = session.latestAt {
+                    Text(latestAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
 private struct OpsCenterLiveRunDashboardView: View {
     @EnvironmentObject var appState: AppState
     let workflow: Workflow?
@@ -1544,6 +2733,186 @@ private enum OpsCenterSessionListFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private enum OpsCenterThreadListFilter: String, CaseIterable, Identifiable {
+    case all
+    case active
+    case blocked
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All"
+        case .active:
+            return "Active"
+        case .blocked:
+            return "Blocked"
+        }
+    }
+}
+
+private enum OpsCenterThreadFocus: String, CaseIterable, Identifiable {
+    case all
+    case hotspots
+    case approval
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All"
+        case .hotspots:
+            return "Hotspots"
+        case .approval:
+            return "Approval"
+        }
+    }
+}
+
+private enum OpsCenterThreadSort: String, CaseIterable, Identifiable {
+    case hotspot
+    case recent
+    case approval
+    case messages
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hotspot:
+            return "Hotspot Score"
+        case .recent:
+            return "Most Recent"
+        case .approval:
+            return "Approval Load"
+        case .messages:
+            return "Message Load"
+        }
+    }
+}
+
+private enum OpsCenterSignalListFilter: String, CaseIterable, Identifiable {
+    case all
+    case crons
+    case tools
+    case projections
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All"
+        case .crons:
+            return "Crons"
+        case .tools:
+            return "Tools"
+        case .projections:
+            return "Projections"
+        }
+    }
+}
+
+private enum OpsCenterSignalSort: String, CaseIterable, Identifiable {
+    case priority
+    case recent
+    case name
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .priority:
+            return "Priority"
+        case .recent:
+            return "Most Recent"
+        case .name:
+            return "Name"
+        }
+    }
+}
+
+private enum OpsCenterThreadPressureMode: String, CaseIterable, Identifiable {
+    case approval
+    case blocked
+    case runtimeFailure
+    case runtimeBacklog
+    case activeWork
+    case stable
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .approval:
+            return "Approval Gridlock"
+        case .blocked:
+            return "Blocked Work"
+        case .runtimeFailure:
+            return "Runtime Failure"
+        case .runtimeBacklog:
+            return "Runtime Backlog"
+        case .activeWork:
+            return "Active Work"
+        case .stable:
+            return "Stable Hold"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .approval:
+            return "Approval"
+        case .blocked:
+            return "Blocked"
+        case .runtimeFailure:
+            return "Failure"
+        case .runtimeBacklog:
+            return "Backlog"
+        case .activeWork:
+            return "Active"
+        case .stable:
+            return "Stable"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .approval:
+            return .yellow
+        case .blocked:
+            return .red
+        case .runtimeFailure:
+            return .red
+        case .runtimeBacklog:
+            return .orange
+        case .activeWork:
+            return .blue
+        case .stable:
+            return .green
+        }
+    }
+}
+
+private enum OpsCenterSignalKind: String {
+    case cron
+    case tool
+    case projection
+
+    var title: String {
+        switch self {
+        case .cron:
+            return "Cron"
+        case .tool:
+            return "Tool"
+        case .projection:
+            return "Projection"
+        }
+    }
+}
+
 private enum OpsCenterSessionFocus: String, CaseIterable, Identifiable {
     case all
     case hotspots
@@ -2130,6 +3499,58 @@ private struct OpsCenterThreadSummary: Identifiable {
     var id: String { threadID }
 }
 
+private struct OpsCenterThreadClusterDigest: Identifiable {
+    let key: String
+    let title: String
+    let subtitleText: String
+    let detailText: String
+    let threadCount: Int
+    let hotspotThreadCount: Int
+    let approvalPressure: Int
+    let blockedThreadCount: Int
+    let runtimeLinkedThreadCount: Int
+    let totalHotspotScore: Int
+    let latestAt: Date?
+    let leadThreadID: String
+
+    var id: String { key }
+}
+
+private struct OpsCenterThreadPressureDigest: Identifiable {
+    let key: String
+    let mode: OpsCenterThreadPressureMode
+    let title: String
+    let detailText: String
+    let threadCount: Int
+    let hotspotThreadCount: Int
+    let approvalPressure: Int
+    let blockedThreadCount: Int
+    let runtimeFailureCount: Int
+    let runtimeBacklogCount: Int
+    let totalHotspotScore: Int
+    let latestAt: Date?
+    let leadThreadID: String
+
+    var id: String { key }
+}
+
+private struct OpsCenterThreadSessionDigest: Identifiable {
+    let key: String
+    let title: String
+    let detailText: String
+    let threadCount: Int
+    let hotspotThreadCount: Int
+    let approvalPressure: Int
+    let queuedDispatchCount: Int
+    let inflightDispatchCount: Int
+    let failedDispatchCount: Int
+    let latestAt: Date?
+    let leadThreadID: String
+    let sessionID: String?
+
+    var id: String { key }
+}
+
 private struct OpsCenterToolHotspotDigest: Identifiable {
     let toolIdentifier: String
     let failureCount: Int
@@ -2139,6 +3560,22 @@ private struct OpsCenterToolHotspotDigest: Identifiable {
     let status: OpsHealthStatus
 
     var id: String { toolIdentifier }
+}
+
+private struct OpsCenterSignalFrontlineDigest: Identifiable {
+    let id: String
+    let kind: OpsCenterSignalKind
+    let title: String
+    let subtitleText: String
+    let detailText: String
+    let metricText: String
+    let timestamp: Date?
+    let status: OpsHealthStatus
+    let priorityScore: Int
+    let actionTitle: String
+    let action: () -> Void
+    let linkedSessionID: String?
+    let linkedThreadID: String?
 }
 
 private enum OpsThreadRowEmphasis {
@@ -2245,18 +3682,20 @@ private struct OpsCenterHistoryDashboardView: View {
             )
         }
 
-        if let liveRun = projections?.liveRunEntry(for: workflow?.id) ?? projections?.liveRun.map({
+        let projectedLiveRun = projections?.liveRun.map { liveRun in
             OpsCenterProjectionWorkflowLiveRunEntry(
                 workflowID: workflow?.id ?? UUID(),
                 workflowName: workflow?.name ?? "Project Runtime",
-                sessionCount: $0.totalSessionCount,
-                activeSessionCount: $0.activeSessionCount,
+                sessionCount: liveRun.totalSessionCount,
+                activeSessionCount: liveRun.activeSessionCount,
                 activeNodeCount: 0,
                 failedNodeCount: 0,
-                waitingApprovalNodeCount: $0.waitingApprovalCount,
-                lastUpdatedAt: $0.generatedAt
+                waitingApprovalNodeCount: liveRun.waitingApprovalCount,
+                lastUpdatedAt: liveRun.generatedAt
             )
-        }) {
+        }
+
+        if let liveRun = projections?.liveRunEntry(for: workflow?.id) ?? projectedLiveRun {
             cards.append(
                 OpsCenterHistoryGoalDigest(
                     id: "projection-sessions",
@@ -2411,12 +3850,13 @@ private struct OpsCenterHistoryDashboardView: View {
     }
 
     private var toolHotspots: [OpsCenterToolHotspotDigest] {
-        let liveHotspots: [OpsCenterToolHotspotDigest] = Dictionary(grouping: snapshot.anomalyRows.compactMap { anomaly -> (String, OpsAnomalyRow)? in
+        let anomalyPairs: [(String, OpsAnomalyRow)] = snapshot.anomalyRows.compactMap { anomaly in
             guard let identifier = opsToolIdentifier(from: anomaly) else { return nil }
             return (identifier, anomaly)
-        }, by: \.0)
-        .compactMap { identifier, items in
-            let anomalies = items.map(\.1)
+        }
+        let groupedLiveHotspots = Dictionary(grouping: anomalyPairs, by: { $0.0 })
+        let liveHotspots: [OpsCenterToolHotspotDigest] = groupedLiveHotspots.compactMap { identifier, items in
+            let anomalies = items.map { $0.1 }
             guard let latestAnomaly = anomalies.max(by: { $0.occurredAt < $1.occurredAt }) else {
                 return nil
             }
@@ -2458,7 +3898,7 @@ private struct OpsCenterHistoryDashboardView: View {
 
         let mergedHotspots: [OpsCenterToolHotspotDigest] = liveHotspots + projectedHotspots
 
-        return mergedHotspots.reduce(into: [String: OpsCenterToolHotspotDigest]()) { partial, item in
+        let mergedByIdentifier = mergedHotspots.reduce(into: [String: OpsCenterToolHotspotDigest]()) { partial, item in
             let key = item.toolIdentifier.lowercased()
             guard let existing = partial[key] else {
                 partial[key] = item
@@ -2470,8 +3910,8 @@ private struct OpsCenterHistoryDashboardView: View {
                 partial[key] = item
             }
         }
-        .values
-        .sorted { lhs, rhs in
+
+        return Array(mergedByIdentifier.values).sorted { lhs, rhs in
             if lhs.failureCount != rhs.failureCount {
                 return lhs.failureCount > rhs.failureCount
             }
@@ -5010,6 +6450,12 @@ private func opsThreadRow(_ thread: OpsCenterThreadSummary, emphasis: OpsThreadR
             .font(.caption2)
             .foregroundColor(.secondary)
             .lineLimit(1)
+            if let relatedSession = thread.relatedSession {
+                Text("Runtime Q \(relatedSession.queuedDispatchCount) • Run \(relatedSession.inflightDispatchCount) • F \(relatedSession.failedDispatchCount)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
         }
 
         Spacer()
@@ -5305,6 +6751,14 @@ private func opsThreadIsActive(_ thread: OpsCenterThreadSummary) -> Bool {
     }
 }
 
+private func opsThreadHasRuntimePressure(_ thread: OpsCenterThreadSummary) -> Bool {
+    guard let session = thread.relatedSession else { return false }
+    return session.failedDispatchCount > 0
+        || session.queuedDispatchCount > 0
+        || session.inflightDispatchCount > 0
+        || session.isPrimaryRuntimeSession
+}
+
 private func opsThreadIsHotspot(_ thread: OpsCenterThreadSummary) -> Bool {
     thread.hotspotScore > 0
 }
@@ -5344,6 +6798,329 @@ private func opsThreadHotspotReason(_ thread: OpsCenterThreadSummary) -> String 
         return "Completed work is retained here for audit and replay."
     }
     return "Observed thread with retained workbench context."
+}
+
+private func opsPrimaryThreadPressureMode(_ thread: OpsCenterThreadSummary) -> OpsCenterThreadPressureMode {
+    if thread.pendingApprovalCount > 0 {
+        return .approval
+    }
+    if thread.blockedTaskCount > 0 || thread.status == "blocked" {
+        return .blocked
+    }
+    if (thread.relatedSession?.failedDispatchCount ?? 0) > 0 || thread.failedMessageCount > 0 {
+        return .runtimeFailure
+    }
+    if let session = thread.relatedSession,
+       session.queuedDispatchCount > 0 || session.inflightDispatchCount > 0 || session.isPrimaryRuntimeSession {
+        return .runtimeBacklog
+    }
+    if thread.activeTaskCount > 0 || thread.status == "active" {
+        return .activeWork
+    }
+    return .stable
+}
+
+private func opsBuildThreadClusterDigests(_ threads: [OpsCenterThreadSummary]) -> [OpsCenterThreadClusterDigest] {
+    let grouped = Dictionary(grouping: threads) { thread -> String in
+        let workflowKey = thread.workflowName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let agentKey = (thread.entryAgentName ?? "unassigned").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return "\(workflowKey)|\(agentKey)"
+    }
+
+    return grouped.compactMap { key, items in
+        guard let leadThread = items.max(by: { lhs, rhs in
+            if lhs.hotspotScore != rhs.hotspotScore {
+                return lhs.hotspotScore < rhs.hotspotScore
+            }
+            return (lhs.lastUpdatedAt ?? .distantPast) < (rhs.lastUpdatedAt ?? .distantPast)
+        }) else {
+            return nil
+        }
+
+        let title = leadThread.entryAgentName ?? "Unassigned Entry"
+        let hotspotThreadCount = items.filter(opsThreadIsHotspot).count
+        let approvalPressure = items.reduce(0) { $0 + $1.pendingApprovalCount }
+        let blockedThreadCount = items.filter { $0.blockedTaskCount > 0 || $0.status == "blocked" }.count
+        let runtimeLinkedThreadCount = items.filter(opsThreadHasRuntimePressure).count
+        let totalHotspotScore = items.reduce(0) { $0 + $1.hotspotScore }
+        let latestAt = items.compactMap(\.lastUpdatedAt).max()
+        let subtitleText = [
+            leadThread.workflowName,
+            "\(items.count) threads",
+            hotspotThreadCount > 0 ? "\(hotspotThreadCount) hotspots" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: " • ")
+
+        let detailText: String
+        if approvalPressure > 0 {
+            detailText = "\(approvalPressure) pending approvals are stacking inside this entry lane."
+        } else if blockedThreadCount > 0 {
+            detailText = "\(blockedThreadCount) blocked threads are concentrated in this lane."
+        } else if runtimeLinkedThreadCount > 0 {
+            detailText = "\(runtimeLinkedThreadCount) threads in this lane are still coupled to live runtime pressure."
+        } else {
+            detailText = opsThreadHotspotReason(leadThread)
+        }
+
+        return OpsCenterThreadClusterDigest(
+            key: key,
+            title: title,
+            subtitleText: subtitleText,
+            detailText: detailText,
+            threadCount: items.count,
+            hotspotThreadCount: hotspotThreadCount,
+            approvalPressure: approvalPressure,
+            blockedThreadCount: blockedThreadCount,
+            runtimeLinkedThreadCount: runtimeLinkedThreadCount,
+            totalHotspotScore: totalHotspotScore,
+            latestAt: latestAt,
+            leadThreadID: leadThread.threadID
+        )
+    }
+    .sorted { lhs, rhs in
+        if lhs.totalHotspotScore != rhs.totalHotspotScore {
+            return lhs.totalHotspotScore > rhs.totalHotspotScore
+        }
+        if lhs.hotspotThreadCount != rhs.hotspotThreadCount {
+            return lhs.hotspotThreadCount > rhs.hotspotThreadCount
+        }
+        if lhs.latestAt != rhs.latestAt {
+            return (lhs.latestAt ?? .distantPast) > (rhs.latestAt ?? .distantPast)
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+}
+
+private func opsBuildThreadPressureDigests(_ threads: [OpsCenterThreadSummary]) -> [OpsCenterThreadPressureDigest] {
+    let grouped = Dictionary(grouping: threads, by: opsPrimaryThreadPressureMode)
+
+    return grouped.compactMap { mode, items -> OpsCenterThreadPressureDigest? in
+        guard let leadThread = items.max(by: { lhs, rhs in
+            if lhs.hotspotScore != rhs.hotspotScore {
+                return lhs.hotspotScore < rhs.hotspotScore
+            }
+            return (lhs.lastUpdatedAt ?? .distantPast) < (rhs.lastUpdatedAt ?? .distantPast)
+        }) else {
+            return nil
+        }
+
+        let hotspotThreadCount = items.filter(opsThreadIsHotspot).count
+        let approvalPressure = items.reduce(0) { $0 + $1.pendingApprovalCount }
+        let blockedThreadCount = items.filter { $0.blockedTaskCount > 0 || $0.status == "blocked" }.count
+        let runtimeFailureCount = items.filter {
+            ($0.relatedSession?.failedDispatchCount ?? 0) > 0 || $0.failedMessageCount > 0
+        }.count
+        let runtimeBacklogCount = items.filter {
+            guard let session = $0.relatedSession else { return false }
+            return session.queuedDispatchCount > 0 || session.inflightDispatchCount > 0 || session.isPrimaryRuntimeSession
+        }.count
+        let totalHotspotScore = items.reduce(0) { $0 + $1.hotspotScore }
+        let latestAt = items.compactMap(\.lastUpdatedAt).max()
+
+        let detailText: String
+        switch mode {
+        case .approval:
+            detailText = "\(approvalPressure) approvals are explicitly blocking forward progress across these threads."
+        case .blocked:
+            detailText = "\(blockedThreadCount) threads have workbench blockers and should be inspected before more runtime load is added."
+        case .runtimeFailure:
+            detailText = "\(runtimeFailureCount) threads now carry failed runtime dispatches or failed message evidence."
+        case .runtimeBacklog:
+            detailText = "\(runtimeBacklogCount) threads are still carrying queued or inflight runtime pressure."
+        case .activeWork:
+            detailText = "These threads are actively moving work and are the best place to observe live orchestration behavior."
+        case .stable:
+            detailText = "These retained threads are stable and primarily useful for audit, replay, and comparative debugging."
+        }
+
+        return OpsCenterThreadPressureDigest(
+            key: mode.rawValue,
+            mode: mode,
+            title: mode.title,
+            detailText: detailText,
+            threadCount: items.count,
+            hotspotThreadCount: hotspotThreadCount,
+            approvalPressure: approvalPressure,
+            blockedThreadCount: blockedThreadCount,
+            runtimeFailureCount: runtimeFailureCount,
+            runtimeBacklogCount: runtimeBacklogCount,
+            totalHotspotScore: totalHotspotScore,
+            latestAt: latestAt,
+            leadThreadID: leadThread.threadID
+        )
+    }
+    .sorted { lhs, rhs in
+        if lhs.totalHotspotScore != rhs.totalHotspotScore {
+            return lhs.totalHotspotScore > rhs.totalHotspotScore
+        }
+        if lhs.threadCount != rhs.threadCount {
+            return lhs.threadCount > rhs.threadCount
+        }
+        if lhs.latestAt != rhs.latestAt {
+            return (lhs.latestAt ?? .distantPast) > (rhs.latestAt ?? .distantPast)
+        }
+        return lhs.mode.rawValue < rhs.mode.rawValue
+    }
+}
+
+private func opsBuildThreadSessionDigests(_ threads: [OpsCenterThreadSummary]) -> [OpsCenterThreadSessionDigest] {
+    let grouped = Dictionary(grouping: threads) { thread -> String in
+        opsNormalizedSessionID(thread.relatedSession?.sessionID) ?? "detached"
+    }
+
+    return grouped.compactMap { key, items in
+        guard let leadThread = items.max(by: { lhs, rhs in
+            if lhs.hotspotScore != rhs.hotspotScore {
+                return lhs.hotspotScore < rhs.hotspotScore
+            }
+            return (lhs.lastUpdatedAt ?? .distantPast) < (rhs.lastUpdatedAt ?? .distantPast)
+        }) else {
+            return nil
+        }
+
+        let leadSession = items.compactMap(\.relatedSession).max(by: { lhs, rhs in
+            let lhsScore = lhs.failedDispatchCount * 6 + lhs.inflightDispatchCount * 4 + lhs.queuedDispatchCount * 3
+            let rhsScore = rhs.failedDispatchCount * 6 + rhs.inflightDispatchCount * 4 + rhs.queuedDispatchCount * 3
+            if lhsScore != rhsScore {
+                return lhsScore < rhsScore
+            }
+            return (lhs.lastUpdatedAt ?? .distantPast) < (rhs.lastUpdatedAt ?? .distantPast)
+        })
+
+        let threadCount = items.count
+        let hotspotThreadCount = items.filter(opsThreadIsHotspot).count
+        let approvalPressure = items.reduce(0) { $0 + $1.pendingApprovalCount }
+        let latestAt = items.compactMap(\.lastUpdatedAt).max()
+
+        let title = leadSession.map { "Session \(String($0.sessionID.prefix(12)))" } ?? "Detached Threads"
+        let detailText: String
+        if let leadSession, leadSession.failedDispatchCount > 0 {
+            detailText = leadSession.latestFailureText ?? "\(leadSession.failedDispatchCount) runtime failure signal(s) are landing in this session family."
+        } else if let leadSession, leadSession.queuedDispatchCount > 0 || leadSession.inflightDispatchCount > 0 {
+            detailText = "This session family is still carrying queued or inflight runtime work across visible threads."
+        } else if approvalPressure > 0 {
+            detailText = "\(approvalPressure) approvals are stacking on threads linked to this session family."
+        } else {
+            detailText = "Threads in this family are primarily retained for context, replay, and session-linked debugging."
+        }
+
+        return OpsCenterThreadSessionDigest(
+            key: key,
+            title: title,
+            detailText: detailText,
+            threadCount: threadCount,
+            hotspotThreadCount: hotspotThreadCount,
+            approvalPressure: approvalPressure,
+            queuedDispatchCount: leadSession?.queuedDispatchCount ?? 0,
+            inflightDispatchCount: leadSession?.inflightDispatchCount ?? 0,
+            failedDispatchCount: leadSession?.failedDispatchCount ?? 0,
+            latestAt: latestAt,
+            leadThreadID: leadThread.threadID,
+            sessionID: leadSession?.sessionID
+        )
+    }
+    .sorted { lhs, rhs in
+        let lhsScore = lhs.failedDispatchCount * 6 + lhs.inflightDispatchCount * 4 + lhs.queuedDispatchCount * 3 + lhs.approvalPressure * 2 + lhs.hotspotThreadCount
+        let rhsScore = rhs.failedDispatchCount * 6 + rhs.inflightDispatchCount * 4 + rhs.queuedDispatchCount * 3 + rhs.approvalPressure * 2 + rhs.hotspotThreadCount
+        if lhsScore != rhsScore {
+            return lhsScore > rhsScore
+        }
+        if lhs.threadCount != rhs.threadCount {
+            return lhs.threadCount > rhs.threadCount
+        }
+        if lhs.latestAt != rhs.latestAt {
+            return (lhs.latestAt ?? .distantPast) > (rhs.latestAt ?? .distantPast)
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+}
+
+private func opsNormalizedSessionID(_ rawValue: String?) -> String? {
+    let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func opsNormalizedToolIdentifier(_ rawValue: String?) -> String? {
+    let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed.lowercased()
+}
+
+private func opsLeadLinkedSessionID(
+    spanIDs: [UUID],
+    executionResultsByID: [UUID: ExecutionResult]
+) -> String? {
+    let sessionIDs = spanIDs.compactMap { spanID in
+        opsNormalizedSessionID(executionResultsByID[spanID]?.sessionID)
+    }
+    guard !sessionIDs.isEmpty else { return nil }
+
+    let counts = sessionIDs.reduce(into: [String: Int]()) { partial, sessionID in
+        partial[sessionID, default: 0] += 1
+    }
+
+    return counts.max { lhs, rhs in
+        if lhs.value != rhs.value {
+            return lhs.value < rhs.value
+        }
+        return lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedDescending
+    }?.key
+}
+
+private func opsLinkedToolSpanIDs(
+    toolIdentifier: String,
+    snapshot: OpsAnalyticsSnapshot,
+    projections: OpsCenterProjectionBundle?
+) -> [UUID] {
+    let liveSpanIDs = snapshot.anomalyRows.compactMap { anomaly -> UUID? in
+        guard opsNormalizedToolIdentifier(anomaly.sourceService) == opsNormalizedToolIdentifier(toolIdentifier) else {
+            return nil
+        }
+        return anomaly.linkedSessionSpanID
+    }
+
+    let projectedEntry = projections?.toolEntries().first { entry in
+        opsNormalizedToolIdentifier(entry.toolIdentifier) == opsNormalizedToolIdentifier(toolIdentifier)
+    }
+    let projectedSpanIDs = (projectedEntry?.anomalies ?? []).compactMap { anomaly in
+        anomaly.linkedSpanID ?? anomaly.relatedRunID.flatMap(UUID.init(uuidString:))
+    }
+
+    return liveSpanIDs + projectedSpanIDs
+}
+
+private func opsCronRunIsFailure(_ run: OpsCronRunRow) -> Bool {
+    let normalizedStatus = run.statusText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if normalizedStatus.contains("fail") || normalizedStatus.contains("error") || normalizedStatus.contains("timeout") {
+        return true
+    }
+
+    let delivery = run.deliveryStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return delivery.contains("fail") || delivery.contains("error") || delivery.contains("timeout")
+}
+
+private func opsProjectionDigestPriorityScore(_ digest: OpsCenterArchiveProjectionDocumentDigest) -> Int {
+    let statusScore: Int
+    switch digest.status {
+    case .critical:
+        statusScore = 30
+    case .warning:
+        statusScore = 20
+    case .neutral:
+        statusScore = 10
+    case .healthy:
+        statusScore = 0
+    }
+
+    let stalenessScore: Int
+    if let generatedAt = digest.generatedAt {
+        let hoursSinceGeneration = max(Int(Date().timeIntervalSince(generatedAt) / 3600), 0)
+        stalenessScore = min(hoursSinceGeneration, 24)
+    } else {
+        stalenessScore = 24
+    }
+
+    return statusScore + stalenessScore
 }
 
 private func opsToolIdentifier(from anomaly: OpsAnomalyRow) -> String? {

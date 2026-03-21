@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import Multi_Agent_Flow
 
 final class TemplateNodeCreationTests: XCTestCase {
@@ -21,6 +22,51 @@ final class TemplateNodeCreationTests: XCTestCase {
         XCTAssertEqual(
             appState.currentProject?.workflows.first?.nodes.first(where: { $0.id == nodeID })?.agentID,
             agent.id
+        )
+    }
+
+    @MainActor
+    func testInstantiateTemplatePayloadCreatesNodeBoundToTemplateAgent() throws {
+        let appState = AppState()
+        appState.currentProject = MAProject(name: "Template Payload Test")
+        let template = try XCTUnwrap(AgentTemplateCatalog.templates.first)
+
+        let instantiated = try XCTUnwrap(
+            appState.instantiateAgentNodeFromPalettePayload(
+                "template:\(template.id)",
+                position: CGPoint(x: 240, y: 180)
+            )
+        )
+
+        XCTAssertEqual(instantiated.agent.soulMD, template.soulMD)
+        XCTAssertEqual(
+            appState.currentProject?.workflows.first?.nodes.first(where: { $0.id == instantiated.nodeID })?.agentID,
+            instantiated.agent.id
+        )
+    }
+
+    @MainActor
+    func testInstantiateProjectAgentPayloadDuplicatesAgentSoulContent() throws {
+        let appState = AppState()
+        appState.currentProject = MAProject(name: "Project Agent Payload Test")
+
+        let sourceAgent = try XCTUnwrap(appState.addNewAgent(named: "源智能体"))
+        var updatedSourceAgent = sourceAgent
+        updatedSourceAgent.soulMD = "# 源智能体\n\n复制这份 soul。"
+        appState.updateAgent(updatedSourceAgent, reload: false)
+
+        let instantiated = try XCTUnwrap(
+            appState.instantiateAgentNodeFromPalettePayload(
+                "projectAgent:\(sourceAgent.id.uuidString)",
+                position: CGPoint(x: 320, y: 220)
+            )
+        )
+
+        XCTAssertNotEqual(instantiated.agent.id, sourceAgent.id)
+        XCTAssertEqual(instantiated.agent.soulMD, updatedSourceAgent.soulMD)
+        XCTAssertEqual(
+            appState.currentProject?.workflows.first?.nodes.first(where: { $0.id == instantiated.nodeID })?.agentID,
+            instantiated.agent.id
         )
     }
 

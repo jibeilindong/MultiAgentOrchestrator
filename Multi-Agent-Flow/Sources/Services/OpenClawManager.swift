@@ -1844,6 +1844,35 @@ class OpenClawManager: ObservableObject {
         return transports
     }
 
+    private func inferredProbeLayers(
+        for config: OpenClawConfig,
+        capabilities: OpenClawConnectionCapabilitiesSnapshot
+    ) -> OpenClawProbeLayersSnapshot {
+        switch config.deploymentKind {
+        case .container:
+            return OpenClawProbeLayersSnapshot(
+                transport: capabilities.cliAvailable ? .ready : .unavailable,
+                authentication: .notRequired,
+                session: capabilities.cliAvailable && capabilities.agentListingAvailable ? .ready : (capabilities.cliAvailable ? .degraded : .unavailable),
+                inventory: capabilities.agentListingAvailable ? .ready : (capabilities.cliAvailable ? .degraded : .unavailable)
+            )
+        case .remoteServer:
+            return OpenClawProbeLayersSnapshot(
+                transport: capabilities.gatewayReachable ? .ready : .unavailable,
+                authentication: capabilities.gatewayReachable ? (capabilities.gatewayAuthenticated ? .ready : .degraded) : .unavailable,
+                session: capabilities.gatewayAuthenticated ? .ready : (capabilities.gatewayReachable ? .degraded : .unavailable),
+                inventory: capabilities.agentListingAvailable ? .ready : (capabilities.gatewayAuthenticated ? .degraded : .unavailable)
+            )
+        case .local:
+            return OpenClawProbeLayersSnapshot(
+                transport: capabilities.cliAvailable && capabilities.gatewayReachable ? .ready : ((capabilities.cliAvailable || capabilities.gatewayReachable) ? .degraded : .unavailable),
+                authentication: capabilities.gatewayReachable ? (capabilities.gatewayAuthenticated ? .ready : .degraded) : (capabilities.cliAvailable ? .degraded : .unavailable),
+                session: capabilities.cliAvailable && capabilities.agentListingAvailable && capabilities.gatewayAuthenticated ? .ready : ((capabilities.cliAvailable || capabilities.gatewayReachable) ? .degraded : .unavailable),
+                inventory: capabilities.agentListingAvailable ? .ready : (capabilities.cliAvailable ? .degraded : .unavailable)
+            )
+        }
+    }
+
     private func recordProbeResult(
         using config: OpenClawConfig,
         success: Bool,
@@ -1876,10 +1905,12 @@ class OpenClawManager: ObservableObject {
             health: health
         )
 
+        let layers = inferredProbeLayers(for: config, capabilities: capabilities)
         lastProbeReport = OpenClawProbeReportSnapshot(
             success: success,
             deploymentKind: config.deploymentKind,
             endpoint: endpointDescription(for: config),
+            layers: layers,
             capabilities: capabilities,
             health: health,
             availableAgents: agentNames,

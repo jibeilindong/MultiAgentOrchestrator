@@ -69,6 +69,7 @@ import {
 } from "@multi-agent-flow/domain";
 import { startTransition, useEffect, useState } from "react";
 import { WorkflowCanvasPreview } from "./components/WorkflowCanvasPreview";
+import { assessOpenClawRuntimeReadiness, formatOpenClawRuntimeLayers } from "./openclaw-runtime-readiness";
 
 type BusyAction = "new" | "open" | "save" | "saveAs" | null;
 
@@ -314,11 +315,55 @@ interface LiveWorkflowExecutionResult {
   advisoryMessage: string | null;
 }
 
+function shouldAttemptLiveApprovalContinuation(
+  project: MAProject,
+  message: Message | null,
+  workflow: Workflow | null,
+  targetNodeId: string | null | undefined
+): {
+  shouldAttempt: boolean;
+  blockingMessage: string | null;
+} {
+  if (message?.metadata.liveExecution !== "true") {
+    return { shouldAttempt: false, blockingMessage: null };
+  }
+
+  const runtimeReadiness = assessOpenClawRuntimeReadiness(project.openClaw);
+  if (runtimeReadiness.blockingMessage) {
+    return {
+      shouldAttempt: false,
+      blockingMessage: runtimeReadiness.blockingMessage
+    };
+  }
+
+  if (!workflow || !targetNodeId) {
+    return {
+      shouldAttempt: false,
+      blockingMessage: "Approval could not continue because the downstream workflow target is missing."
+    };
+  }
+
+  return {
+    shouldAttempt: true,
+    blockingMessage: null
+  };
+}
+
 async function evaluateLiveExecutionPreflight(project: MAProject, workflow: Workflow): Promise<LiveExecutionPreflightResult> {
   const assessment = assessWorkflowRuntimeIsolation(project, workflow);
-  const advisories: string[] = [];
+  const runtimeReadiness = assessOpenClawRuntimeReadiness(project.openClaw);
+  const advisories: string[] = [...runtimeReadiness.advisoryMessages];
   if (assessment.blockingFindings.length > 0) {
     advisories.push(assessment.blockingFindings.join(" "));
+  }
+
+  if (runtimeReadiness.blockingMessage) {
+    return {
+      blocked: true,
+      message: runtimeReadiness.blockingMessage,
+      advisoryMessage: advisories.length > 0 ? advisories.join(" ") : null,
+      governanceReport: null
+    };
   }
 
   const workflowAgentIdentifiers = Array.from(
@@ -676,7 +721,7 @@ export function App() {
   const [workbenchPrompt, setWorkbenchPrompt] = useState("");
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const [workbenchAction, setWorkbenchAction] = useState<"publish" | `approval:${string}` | null>(null);
-  const [openClawAction, setOpenClawAction] = useState<"detect" | "connect" | "disconnect" | "import" | null>(null);
+  const [openClawAction, setOpenClawAction] = useState<"detect" | "connect" | "disconnect" | "import" | "recover" | null>(null);
   const [openClawGovernanceAction, setOpenClawGovernanceAction] = useState<"audit" | "remediate" | null>(null);
   const [openClawGovernanceReport, setOpenClawGovernanceReport] = useState<OpenClawGovernanceAuditReport | null>(null);
   const [openClawGovernanceNotes, setOpenClawGovernanceNotes] = useState<string[]>([]);
@@ -1493,6 +1538,15 @@ export function App() {
         return;
       }
 
+      const runtimeReadiness = assessOpenClawRuntimeReadiness(verificationProject.openClaw);
+      const runtimeFindings: string[] = [];
+      if (runtimeReadiness.blockingMessage) {
+        runtimeFindings.push(`Live runtime blocked: ${runtimeReadiness.blockingMessage}`);
+      }
+      if (runtimeReadiness.advisoryMessages.length > 0) {
+        runtimeFindings.push(...runtimeReadiness.advisoryMessages.map((message) => `Runtime advisory: ${message}`));
+      }
+
       let governancePreflightFinding: string | null = null;
       try {
         const governanceReport = await requireDesktopApi().auditOpenClawRuntimeGovernance(
@@ -1511,7 +1565,7 @@ export function App() {
         const finalized = finalizeWorkflowLaunchVerification(
           verificationProject,
           verificationWorkflow.id,
-          governancePreflightFinding ? [governancePreflightFinding] : [],
+          [...runtimeFindings, ...(governancePreflightFinding ? [governancePreflightFinding] : [])],
           []
         );
         commitProject(finalized.project, "Launch verification completed with static checks only.", {
@@ -1521,7 +1575,22 @@ export function App() {
       }
 
       const caseReports: ReturnType<typeof evaluateWorkflowLaunchTestCase>[] = [];
-      const runtimeFindings: string[] = governancePreflightFinding ? [governancePreflightFinding] : [];
+      if (governancePreflightFinding) {
+        runtimeFindings.push(governancePreflightFinding);
+      }
+
+      if (runtimeReadiness.blockingMessage) {
+        const finalized = finalizeWorkflowLaunchVerification(
+          verificationProject,
+          verificationWorkflow.id,
+          runtimeFindings,
+          []
+        );
+        commitProject(finalized.project, "Launch verification stopped because live runtime is blocked.", {
+          recordHistory: false
+        });
+        return;
+      }
 
       for (const testCase of testCases) {
         const liveCase = await runLiveWorkflowCase(verificationProject, verificationWorkflow, testCase.prompt);
@@ -2197,23 +2266,34 @@ export function App() {
     setOpenClawAction("detect");
     try {
       const result = await requireDesktopApi().detectOpenClawAgents(project.openClaw.config);
-      updateProject(
-        (current) =>
-          syncOpenClawState(current, {
-            isConnected: false,
-            availableAgents: result.availableAgents,
-            activeAgents: result.activeAgents,
-            detectedAgents: result.detectedAgents,
-            connectionState: result.connectionState,
-            lastProbeReport: result.probeReport
-          }),
-        result.message
-      );
+      const nextProject = syncOpenClawState(project, {
+        isConnected: false,
+        availableAgents: result.availableAgents,
+        activeAgents: result.activeAgents,
+        detectedAgents: result.detectedAgents,
+        connectionState: result.connectionState,
+        lastProbeReport: result.probeReport
+      });
+      commitProject(nextProject, result.message);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : String(actionError));
     } finally {
       setOpenClawAction(null);
     }
+  }
+
+  async function runDetectOpenClawAgents(projectSnapshot: MAProject) {
+    const result = await requireDesktopApi().detectOpenClawAgents(projectSnapshot.openClaw.config);
+    const nextProject = syncOpenClawState(projectSnapshot, {
+      isConnected: false,
+      availableAgents: result.availableAgents,
+      activeAgents: result.activeAgents,
+      detectedAgents: result.detectedAgents,
+      connectionState: result.connectionState,
+      lastProbeReport: result.probeReport
+    });
+
+    return { result, nextProject };
   }
 
   async function handleConnectOpenClaw() {
@@ -2223,24 +2303,27 @@ export function App() {
 
     setOpenClawAction("connect");
     try {
-      const result = await requireDesktopApi().connectOpenClaw(project.openClaw.config);
-      updateProject(
-        (current) =>
-          syncOpenClawState(current, {
-            isConnected: result.isConnected,
-            availableAgents: result.availableAgents,
-            activeAgents: result.activeAgents,
-            detectedAgents: result.detectedAgents,
-            connectionState: result.connectionState,
-            lastProbeReport: result.probeReport
-          }),
-        result.message
-      );
+      const { result, nextProject } = await runConnectOpenClaw(project);
+      commitProject(nextProject, result.message);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : String(actionError));
     } finally {
       setOpenClawAction(null);
     }
+  }
+
+  async function runConnectOpenClaw(projectSnapshot: MAProject) {
+    const result = await requireDesktopApi().connectOpenClaw(projectSnapshot.openClaw.config);
+    const nextProject = syncOpenClawState(projectSnapshot, {
+      isConnected: result.isConnected,
+      availableAgents: result.availableAgents,
+      activeAgents: result.activeAgents,
+      detectedAgents: result.detectedAgents,
+      connectionState: result.connectionState,
+      lastProbeReport: result.probeReport
+    });
+
+    return { result, nextProject };
   }
 
   async function handleDisconnectOpenClaw() {
@@ -2261,6 +2344,86 @@ export function App() {
             lastProbeReport: result.probeReport
           }),
         result.message
+      );
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : String(actionError));
+    } finally {
+      setOpenClawAction(null);
+    }
+  }
+
+  function handleRunOpenClawRecoveryAction(command: "connect" | "detect" | "review_config") {
+    switch (command) {
+      case "connect":
+        void handleConnectOpenClaw();
+        break;
+      case "detect":
+        void handleDetectOpenClawAgents();
+        break;
+      case "review_config":
+        setStatus("Review the OpenClaw configuration fields highlighted in the diagnostics panel before retrying.");
+        break;
+    }
+  }
+
+  async function handleRunOpenClawRecoveryPlan() {
+    if (!project) {
+      return;
+    }
+
+    const readiness = assessOpenClawRuntimeReadiness(project.openClaw);
+    if (readiness.recoveryActions.length === 0) {
+      setStatus("OpenClaw recovery plan is already clear. No recovery action is needed right now.");
+      return;
+    }
+
+    setOpenClawAction("recover");
+    setError(null);
+
+    let workingProject = project;
+    const completedSteps: string[] = [];
+
+    try {
+      for (const action of readiness.recoveryActions) {
+        if (action.command === "review_config") {
+          setStatus(
+            completedSteps.length > 0
+              ? `Recovery progressed through ${completedSteps.join(" -> ")}. Manual follow-up: ${action.detail}`
+              : `Recovery paused for manual follow-up: ${action.detail}`
+          );
+          return;
+        }
+
+        if (action.command === "connect") {
+          const { result, nextProject } = await runConnectOpenClaw(workingProject);
+          workingProject = nextProject;
+          commitProject(nextProject, `Recovery step complete: ${action.title}. ${result.message}`, {
+            recordHistory: false
+          });
+          completedSteps.push(action.title);
+
+          const nextReadiness = assessOpenClawRuntimeReadiness(nextProject.openClaw);
+          if (nextReadiness.blockingMessage) {
+            setStatus(`Recovery stopped after ${action.title}: ${nextReadiness.blockingMessage}`);
+            return;
+          }
+          continue;
+        }
+
+        if (action.command === "detect") {
+          const { result, nextProject } = await runDetectOpenClawAgents(workingProject);
+          workingProject = nextProject;
+          commitProject(nextProject, `Recovery step complete: ${action.title}. ${result.message}`, {
+            recordHistory: false
+          });
+          completedSteps.push(action.title);
+        }
+      }
+
+      setStatus(
+        completedSteps.length > 0
+          ? `OpenClaw recovery plan completed: ${completedSteps.join(" -> ")}.`
+          : "OpenClaw recovery plan did not require an automatic step."
       );
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : String(actionError));
@@ -2294,8 +2457,9 @@ export function App() {
       return;
     }
 
-    if (!project.openClaw.isConnected) {
-      setWorkbenchError("Connect OpenClaw before publishing workbench tasks.");
+    const runtimeReadiness = assessOpenClawRuntimeReadiness(project.openClaw);
+    if (runtimeReadiness.blockingMessage) {
+      setWorkbenchError(runtimeReadiness.blockingMessage);
       return;
     }
 
@@ -2379,6 +2543,22 @@ export function App() {
         project.workflows.find((workflow) => workflow.id === approvalMessage?.metadata.workflowID) ?? null;
       const targetNode =
         linkedWorkflow?.nodes.find((node) => node.id === approvalMessage?.metadata.targetNodeID) ?? null;
+      const liveApproval = shouldAttemptLiveApprovalContinuation(
+        project,
+        approvalMessage,
+        linkedWorkflow,
+        targetNode?.id
+      );
+
+      if (
+        decision === "approve" &&
+        approvalMessage?.metadata.liveExecution === "true" &&
+        liveApproval.blockingMessage
+      ) {
+        setWorkbenchError(liveApproval.blockingMessage);
+        setStatus(`Blocked downstream OpenClaw execution: ${liveApproval.blockingMessage}`);
+        return;
+      }
 
       if (
         decision === "approve" &&
@@ -2386,7 +2566,7 @@ export function App() {
         linkedTask?.metadata.liveExecution === "true" &&
         linkedWorkflow &&
         targetNode?.agentID &&
-        project.openClaw.isConnected
+        liveApproval.shouldAttempt
       ) {
         const completedNodeIds = parseMetadataCsv(linkedTask.metadata.completedNodeIDs);
         const visitCounts = new Map(completedNodeIds.map((nodeId) => [nodeId, 1] as const));
@@ -2476,6 +2656,7 @@ export function App() {
   const errorLogCount = project?.executionLogs.filter((entry) => entry.level === "ERROR").length ?? 0;
   const warnLogCount = project?.executionLogs.filter((entry) => entry.level === "WARN").length ?? 0;
   const openClawReadiness = project ? computeOpenClawReadiness(project) : null;
+  const openClawRuntimeReadiness = project ? assessOpenClawRuntimeReadiness(project.openClaw) : null;
   const recentExecutionResults =
     project?.executionResults
       .slice()
@@ -4199,6 +4380,7 @@ export function App() {
                 <span className="sectionLabel">OpenClaw configuration</span>
                 <div className="metaStrip">
                   <span>{project.openClaw.isConnected ? "Connected" : "Disconnected"}</span>
+                  <span>Phase: {project.openClaw.connectionState.phase}</span>
                   <span>Available agents: {project.openClaw.availableAgents.length}</span>
                   <span>Active agents: {project.openClaw.activeAgents.length}</span>
                   <span>Detected agents: {project.openClaw.detectedAgents.length}</span>
@@ -4466,6 +4648,77 @@ export function App() {
                   </button>
                 </div>
 
+                {openClawRuntimeReadiness ? (
+                  <div className="dashboardPanel">
+                    <div className="dashboardPanelHeader">
+                      <h3>OpenClaw connection diagnostics</h3>
+                      <span>{openClawRuntimeReadiness.label}</span>
+                    </div>
+                    <div className="metaStrip">
+                      <span>Phase: {project.openClaw.connectionState.phase}</span>
+                      <span>
+                        Last probe:{" "}
+                        {project.openClaw.connectionState.health.lastProbeAt
+                          ? fromSwiftDate(project.openClaw.connectionState.health.lastProbeAt).toLocaleString()
+                          : "Never"}
+                      </span>
+                      <span>
+                        Layers:{" "}
+                        {openClawRuntimeReadiness.layers
+                          ? formatOpenClawRuntimeLayers(openClawRuntimeReadiness.layers)
+                          : "Not probed"}
+                      </span>
+                    </div>
+                    <p className="dashboardEventBody">{openClawRuntimeReadiness.summary}</p>
+                    {openClawRuntimeReadiness.recoveryActions.some((action) => action.command !== "review_config") ? (
+                      <div className="inspectorActions">
+                        <button
+                          type="button"
+                          onClick={() => void handleRunOpenClawRecoveryPlan()}
+                          disabled={openClawAction !== null}
+                        >
+                          {openClawAction === "recover" ? "Recovering..." : "Run recovery plan"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {openClawRuntimeReadiness.recoveryActions.length > 0 ? (
+                      <div className="dashboardChecklist">
+                        {openClawRuntimeReadiness.recoveryActions.map((action) => (
+                          <div key={action.id} className="dashboardChecklistItem">
+                            <strong>{action.title}</strong>
+                            <span>{action.detail}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleRunOpenClawRecoveryAction(action.command)}
+                              disabled={openClawAction !== null && action.command !== "review_config"}
+                            >
+                              {action.command === "connect"
+                                ? openClawAction === "connect"
+                                  ? "Connecting..."
+                                  : "Run Connect"
+                                : action.command === "detect"
+                                  ? openClawAction === "detect"
+                                    ? "Detecting..."
+                                    : "Run Detect"
+                                  : "Review config"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {openClawRuntimeReadiness.advisoryMessages.length > 0 ? (
+                      <div className="dashboardChecklist">
+                        {openClawRuntimeReadiness.advisoryMessages.map((message) => (
+                          <div key={message} className="dashboardChecklistItem">
+                            <strong>Advisory</strong>
+                            <span>{message}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <div className="dashboardPanel">
                   <div className="dashboardPanelHeader">
                     <h3>OpenClaw runtime governance</h3>
@@ -4724,10 +4977,14 @@ export function App() {
                 </article>
                 <article className="dashboardMetricCard">
                   <span className="dashboardMetricLabel">OpenClaw readiness</span>
-                  <strong>{openClawReadiness?.label ?? "Unavailable"}</strong>
+                  <strong>{openClawRuntimeReadiness?.label ?? openClawReadiness?.label ?? "Unavailable"}</strong>
                   <p>
                     Score {openClawReadiness ? formatPercent(openClawReadiness.score) : "0%"}.
-                    {openClawReadiness?.issues[0] ? ` ${openClawReadiness.issues[0]}` : " Configuration looks complete."}
+                    {openClawRuntimeReadiness
+                      ? ` ${openClawRuntimeReadiness.summary}`
+                      : openClawReadiness?.issues[0]
+                        ? ` ${openClawReadiness.issues[0]}`
+                        : " Configuration looks complete."}
                   </p>
                 </article>
                 <article className="dashboardMetricCard">
@@ -4873,6 +5130,40 @@ export function App() {
                       <div key={issue} className="dashboardChecklistItem">
                         <strong>Attention</strong>
                         <span>{issue}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {openClawRuntimeReadiness && openClawRuntimeReadiness.advisoryMessages.length > 0 ? (
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>OpenClaw runtime advisories</h3>
+                    <span>{openClawRuntimeReadiness.advisoryMessages.length} item(s)</span>
+                  </div>
+                  <div className="dashboardChecklist">
+                    {openClawRuntimeReadiness.advisoryMessages.map((message) => (
+                      <div key={message} className="dashboardChecklistItem">
+                        <strong>Advisory</strong>
+                        <span>{message}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {openClawRuntimeReadiness && openClawRuntimeReadiness.recoveryActions.length > 0 ? (
+                <section className="dashboardPanel">
+                  <div className="dashboardPanelHeader">
+                    <h3>OpenClaw recovery plan</h3>
+                    <span>{openClawRuntimeReadiness.recoveryActions.length} step(s)</span>
+                  </div>
+                  <div className="dashboardChecklist">
+                    {openClawRuntimeReadiness.recoveryActions.map((action) => (
+                      <div key={action.id} className="dashboardChecklistItem">
+                        <strong>{action.title}</strong>
+                        <span>{action.detail}</span>
                       </div>
                     ))}
                   </div>

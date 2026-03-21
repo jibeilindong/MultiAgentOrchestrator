@@ -1235,7 +1235,7 @@ class AppState: ObservableObject {
             tasks: project.tasks,
             existing: project.workspaceIndex
         )
-        hydratedProject = normalizeProjectNaming(hydratedProject)
+        hydratedProject = Self.normalizeProjectNaming(hydratedProject)
         if !hydratedProject.workflows.isEmpty {
             hydratedProject.permissions = conversationPermissions(for: hydratedProject.workflows)
         }
@@ -1311,7 +1311,7 @@ class AppState: ObservableObject {
         return agents
     }
 
-    private func normalizedNodeTitle(
+    static func normalizedNodeTitle(
         for node: WorkflowNode,
         existingNodes: [WorkflowNode],
         agentNamesByID: [UUID: String]
@@ -1332,7 +1332,7 @@ class AppState: ObservableObject {
         )
     }
 
-    private func normalizeProjectNaming(_ project: MAProject) -> MAProject {
+    static func normalizeProjectNaming(_ project: MAProject) -> MAProject {
         var normalizedProject = project
         var normalizedAgents: [Agent] = []
 
@@ -1494,7 +1494,7 @@ class AppState: ObservableObject {
         let imported = openClawManager.importDetectedAgents(into: &project, selections: selections)
         guard !imported.isEmpty else { return [] }
 
-        currentProject = normalizeProjectNaming(project)
+        currentProject = Self.normalizeProjectNaming(project)
         syncCurrentProjectFromManagers()
         persistCurrentProjectSilently()
         return imported
@@ -1659,7 +1659,7 @@ class AppState: ObservableObject {
         var normalizedProject = project
         let deduplication = enforceUniqueAgentNodes(in: normalizedProject.workflows)
         normalizedProject.workflows = deduplication.workflows
-        normalizedProject = normalizeProjectNaming(normalizedProject)
+        normalizedProject = Self.normalizeProjectNaming(normalizedProject)
         if !normalizedProject.workflows.isEmpty {
             normalizedProject.permissions = conversationPermissions(for: normalizedProject.workflows)
         }
@@ -2067,6 +2067,147 @@ class AppState: ObservableObject {
         _ = ensureAgentNode(agentID: agent.id, suggestedPosition: snapPointToGrid(position))
     }
 
+    @MainActor
+    @discardableResult
+    func instantiateAgentNodeFromPalettePayload(
+        _ payload: String,
+        position: CGPoint
+    ) -> (agent: Agent, nodeID: UUID)? {
+        let snappedPosition = snapPointToGrid(position)
+
+        if payload.hasPrefix("template:") {
+            let templateID = String(payload.dropFirst("template:".count))
+            guard let agent = addNewAgent(templateID: templateID) else { return nil }
+            return instantiateNode(for: agent, position: snappedPosition)
+        }
+
+        if payload.hasPrefix("projectAgent:"),
+           let agentID = UUID(uuidString: String(payload.dropFirst("projectAgent:".count))),
+           let duplicated = duplicateAgent(agentID, suffix: "Copy", offset: .zero) {
+            return instantiateNode(for: duplicated, position: snappedPosition)
+        }
+
+        if payload.hasPrefix("detectedAgent:") {
+            let detectedName = String(payload.dropFirst("detectedAgent:".count))
+            return instantiateDetectedAgentNode(named: detectedName, position: snappedPosition)
+        }
+
+        if let existingAgent = currentProject?.agents.first(where: { $0.name == payload }),
+           let duplicated = duplicateAgent(existingAgent.id, suffix: "Copy", offset: .zero) {
+            return instantiateNode(for: duplicated, position: snappedPosition)
+        }
+
+        if detectedOpenClawRecord(named: payload) != nil {
+            return instantiateDetectedAgentNode(named: payload, position: snappedPosition)
+        }
+
+        guard let agent = addNewAgent(named: payload) else { return nil }
+        return instantiateNode(for: agent, position: snappedPosition)
+    }
+
+    @MainActor
+    @discardableResult
+    private func instantiateDetectedAgentNode(
+        named name: String,
+        position: CGPoint
+    ) -> (agent: Agent, nodeID: UUID)? {
+        guard let detectedRecord = detectedOpenClawRecord(named: name) else {
+            guard let agent = addNewAgent(named: name) else { return nil }
+            return instantiateNode(for: agent, position: position)
+        }
+
+        guard var project = currentProject else { return nil }
+
+        let agent = makeDetectedAgentDraft(from: detectedRecord, existingAgents: project.agents)
+        project.agents.append(agent)
+        markWorkflowConfigurationPending(in: &project)
+        project.updatedAt = Date()
+        currentProject = project
+        objectWillChange.send()
+
+        return instantiateNode(for: agent, position: position)
+    }
+
+    @discardableResult
+    private func instantiateNode(for agent: Agent, position: CGPoint) -> (agent: Agent, nodeID: UUID)? {
+        guard let nodeID = ensureAgentNode(agentID: agent.id, suggestedPosition: position) else { return nil }
+        return (agent, nodeID)
+    }
+
+    private func detectedOpenClawRecord(named name: String) -> ProjectOpenClawDetectedAgentRecord? {
+        let normalizedName = normalizeAgentKey(name)
+        guard !normalizedName.isEmpty else { return nil }
+
+        return openClawManager.discoveryResults.first {
+            normalizeAgentKey($0.name) == normalizedName
+        }
+    }
+
+    private func makeDetectedAgentDraft(
+        from record: ProjectOpenClawDetectedAgentRecord,
+        existingAgents: [Agent]
+    ) -> Agent {
+        let soulText = AgentImportNamingService.loadSoulMarkdown(for: record) ?? "# \(record.name)\n"
+        let capabilities = detectedCapabilities(for: record)
+        let resolution = AgentImportNamingService.resolveImportedAgent(
+            rawName: record.name,
+            soulMD: soulText,
+            capabilities: capabilities
+        )
+
+        let baseName = {
+            let recommended = resolution.recommendedFunctionDescription?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !recommended.isEmpty {
+                return recommended
+            }
+            return AgentImportNamingService.fallbackFunctionDescription(from: record.name)
+        }()
+
+        var agent = Agent(
+            name: Agent.normalizedName(
+                requestedName: baseName,
+                existingAgents: existingAgents
+            )
+        )
+
+        if let templateID = resolution.recommendedTemplateID,
+           let template = AgentTemplateLibraryStore.shared.template(withID: templateID) {
+            agent.identity = template.identity
+            agent.description = template.summary
+            agent.colorHex = template.colorHex
+        } else {
+            agent.description = "Instantiated from OpenClaw"
+        }
+
+        agent.soulMD = soulText
+        agent.capabilities = capabilities
+        agent = Self.preparedDraftAgentForDeferredMaterialization(agent, agentIdentifier: agent.name)
+        agent.updatedAt = Date()
+        return agent
+    }
+
+    private func detectedCapabilities(for record: ProjectOpenClawDetectedAgentRecord) -> [String] {
+        guard let directoryPath = firstNonEmptyPath(record.directoryPath) else {
+            return ["basic"]
+        }
+
+        let skillsDirectory = URL(fileURLWithPath: directoryPath, isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+        guard let skillContents = try? FileManager.default.contentsOfDirectory(
+            at: skillsDirectory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return ["basic"]
+        }
+
+        let capabilities = skillContents
+            .filter { ["md", "MD"].contains($0.pathExtension) }
+            .map { $0.deletingPathExtension().lastPathComponent }
+
+        return capabilities.isEmpty ? ["basic"] : capabilities
+    }
+
     static func undeletableNodeIDs(in workflow: Workflow, from nodeIDs: Set<UUID>) -> Set<UUID> {
         guard !nodeIDs.isEmpty else { return [] }
 
@@ -2380,7 +2521,7 @@ class AppState: ObservableObject {
             guard let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
             updates(&workflow.nodes[index])
             let updatedNode = workflow.nodes[index]
-            workflow.nodes[index].title = normalizedNodeTitle(
+            workflow.nodes[index].title = Self.normalizedNodeTitle(
                 for: updatedNode,
                 existingNodes: workflow.nodes,
                 agentNamesByID: agentNamesByID
@@ -2393,7 +2534,7 @@ class AppState: ObservableObject {
         updateMainWorkflow { workflow in
             guard let index = workflow.nodes.firstIndex(where: { $0.id == updatedNode.id }) else { return }
             var normalizedNode = updatedNode
-            normalizedNode.title = normalizedNodeTitle(
+            normalizedNode.title = Self.normalizedNodeTitle(
                 for: normalizedNode,
                 existingNodes: workflow.nodes,
                 agentNamesByID: agentNamesByID
@@ -2636,7 +2777,7 @@ class AppState: ObservableObject {
     func loadManagedAgentWorkspaceDocument(
         agentID: UUID,
         fileName: String
-    ) -> (content: String, sourcePath: String?)? {
+    ) -> (content: String, documentPath: String?)? {
         guard let context = managedAgentWorkspaceContext(for: agentID),
               let documentURL = try? ensureManagedAgentWorkspaceDocument(named: fileName, context: context),
               let content = try? String(contentsOf: documentURL, encoding: .utf8) else {
@@ -2680,7 +2821,7 @@ class AppState: ObservableObject {
             currentProject = context.project
             objectWillChange.send()
 
-            return (true, LocalizedString.text("workflow_apply_pending"), writtenPaths)
+            return (true, LocalizedString.text("managed_config_saved_locally"), writtenPaths)
         } catch {
             return (
                 false,
@@ -2690,73 +2831,19 @@ class AppState: ObservableObject {
         }
     }
 
-    func loadAgentSoulMDFromSource(agentID: UUID) -> (content: String, sourcePath: String?)? {
-        guard let project = currentProject,
-              let agent = project.agents.first(where: { $0.id == agentID }) else { return nil }
+    func managedAgentPrimaryConfigURL(
+        for agentID: UUID,
+        preferredFileName: String = "SOUL.md"
+    ) -> URL? {
+        let availableDocuments = managedAgentWorkspaceDocuments(agentID: agentID)
+        guard !availableDocuments.isEmpty else { return nil }
 
-        if let managedDocument = loadManagedAgentWorkspaceDocument(agentID: agentID, fileName: "SOUL.md") {
-            return managedDocument
+        if let preferred = availableDocuments.first(where: { $0.fileName == preferredFileName }) {
+            return URL(fileURLWithPath: preferred.absolutePath, isDirectory: false)
         }
 
-        if let managedSoulURL = managedNodeOpenClawSoulURL(for: agent, in: project),
-           FileManager.default.fileExists(atPath: managedSoulURL.path),
-           let content = try? String(contentsOf: managedSoulURL, encoding: .utf8) {
-            return (content, managedSoulURL.path)
-        }
-
-        if let mirrorURL = openClawManager.projectMirrorSoulURL(for: agent, in: project),
-           FileManager.default.fileExists(atPath: mirrorURL.path),
-           let content = try? String(contentsOf: mirrorURL, encoding: .utf8) {
-            return (content, mirrorURL.path)
-        }
-
-        guard let soulURL = existingAgentSoulFileURL(for: agent) else {
-            return (agent.soulMD, nil)
-        }
-
-        if let content = try? String(contentsOf: soulURL, encoding: .utf8) {
-            return (content, soulURL.path)
-        }
-        return (agent.soulMD, nil)
-    }
-
-    func persistAgentSoulMDToSource(agentID: UUID, soulMD: String) -> (success: Bool, message: String) {
-        let result = persistManagedAgentWorkspaceDocuments(
-            agentID: agentID,
-            documents: ["SOUL.md": soulMD]
-        )
-        return (result.success, result.message)
-    }
-
-    func refreshAgentSoulMDFromSource(agentID: UUID) -> (success: Bool, message: String) {
-        guard var project = currentProject,
-              let index = project.agents.firstIndex(where: { $0.id == agentID }) else {
-            return (false, LocalizedString.text("agent_not_found"))
-        }
-
-        let agent = project.agents[index]
-        guard let soulURL = existingAgentSoulFileURL(for: agent) else {
-            return (false, LocalizedString.text("no_real_soul_file_project_cache"))
-        }
-
-        do {
-            let content = try String(contentsOf: soulURL, encoding: .utf8)
-            project.agents[index].soulMD = content
-            project.agents[index].openClawDefinition.soulSourcePath = soulURL.path
-            project.agents[index].updatedAt = Date()
-            markWorkflowConfigurationPending(in: &project)
-            project.updatedAt = Date()
-            currentProject = project
-            objectWillChange.send()
-            return (true, LocalizedString.format("reloaded_from_path", soulURL.path))
-        } catch {
-            return (false, LocalizedString.format("read_soul_failed", error.localizedDescription))
-        }
-    }
-
-    func agentSoulFileURL(for agentID: UUID) -> URL? {
-        guard let agent = currentProject?.agents.first(where: { $0.id == agentID }) else { return nil }
-        return existingAgentSoulFileURL(for: agent)
+        guard let firstDocument = availableDocuments.first else { return nil }
+        return URL(fileURLWithPath: firstDocument.absolutePath, isDirectory: false)
     }
 
     func agentWorkspaceURL(for agentID: UUID) -> URL? {

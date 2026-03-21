@@ -2,148 +2,85 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class AgentTemplateLibraryStoreTests: XCTestCase {
-    func testImportPlannerReportsExistingLibraryConflicts() throws {
-        let builtInTemplate = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
-        var planner = TemplateAssetImportPlanner(
-            existingTemplateIDs: Set(AgentTemplateCatalog.builtInTemplates.map(\.id)),
-            existingTemplateNames: Set(AgentTemplateCatalog.builtInTemplates.map(\.name)),
-            existingIdentities: Set(AgentTemplateCatalog.builtInTemplates.map(\.identity)),
-            existingSourceTemplateIDs: Set(AgentTemplateCatalog.builtInTemplates.map(\.id))
+    func testOpenDraftSessionCreatesDraftDirectoryForCustomTemplate() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let store = AgentTemplateLibraryStore(
+            templateFileSystem: TemplateFileSystem(),
+            appSupportRootDirectory: rootURL
         )
-        let sourceDirectoryURL = URL(fileURLWithPath: "/tmp/source-template", isDirectory: true)
-        let sourceDocument = TemplateAssetDocument(
-            template: builtInTemplate,
-            revision: 7,
-            status: .published
-        )
-        let entry = planner.buildPreviewEntry(
-            sourceDirectoryURL: sourceDirectoryURL,
-            sourceDocument: sourceDocument,
-            sortOrder: 200,
-            importHash: "hash-a"
+        let customTemplate = try XCTUnwrap(
+            store.duplicateTemplate(from: AgentTemplateCatalog.defaultTemplateID)
         )
 
-        XCTAssertEqual(entry.sourceTemplateID, builtInTemplate.id)
-        XCTAssertEqual(entry.sourceName, builtInTemplate.name)
-        XCTAssertEqual(entry.sourceIdentity, builtInTemplate.identity)
-        XCTAssertEqual(entry.importedTemplate.id, "custom.\(builtInTemplate.id)")
-        XCTAssertEqual(entry.importedTemplate.name, "\(builtInTemplate.name) 2")
-        XCTAssertEqual(entry.importedTemplate.identity, "\(builtInTemplate.identity)-2")
-        XCTAssertEqual(entry.importedTemplate.meta.sortOrder, 200)
-        XCTAssertEqual(entry.importedLineage.sourceScope, .importedAssetDirectory)
-        XCTAssertEqual(entry.importedLineage.sourceTemplateID, builtInTemplate.id)
-        XCTAssertEqual(entry.importedLineage.sourceRevision, 7)
-        XCTAssertEqual(entry.importedLineage.importedFromPath, sourceDirectoryURL.path)
-        XCTAssertEqual(entry.importedLineage.importHash, "hash-a")
+        let session = try store.openDraftSession(for: customTemplate.id)
 
-        let issueTitles = Set(entry.issues.map(\.title))
-        XCTAssertTrue(issueTitles.contains("独立导入"))
-        XCTAssertTrue(issueTitles.contains("检测到同源模板"))
-        XCTAssertTrue(issueTitles.contains("模板名称已调整"))
-        XCTAssertTrue(issueTitles.contains("身份标识已调整"))
+        XCTAssertEqual(session.templateID, customTemplate.id)
+        XCTAssertEqual(store.draftSession(for: customTemplate.id), session)
+        XCTAssertNotEqual(session.sourceAssetURL, session.draftRootURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.draftRootURL.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: session.draftRootURL.appendingPathComponent("template.json", isDirectory: false).path
+            )
+        )
     }
 
-    func testImportPlannerReportsConflictsWithinSelectedAssets() throws {
-        var planner = TemplateAssetImportPlanner(
-            existingTemplateIDs: [],
-            existingTemplateNames: [],
-            existingIdentities: [],
-            existingSourceTemplateIDs: []
+    func testCloseDraftSessionPreservesDraftDirectoryForLaterReopen() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let store = AgentTemplateLibraryStore(
+            templateFileSystem: TemplateFileSystem(),
+            appSupportRootDirectory: rootURL
         )
-        let templateA = makeTemplate(
-            id: "source.shared-alpha",
-            name: "Shared Import Template",
-            identity: "shared-import-template"
-        )
-        let templateB = makeTemplate(
-            id: "source.shared-beta",
-            name: "Shared Import Template",
-            identity: "shared-import-template"
+        let customTemplate = try XCTUnwrap(
+            store.duplicateTemplate(from: AgentTemplateCatalog.defaultTemplateID)
         )
 
-        let firstEntry = planner.buildPreviewEntry(
-            sourceDirectoryURL: URL(fileURLWithPath: "/tmp/shared-alpha", isDirectory: true),
-            sourceDocument: TemplateAssetDocument(
-                template: templateA,
-                revision: 1,
-                status: .published
-            ),
-            sortOrder: 10,
-            importHash: nil
-        )
-        let secondEntry = planner.buildPreviewEntry(
-            sourceDirectoryURL: URL(fileURLWithPath: "/tmp/shared-beta", isDirectory: true),
-            sourceDocument: TemplateAssetDocument(
-                template: templateB,
-                revision: 1,
-                status: .published
-            ),
-            sortOrder: 11,
-            importHash: nil
-        )
+        let firstSession = try store.openDraftSession(for: customTemplate.id)
+        let draftSoulURL = firstSession.draftRootURL.appendingPathComponent("SOUL.md", isDirectory: false)
+        try "# Reopened Draft\n\n保留草稿内容".write(to: draftSoulURL, atomically: true, encoding: .utf8)
 
-        XCTAssertEqual(firstEntry.importedTemplate.name, "Shared Import Template")
-        XCTAssertEqual(firstEntry.importedTemplate.identity, "shared-import-template")
+        store.closeDraftSession(for: customTemplate.id)
 
-        XCTAssertEqual(secondEntry.importedTemplate.name, "Shared Import Template 2")
-        XCTAssertEqual(secondEntry.importedTemplate.identity, "shared-import-template-2")
+        XCTAssertNil(store.draftSession(for: customTemplate.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstSession.draftRootURL.path))
 
-        let conflictDetails = secondEntry.issues.map(\.detail).joined(separator: "\n")
-        XCTAssertTrue(conflictDetails.contains("与本次导入中的其他模板冲突"))
+        let reopenedSession = try store.openDraftSession(for: customTemplate.id)
+        let reopenedSoul = try String(contentsOf: draftSoulURL, encoding: .utf8)
+
+        XCTAssertEqual(reopenedSession.draftRootURL, firstSession.draftRootURL)
+        XCTAssertEqual(reopenedSoul, "# Reopened Draft\n\n保留草稿内容")
     }
 
-    func testImportPlannerWarnsWhenSelectedAssetsShareSourceTemplateID() throws {
-        var planner = TemplateAssetImportPlanner(
-            existingTemplateIDs: [],
-            existingTemplateNames: [],
-            existingIdentities: [],
-            existingSourceTemplateIDs: []
+    func testDiscardDraftSessionRemovesDraftDirectoryAndSessionState() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let store = AgentTemplateLibraryStore(
+            templateFileSystem: TemplateFileSystem(),
+            appSupportRootDirectory: rootURL
         )
-        let firstEntry = planner.buildPreviewEntry(
-            sourceDirectoryURL: URL(fileURLWithPath: "/tmp/duplicate-source-a", isDirectory: true),
-            sourceDocument: TemplateAssetDocument(
-                template: makeTemplate(
-                    id: "same.source",
-                    name: "Planner Duplicate A",
-                    identity: "planner-duplicate-a"
-                ),
-                revision: 3,
-                status: .published
-            ),
-            sortOrder: 20,
-            importHash: nil
-        )
-        let secondEntry = planner.buildPreviewEntry(
-            sourceDirectoryURL: URL(fileURLWithPath: "/tmp/duplicate-source-b", isDirectory: true),
-            sourceDocument: TemplateAssetDocument(
-                template: makeTemplate(
-                    id: "same.source",
-                    name: "Planner Duplicate B",
-                    identity: "planner-duplicate-b"
-                ),
-                revision: 4,
-                status: .published
-            ),
-            sortOrder: 21,
-            importHash: nil
+        let customTemplate = try XCTUnwrap(
+            store.duplicateTemplate(from: AgentTemplateCatalog.defaultTemplateID)
         )
 
-        XCTAssertFalse(firstEntry.issues.contains(where: { $0.title == "检测到同源模板" }))
-        XCTAssertTrue(secondEntry.issues.contains(where: { $0.title == "检测到同源模板" }))
+        let session = try store.openDraftSession(for: customTemplate.id)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.draftRootURL.path))
+
+        try store.discardDraftSession(for: customTemplate.id)
+
+        XCTAssertNil(store.draftSession(for: customTemplate.id))
+        XCTAssertNil(store.templateDraftDirectoryURL(for: customTemplate.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: session.draftRootURL.path))
     }
 
-    private func makeTemplate(
-        id: String,
-        name: String,
-        identity: String
-    ) -> AgentTemplate {
-        let baseTemplate = AgentTemplateCatalog.defaultTemplate
-        var template = baseTemplate
-        template.meta.id = id
-        template.meta.name = name
-        template.meta.identity = identity
-        template.meta.summary = "Template used for import conflict tests."
-        template.meta.tags = ["test"]
-        return template.sanitizedForPersistence()
+    private func makeTemporaryDirectory() throws -> URL {
+        let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("template-library-store-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        return rootURL
     }
 }
