@@ -1468,7 +1468,7 @@ class AppState: ObservableObject {
         if currentProject != nil {
             persistCurrentProjectSilently()
         }
-        completion?(true, "OpenClaw 已断开并恢复到连接前状态。")
+        completion?(true, "OpenClaw 已断开，当前会话已结束，项目镜像仍保留在项目中。")
     }
 
     @discardableResult

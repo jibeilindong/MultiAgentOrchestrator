@@ -452,6 +452,28 @@ private struct WorkbenchThreadContextDocument: Codable {
     var entryAgentName: String?
 }
 
+private struct WorkbenchThreadInvestigationDocument: Codable {
+    var threadID: String
+    var sessionID: String
+    var workflowID: UUID?
+    var workflowName: String?
+    var entryAgentID: UUID?
+    var entryAgentName: String?
+    var participantAgentIDs: [UUID]
+    var relatedNodeIDs: [UUID]
+    var status: String
+    var startedAt: Date
+    var lastUpdatedAt: Date
+    var messageCount: Int
+    var taskCount: Int
+    var pendingApprovalCount: Int
+    var dispatchCount: Int
+    var eventCount: Int
+    var receiptCount: Int
+    var latestMessageID: UUID?
+    var latestTaskID: UUID?
+}
+
 private struct RuntimeQueueStateDocument: Codable {
     var generatedAt: Date
     var messageQueue: [String]
@@ -1181,6 +1203,63 @@ struct ProjectFileSystem {
                 entryAgentName: entryAgentName
             )
             try encode(contextDocument, to: threadRootURL.appendingPathComponent("context.json", isDirectory: false))
+
+            let runtimeDispatches = runtimeDispatchEnvelopes(from: project.runtimeState)
+                .map(\.record)
+                .filter { normalizedSessionID($0.sessionKey) == sessionID }
+                .filter { record in
+                    guard let resolvedWorkflowID else { return true }
+                    return record.workflowID == nil || record.workflowID == resolvedWorkflowID.uuidString
+                }
+            let runtimeEvents = project.runtimeState.runtimeEvents
+                .filter { normalizedSessionID($0.sessionKey) == sessionID }
+                .filter { event in
+                    guard let resolvedWorkflowID else { return true }
+                    return event.workflowId == nil || event.workflowId == resolvedWorkflowID.uuidString
+                }
+            let workflowNodeIDs = Set(workflowsByID[resolvedWorkflowID ?? UUID()]?.nodes.map(\.id) ?? [])
+            let runtimeReceipts = project.executionResults
+                .filter { normalizedSessionID($0.sessionID) == sessionID }
+                .filter { receipt in
+                    workflowNodeIDs.isEmpty || workflowNodeIDs.contains(receipt.nodeID)
+                }
+            let relatedNodeIDs = Set(
+                threadTasks.compactMap(\.workflowNodeID)
+                    + runtimeDispatches.compactMap { record in
+                        guard let rawNodeID = record.nodeID else { return nil }
+                        return UUID(uuidString: rawNodeID.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                    + runtimeEvents.compactMap { event in
+                        guard let rawNodeID = event.nodeId else { return nil }
+                        return UUID(uuidString: rawNodeID.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                    + runtimeReceipts.map(\.nodeID)
+            )
+            let investigationDocument = WorkbenchThreadInvestigationDocument(
+                threadID: sessionID,
+                sessionID: sessionID,
+                workflowID: resolvedWorkflowID,
+                workflowName: workflowName,
+                entryAgentID: resolvedEntryAgentID,
+                entryAgentName: entryAgentName,
+                participantAgentIDs: participantAgentIDs.sorted { $0.uuidString < $1.uuidString },
+                relatedNodeIDs: relatedNodeIDs.sorted { $0.uuidString < $1.uuidString },
+                status: threadStatus,
+                startedAt: startedAt,
+                lastUpdatedAt: lastUpdatedAt,
+                messageCount: threadMessages.count,
+                taskCount: threadTasks.count,
+                pendingApprovalCount: pendingApprovalCount,
+                dispatchCount: runtimeDispatches.count,
+                eventCount: runtimeEvents.count,
+                receiptCount: runtimeReceipts.count,
+                latestMessageID: threadMessages.last?.id,
+                latestTaskID: threadTasks.max(by: { $0.createdAt < $1.createdAt })?.id
+            )
+            try encode(
+                investigationDocument,
+                to: threadRootURL.appendingPathComponent("investigation.json", isDirectory: false)
+            )
             try writeNDJSON(threadMessages, to: threadRootURL.appendingPathComponent("dialog.ndjson", isDirectory: false))
         }
     }

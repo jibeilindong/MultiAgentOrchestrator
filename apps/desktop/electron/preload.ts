@@ -3,6 +3,8 @@ import type {
   ExecutionOutputType,
   MAProject,
   OpenClawConfig,
+  OpenClawConnectionStateSnapshot,
+  OpenClawProbeReportSnapshot,
   OpenClawRuntimeEvent,
   ProjectOpenClawAgentRecord,
   ProjectOpenClawDetectedAgentRecord
@@ -35,6 +37,8 @@ interface OpenClawActionResult {
   availableAgents: string[];
   activeAgents: ProjectOpenClawAgentRecord[];
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+  connectionState?: OpenClawConnectionStateSnapshot;
+  probeReport?: OpenClawProbeReportSnapshot | null;
 }
 
 interface OpenClawAgentExecutionRequest {
@@ -168,11 +172,14 @@ contextBridge.exposeInMainWorld("desktopApi", {
   connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult> {
     return ipcRenderer.invoke("openClaw:connect", config);
   },
+  probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeReportSnapshot> {
+    return ipcRenderer.invoke("openClaw:probe", config);
+  },
   detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult> {
     return ipcRenderer.invoke("openClaw:detect", config);
   },
-  disconnectOpenClaw(): Promise<OpenClawActionResult> {
-    return ipcRenderer.invoke("openClaw:disconnect");
+  disconnectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult> {
+    return ipcRenderer.invoke("openClaw:disconnect", config);
   },
   executeOpenClawAgent(config: OpenClawConfig, request: OpenClawAgentExecutionRequest): Promise<OpenClawAgentExecutionResult> {
     return ipcRenderer.invoke("openClaw:executeAgent", { config, request });

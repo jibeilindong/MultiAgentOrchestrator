@@ -2,6 +2,9 @@ import Foundation
 import CryptoKit
 
 actor OpenClawGatewayClient {
+    nonisolated static let disconnectNotificationName = Notification.Name("OpenClawGatewayDidDisconnect")
+    nonisolated static let disconnectMessageUserInfoKey = "message"
+
     private enum GatewayErrorUserInfoKey {
         static let connectDetailCode = "OpenClawGatewayClient.ConnectDetailCode"
     }
@@ -727,6 +730,12 @@ actor OpenClawGatewayClient {
         for continuation in continuations {
             continuation.resume(throwing: error)
         }
+
+        NotificationCenter.default.post(
+            name: Self.disconnectNotificationName,
+            object: nil,
+            userInfo: [Self.disconnectMessageUserInfoKey: error.localizedDescription]
+        )
     }
 
     private func awaitResponse(

@@ -1,6 +1,9 @@
 import type {
   MAProject,
   OpenClawConfig,
+  OpenClawConnectionCapabilitiesSnapshot,
+  OpenClawConnectionHealthSnapshot,
+  OpenClawConnectionStateSnapshot,
   ProjectMemoryData,
   ProjectOpenClawSnapshot,
   ProjectTaskDataSettings,
@@ -49,6 +52,38 @@ function createDefaultOpenClawConfig(): OpenClawConfig {
   };
 }
 
+function createDefaultOpenClawCapabilities(): OpenClawConnectionCapabilitiesSnapshot {
+  return {
+    cliAvailable: false,
+    gatewayReachable: false,
+    gatewayAuthenticated: false,
+    agentListingAvailable: false,
+    sessionHistoryAvailable: false,
+    gatewayAgentAvailable: false,
+    gatewayChatAvailable: false,
+    projectAttachmentSupported: false
+  };
+}
+
+function createDefaultOpenClawHealth(): OpenClawConnectionHealthSnapshot {
+  return {
+    lastProbeAt: null,
+    lastHeartbeatAt: null,
+    latencyMs: null,
+    degradationReason: null,
+    lastMessage: null
+  };
+}
+
+function createDefaultOpenClawConnectionState(): OpenClawConnectionStateSnapshot {
+  return {
+    phase: "idle",
+    deploymentKind: "local",
+    capabilities: createDefaultOpenClawCapabilities(),
+    health: createDefaultOpenClawHealth()
+  };
+}
+
 function createDefaultOpenClawSnapshot(now: number): ProjectOpenClawSnapshot {
   return {
     config: createDefaultOpenClawConfig(),
@@ -56,6 +91,8 @@ function createDefaultOpenClawSnapshot(now: number): ProjectOpenClawSnapshot {
     availableAgents: [],
     activeAgents: [],
     detectedAgents: [],
+    connectionState: createDefaultOpenClawConnectionState(),
+    lastProbeReport: null,
     sessionBackupPath: null,
     sessionMirrorPath: null,
     lastSyncedAt: now

@@ -484,6 +484,8 @@ export function syncOpenClawState(
     availableAgents?: string[];
     activeAgents?: MAProject["openClaw"]["activeAgents"];
     detectedAgents?: MAProject["openClaw"]["detectedAgents"];
+    connectionState?: MAProject["openClaw"]["connectionState"];
+    lastProbeReport?: MAProject["openClaw"]["lastProbeReport"];
   }
 ): MAProject {
   const nextOpenClaw = {
@@ -492,6 +494,9 @@ export function syncOpenClawState(
     availableAgents: payload.availableAgents ?? project.openClaw.availableAgents,
     activeAgents: payload.activeAgents ?? project.openClaw.activeAgents,
     detectedAgents: payload.detectedAgents ?? project.openClaw.detectedAgents,
+    connectionState: payload.connectionState ?? project.openClaw.connectionState,
+    lastProbeReport:
+      payload.lastProbeReport === undefined ? project.openClaw.lastProbeReport ?? null : payload.lastProbeReport,
     lastSyncedAt: toSwiftDate()
   };
 

@@ -50,7 +50,13 @@ struct OpsCenterDashboardView: View {
             }
         }
         .sheet(item: $selectedInvestigation) { target in
-            OpsCenterInvestigationPanel(target: target)
+            OpsCenterInvestigationPanel(
+                target: target,
+                onSelectSession: openSessionInvestigation,
+                onSelectNode: openNodeInvestigation,
+                onSelectRoute: openRouteInvestigation,
+                onSelectThread: openThreadInvestigation
+            )
         }
         .onAppear {
             syncSelectedWorkflow()
@@ -144,7 +150,8 @@ struct OpsCenterDashboardView: View {
                 workflow: selectedWorkflow,
                 projections: projections,
                 onSelectSession: openSessionInvestigation,
-                onSelectNode: openNodeInvestigation
+                onSelectNode: openNodeInvestigation,
+                onSelectThread: openThreadInvestigation
             )
         }
     }
@@ -334,6 +341,36 @@ struct OpsCenterDashboardView: View {
         }
     }
 
+    private func openThreadInvestigation(_ threadID: String) {
+        let liveInvestigation = OpsCenterSnapshotBuilder.buildThreadInvestigation(
+            project: appState.currentProject,
+            workflow: selectedWorkflow,
+            threadID: threadID,
+            tasks: appState.taskManager.tasks,
+            messages: appState.messageManager.messages,
+            executionResults: appState.openClawService.executionResults
+        )
+
+        let archiveInvestigation: OpsCenterThreadInvestigation?
+        if let projectID = appState.currentProject?.id {
+            archiveInvestigation = OpsCenterArchiveStore.loadThreadInvestigation(
+                projectID: projectID,
+                workflowID: selectedWorkflow?.id,
+                threadID: threadID,
+                projections: projections
+            )
+        } else {
+            archiveInvestigation = nil
+        }
+
+        if let investigation = mergedThreadInvestigation(
+            live: liveInvestigation,
+            archive: archiveInvestigation
+        ) {
+            selectedInvestigation = .thread(investigation)
+        }
+    }
+
     private func refreshProjectionsIfNeeded(force: Bool = false) {
         guard let projectID = appState.currentProject?.id else {
             projections = nil
@@ -451,6 +488,40 @@ struct OpsCenterDashboardView: View {
         }
     }
 
+    private func mergedThreadInvestigation(
+        live: OpsCenterThreadInvestigation?,
+        archive: OpsCenterThreadInvestigation?
+    ) -> OpsCenterThreadInvestigation? {
+        switch (live, archive) {
+        case let (live?, archive?):
+            return OpsCenterThreadInvestigation(
+                threadID: preferredText(live.threadID, archive.threadID) ?? live.threadID,
+                sessionID: preferredText(live.sessionID, archive.sessionID) ?? live.sessionID,
+                workflowID: live.workflowID ?? archive.workflowID,
+                workflowName: preferredText(live.workflowName, archive.workflowName) ?? live.workflowName,
+                status: preferredText(live.status, archive.status) ?? live.status,
+                startedAt: [live.startedAt, archive.startedAt].compactMap { $0 }.min(),
+                lastUpdatedAt: [live.lastUpdatedAt, archive.lastUpdatedAt].compactMap { $0 }.max(),
+                entryAgentName: preferredText(live.entryAgentName, archive.entryAgentName),
+                participantNames: Array(Set(live.participantNames + archive.participantNames)).sorted(),
+                pendingApprovalCount: max(live.pendingApprovalCount, archive.pendingApprovalCount),
+                relatedSession: mergedOptionalSessionSummary(live.relatedSession, archive.relatedSession),
+                relatedNodes: mergedNodeSummaries(live.relatedNodes, archive.relatedNodes),
+                events: mergedEventDigests(live.events, archive.events),
+                dispatches: mergedDispatchDigests(live.dispatches, archive.dispatches),
+                receipts: mergedReceiptDigests(live.receipts, archive.receipts),
+                messages: mergedMessageDigests(live.messages, archive.messages),
+                tasks: mergedTaskDigests(live.tasks, archive.tasks)
+            )
+        case let (live?, nil):
+            return live
+        case let (nil, archive?):
+            return archive
+        case (nil, nil):
+            return nil
+        }
+    }
+
     private func mergedSessionSummary(
         _ lhs: OpsCenterSessionSummary,
         _ rhs: OpsCenterSessionSummary
@@ -495,6 +566,22 @@ struct OpsCenterDashboardView: View {
         switch (lhs, rhs) {
         case let (lhs?, rhs?):
             return mergedNodeSummary(lhs, rhs)
+        case let (lhs?, nil):
+            return lhs
+        case let (nil, rhs?):
+            return rhs
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private func mergedOptionalSessionSummary(
+        _ lhs: OpsCenterSessionSummary?,
+        _ rhs: OpsCenterSessionSummary?
+    ) -> OpsCenterSessionSummary? {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?):
+            return mergedSessionSummary(lhs, rhs)
         case let (lhs?, nil):
             return lhs
         case let (nil, rhs?):
@@ -937,6 +1024,11 @@ private struct OpsCenterSessionsDashboardView: View {
     let projections: OpsCenterProjectionBundle?
     let onSelectSession: (String) -> Void
 
+    @State private var searchText = ""
+    @State private var selectedFilter: OpsCenterSessionListFilter = .all
+    @State private var selectedFocus: OpsCenterSessionFocus = .all
+    @State private var selectedSort: OpsCenterSessionSort = .recent
+
     private var sessions: [OpsCenterSessionSummary] {
         OpsCenterSnapshotBuilder.buildSessionSummaries(
             project: appState.currentProject,
@@ -949,6 +1041,45 @@ private struct OpsCenterSessionsDashboardView: View {
 
     private var effectiveSessions: [OpsCenterSessionSummary] {
         sessions.isEmpty ? (projections?.sessionSummaries(for: workflow?.id) ?? []) : sessions
+    }
+
+    private var filteredSessions: [OpsCenterSessionSummary] {
+        effectiveSessions.filter { session in
+            matchesSessionFilter(session) && matchesSessionSearch(session)
+        }
+    }
+
+    private var sortedSessions: [OpsCenterSessionSummary] {
+        filteredSessions.sorted(by: sortSessions)
+    }
+
+    private var displayedSessions: [OpsCenterSessionSummary] {
+        switch selectedFocus {
+        case .all:
+            return sortedSessions
+        case .hotspots:
+            return sortedSessions.filter(opsSessionIsHotspot)
+        }
+    }
+
+    private var hotspotSessions: [OpsCenterSessionSummary] {
+        sortedSessions.filter(opsSessionIsHotspot)
+    }
+
+    private var hotspotDispatchPressure: Int {
+        hotspotSessions.reduce(0) { partial, session in
+            partial + session.queuedDispatchCount + session.inflightDispatchCount
+        }
+    }
+
+    private var hotspotFailureSignals: Int {
+        hotspotSessions.reduce(0) { partial, session in
+            partial + session.failedDispatchCount
+        }
+    }
+
+    private var leadHotspotSession: OpsCenterSessionSummary? {
+        hotspotSessions.first
     }
 
     var body: some View {
@@ -965,13 +1096,106 @@ private struct OpsCenterSessionsDashboardView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
 
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 12) {
+                            TextField("Search session ID, workflow ID, or failure text", text: $searchText)
+                                .textFieldStyle(.roundedBorder)
+
+                            Picker("Filter", selection: $selectedFilter) {
+                                ForEach(OpsCenterSessionListFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 260)
+                        }
+
+                        HStack(alignment: .center, spacing: 12) {
+                            Picker("Focus", selection: $selectedFocus) {
+                                ForEach(OpsCenterSessionFocus.allCases) { focus in
+                                    Text(focus.title).tag(focus)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 230)
+
+                            Picker("Sort", selection: $selectedSort) {
+                                ForEach(OpsCenterSessionSort.allCases) { sort in
+                                    Text(sort.title).tag(sort)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 170)
+
+                            Spacer()
+
+                            Text("\(displayedSessions.count) of \(effectiveSessions.count) sessions visible in current scope.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                        opsMetricCard(title: "Hotspot Sessions", value: "\(hotspotSessions.count)", detail: "Sessions with failure, active dispatch, or primary-runtime signal", color: hotspotSessions.isEmpty ? .green : .orange)
+                        opsMetricCard(title: "Dispatch Pressure", value: "\(hotspotDispatchPressure)", detail: "Queued and inflight dispatches across hotspot sessions", color: hotspotDispatchPressure > 0 ? .orange : .green)
+                        opsMetricCard(title: "Failure Signals", value: "\(hotspotFailureSignals)", detail: "Failed dispatches retained across hotspot sessions", color: hotspotFailureSignals > 0 ? .red : .green)
+                        opsMetricCard(title: "Lead Hotspot", value: leadHotspotSession.map { String($0.sessionID.prefix(12)) } ?? "None", detail: leadHotspotSession.map(opsSessionHotspotReason) ?? "No current hotspot requires immediate drill-down", color: leadHotspotSession == nil ? .green : .red)
+                    }
+
                     if sessions.isEmpty, let freshestProjectionAt = projections?.freshestGeneratedAt {
                         Text("Using persisted session projections from \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)).")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
 
-                    ForEach(effectiveSessions) { session in
+                    if !hotspotSessions.isEmpty {
+                        sectionTitle("Current Hotspots")
+                        VStack(spacing: 8) {
+                            ForEach(Array(hotspotSessions.prefix(3))) { session in
+                                Button {
+                                    onSelectSession(session.sessionID)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 12) {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(session.sessionID)
+                                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                                .foregroundColor(.primary)
+                                            Text(opsSessionHotspotReason(session))
+                                                .font(.caption.weight(.medium))
+                                                .foregroundColor(.primary)
+                                            Text("Queued \(session.queuedDispatchCount) • Running \(session.inflightDispatchCount) • Failed \(session.failedDispatchCount) • Receipts \(session.receiptCount)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+
+                                        Spacer()
+
+                                        VStack(alignment: .trailing, spacing: 6) {
+                                            opsStatusPill(
+                                                title: session.failedDispatchCount > 0 ? "Failure Hotspot" : (session.inflightDispatchCount > 0 ? "Running Hotspot" : "Watch"),
+                                                color: session.failedDispatchCount > 0 ? .red : (session.inflightDispatchCount > 0 ? .orange : .teal)
+                                            )
+                                            if let lastUpdatedAt = session.lastUpdatedAt {
+                                                Text(lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .padding(10)
+                                    .background(Color(.controlBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    if displayedSessions.isEmpty {
+                        opsInlineEmptyState("No sessions match the current search, filter, or focus mode.")
+                    }
+
+                    ForEach(displayedSessions) { session in
                         Button {
                             onSelectSession(session.sessionID)
                         } label: {
@@ -1021,6 +1245,120 @@ private struct OpsCenterSessionsDashboardView: View {
                 }
             }
             .padding()
+        }
+    }
+
+    private func matchesSessionFilter(_ session: OpsCenterSessionSummary) -> Bool {
+        switch selectedFilter {
+        case .all:
+            return true
+        case .active:
+            return session.queuedDispatchCount > 0 || session.inflightDispatchCount > 0
+        case .failed:
+            return session.failedDispatchCount > 0 || (session.latestFailureText?.isEmpty == false)
+        }
+    }
+
+    private func matchesSessionSearch(_ session: OpsCenterSessionSummary) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+
+        let haystack = [
+            session.sessionID.lowercased(),
+            session.workflowIDs.joined(separator: " ").lowercased(),
+            session.latestFailureText?.lowercased() ?? ""
+        ]
+        .joined(separator: " ")
+
+        return haystack.contains(query)
+    }
+
+    private func sortSessions(_ lhs: OpsCenterSessionSummary, _ rhs: OpsCenterSessionSummary) -> Bool {
+        switch selectedSort {
+        case .recent:
+            let lhsDate = lhs.lastUpdatedAt ?? .distantPast
+            let rhsDate = rhs.lastUpdatedAt ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            if opsSessionActivityScore(lhs) != opsSessionActivityScore(rhs) {
+                return opsSessionActivityScore(lhs) > opsSessionActivityScore(rhs)
+            }
+        case .failures:
+            if opsSessionFailureScore(lhs) != opsSessionFailureScore(rhs) {
+                return opsSessionFailureScore(lhs) > opsSessionFailureScore(rhs)
+            }
+            if opsSessionActivityScore(lhs) != opsSessionActivityScore(rhs) {
+                return opsSessionActivityScore(lhs) > opsSessionActivityScore(rhs)
+            }
+        case .activity:
+            if opsSessionActivityScore(lhs) != opsSessionActivityScore(rhs) {
+                return opsSessionActivityScore(lhs) > opsSessionActivityScore(rhs)
+            }
+            if opsSessionFailureScore(lhs) != opsSessionFailureScore(rhs) {
+                return opsSessionFailureScore(lhs) > opsSessionFailureScore(rhs)
+            }
+        }
+
+        let lhsDate = lhs.lastUpdatedAt ?? .distantPast
+        let rhsDate = rhs.lastUpdatedAt ?? .distantPast
+        if lhsDate != rhsDate {
+            return lhsDate > rhsDate
+        }
+        return lhs.sessionID.localizedCaseInsensitiveCompare(rhs.sessionID) == .orderedAscending
+    }
+}
+
+private enum OpsCenterSessionListFilter: String, CaseIterable, Identifiable {
+    case all
+    case active
+    case failed
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All"
+        case .active:
+            return "Active"
+        case .failed:
+            return "Failed"
+        }
+    }
+}
+
+private enum OpsCenterSessionFocus: String, CaseIterable, Identifiable {
+    case all
+    case hotspots
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All Sessions"
+        case .hotspots:
+            return "Hotspots"
+        }
+    }
+}
+
+private enum OpsCenterSessionSort: String, CaseIterable, Identifiable {
+    case recent
+    case failures
+    case activity
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recent:
+            return "Most Recent"
+        case .failures:
+            return "Failure Pressure"
+        case .activity:
+            return "Activity Load"
         }
     }
 }
@@ -1464,15 +1802,121 @@ private struct OpsCenterHistoryTraceDigest: Identifiable {
     let nodeID: UUID?
 }
 
+private struct OpsCenterHistorySpotlightDigest: Identifiable {
+    let id: String
+    let kindTitle: String
+    let title: String
+    let detailText: String
+    let timestamp: Date
+    let color: Color
+    let sessionID: String?
+    let nodeID: UUID?
+    let priority: Int
+}
+
+private enum OpsCenterHistoryListFilter: String, CaseIterable, Identifiable {
+    case all
+    case anomalies
+    case traces
+    case actionable
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All"
+        case .anomalies:
+            return "Anomalies"
+        case .traces:
+            return "Traces"
+        case .actionable:
+            return "Actionable"
+        }
+    }
+}
+
+private enum OpsCenterHistoryFocus: String, CaseIterable, Identifiable {
+    case all
+    case hotspots
+    case current
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All Signals"
+        case .hotspots:
+            return "Hotspots"
+        case .current:
+            return "Current Focus"
+        }
+    }
+}
+
+private enum OpsCenterHistorySort: String, CaseIterable, Identifiable {
+    case newest
+    case severity
+    case runtimeCost
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .newest:
+            return "Newest First"
+        case .severity:
+            return "Severity First"
+        case .runtimeCost:
+            return "Runtime Cost"
+        }
+    }
+}
+
+private struct OpsCenterRoutePressureDigest: Identifiable {
+    let id: String
+    let title: String
+    let valueText: String
+    let detailText: String
+    let color: Color
+}
+
+private struct OpsCenterRouteTimelineDigest: Identifiable {
+    let id: String
+    let kindTitle: String
+    let title: String
+    let detailText: String
+    let timestamp: Date
+    let color: Color
+    let sessionID: String?
+}
+
 private struct OpsCenterHistoryDashboardView: View {
     @EnvironmentObject var appState: AppState
     let workflow: Workflow?
     let projections: OpsCenterProjectionBundle?
     let onSelectSession: (String) -> Void
     let onSelectNode: (UUID) -> Void
+    let onSelectThread: (String) -> Void
+
+    @State private var searchText = ""
+    @State private var selectedFilter: OpsCenterHistoryListFilter = .all
+    @State private var selectedFocus: OpsCenterHistoryFocus = .all
+    @State private var selectedSort: OpsCenterHistorySort = .newest
 
     private var snapshot: OpsAnalyticsSnapshot {
         appState.opsAnalytics.snapshot
+    }
+
+    private var liveRunSnapshot: OpsCenterLiveRunSnapshot {
+        OpsCenterSnapshotBuilder.buildLiveRunSnapshot(
+            project: appState.currentProject,
+            workflow: workflow,
+            tasks: appState.taskManager.tasks,
+            messages: appState.messageManager.messages,
+            executionResults: appState.openClawService.executionResults
+        )
     }
 
     private var executionResultsByID: [UUID: ExecutionResult] {
@@ -1705,10 +2149,99 @@ private struct OpsCenterHistoryDashboardView: View {
         return "Persisted analytics projection refreshed at \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened))."
     }
 
-    private var averagePersistedTraceDuration: TimeInterval? {
-        let durations = effectiveTraces.compactMap(\.duration)
-        guard !durations.isEmpty else { return nil }
-        return durations.reduce(0, +) / Double(durations.count)
+    private var workflowHotspotNodeIDs: Set<UUID> {
+        Set(
+            liveRunSnapshot.nodeSummaries
+                .filter { node in
+                    switch node.status {
+                    case .queued, .inflight, .waitingApproval, .failed:
+                        return true
+                    case .idle, .completed:
+                        return false
+                    }
+                }
+                .map(\.id)
+        )
+    }
+
+    private var workflowHotspotSessionIDs: Set<String> {
+        Set(liveRunSnapshot.sessionSummaries.filter(opsSessionIsHotspot).map(\.sessionID))
+    }
+
+    private var hasCurrentFocusSignals: Bool {
+        !workflowHotspotNodeIDs.isEmpty || !workflowHotspotSessionIDs.isEmpty
+    }
+
+    private var filteredAnomalies: [OpsCenterHistoryAnomalyDigest] {
+        effectiveAnomalies.filter { anomaly in
+            let filterMatch = matchesHistoryFilterForAnomaly || (selectedFilter == .actionable && isActionable(anomaly))
+            return filterMatch
+                && matchesHistorySearch(anomaly: anomaly)
+                && matchesHistoryFocus(anomaly: anomaly)
+        }
+        .sorted(by: sortAnomalies)
+    }
+
+    private var filteredTraces: [OpsCenterHistoryTraceDigest] {
+        effectiveTraces.filter { trace in
+            let filterMatch = matchesHistoryFilterForTrace || (selectedFilter == .actionable && isActionable(trace))
+            return filterMatch
+                && matchesHistorySearch(trace: trace)
+                && matchesHistoryFocus(trace: trace)
+        }
+        .sorted(by: sortTraces)
+    }
+
+    private var matchesHistoryFilterForAnomaly: Bool {
+        selectedFilter == .all || selectedFilter == .anomalies
+    }
+
+    private var matchesHistoryFilterForTrace: Bool {
+        selectedFilter == .all || selectedFilter == .traces
+    }
+
+    private var currentHotspotItems: [OpsCenterHistorySpotlightDigest] {
+        let anomalyItems = effectiveAnomalies
+            .filter(isHistoryHotspot)
+            .map { anomaly in
+                OpsCenterHistorySpotlightDigest(
+                    id: "anomaly-\(anomaly.id)",
+                    kindTitle: "Anomaly",
+                    title: anomaly.title,
+                    detailText: "\(anomaly.sourceLabel) • \(anomaly.detailText)",
+                    timestamp: anomaly.timestamp,
+                    color: historyColor(for: anomaly.status),
+                    sessionID: anomaly.sessionID,
+                    nodeID: anomaly.nodeID,
+                    priority: historySpotlightPriority(nodeID: anomaly.nodeID, sessionID: anomaly.sessionID, actionable: isActionable(anomaly))
+                )
+            }
+
+        let traceItems = effectiveTraces
+            .filter(isHistoryHotspot)
+            .map { trace in
+                OpsCenterHistorySpotlightDigest(
+                    id: "trace-\(trace.id)",
+                    kindTitle: "Trace",
+                    title: trace.title,
+                    detailText: "\(trace.agentName) • \(trace.statusText) • \(trace.previewText)",
+                    timestamp: trace.timestamp,
+                    color: historyStatusColor(trace.statusText),
+                    sessionID: trace.sessionID,
+                    nodeID: trace.nodeID,
+                    priority: historySpotlightPriority(nodeID: trace.nodeID, sessionID: trace.sessionID, actionable: isActionable(trace))
+                )
+            }
+
+        return (anomalyItems + traceItems).sorted { lhs, rhs in
+            if lhs.priority != rhs.priority {
+                return lhs.priority < rhs.priority
+            }
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            return lhs.id > rhs.id
+        }
     }
 
     var body: some View {
@@ -1719,19 +2252,101 @@ private struct OpsCenterHistoryDashboardView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 12) {
+                        TextField("Search anomaly text, node, agent, or session", text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+
+                        Picker("Signal", selection: $selectedFilter) {
+                            ForEach(OpsCenterHistoryListFilter.allCases) { filter in
+                                Text(filter.title).tag(filter)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 320)
+                    }
+
+                    HStack(alignment: .center, spacing: 12) {
+                        Picker("Focus", selection: $selectedFocus) {
+                            ForEach(OpsCenterHistoryFocus.allCases) { focus in
+                                Text(focus.title).tag(focus)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 300)
+
+                        Picker("Sort", selection: $selectedSort) {
+                            ForEach(OpsCenterHistorySort.allCases) { sort in
+                                Text(sort.title).tag(sort)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 170)
+
+                        Spacer()
+
+                        Text("\(filteredAnomalies.count) anomalies and \(filteredTraces.count) traces visible in current focus.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
                     opsMetricCard(title: "Goal Cards", value: "\(effectiveGoalCards.count)", detail: "Current health summary cards", color: .blue)
                     opsMetricCard(title: "Trend Series", value: "\(snapshot.historicalSeries.count)", detail: "In-memory historical metric series", color: .green)
-                    opsMetricCard(title: "Anomalies", value: "\(effectiveAnomalies.count)", detail: "Merged live and persisted anomaly queue", color: effectiveAnomalies.isEmpty ? .green : .orange)
-                    opsMetricCard(title: "Trace Rows", value: "\(effectiveTraces.count)", detail: "Merged live and persisted execution traces", color: .purple)
+                    opsMetricCard(title: "Current Hotspots", value: "\(currentHotspotItems.count)", detail: "Combined anomaly and trace items worth immediate inspection", color: currentHotspotItems.isEmpty ? .green : .orange)
+                    opsMetricCard(title: "Hot Nodes", value: "\(workflowHotspotNodeIDs.count)", detail: "Workflow nodes currently running, waiting, or failed in live posture", color: workflowHotspotNodeIDs.isEmpty ? .green : .red)
+                    opsMetricCard(title: "Anomalies", value: "\(filteredAnomalies.count)", detail: "Merged live and persisted anomaly queue", color: filteredAnomalies.isEmpty ? .green : .orange)
+                    opsMetricCard(title: "Trace Rows", value: "\(filteredTraces.count)", detail: "Merged live and persisted execution traces", color: .purple)
                     opsMetricCard(title: "Failures", value: "\(projections?.overview?.failedExecutionCount ?? snapshot.failedExecutions)", detail: "Retained failed executions in current scope", color: (projections?.overview?.failedExecutionCount ?? snapshot.failedExecutions) > 0 ? .red : .green)
-                    opsMetricCard(title: "Avg Duration", value: averagePersistedTraceDuration.map(opsDurationText) ?? "n/a", detail: "Average runtime duration across retained traces", color: .teal)
+                    opsMetricCard(title: "Avg Duration", value: filteredAverageTraceDuration.map(opsDurationText) ?? "n/a", detail: "Average runtime duration across retained traces", color: .teal)
                 }
 
                 if let projectionSummaryText {
                     Text(projectionSummaryText)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+
+                if hasCurrentFocusSignals {
+                    Text("Current workflow focus is tracking \(workflowHotspotNodeIDs.count) hot nodes and \(workflowHotspotSessionIDs.count) hot sessions from live runtime posture.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                sectionTitle("Current Hotspots")
+                if currentHotspotItems.isEmpty {
+                    opsInlineEmptyState("No cross-source hotspot signals are currently retained.")
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(currentHotspotItems.prefix(6))) { item in
+                            HStack(alignment: .top, spacing: 12) {
+                                opsStatusPill(title: item.kindTitle, color: item.color)
+                                    .frame(width: 84, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.title)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(item.detailText)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(3)
+                                }
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 6) {
+                                    historyActionButtons(sessionID: item.sessionID, nodeID: item.nodeID)
+                                    Text(item.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color(.controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
                 }
 
                 if effectiveGoalCards.isEmpty {
@@ -1837,11 +2452,11 @@ private struct OpsCenterHistoryDashboardView: View {
                 }
 
                 sectionTitle("Recent Anomalies")
-                if effectiveAnomalies.isEmpty {
-                    opsInlineEmptyState("No retained anomalies available in the current scope.")
+                if filteredAnomalies.isEmpty {
+                    opsInlineEmptyState("No retained anomalies match the current search or filter.")
                 } else {
                     VStack(spacing: 8) {
-                        ForEach(effectiveAnomalies.prefix(8)) { anomaly in
+                        ForEach(filteredAnomalies.prefix(8)) { anomaly in
                             HStack(alignment: .top, spacing: 12) {
                                 opsStatusPill(title: anomaly.sourceLabel, color: historyColor(for: anomaly.status))
                                     .frame(width: 84, alignment: .leading)
@@ -1872,11 +2487,11 @@ private struct OpsCenterHistoryDashboardView: View {
                 }
 
                 sectionTitle("Recent Traces")
-                if effectiveTraces.isEmpty {
-                    opsInlineEmptyState("No retained traces available in the current scope.")
+                if filteredTraces.isEmpty {
+                    opsInlineEmptyState("No retained traces match the current search or filter.")
                 } else {
                     VStack(spacing: 8) {
-                        ForEach(effectiveTraces.prefix(10)) { trace in
+                        ForEach(filteredTraces.prefix(10)) { trace in
                             HStack(alignment: .top, spacing: 12) {
                                 opsStatusPill(title: trace.statusText, color: historyStatusColor(trace.statusText))
                                     .frame(width: 92, alignment: .leading)
@@ -1923,6 +2538,188 @@ private struct OpsCenterHistoryDashboardView: View {
         }
     }
 
+    private var filteredAverageTraceDuration: TimeInterval? {
+        let durations = filteredTraces.compactMap(\.duration)
+        guard !durations.isEmpty else { return nil }
+        return durations.reduce(0, +) / Double(durations.count)
+    }
+
+    private func matchesHistorySearch(anomaly: OpsCenterHistoryAnomalyDigest) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+
+        let haystack = [
+            anomaly.title,
+            anomaly.sourceLabel,
+            anomaly.detailText,
+            anomaly.sessionID ?? "",
+            anomaly.nodeID?.uuidString ?? ""
+        ]
+        .joined(separator: " ")
+        .lowercased()
+
+        return haystack.contains(query)
+    }
+
+    private func matchesHistorySearch(trace: OpsCenterHistoryTraceDigest) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+
+        let haystack = [
+            trace.title,
+            trace.agentName,
+            trace.sourceLabel,
+            trace.statusText,
+            trace.previewText,
+            trace.sessionID ?? "",
+            trace.nodeID?.uuidString ?? ""
+        ]
+        .joined(separator: " ")
+        .lowercased()
+
+        return haystack.contains(query)
+    }
+
+    private func isActionable(_ anomaly: OpsCenterHistoryAnomalyDigest) -> Bool {
+        anomaly.status == .critical || anomaly.status == .warning
+    }
+
+    private func isActionable(_ trace: OpsCenterHistoryTraceDigest) -> Bool {
+        let status = trace.statusText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return status != "completed" || trace.protocolRepairCount > 0
+    }
+
+    private func isHistoryHotspot(_ anomaly: OpsCenterHistoryAnomalyDigest) -> Bool {
+        isActionable(anomaly) || isCurrentWorkflowFocus(nodeID: anomaly.nodeID, sessionID: anomaly.sessionID)
+    }
+
+    private func isHistoryHotspot(_ trace: OpsCenterHistoryTraceDigest) -> Bool {
+        isActionable(trace) || isCurrentWorkflowFocus(nodeID: trace.nodeID, sessionID: trace.sessionID)
+    }
+
+    private func isCurrentWorkflowFocus(nodeID: UUID?, sessionID: String?) -> Bool {
+        if let nodeID, workflowHotspotNodeIDs.contains(nodeID) {
+            return true
+        }
+        if let normalizedSessionID = normalizedHistorySessionID(sessionID),
+           workflowHotspotSessionIDs.contains(normalizedSessionID) {
+            return true
+        }
+        return false
+    }
+
+    private func matchesHistoryFocus(anomaly: OpsCenterHistoryAnomalyDigest) -> Bool {
+        switch selectedFocus {
+        case .all:
+            return true
+        case .hotspots:
+            return isHistoryHotspot(anomaly)
+        case .current:
+            return hasCurrentFocusSignals
+                ? isCurrentWorkflowFocus(nodeID: anomaly.nodeID, sessionID: anomaly.sessionID)
+                : isHistoryHotspot(anomaly)
+        }
+    }
+
+    private func matchesHistoryFocus(trace: OpsCenterHistoryTraceDigest) -> Bool {
+        switch selectedFocus {
+        case .all:
+            return true
+        case .hotspots:
+            return isHistoryHotspot(trace)
+        case .current:
+            return hasCurrentFocusSignals
+                ? isCurrentWorkflowFocus(nodeID: trace.nodeID, sessionID: trace.sessionID)
+                : isHistoryHotspot(trace)
+        }
+    }
+
+    private func sortAnomalies(_ lhs: OpsCenterHistoryAnomalyDigest, _ rhs: OpsCenterHistoryAnomalyDigest) -> Bool {
+        let lhsCurrent = isCurrentWorkflowFocus(nodeID: lhs.nodeID, sessionID: lhs.sessionID)
+        let rhsCurrent = isCurrentWorkflowFocus(nodeID: rhs.nodeID, sessionID: rhs.sessionID)
+
+        switch selectedSort {
+        case .newest:
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            if lhsCurrent != rhsCurrent {
+                return lhsCurrent
+            }
+        case .severity:
+            if opsHealthStatusRank(lhs.status) != opsHealthStatusRank(rhs.status) {
+                return opsHealthStatusRank(lhs.status) < opsHealthStatusRank(rhs.status)
+            }
+            if lhsCurrent != rhsCurrent {
+                return lhsCurrent
+            }
+        case .runtimeCost:
+            if lhsCurrent != rhsCurrent {
+                return lhsCurrent
+            }
+            if opsHealthStatusRank(lhs.status) != opsHealthStatusRank(rhs.status) {
+                return opsHealthStatusRank(lhs.status) < opsHealthStatusRank(rhs.status)
+            }
+        }
+
+        if lhs.timestamp != rhs.timestamp {
+            return lhs.timestamp > rhs.timestamp
+        }
+        return lhs.id > rhs.id
+    }
+
+    private func sortTraces(_ lhs: OpsCenterHistoryTraceDigest, _ rhs: OpsCenterHistoryTraceDigest) -> Bool {
+        let lhsCurrent = isCurrentWorkflowFocus(nodeID: lhs.nodeID, sessionID: lhs.sessionID)
+        let rhsCurrent = isCurrentWorkflowFocus(nodeID: rhs.nodeID, sessionID: rhs.sessionID)
+
+        switch selectedSort {
+        case .newest:
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            if lhsCurrent != rhsCurrent {
+                return lhsCurrent
+            }
+        case .severity:
+            if opsTraceStatusRank(lhs.statusText) != opsTraceStatusRank(rhs.statusText) {
+                return opsTraceStatusRank(lhs.statusText) < opsTraceStatusRank(rhs.statusText)
+            }
+            if lhs.protocolRepairCount != rhs.protocolRepairCount {
+                return lhs.protocolRepairCount > rhs.protocolRepairCount
+            }
+            if lhsCurrent != rhsCurrent {
+                return lhsCurrent
+            }
+        case .runtimeCost:
+            if lhsCurrent != rhsCurrent {
+                return lhsCurrent
+            }
+            if lhs.protocolRepairCount != rhs.protocolRepairCount {
+                return lhs.protocolRepairCount > rhs.protocolRepairCount
+            }
+            let lhsDuration = lhs.duration ?? 0
+            let rhsDuration = rhs.duration ?? 0
+            if lhsDuration != rhsDuration {
+                return lhsDuration > rhsDuration
+            }
+        }
+
+        if lhs.timestamp != rhs.timestamp {
+            return lhs.timestamp > rhs.timestamp
+        }
+        return lhs.id > rhs.id
+    }
+
+    private func historySpotlightPriority(nodeID: UUID?, sessionID: String?, actionable: Bool) -> Int {
+        if isCurrentWorkflowFocus(nodeID: nodeID, sessionID: sessionID) {
+            return 0
+        }
+        if actionable {
+            return 1
+        }
+        return 2
+    }
+
     private func historyColor(for status: OpsHealthStatus) -> Color {
         switch status {
         case .healthy:
@@ -1961,6 +2758,9 @@ private struct OpsCenterHistoryDashboardView: View {
                     historyActionButton(title: "Session") {
                         onSelectSession(normalizedSessionID)
                     }
+                    historyActionButton(title: "Thread") {
+                        onSelectThread(normalizedSessionID)
+                    }
                 }
 
                 if let nodeID {
@@ -1993,6 +2793,10 @@ private struct OpsCenterHistoryDashboardView: View {
 
 private struct OpsCenterInvestigationPanel: View {
     let target: OpsCenterInvestigationTarget
+    let onSelectSession: (String) -> Void
+    let onSelectNode: (UUID) -> Void
+    let onSelectRoute: (UUID) -> Void
+    let onSelectThread: (String) -> Void
 
     var body: some View {
         ScrollView {
@@ -2008,6 +2812,8 @@ private struct OpsCenterInvestigationPanel: View {
                 switch target {
                 case let .session(investigation):
                     sessionInvestigationBody(investigation)
+                case let .thread(investigation):
+                    threadInvestigationBody(investigation)
                 case let .node(investigation):
                     nodeInvestigationBody(investigation)
                 case let .route(investigation):
@@ -2031,12 +2837,31 @@ private struct OpsCenterInvestigationPanel: View {
             opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Workbench tasks linked to session", color: .teal)
         }
 
+        opsInvestigationSection("Session Entry", detail: "Open the workbench thread view when you need the conversation-first perspective for this session.") {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(investigation.session.sessionID)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    Text("Thread and session keys are aligned in the current workbench runtime model.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                investigationActionButton(title: "Open Thread") {
+                    onSelectThread(investigation.session.sessionID)
+                }
+            }
+            .padding(10)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+
         opsInvestigationSection("Related Nodes", detail: "Nodes touched by this session's dispatches, receipts, tasks, or runtime events.") {
             if investigation.relatedNodes.isEmpty {
                 opsInlineEmptyState("No node relationships resolved yet.")
             } else {
                 ForEach(investigation.relatedNodes) { node in
-                    HStack {
+                    HStack(alignment: .center, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(node.title)
                                 .font(.subheadline.weight(.medium))
@@ -2046,6 +2871,9 @@ private struct OpsCenterInvestigationPanel: View {
                         }
                         Spacer()
                         opsStatusPill(title: node.status.title, color: node.status.color)
+                        investigationActionButton(title: "Open Node") {
+                            onSelectNode(node.id)
+                        }
                     }
                     .padding(10)
                     .background(Color(.controlBackgroundColor))
@@ -2106,6 +2934,206 @@ private struct OpsCenterInvestigationPanel: View {
     }
 
     @ViewBuilder
+    private func threadInvestigationBody(_ investigation: OpsCenterThreadInvestigation) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
+            opsMetricCard(
+                title: "Thread Status",
+                value: workbenchThreadStatusTitle(investigation.status),
+                detail: investigation.entryAgentName ?? "No entry agent resolved",
+                color: workbenchThreadStatusColor(investigation.status)
+            )
+            opsMetricCard(title: "Participants", value: "\(investigation.participantNames.count)", detail: "Named agents participating in this thread", color: .blue)
+            opsMetricCard(title: "Messages", value: "\(investigation.messages.count)", detail: "Workbench dialog retained under this thread", color: .purple)
+            opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Workbench tasks carried by this thread", color: .teal)
+            opsMetricCard(title: "Approvals", value: "\(investigation.pendingApprovalCount)", detail: "Pending approval waits still retained", color: investigation.pendingApprovalCount > 0 ? .yellow : .green)
+            opsMetricCard(title: "Runtime Evidence", value: "\(investigation.events.count + investigation.dispatches.count + investigation.receipts.count)", detail: "Events, dispatches, and receipts correlated back to the thread session", color: .orange)
+        }
+
+        opsInvestigationSection("Thread Posture", detail: "Top-level runtime identity, session binding, workflow binding, and operator-relevant timestamps.") {
+            VStack(spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Workflow")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(investigation.workflowName)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    opsStatusPill(title: workbenchThreadStatusTitle(investigation.status), color: workbenchThreadStatusColor(investigation.status))
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Session Key")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(investigation.sessionID)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    }
+                    Spacer()
+                    investigationActionButton(title: "Open Session") {
+                        onSelectSession(investigation.sessionID)
+                    }
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Entry Agent")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(investigation.entryAgentName ?? "No entry agent resolved")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if let startedAt = investigation.startedAt {
+                            Text("Started \(startedAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        if let lastUpdatedAt = investigation.lastUpdatedAt {
+                            Text("Updated \(lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+
+        opsInvestigationSection("Participants", detail: "Named agents that have appeared in dialog, assignments, or entry metadata for this thread.") {
+            if investigation.participantNames.isEmpty {
+                opsInlineEmptyState("No named thread participants resolved yet.")
+            } else {
+                ForEach(investigation.participantNames, id: \.self) { participantName in
+                    HStack {
+                        Text(participantName)
+                            .font(.subheadline.weight(.medium))
+                        Spacer()
+                        opsStatusPill(title: "Participant", color: .blue)
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+
+        opsInvestigationSection("Related Session", detail: "Runtime counters from the session that this workbench thread is currently bound to.") {
+            if let session = investigation.relatedSession {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(session.sessionID)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        Text("Events \(session.eventCount) • Dispatches \(session.dispatchCount) • Receipts \(session.receiptCount)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    opsStatusPill(
+                        title: session.failedDispatchCount > 0 ? "Failure Signal" : (session.isPrimaryRuntimeSession ? "Primary" : "Observed"),
+                        color: session.failedDispatchCount > 0 ? .red : (session.isPrimaryRuntimeSession ? .teal : .blue)
+                    )
+                    investigationActionButton(title: "Open Session") {
+                        onSelectSession(session.sessionID)
+                    }
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                opsInlineEmptyState("No session digest could be resolved for this thread yet.")
+            }
+        }
+
+        opsInvestigationSection("Related Nodes", detail: "Workflow nodes touched by this thread's tasks, dispatches, runtime events, or execution receipts.") {
+            if investigation.relatedNodes.isEmpty {
+                opsInlineEmptyState("No related workflow nodes resolved for this thread.")
+            } else {
+                ForEach(investigation.relatedNodes) { node in
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(node.title)
+                                .font(.subheadline.weight(.medium))
+                            Text(node.agentName ?? "No bound agent")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        opsStatusPill(title: node.status.title, color: node.status.color)
+                        investigationActionButton(title: "Open Node") {
+                            onSelectNode(node.id)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+
+        opsInvestigationSection("Workbench Messages", detail: "Conversation evidence retained directly inside the workbench thread archive.") {
+            if investigation.messages.isEmpty {
+                opsInlineEmptyState("No workbench messages linked to this thread.")
+            } else {
+                ForEach(investigation.messages.prefix(12)) { message in
+                    OpsCenterMessageDigestCard(message: message)
+                }
+            }
+        }
+
+        opsInvestigationSection("Workbench Tasks", detail: "Task cards retained under the same workbench thread key.") {
+            if investigation.tasks.isEmpty {
+                opsInlineEmptyState("No workbench tasks linked to this thread.")
+            } else {
+                ForEach(investigation.tasks.prefix(12)) { task in
+                    OpsCenterTaskDigestCard(task: task)
+                }
+            }
+        }
+
+        opsInvestigationSection("Runtime Dispatches", detail: "Dispatch traffic currently correlated back from the thread session.") {
+            if investigation.dispatches.isEmpty {
+                opsInlineEmptyState("No runtime dispatches correlated back to this thread.")
+            } else {
+                ForEach(investigation.dispatches.prefix(12)) { dispatch in
+                    OpsCenterDispatchDigestCard(dispatch: dispatch)
+                }
+            }
+        }
+
+        opsInvestigationSection("Execution Receipts", detail: "Execution outcomes emitted while this thread's session was active.") {
+            if investigation.receipts.isEmpty {
+                opsInlineEmptyState("No execution receipts correlated back to this thread.")
+            } else {
+                ForEach(investigation.receipts.prefix(10)) { receipt in
+                    OpsCenterReceiptDigestCard(receipt: receipt)
+                }
+            }
+        }
+
+        opsInvestigationSection("Runtime Events", detail: "Recent runtime events emitted under the same bound session key.") {
+            if investigation.events.isEmpty {
+                opsInlineEmptyState("No runtime events linked to this thread.")
+            } else {
+                ForEach(investigation.events.prefix(10)) { event in
+                    OpsCenterEventDigestCard(event: event)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private func nodeInvestigationBody(_ investigation: OpsCenterNodeInvestigation) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
             opsMetricCard(title: "Node Status", value: investigation.node.status.title, detail: investigation.node.latestDetail ?? "No runtime detail captured", color: investigation.node.status.color)
@@ -2131,6 +3159,9 @@ private struct OpsCenterInvestigationPanel: View {
                         if edge.requiresApproval {
                             opsStatusPill(title: "Approval", color: .yellow)
                         }
+                        investigationActionButton(title: "Open Route") {
+                            onSelectRoute(edge.id)
+                        }
                     }
                     .padding(10)
                     .background(Color(.controlBackgroundColor))
@@ -2146,6 +3177,9 @@ private struct OpsCenterInvestigationPanel: View {
                             .foregroundColor(edge.activityCount > 0 ? .blue : .secondary)
                         if edge.requiresApproval {
                             opsStatusPill(title: "Approval", color: .yellow)
+                        }
+                        investigationActionButton(title: "Open Route") {
+                            onSelectRoute(edge.id)
                         }
                     }
                     .padding(10)
@@ -2173,6 +3207,12 @@ private struct OpsCenterInvestigationPanel: View {
                             title: session.isPrimaryRuntimeSession ? "Primary" : "Linked",
                             color: session.isPrimaryRuntimeSession ? .teal : .blue
                         )
+                        investigationActionButton(title: "Open Session") {
+                            onSelectSession(session.sessionID)
+                        }
+                        investigationActionButton(title: "Open Thread") {
+                            onSelectThread(session.sessionID)
+                        }
                     }
                     .padding(10)
                     .background(Color(.controlBackgroundColor))
@@ -2234,6 +3274,9 @@ private struct OpsCenterInvestigationPanel: View {
 
     @ViewBuilder
     private func routeInvestigationBody(_ investigation: OpsCenterRouteInvestigation) -> some View {
+        let pressureDigests = routePressureDigests(for: investigation)
+        let timelineEntries = routeTimelineEntries(for: investigation)
+
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
             opsMetricCard(title: "Route Flow", value: "\(investigation.edge.activityCount)", detail: investigation.edge.title, color: .blue)
             opsMetricCard(title: "Sessions", value: "\(investigation.relatedSessions.count)", detail: "Sessions correlated to this route", color: .green)
@@ -2245,16 +3288,26 @@ private struct OpsCenterInvestigationPanel: View {
 
         opsInvestigationSection("Route Posture", detail: "Upstream, downstream, and gate posture for the selected workflow route.") {
             VStack(alignment: .leading, spacing: 8) {
-                routeEndpointCard(
-                    title: "Upstream",
-                    node: investigation.upstreamNode,
-                    fallbackTitle: investigation.edge.fromTitle
-                )
-                routeEndpointCard(
-                    title: "Downstream",
-                    node: investigation.downstreamNode,
-                    fallbackTitle: investigation.edge.toTitle
-                )
+                routeEndpointCard(title: "Upstream", node: investigation.upstreamNode, fallbackTitle: investigation.edge.fromTitle)
+                if let upstreamNode = investigation.upstreamNode {
+                    HStack {
+                        Spacer()
+                        investigationActionButton(title: "Open Upstream Node") {
+                            onSelectNode(upstreamNode.id)
+                        }
+                    }
+                }
+
+                routeEndpointCard(title: "Downstream", node: investigation.downstreamNode, fallbackTitle: investigation.edge.toTitle)
+                if let downstreamNode = investigation.downstreamNode {
+                    HStack {
+                        Spacer()
+                        investigationActionButton(title: "Open Downstream Node") {
+                            onSelectNode(downstreamNode.id)
+                        }
+                    }
+                }
+
                 HStack {
                     Text("Label")
                         .font(.caption.weight(.medium))
@@ -2269,6 +3322,53 @@ private struct OpsCenterInvestigationPanel: View {
                 .padding(10)
                 .background(Color(.controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+
+        opsInvestigationSection("Pressure Judgement", detail: "Route-level judgement of upstream backlog, downstream sink pressure, approval gating, and likely bottleneck direction.") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+                ForEach(pressureDigests) { digest in
+                    opsMetricCard(title: digest.title, value: digest.valueText, detail: digest.detailText, color: digest.color)
+                }
+            }
+        }
+
+        opsInvestigationSection("Timeline Summary", detail: "Most recent dispatch, receipt, runtime event, message, and task evidence merged into one route-centric stream.") {
+            if timelineEntries.isEmpty {
+                opsInlineEmptyState("No merged timeline evidence is currently retained for this route.")
+            } else {
+                ForEach(Array(timelineEntries.prefix(16))) { entry in
+                    HStack(alignment: .top, spacing: 12) {
+                        opsStatusPill(title: entry.kindTitle, color: entry.color)
+                            .frame(width: 86, alignment: .leading)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry.title)
+                                .font(.subheadline.weight(.medium))
+                            Text(entry.detailText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(3)
+                        }
+
+                        Spacer()
+
+                        VStack(alignment: .trailing, spacing: 6) {
+                            if let sessionID = entry.sessionID, !sessionID.isEmpty {
+                                Text(sessionID)
+                                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Text(entry.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
             }
         }
 
@@ -2290,6 +3390,12 @@ private struct OpsCenterInvestigationPanel: View {
                             title: session.failedDispatchCount > 0 ? "Failure Signal" : "Observed",
                             color: session.failedDispatchCount > 0 ? .red : .blue
                         )
+                        investigationActionButton(title: "Open Session") {
+                            onSelectSession(session.sessionID)
+                        }
+                        investigationActionButton(title: "Open Thread") {
+                            onSelectThread(session.sessionID)
+                        }
                     }
                     .padding(10)
                     .background(Color(.controlBackgroundColor))
@@ -2347,6 +3453,261 @@ private struct OpsCenterInvestigationPanel: View {
                 }
             }
         }
+    }
+
+    private func routePressureDigests(for investigation: OpsCenterRouteInvestigation) -> [OpsCenterRoutePressureDigest] {
+        let upstreamBacklog = investigation.relatedSessions.reduce(0) { partial, session in
+            partial + session.queuedDispatchCount + session.inflightDispatchCount
+        }
+        let failedDispatches = investigation.dispatches.filter { dispatch in
+            dispatch.status == .failed || dispatch.status == .aborted || dispatch.status == .expired
+        }.count
+        let waitingDispatches = investigation.dispatches.filter { dispatch in
+            dispatch.status == .created
+                || dispatch.status == .dispatched
+                || dispatch.status == .accepted
+                || dispatch.status == .running
+                || dispatch.status == .waitingDependency
+        }.count
+        let waitingApprovals = investigation.dispatches.filter { $0.status == .waitingApproval }.count
+            + investigation.messages.filter { $0.status == .waitingForApproval }.count
+        let downstreamFailures = investigation.receipts.filter { $0.status == .failed }.count
+        let downstreamWaiting = investigation.receipts.filter { $0.status == .waiting }.count
+
+        let upstreamScore = routePressureScore(for: investigation.upstreamNode) + upstreamBacklog + waitingDispatches
+        let downstreamScore = routePressureScore(for: investigation.downstreamNode) + downstreamFailures * 3 + downstreamWaiting * 2 + failedDispatches * 2
+        let gateScore = (investigation.edge.requiresApproval ? 2 : 0) + waitingApprovals * 3
+
+        let bottleneckDigest: OpsCenterRoutePressureDigest = {
+            if gateScore >= max(upstreamScore, downstreamScore), gateScore > 0 {
+                return OpsCenterRoutePressureDigest(
+                    id: "bottleneck",
+                    title: "Likely Bottleneck",
+                    valueText: "Approval Gate",
+                    detailText: waitingApprovals > 0
+                        ? "\(waitingApprovals) approval waits are retaining the route."
+                        : "The route is approval-gated and should be watched for operator latency.",
+                    color: .yellow
+                )
+            }
+            if downstreamScore > upstreamScore + 1 {
+                return OpsCenterRoutePressureDigest(
+                    id: "bottleneck",
+                    title: "Likely Bottleneck",
+                    valueText: "Downstream Sink",
+                    detailText: "\(downstreamFailures) failed receipts and \(downstreamWaiting) waiting receipts suggest the target side is absorbing pressure slowly.",
+                    color: .red
+                )
+            }
+            if upstreamScore > downstreamScore + 1 {
+                return OpsCenterRoutePressureDigest(
+                    id: "bottleneck",
+                    title: "Likely Bottleneck",
+                    valueText: "Upstream Backlog",
+                    detailText: "\(upstreamBacklog) queued or inflight dispatches are stacking before the route clears.",
+                    color: .orange
+                )
+            }
+            if failedDispatches > 0 {
+                return OpsCenterRoutePressureDigest(
+                    id: "bottleneck",
+                    title: "Likely Bottleneck",
+                    valueText: "Failure Churn",
+                    detailText: "\(failedDispatches) failed route dispatches are recycling pressure across both ends.",
+                    color: .red
+                )
+            }
+            return OpsCenterRoutePressureDigest(
+                id: "bottleneck",
+                title: "Likely Bottleneck",
+                valueText: "Flowing",
+                detailText: "No dominant retained bottleneck signal is currently stronger than normal route traffic.",
+                color: .green
+            )
+        }()
+
+        return [
+            OpsCenterRoutePressureDigest(
+                id: "upstream",
+                title: "Upstream Pressure",
+                valueText: routePressureLabel(for: upstreamScore),
+                detailText: "\(upstreamBacklog) queued or inflight dispatches with source node status \(investigation.upstreamNode?.status.title ?? "Unknown").",
+                color: routePressureColor(for: upstreamScore)
+            ),
+            OpsCenterRoutePressureDigest(
+                id: "downstream",
+                title: "Downstream Pressure",
+                valueText: routePressureLabel(for: downstreamScore),
+                detailText: "\(downstreamFailures) failed receipts and \(downstreamWaiting) waiting receipts with target node status \(investigation.downstreamNode?.status.title ?? "Unknown").",
+                color: routePressureColor(for: downstreamScore)
+            ),
+            OpsCenterRoutePressureDigest(
+                id: "approval",
+                title: "Approval Gating",
+                valueText: gateScore > 0 ? (waitingApprovals > 0 ? "Waiting" : "Armed") : "Clear",
+                detailText: gateScore > 0
+                    ? "\(waitingApprovals) active waits and route gate flag \(investigation.edge.requiresApproval ? "enabled" : "clear")."
+                    : "No approval backlog is currently retained for this route.",
+                color: gateScore > 0 ? .yellow : .green
+            ),
+            bottleneckDigest
+        ]
+    }
+
+    private func routeTimelineEntries(for investigation: OpsCenterRouteInvestigation) -> [OpsCenterRouteTimelineDigest] {
+        let dispatchEntries = investigation.dispatches.map { dispatch in
+            OpsCenterRouteTimelineDigest(
+                id: "dispatch-\(dispatch.id)",
+                kindTitle: "Dispatch",
+                title: "\(dispatch.sourceName) -> \(dispatch.targetName)",
+                detailText: "\(opsDispatchStatusTitle(dispatch.status)) • \(dispatch.summary)",
+                timestamp: dispatch.updatedAt,
+                color: opsDispatchStatusColor(dispatch.status),
+                sessionID: dispatch.sessionID
+            )
+        }
+
+        let receiptEntries = investigation.receipts.map { receipt in
+            OpsCenterRouteTimelineDigest(
+                id: "receipt-\(receipt.id.uuidString)",
+                kindTitle: "Receipt",
+                title: receipt.nodeTitle,
+                detailText: "\(receipt.status.rawValue) • \(receipt.summary)",
+                timestamp: receipt.timestamp,
+                color: opsExecutionStatusColor(receipt.status),
+                sessionID: receipt.sessionID
+            )
+        }
+
+        let eventEntries = investigation.events.map { event in
+            OpsCenterRouteTimelineDigest(
+                id: "event-\(event.id)",
+                kindTitle: "Event",
+                title: event.eventType.rawValue,
+                detailText: "\(event.participants) • \(event.summary)",
+                timestamp: event.timestamp,
+                color: .blue,
+                sessionID: event.sessionID
+            )
+        }
+
+        let messageEntries = investigation.messages.map { message in
+            OpsCenterRouteTimelineDigest(
+                id: "message-\(message.id.uuidString)",
+                kindTitle: "Message",
+                title: message.routeTitle,
+                detailText: "\(message.status.rawValue) • \(message.summary)",
+                timestamp: message.timestamp,
+                color: message.status.color,
+                sessionID: nil
+            )
+        }
+
+        let taskEntries = investigation.tasks.map { task in
+            OpsCenterRouteTimelineDigest(
+                id: "task-\(task.id.uuidString)",
+                kindTitle: "Task",
+                title: task.title,
+                detailText: "\(task.status.rawValue) • \(task.summary)",
+                timestamp: task.timestamp,
+                color: task.priority.color,
+                sessionID: nil
+            )
+        }
+
+        return (dispatchEntries + receiptEntries + eventEntries + messageEntries + taskEntries).sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            return lhs.id > rhs.id
+        }
+    }
+
+    private func routePressureScore(for node: OpsCenterNodeSummary?) -> Int {
+        guard let node else { return 0 }
+        switch node.status {
+        case .failed:
+            return 5
+        case .waitingApproval:
+            return 4
+        case .inflight:
+            return 3
+        case .queued:
+            return 2
+        case .completed:
+            return 1
+        case .idle:
+            return 0
+        }
+    }
+
+    private func routePressureLabel(for score: Int) -> String {
+        switch score {
+        case 7...:
+            return "High"
+        case 3...6:
+            return "Medium"
+        case 1...2:
+            return "Low"
+        default:
+            return "Clear"
+        }
+    }
+
+    private func routePressureColor(for score: Int) -> Color {
+        switch score {
+        case 7...:
+            return .red
+        case 3...6:
+            return .orange
+        case 1...2:
+            return .yellow
+        default:
+            return .green
+        }
+    }
+
+    private func workbenchThreadStatusTitle(_ status: String) -> String {
+        switch status {
+        case "approval_pending":
+            return "Approval Pending"
+        case "blocked":
+            return "Blocked"
+        case "active":
+            return "Active"
+        case "completed":
+            return "Completed"
+        default:
+            return "Idle"
+        }
+    }
+
+    private func workbenchThreadStatusColor(_ status: String) -> Color {
+        switch status {
+        case "approval_pending":
+            return .yellow
+        case "blocked":
+            return .red
+        case "active":
+            return .orange
+        case "completed":
+            return .green
+        default:
+            return .secondary
+        }
+    }
+
+    private func investigationActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundColor(.blue)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.blue.opacity(0.10))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -2730,4 +4091,74 @@ private func opsDurationText(_ duration: TimeInterval) -> String {
         return "\(minutes)m \(seconds)s"
     }
     return String(format: "%.1fs", duration)
+}
+
+private func opsSessionIsHotspot(_ session: OpsCenterSessionSummary) -> Bool {
+    session.failedDispatchCount > 0
+        || session.queuedDispatchCount > 0
+        || session.inflightDispatchCount > 0
+        || session.isPrimaryRuntimeSession
+        || ((session.latestFailureText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) == false)
+}
+
+private func opsSessionActivityScore(_ session: OpsCenterSessionSummary) -> Int {
+    (session.inflightDispatchCount * 4)
+        + (session.queuedDispatchCount * 3)
+        + (session.dispatchCount * 2)
+        + session.receiptCount
+        + session.eventCount
+}
+
+private func opsSessionFailureScore(_ session: OpsCenterSessionSummary) -> Int {
+    let failureTextScore = ((session.latestFailureText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) == false) ? 2 : 0
+    return (session.failedDispatchCount * 4) + failureTextScore + (session.isPrimaryRuntimeSession ? 1 : 0)
+}
+
+private func opsSessionHotspotReason(_ session: OpsCenterSessionSummary) -> String {
+    if session.failedDispatchCount > 0 {
+        return "Dispatch failure pressure is retained in this session."
+    }
+    if session.inflightDispatchCount > 0 {
+        return "This session still owns inflight route work."
+    }
+    if session.queuedDispatchCount > 0 {
+        return "Queued dispatches are waiting to clear from this session."
+    }
+    if session.isPrimaryRuntimeSession {
+        return "Primary runtime session should stay visible for top-level drill-down."
+    }
+    if (session.latestFailureText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) == false {
+        return "Failure text is retained even though live pressure may have cooled."
+    }
+    return "Observed session with retained workflow evidence."
+}
+
+private func opsHealthStatusRank(_ status: OpsHealthStatus) -> Int {
+    switch status {
+    case .critical:
+        return 0
+    case .warning:
+        return 1
+    case .neutral:
+        return 2
+    case .healthy:
+        return 3
+    }
+}
+
+private func opsTraceStatusRank(_ rawValue: String) -> Int {
+    switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "failed":
+        return 0
+    case "waiting":
+        return 1
+    case "running":
+        return 2
+    case "idle":
+        return 3
+    case "completed":
+        return 4
+    default:
+        return 5
+    }
 }

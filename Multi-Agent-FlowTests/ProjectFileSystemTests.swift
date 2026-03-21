@@ -56,6 +56,24 @@ private struct WorkbenchThreadFixture: Decodable {
     var pendingApprovalCount: Int
 }
 
+private struct WorkbenchThreadInvestigationFixture: Decodable {
+    var threadID: String
+    var sessionID: String
+    var workflowID: UUID?
+    var workflowName: String?
+    var entryAgentID: UUID?
+    var entryAgentName: String?
+    var participantAgentIDs: [UUID]
+    var relatedNodeIDs: [UUID]
+    var status: String
+    var messageCount: Int
+    var taskCount: Int
+    var pendingApprovalCount: Int
+    var dispatchCount: Int
+    var eventCount: Int
+    var receiptCount: Int
+}
+
 private struct RuntimeSessionFixture: Decodable {
     var sessionID: String
     var workflowIDs: [String]
@@ -748,6 +766,7 @@ final class ProjectFileSystemTests: XCTestCase {
 
         let threadURL = threadRoot.appendingPathComponent("thread.json", isDirectory: false)
         let contextURL = threadRoot.appendingPathComponent("context.json", isDirectory: false)
+        let threadInvestigationURL = threadRoot.appendingPathComponent("investigation.json", isDirectory: false)
         let dialogURL = threadRoot.appendingPathComponent("dialog.ndjson", isDirectory: false)
         let messagesURL = projectRoot.appendingPathComponent("collaboration/communications/messages.ndjson", isDirectory: false)
         let approvalsURL = projectRoot.appendingPathComponent("collaboration/communications/approvals.ndjson", isDirectory: false)
@@ -771,6 +790,7 @@ final class ProjectFileSystemTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: threadURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: contextURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: threadInvestigationURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dialogURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: messagesURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: approvalsURL.path))
@@ -801,6 +821,26 @@ final class ProjectFileSystemTests: XCTestCase {
         XCTAssertEqual(thread.messageCount, 2)
         XCTAssertEqual(thread.taskCount, 1)
         XCTAssertEqual(thread.pendingApprovalCount, 1)
+
+        let threadInvestigation = try JSONDecoder().decode(
+            WorkbenchThreadInvestigationFixture.self,
+            from: Data(contentsOf: threadInvestigationURL)
+        )
+        XCTAssertEqual(threadInvestigation.threadID, sessionID)
+        XCTAssertEqual(threadInvestigation.sessionID, sessionID)
+        XCTAssertEqual(threadInvestigation.workflowID, workflow.id)
+        XCTAssertEqual(threadInvestigation.workflowName, workflow.name)
+        XCTAssertEqual(threadInvestigation.entryAgentID, agent.id)
+        XCTAssertEqual(threadInvestigation.entryAgentName, agent.name)
+        XCTAssertEqual(threadInvestigation.participantAgentIDs, [agent.id])
+        XCTAssertEqual(threadInvestigation.relatedNodeIDs, [node.id])
+        XCTAssertEqual(threadInvestigation.status, "approval_pending")
+        XCTAssertEqual(threadInvestigation.messageCount, 2)
+        XCTAssertEqual(threadInvestigation.taskCount, 1)
+        XCTAssertEqual(threadInvestigation.pendingApprovalCount, 1)
+        XCTAssertEqual(threadInvestigation.dispatchCount, 1)
+        XCTAssertEqual(threadInvestigation.eventCount, 2)
+        XCTAssertEqual(threadInvestigation.receiptCount, 1)
 
         let dialogMessages = try decodeNDJSON(Message.self, from: dialogURL)
         XCTAssertEqual(dialogMessages.count, 2)

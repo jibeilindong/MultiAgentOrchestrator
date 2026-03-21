@@ -39,6 +39,7 @@ export interface ProjectOpenClawDetectedAgentRecord {
   name: string;
   directoryPath?: string | null;
   configPath?: string | null;
+  soulPath?: string | null;
   workspacePath?: string | null;
   statePath?: string | null;
   directoryValidated: boolean;
@@ -49,12 +50,64 @@ export interface ProjectOpenClawDetectedAgentRecord {
   importedAt?: SwiftDate | null;
 }
 
+export const OPENCLAW_CONNECTION_PHASES = [
+  "idle",
+  "discovering",
+  "probed",
+  "ready",
+  "degraded",
+  "detached",
+  "failed"
+] as const;
+export type OpenClawConnectionPhase = (typeof OPENCLAW_CONNECTION_PHASES)[number];
+
+export interface OpenClawConnectionCapabilitiesSnapshot {
+  cliAvailable: boolean;
+  gatewayReachable: boolean;
+  gatewayAuthenticated: boolean;
+  agentListingAvailable: boolean;
+  sessionHistoryAvailable: boolean;
+  gatewayAgentAvailable: boolean;
+  gatewayChatAvailable: boolean;
+  projectAttachmentSupported: boolean;
+}
+
+export interface OpenClawConnectionHealthSnapshot {
+  lastProbeAt?: SwiftDate | null;
+  lastHeartbeatAt?: SwiftDate | null;
+  latencyMs?: number | null;
+  degradationReason?: string | null;
+  lastMessage?: string | null;
+}
+
+export interface OpenClawConnectionStateSnapshot {
+  phase: OpenClawConnectionPhase;
+  deploymentKind: OpenClawDeploymentKind;
+  capabilities: OpenClawConnectionCapabilitiesSnapshot;
+  health: OpenClawConnectionHealthSnapshot;
+}
+
+export interface OpenClawProbeReportSnapshot {
+  success: boolean;
+  deploymentKind: OpenClawDeploymentKind;
+  endpoint: string;
+  capabilities: OpenClawConnectionCapabilitiesSnapshot;
+  health: OpenClawConnectionHealthSnapshot;
+  availableAgents: string[];
+  message: string;
+  warnings: string[];
+  sourceOfTruth: string;
+  observedDefaultTransports: string[];
+}
+
 export interface ProjectOpenClawSnapshot {
   config: OpenClawConfig;
   isConnected: boolean;
   availableAgents: string[];
   activeAgents: ProjectOpenClawAgentRecord[];
   detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+  connectionState: OpenClawConnectionStateSnapshot;
+  lastProbeReport?: OpenClawProbeReportSnapshot | null;
   sessionBackupPath?: string | null;
   sessionMirrorPath?: string | null;
   lastSyncedAt: SwiftDate;

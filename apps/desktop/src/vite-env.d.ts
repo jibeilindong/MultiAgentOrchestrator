@@ -4,6 +4,8 @@ import type {
   ExecutionOutputType,
   MAProject,
   OpenClawConfig,
+  OpenClawConnectionStateSnapshot,
+  OpenClawProbeReportSnapshot,
   OpenClawRuntimeEvent,
   ProjectOpenClawAgentRecord,
   ProjectOpenClawDetectedAgentRecord
@@ -37,6 +39,8 @@ declare global {
     availableAgents: string[];
     activeAgents: ProjectOpenClawAgentRecord[];
     detectedAgents: ProjectOpenClawDetectedAgentRecord[];
+    connectionState?: OpenClawConnectionStateSnapshot;
+    probeReport?: OpenClawProbeReportSnapshot | null;
   }
 
   interface OpenClawAgentExecutionRequest {
@@ -153,8 +157,9 @@ declare global {
       autosaveProject(project: MAProject): Promise<AutosaveResult>;
       chooseDirectory(defaultPath?: string | null): Promise<DirectorySelectionResult>;
       connectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult>;
+      probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeReportSnapshot>;
       detectOpenClawAgents(config: OpenClawConfig): Promise<OpenClawActionResult>;
-      disconnectOpenClaw(): Promise<OpenClawActionResult>;
+      disconnectOpenClaw(config: OpenClawConfig): Promise<OpenClawActionResult>;
       executeOpenClawAgent(
         config: OpenClawConfig,
         request: OpenClawAgentExecutionRequest

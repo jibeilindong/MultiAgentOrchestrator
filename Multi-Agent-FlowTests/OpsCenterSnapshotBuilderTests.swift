@@ -2,6 +2,133 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class OpsCenterSnapshotBuilderTests: XCTestCase {
+    func testBuildThreadInvestigationAggregatesWorkbenchAndRuntimeEvidence() throws {
+        var project = MAProject(name: "Ops Center Thread Test")
+
+        let planner = Agent(name: "Planner Agent")
+        let reviewer = Agent(name: "Reviewer Agent")
+        project.agents = [planner, reviewer]
+
+        var workflow = project.workflows[0]
+        var plannerNode = WorkflowNode(type: .agent)
+        plannerNode.agentID = planner.id
+        plannerNode.title = "Planner"
+
+        var reviewerNode = WorkflowNode(type: .agent)
+        reviewerNode.agentID = reviewer.id
+        reviewerNode.title = "Reviewer"
+
+        var edge = WorkflowEdge(from: plannerNode.id, to: reviewerNode.id)
+        edge.label = "Review Route"
+        edge.isBidirectional = false
+
+        workflow.nodes = [plannerNode, reviewerNode]
+        workflow.edges = [edge]
+        project.workflows = [workflow]
+
+        let threadID = "thread-investigation"
+        let startedAt = Date(timeIntervalSince1970: 1_710_200_000)
+
+        let dispatchEvent = OpenClawRuntimeEvent(
+            id: "event-thread-dispatch",
+            eventType: .taskDispatch,
+            workflowId: workflow.id.uuidString,
+            nodeId: reviewerNode.id.uuidString,
+            sessionKey: threadID,
+            source: OpenClawRuntimeActor(kind: .agent, agentId: planner.id.uuidString, agentName: planner.name),
+            target: OpenClawRuntimeActor(kind: .agent, agentId: reviewer.id.uuidString, agentName: reviewer.name),
+            transport: OpenClawRuntimeTransport(kind: .runtimeChannel, deploymentKind: "local"),
+            payload: ["summary": "Send the review request"]
+        )
+        project.runtimeState.runtimeEvents = [dispatchEvent]
+
+        let dispatchRecord = RuntimeDispatchRecord(
+            eventID: "dispatch-thread",
+            workflowID: workflow.id.uuidString,
+            nodeID: reviewerNode.id.uuidString,
+            sourceAgentID: planner.id.uuidString,
+            targetAgentID: reviewer.id.uuidString,
+            summary: "Thread review dispatch",
+            sessionKey: threadID,
+            status: .waitingApproval,
+            transportKind: .runtimeChannel,
+            queuedAt: startedAt,
+            updatedAt: startedAt.addingTimeInterval(15)
+        )
+        project.runtimeState.inflightDispatches = [dispatchRecord]
+
+        let result = ExecutionResult(
+            nodeID: reviewerNode.id,
+            agentID: reviewer.id,
+            status: .running,
+            output: "Review in progress",
+            outputType: .runtimeLog,
+            sessionID: threadID,
+            transportKind: OpenClawRuntimeTransportKind.runtimeChannel.rawValue,
+            runtimeEvents: [dispatchEvent],
+            primaryRuntimeEvent: dispatchEvent,
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(45)
+        )
+
+        var userMessage = Message(from: planner.id, to: reviewer.id, type: .task, content: "Please review the draft.")
+        userMessage.timestamp = startedAt
+        userMessage.status = .read
+        userMessage.metadata["channel"] = "workbench"
+        userMessage.metadata["workflowID"] = workflow.id.uuidString
+        userMessage.metadata["workbenchSessionID"] = threadID
+        userMessage.metadata["entryAgentID"] = planner.id.uuidString
+
+        var approvalMessage = Message(from: reviewer.id, to: planner.id, type: .notification, content: "Needs approval before continuing.")
+        approvalMessage.timestamp = startedAt.addingTimeInterval(30)
+        approvalMessage.status = .waitingForApproval
+        approvalMessage.requiresApproval = true
+        approvalMessage.metadata["channel"] = "workbench"
+        approvalMessage.metadata["workflowID"] = workflow.id.uuidString
+        approvalMessage.metadata["workbenchSessionID"] = threadID
+        approvalMessage.metadata["entryAgentID"] = planner.id.uuidString
+
+        var reviewTask = Task(
+            title: "Review Draft",
+            description: "Validate the draft for release",
+            status: .inProgress,
+            priority: .high,
+            assignedAgentID: reviewer.id,
+            workflowNodeID: reviewerNode.id
+        )
+        reviewTask.createdAt = startedAt.addingTimeInterval(5)
+        reviewTask.metadata["source"] = "workbench"
+        reviewTask.metadata["workflowID"] = workflow.id.uuidString
+        reviewTask.metadata["workbenchSessionID"] = threadID
+
+        let investigation = try XCTUnwrap(
+            OpsCenterSnapshotBuilder.buildThreadInvestigation(
+                project: project,
+                workflow: workflow,
+                threadID: threadID,
+                tasks: [reviewTask],
+                messages: [userMessage, approvalMessage],
+                executionResults: [result]
+            )
+        )
+
+        XCTAssertEqual(investigation.threadID, threadID)
+        XCTAssertEqual(investigation.sessionID, threadID)
+        XCTAssertEqual(investigation.workflowID, workflow.id)
+        XCTAssertEqual(investigation.workflowName, workflow.name)
+        XCTAssertEqual(investigation.status, "approval_pending")
+        XCTAssertEqual(investigation.entryAgentName, planner.name)
+        XCTAssertEqual(investigation.participantNames, [planner.name, reviewer.name])
+        XCTAssertEqual(investigation.pendingApprovalCount, 1)
+        XCTAssertEqual(investigation.relatedSession?.sessionID, threadID)
+        XCTAssertEqual(investigation.messages.count, 2)
+        XCTAssertEqual(investigation.tasks.count, 1)
+        XCTAssertEqual(investigation.dispatches.count, 1)
+        XCTAssertEqual(investigation.receipts.count, 1)
+        XCTAssertEqual(investigation.events.count, 1)
+        XCTAssertTrue(investigation.relatedNodes.contains(where: { $0.id == reviewerNode.id }))
+    }
+
     func testBuildRouteInvestigationFocusesOnDirectRouteTraffic() throws {
         var project = MAProject(name: "Ops Center Route Test")
 

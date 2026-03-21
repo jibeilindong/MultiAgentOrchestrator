@@ -252,10 +252,32 @@ struct OpsCenterRouteInvestigation: Identifiable {
     let tasks: [OpsCenterTaskDigest]
 }
 
+struct OpsCenterThreadInvestigation: Identifiable {
+    var id: String { threadID }
+    let threadID: String
+    let sessionID: String
+    let workflowID: UUID?
+    let workflowName: String
+    let status: String
+    let startedAt: Date?
+    let lastUpdatedAt: Date?
+    let entryAgentName: String?
+    let participantNames: [String]
+    let pendingApprovalCount: Int
+    let relatedSession: OpsCenterSessionSummary?
+    let relatedNodes: [OpsCenterNodeSummary]
+    let events: [OpsCenterEventDigest]
+    let dispatches: [OpsCenterDispatchDigest]
+    let receipts: [OpsCenterReceiptDigest]
+    let messages: [OpsCenterMessageDigest]
+    let tasks: [OpsCenterTaskDigest]
+}
+
 enum OpsCenterInvestigationTarget: Identifiable {
     case session(OpsCenterSessionInvestigation)
     case node(OpsCenterNodeInvestigation)
     case route(OpsCenterRouteInvestigation)
+    case thread(OpsCenterThreadInvestigation)
 
     var id: String {
         switch self {
@@ -265,6 +287,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "node-\(investigation.id.uuidString)"
         case let .route(investigation):
             return "route-\(investigation.id.uuidString)"
+        case let .thread(investigation):
+            return "thread-\(investigation.id)"
         }
     }
 
@@ -276,6 +300,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return investigation.node.title
         case let .route(investigation):
             return "\(investigation.edge.fromTitle) -> \(investigation.edge.toTitle)"
+        case let .thread(investigation):
+            return investigation.threadID
         }
     }
 
@@ -287,6 +313,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
             return "\(investigation.workflowName) • Node Investigation"
         case let .route(investigation):
             return "\(investigation.workflowName) • Route Investigation"
+        case let .thread(investigation):
+            return "\(investigation.workflowName) • Thread Investigation"
         }
     }
 }
@@ -747,6 +775,98 @@ enum OpsCenterSnapshotBuilder {
         )
     }
 
+    static func buildThreadInvestigation(
+        project: MAProject?,
+        workflow: Workflow?,
+        threadID: String,
+        tasks: [Task],
+        messages: [Message],
+        executionResults: [ExecutionResult]
+    ) -> OpsCenterThreadInvestigation? {
+        guard let project,
+              let normalizedTargetThreadID = normalizedSessionID(threadID) else {
+            return nil
+        }
+
+        let workbenchMessages = messages
+            .filter { $0.metadata["channel"] == "workbench" }
+            .filter { normalizedSessionID($0.metadata["workbenchSessionID"]) == normalizedTargetThreadID }
+            .filter { matchesWorkflow($0.metadata, workflowID: workflow?.id) }
+        let workbenchTasks = tasks
+            .filter { $0.metadata["source"] == "workbench" }
+            .filter { normalizedSessionID($0.metadata["workbenchSessionID"]) == normalizedTargetThreadID }
+            .filter { matchesWorkflow($0.metadata, workflowID: workflow?.id) }
+
+        let sessionInvestigation = buildSessionInvestigation(
+            project: project,
+            workflow: workflow,
+            sessionID: normalizedTargetThreadID,
+            tasks: tasks,
+            messages: messages,
+            executionResults: executionResults
+        )
+
+        guard !workbenchMessages.isEmpty
+                || !workbenchTasks.isEmpty
+                || sessionInvestigation != nil else {
+            return nil
+        }
+
+        let snapshot = buildLiveRunSnapshot(
+            project: project,
+            workflow: workflow,
+            tasks: tasks,
+            messages: messages,
+            executionResults: executionResults
+        )
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0.name) })
+        let resolvedWorkflowID = workflow?.id
+            ?? workbenchMessages.compactMap { UUID(uuidString: $0.metadata["workflowID"] ?? "") }.first
+            ?? workbenchTasks.compactMap { UUID(uuidString: $0.metadata["workflowID"] ?? "") }.first
+        let resolvedWorkflowName = workflow?.name
+            ?? resolvedWorkflowID.flatMap { workflowID in
+                project.workflows.first(where: { $0.id == workflowID })?.name
+            }
+            ?? "Workbench Thread"
+        let entryAgentID = workbenchMessages
+            .compactMap { UUID(uuidString: $0.metadata["entryAgentID"] ?? "") }
+            .first
+            ?? workbenchTasks.compactMap(\.assignedAgentID).first
+        let participantNames = Set(
+            workbenchMessages.flatMap { [$0.fromAgentID, $0.toAgentID] }
+                + workbenchTasks.compactMap(\.assignedAgentID)
+        )
+        .compactMap { agentNamesByID[$0] }
+        .sorted()
+        let startedAt = (workbenchMessages.map(\.timestamp) + workbenchTasks.map(\.createdAt)).min()
+            ?? sessionInvestigation?.session.lastUpdatedAt
+        let taskDates = workbenchTasks.map { $0.completedAt ?? $0.startedAt ?? $0.createdAt }
+        let lastUpdatedAt = (workbenchMessages.map(\.timestamp) + taskDates).max()
+            ?? sessionInvestigation?.session.lastUpdatedAt
+
+        return OpsCenterThreadInvestigation(
+            threadID: normalizedTargetThreadID,
+            sessionID: normalizedTargetThreadID,
+            workflowID: resolvedWorkflowID,
+            workflowName: resolvedWorkflowName,
+            status: workbenchThreadStatus(messages: workbenchMessages, tasks: workbenchTasks),
+            startedAt: startedAt,
+            lastUpdatedAt: lastUpdatedAt,
+            entryAgentName: entryAgentID.flatMap { agentNamesByID[$0] },
+            participantNames: participantNames,
+            pendingApprovalCount: workbenchMessages.filter { $0.status == .waitingForApproval }.count,
+            relatedSession: sessionInvestigation?.session ?? snapshot.sessionSummaries.first(where: {
+                $0.sessionID == normalizedTargetThreadID
+            }),
+            relatedNodes: sessionInvestigation?.relatedNodes ?? [],
+            events: sessionInvestigation?.events ?? [],
+            dispatches: sessionInvestigation?.dispatches ?? [],
+            receipts: sessionInvestigation?.receipts ?? [],
+            messages: buildMessageDigests(workbenchMessages, agentNamesByID: agentNamesByID),
+            tasks: buildTaskDigests(workbenchTasks, agentNamesByID: agentNamesByID)
+        )
+    }
+
     private static func resolveStatus(
         node: WorkflowNode,
         relatedDispatches: [RuntimeDispatchRecord],
@@ -1002,6 +1122,22 @@ enum OpsCenterSnapshotBuilder {
             + runtimeState.inflightDispatches
             + runtimeState.completedDispatches
             + runtimeState.failedDispatches
+    }
+
+    private static func workbenchThreadStatus(messages: [Message], tasks: [Task]) -> String {
+        if messages.contains(where: { $0.status == .waitingForApproval }) {
+            return "approval_pending"
+        }
+        if tasks.contains(where: { $0.status == .blocked }) {
+            return "blocked"
+        }
+        if tasks.contains(where: { $0.status == .inProgress || $0.status == .todo }) {
+            return "active"
+        }
+        if tasks.contains(where: { $0.status == .done }) {
+            return "completed"
+        }
+        return messages.isEmpty ? "idle" : "active"
     }
 
     private static func agentName(for rawAgentID: String, using agentNamesByID: [UUID: String]) -> String {

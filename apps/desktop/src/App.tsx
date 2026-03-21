@@ -2203,7 +2203,9 @@ export function App() {
             isConnected: false,
             availableAgents: result.availableAgents,
             activeAgents: result.activeAgents,
-            detectedAgents: result.detectedAgents
+            detectedAgents: result.detectedAgents,
+            connectionState: result.connectionState,
+            lastProbeReport: result.probeReport
           }),
         result.message
       );
@@ -2228,7 +2230,9 @@ export function App() {
             isConnected: result.isConnected,
             availableAgents: result.availableAgents,
             activeAgents: result.activeAgents,
-            detectedAgents: result.detectedAgents
+            detectedAgents: result.detectedAgents,
+            connectionState: result.connectionState,
+            lastProbeReport: result.probeReport
           }),
         result.message
       );
@@ -2240,15 +2244,21 @@ export function App() {
   }
 
   async function handleDisconnectOpenClaw() {
+    if (!project) {
+      return;
+    }
+
     setOpenClawAction("disconnect");
     try {
-      const result = await requireDesktopApi().disconnectOpenClaw();
+      const result = await requireDesktopApi().disconnectOpenClaw(project.openClaw.config);
       updateProject(
         (current) =>
           syncOpenClawState(current, {
             isConnected: result.isConnected,
             availableAgents: result.availableAgents,
-            activeAgents: result.activeAgents
+            activeAgents: result.activeAgents,
+            connectionState: result.connectionState,
+            lastProbeReport: result.probeReport
           }),
         result.message
       );

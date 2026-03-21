@@ -247,12 +247,133 @@ struct ProjectOpenClawDetectedAgentRecord: Codable, Identifiable, Hashable {
     }
 }
 
+enum OpenClawConnectionPhase: String, Codable {
+    case idle
+    case discovering
+    case probed
+    case ready
+    case degraded
+    case detached
+    case failed
+}
+
+struct OpenClawConnectionCapabilitiesSnapshot: Codable {
+    var cliAvailable: Bool
+    var gatewayReachable: Bool
+    var gatewayAuthenticated: Bool
+    var agentListingAvailable: Bool
+    var sessionHistoryAvailable: Bool
+    var gatewayAgentAvailable: Bool
+    var gatewayChatAvailable: Bool
+    var projectAttachmentSupported: Bool
+
+    init(
+        cliAvailable: Bool = false,
+        gatewayReachable: Bool = false,
+        gatewayAuthenticated: Bool = false,
+        agentListingAvailable: Bool = false,
+        sessionHistoryAvailable: Bool = false,
+        gatewayAgentAvailable: Bool = false,
+        gatewayChatAvailable: Bool = false,
+        projectAttachmentSupported: Bool = false
+    ) {
+        self.cliAvailable = cliAvailable
+        self.gatewayReachable = gatewayReachable
+        self.gatewayAuthenticated = gatewayAuthenticated
+        self.agentListingAvailable = agentListingAvailable
+        self.sessionHistoryAvailable = sessionHistoryAvailable
+        self.gatewayAgentAvailable = gatewayAgentAvailable
+        self.gatewayChatAvailable = gatewayChatAvailable
+        self.projectAttachmentSupported = projectAttachmentSupported
+    }
+}
+
+struct OpenClawConnectionHealthSnapshot: Codable {
+    var lastProbeAt: Date?
+    var lastHeartbeatAt: Date?
+    var latencyMs: Int?
+    var degradationReason: String?
+    var lastMessage: String?
+
+    init(
+        lastProbeAt: Date? = nil,
+        lastHeartbeatAt: Date? = nil,
+        latencyMs: Int? = nil,
+        degradationReason: String? = nil,
+        lastMessage: String? = nil
+    ) {
+        self.lastProbeAt = lastProbeAt
+        self.lastHeartbeatAt = lastHeartbeatAt
+        self.latencyMs = latencyMs
+        self.degradationReason = degradationReason
+        self.lastMessage = lastMessage
+    }
+}
+
+struct OpenClawConnectionStateSnapshot: Codable {
+    var phase: OpenClawConnectionPhase
+    var deploymentKind: OpenClawDeploymentKind
+    var capabilities: OpenClawConnectionCapabilitiesSnapshot
+    var health: OpenClawConnectionHealthSnapshot
+
+    init(
+        phase: OpenClawConnectionPhase = .idle,
+        deploymentKind: OpenClawDeploymentKind = .local,
+        capabilities: OpenClawConnectionCapabilitiesSnapshot = OpenClawConnectionCapabilitiesSnapshot(),
+        health: OpenClawConnectionHealthSnapshot = OpenClawConnectionHealthSnapshot()
+    ) {
+        self.phase = phase
+        self.deploymentKind = deploymentKind
+        self.capabilities = capabilities
+        self.health = health
+    }
+}
+
+struct OpenClawProbeReportSnapshot: Codable {
+    var success: Bool
+    var deploymentKind: OpenClawDeploymentKind
+    var endpoint: String
+    var capabilities: OpenClawConnectionCapabilitiesSnapshot
+    var health: OpenClawConnectionHealthSnapshot
+    var availableAgents: [String]
+    var message: String
+    var warnings: [String]
+    var sourceOfTruth: String
+    var observedDefaultTransports: [String]
+
+    init(
+        success: Bool = false,
+        deploymentKind: OpenClawDeploymentKind = .local,
+        endpoint: String = "",
+        capabilities: OpenClawConnectionCapabilitiesSnapshot = OpenClawConnectionCapabilitiesSnapshot(),
+        health: OpenClawConnectionHealthSnapshot = OpenClawConnectionHealthSnapshot(),
+        availableAgents: [String] = [],
+        message: String = "",
+        warnings: [String] = [],
+        sourceOfTruth: String = "",
+        observedDefaultTransports: [String] = []
+    ) {
+        self.success = success
+        self.deploymentKind = deploymentKind
+        self.endpoint = endpoint
+        self.capabilities = capabilities
+        self.health = health
+        self.availableAgents = availableAgents
+        self.message = message
+        self.warnings = warnings
+        self.sourceOfTruth = sourceOfTruth
+        self.observedDefaultTransports = observedDefaultTransports
+    }
+}
+
 struct ProjectOpenClawSnapshot: Codable {
     var config: OpenClawConfig
     var isConnected: Bool
     var availableAgents: [String]
     var activeAgents: [ProjectOpenClawAgentRecord]
     var detectedAgents: [ProjectOpenClawDetectedAgentRecord]
+    var connectionState: OpenClawConnectionStateSnapshot
+    var lastProbeReport: OpenClawProbeReportSnapshot?
     var sessionBackupPath: String?
     var sessionMirrorPath: String?
     var lastSyncedAt: Date
@@ -263,6 +384,8 @@ struct ProjectOpenClawSnapshot: Codable {
         case availableAgents
         case activeAgents
         case detectedAgents
+        case connectionState
+        case lastProbeReport
         case sessionBackupPath
         case sessionMirrorPath
         case lastSyncedAt
@@ -274,6 +397,8 @@ struct ProjectOpenClawSnapshot: Codable {
         availableAgents: [String] = [],
         activeAgents: [ProjectOpenClawAgentRecord] = [],
         detectedAgents: [ProjectOpenClawDetectedAgentRecord] = [],
+        connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot(),
+        lastProbeReport: OpenClawProbeReportSnapshot? = nil,
         sessionBackupPath: String? = nil,
         sessionMirrorPath: String? = nil,
         lastSyncedAt: Date = Date()
@@ -283,6 +408,8 @@ struct ProjectOpenClawSnapshot: Codable {
         self.availableAgents = availableAgents
         self.activeAgents = activeAgents
         self.detectedAgents = detectedAgents
+        self.connectionState = connectionState
+        self.lastProbeReport = lastProbeReport
         self.sessionBackupPath = sessionBackupPath
         self.sessionMirrorPath = sessionMirrorPath
         self.lastSyncedAt = lastSyncedAt
@@ -295,6 +422,12 @@ struct ProjectOpenClawSnapshot: Codable {
         availableAgents = try container.decodeIfPresent([String].self, forKey: .availableAgents) ?? []
         activeAgents = try container.decodeIfPresent([ProjectOpenClawAgentRecord].self, forKey: .activeAgents) ?? []
         detectedAgents = try container.decodeIfPresent([ProjectOpenClawDetectedAgentRecord].self, forKey: .detectedAgents) ?? []
+        connectionState = try container.decodeIfPresent(OpenClawConnectionStateSnapshot.self, forKey: .connectionState)
+            ?? OpenClawConnectionStateSnapshot(
+                phase: isConnected ? .ready : .idle,
+                deploymentKind: config.deploymentKind
+            )
+        lastProbeReport = try container.decodeIfPresent(OpenClawProbeReportSnapshot.self, forKey: .lastProbeReport)
         sessionBackupPath = try container.decodeIfPresent(String.self, forKey: .sessionBackupPath)
         sessionMirrorPath = try container.decodeIfPresent(String.self, forKey: .sessionMirrorPath)
         lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt) ?? Date()
@@ -307,6 +440,8 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(availableAgents, forKey: .availableAgents)
         try container.encode(activeAgents, forKey: .activeAgents)
         try container.encode(detectedAgents, forKey: .detectedAgents)
+        try container.encode(connectionState, forKey: .connectionState)
+        try container.encodeIfPresent(lastProbeReport, forKey: .lastProbeReport)
         try container.encodeIfPresent(sessionBackupPath, forKey: .sessionBackupPath)
         try container.encodeIfPresent(sessionMirrorPath, forKey: .sessionMirrorPath)
         try container.encode(lastSyncedAt, forKey: .lastSyncedAt)

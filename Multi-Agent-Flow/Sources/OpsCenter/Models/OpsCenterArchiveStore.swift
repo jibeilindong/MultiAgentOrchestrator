@@ -35,6 +35,45 @@ private struct OpsCenterArchiveThreadContextDocument: Codable {
     let entryAgentName: String?
 }
 
+private struct OpsCenterArchiveWorkbenchThreadDocument: Codable {
+    let threadID: String
+    let sessionID: String
+    let workflowID: UUID?
+    let workflowName: String?
+    let entryAgentID: UUID?
+    let entryAgentName: String?
+    let status: String
+    let startedAt: Date
+    let lastUpdatedAt: Date
+    let messageCount: Int
+    let taskCount: Int
+    let pendingApprovalCount: Int
+    let latestMessageID: UUID?
+    let latestTaskID: UUID?
+}
+
+private struct OpsCenterArchiveThreadInvestigationDocument: Codable {
+    let threadID: String
+    let sessionID: String
+    let workflowID: UUID?
+    let workflowName: String?
+    let entryAgentID: UUID?
+    let entryAgentName: String?
+    let participantAgentIDs: [UUID]
+    let relatedNodeIDs: [UUID]
+    let status: String
+    let startedAt: Date
+    let lastUpdatedAt: Date
+    let messageCount: Int
+    let taskCount: Int
+    let pendingApprovalCount: Int
+    let dispatchCount: Int
+    let eventCount: Int
+    let receiptCount: Int
+    let latestMessageID: UUID?
+    let latestTaskID: UUID?
+}
+
 private struct OpsCenterArchiveSessionPayload {
     let summary: OpsCenterSessionSummary
     let relatedNodeIDs: Set<UUID>
@@ -294,6 +333,156 @@ enum OpsCenterArchiveStore {
             receipts: receipts,
             messages: messages,
             tasks: tasks
+        )
+    }
+
+    static func loadThreadInvestigation(
+        projectID: UUID,
+        workflowID: UUID?,
+        threadID: String,
+        projections: OpsCenterProjectionBundle? = nil
+    ) -> OpsCenterThreadInvestigation? {
+        guard let snapshot = loadSnapshot(projectID: projectID) else { return nil }
+        guard let normalizedTargetThreadID = normalizedSessionID(threadID) else { return nil }
+
+        let projectRootURL = ProjectManager.shared.managedProjectRootDirectory(for: projectID)
+        let threadRootURL = projectRootURL
+            .appendingPathComponent("collaboration", isDirectory: true)
+            .appendingPathComponent("workbench", isDirectory: true)
+            .appendingPathComponent("threads", isDirectory: true)
+            .appendingPathComponent(safeStorageName(for: normalizedTargetThreadID), isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: threadRootURL.path) else { return nil }
+
+        let threadDocument = decode(
+            OpsCenterArchiveWorkbenchThreadDocument.self,
+            from: threadRootURL.appendingPathComponent("thread.json", isDirectory: false)
+        )
+        let threadContext = decode(
+            OpsCenterArchiveThreadContextDocument.self,
+            from: threadRootURL.appendingPathComponent("context.json", isDirectory: false)
+        )
+        let investigationDocument = decode(
+            OpsCenterArchiveThreadInvestigationDocument.self,
+            from: threadRootURL.appendingPathComponent("investigation.json", isDirectory: false)
+        )
+
+        let resolvedWorkflowID = workflowID
+            ?? threadDocument?.workflowID
+            ?? threadContext?.workflowID
+            ?? investigationDocument?.workflowID
+        let resolvedSessionID = normalizedSessionID(
+            threadDocument?.sessionID
+                ?? threadContext?.sessionID
+                ?? investigationDocument?.sessionID
+                ?? normalizedTargetThreadID
+        ) ?? normalizedTargetThreadID
+        let payload = loadSessionPayload(
+            projectID: projectID,
+            workflowID: resolvedWorkflowID,
+            sessionID: resolvedSessionID,
+            snapshot: snapshot,
+            projections: projections
+        )
+
+        let relatedNodeIDs = Set(investigationDocument?.relatedNodeIDs ?? [])
+            .union(payload?.relatedNodeIDs ?? [])
+        let relatedNodes: [OpsCenterNodeSummary]
+        if relatedNodeIDs.isEmpty {
+            relatedNodes = []
+        } else {
+            relatedNodes = buildRelatedNodes(
+                snapshot: snapshot,
+                workflowID: resolvedWorkflowID,
+                relatedNodeIDs: relatedNodeIDs,
+                sessionID: resolvedSessionID,
+                receipts: payload?.receipts ?? [],
+                projections: projections
+            )
+        }
+
+        let participantNames = Set(
+            (threadContext?.participantAgentIDs ?? investigationDocument?.participantAgentIDs ?? [])
+                .compactMap { agentName(for: $0, snapshot: snapshot) }
+        )
+        .sorted()
+        let messageTimestamps = payload?.messages.map(\.timestamp) ?? []
+        let taskTimestamps = payload?.tasks.map(\.timestamp) ?? []
+        let pendingApprovalCount = max(
+            threadDocument?.pendingApprovalCount ?? 0,
+            investigationDocument?.pendingApprovalCount ?? 0,
+            payload?.messages.filter { $0.status == .waitingForApproval }.count ?? 0
+        )
+        let resolvedWorkflowName = threadDocument?.workflowName
+            ?? threadContext?.workflowName
+            ?? investigationDocument?.workflowName
+            ?? resolvedWorkflowID.flatMap { workflowID in
+                snapshot.workflows.first(where: { $0.id == workflowID })?.name
+            }
+            ?? "Workbench Thread"
+
+        guard threadDocument != nil || threadContext != nil || investigationDocument != nil || payload != nil else {
+            return nil
+        }
+
+        let resolvedStatus = threadDocument?.status
+            ?? investigationDocument?.status
+            ?? archiveThreadStatus(
+                messages: payload?.messages ?? [],
+                tasks: payload?.tasks ?? [],
+                pendingApprovalCount: pendingApprovalCount
+            )
+        let resolvedStartedAt = threadDocument?.startedAt
+            ?? investigationDocument?.startedAt
+            ?? (messageTimestamps + taskTimestamps).min()
+        let resolvedLastUpdatedAt = [
+            threadDocument?.lastUpdatedAt,
+            investigationDocument?.lastUpdatedAt,
+            payload?.summary.lastUpdatedAt,
+            (messageTimestamps + taskTimestamps).max()
+        ]
+        .compactMap { $0 }
+        .max()
+        let resolvedEntryAgentName: String? = {
+            if let name = threadDocument?.entryAgentName {
+                return name
+            }
+            if let name = threadContext?.entryAgentName {
+                return name
+            }
+            if let name = investigationDocument?.entryAgentName {
+                return name
+            }
+            if let entryAgentID = threadDocument?.entryAgentID {
+                return agentName(for: entryAgentID, snapshot: snapshot)
+            }
+            if let entryAgentID = threadContext?.entryAgentID {
+                return agentName(for: entryAgentID, snapshot: snapshot)
+            }
+            if let entryAgentID = investigationDocument?.entryAgentID {
+                return agentName(for: entryAgentID, snapshot: snapshot)
+            }
+            return nil
+        }()
+
+        return OpsCenterThreadInvestigation(
+            threadID: normalizedTargetThreadID,
+            sessionID: resolvedSessionID,
+            workflowID: resolvedWorkflowID,
+            workflowName: resolvedWorkflowName,
+            status: resolvedStatus,
+            startedAt: resolvedStartedAt,
+            lastUpdatedAt: resolvedLastUpdatedAt,
+            entryAgentName: resolvedEntryAgentName,
+            participantNames: participantNames,
+            pendingApprovalCount: pendingApprovalCount,
+            relatedSession: payload?.summary,
+            relatedNodes: relatedNodes,
+            events: payload?.events ?? [],
+            dispatches: payload?.dispatches ?? [],
+            receipts: payload?.receipts ?? [],
+            messages: payload?.messages ?? [],
+            tasks: payload?.tasks ?? []
         )
     }
 
@@ -922,6 +1111,26 @@ enum OpsCenterArchiveStore {
                 }
                 return lhs.id.uuidString > rhs.id.uuidString
             }
+    }
+
+    private static func archiveThreadStatus(
+        messages: [OpsCenterMessageDigest],
+        tasks: [OpsCenterTaskDigest],
+        pendingApprovalCount: Int
+    ) -> String {
+        if pendingApprovalCount > 0 || messages.contains(where: { $0.status == .waitingForApproval }) {
+            return "approval_pending"
+        }
+        if tasks.contains(where: { $0.status == .blocked }) {
+            return "blocked"
+        }
+        if tasks.contains(where: { $0.status == .inProgress || $0.status == .todo }) {
+            return "active"
+        }
+        if tasks.contains(where: { $0.status == .done }) {
+            return "completed"
+        }
+        return messages.isEmpty ? "idle" : "active"
     }
 
     private static func latestFailureText(
