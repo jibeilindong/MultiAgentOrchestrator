@@ -112,6 +112,11 @@ interface OpenClawActionResult {
   probeReport?: OpenClawProbeReportSnapshot | null;
 }
 
+interface OpenClawDiscoveryPaths {
+  rootPath: string | null;
+  configPath: string | null;
+}
+
 interface DesktopGatewayDeviceIdentity {
   version: number;
   deviceID: string;
@@ -1091,26 +1096,13 @@ async function inspectOpenClawAgentsFromConfigPath(
 }
 
 async function inspectOpenClawAgents(config: OpenClawConfig, fallbackAgentNames: string[] = []) {
-  const cliConfigPath = await resolveOpenClawConfigPathFromCli(config);
-  if (cliConfigPath) {
-    if (config.deploymentKind === "container") {
-      return inspectOpenClawAgentsFromConfigPath(config, cliConfigPath, fallbackAgentNames);
-    }
-
-    const rootPath = path.dirname(cliConfigPath);
-    if (rootPath && existsSync(rootPath)) {
-      return inspectOpenClawAgentsAtRoot(rootPath, fallbackAgentNames);
-    }
-  }
-
+  const discoveryPaths = await resolveOpenClawDiscoveryPaths(config);
   if (config.deploymentKind === "container") {
-    const discoveredRoot = await resolveOpenClawRootPathForProbe(config);
-    if (discoveredRoot) {
-      const configPath = await firstExistingChildPathForConfig(config, discoveredRoot, ["openclaw.json"]);
-      if (configPath) {
-        return inspectOpenClawAgentsFromConfigPath(config, configPath, fallbackAgentNames);
-      }
+    if (discoveryPaths.configPath) {
+      return inspectOpenClawAgentsFromConfigPath(config, discoveryPaths.configPath, fallbackAgentNames);
     }
+  } else if (discoveryPaths.rootPath && existsSync(discoveryPaths.rootPath)) {
+    return inspectOpenClawAgentsAtRoot(discoveryPaths.rootPath, fallbackAgentNames);
   }
 
   for (const candidate of await openClawRootCandidatesForConfig(config)) {
@@ -1241,6 +1233,42 @@ async function resolveOpenClawConfigPathFromCli(config: OpenClawConfig): Promise
   } catch {
     return null;
   }
+}
+
+async function resolveOpenClawDiscoveryPaths(config: OpenClawConfig): Promise<OpenClawDiscoveryPaths> {
+  const cliConfigPath = await resolveOpenClawConfigPathFromCli(config);
+  if (cliConfigPath) {
+    return {
+      rootPath: path.dirname(cliConfigPath),
+      configPath: cliConfigPath
+    };
+  }
+
+  if (config.deploymentKind === "container") {
+    const discoveredRoot = await discoverContainerOpenClawRootPath(config);
+    if (discoveredRoot) {
+      return {
+        rootPath: discoveredRoot,
+        configPath: await firstExistingChildPathForConfig(config, discoveredRoot, ["openclaw.json"])
+      };
+    }
+  }
+
+  for (const candidate of await openClawRootCandidatesForConfig(config)) {
+    if (!candidate || !(await pathExistsForConfig(config, candidate))) {
+      continue;
+    }
+
+    return {
+      rootPath: candidate,
+      configPath: await firstExistingChildPathForConfig(config, candidate, ["openclaw.json"])
+    };
+  }
+
+  return {
+    rootPath: null,
+    configPath: null
+  };
 }
 
 function normalizedNonEmpty(value: string): string | null {
@@ -1454,25 +1482,8 @@ function createFallbackGatewayProbeConfig(
 }
 
 async function resolveOpenClawRootPathForProbe(config: OpenClawConfig): Promise<string | null> {
-  const cliConfigPath = await resolveOpenClawConfigPathFromCli(config);
-  if (cliConfigPath) {
-    return path.dirname(cliConfigPath);
-  }
-
-  if (config.deploymentKind === "container") {
-    const discoveredRoot = await discoverContainerOpenClawRootPath(config);
-    if (discoveredRoot) {
-      return discoveredRoot;
-    }
-  }
-
-  for (const candidate of await openClawRootCandidatesForConfig(config)) {
-    if (candidate && (await pathExistsForConfig(config, candidate))) {
-      return candidate;
-    }
-  }
-
-  return null;
+  const discoveryPaths = await resolveOpenClawDiscoveryPaths(config);
+  return discoveryPaths.rootPath;
 }
 
 async function resolveGatewayProbeConfigFromRoot(
@@ -1545,7 +1556,8 @@ async function resolveGatewayProbeConfig(config: OpenClawConfig): Promise<OpenCl
     case "remoteServer":
       return trimmedString(normalizedConfig.host) ? normalizedConfig : null;
     case "local": {
-      const rootPath = await resolveOpenClawRootPathForProbe(normalizedConfig);
+      const discoveryPaths = await resolveOpenClawDiscoveryPaths(normalizedConfig);
+      const rootPath = discoveryPaths.rootPath;
       if (!rootPath) {
         return createFallbackGatewayProbeConfig(normalizedConfig, "127.0.0.1", false, normalizedConfig.port);
       }
@@ -1557,7 +1569,8 @@ async function resolveGatewayProbeConfig(config: OpenClawConfig): Promise<OpenCl
     }
     case "container": {
       const hostFallback = trimmedString(normalizedConfig.host) || "127.0.0.1";
-      const rootPath = await resolveOpenClawRootPathForProbe(normalizedConfig);
+      const discoveryPaths = await resolveOpenClawDiscoveryPaths(normalizedConfig);
+      const rootPath = discoveryPaths.rootPath;
       if (!rootPath) {
         return createFallbackGatewayProbeConfig(
           normalizedConfig,
@@ -1745,36 +1758,16 @@ async function inspectOpenClawRuntimeSecurity(
 
 async function resolveOpenClawGovernancePaths(config: OpenClawConfig): Promise<OpenClawGovernancePaths> {
   const normalizedConfig = normalizeOpenClawConfig(config);
-  const cliConfigPath = await resolveOpenClawConfigPathFromCli(normalizedConfig);
-  if (cliConfigPath) {
-    const rootPath = path.dirname(cliConfigPath);
+  const discoveryPaths = await resolveOpenClawDiscoveryPaths(normalizedConfig);
+  if (discoveryPaths.rootPath) {
     return {
-      rootPath,
-      configPath: cliConfigPath,
-      approvalsPath: await firstExistingChildPathForConfig(normalizedConfig, rootPath, ["exec-approvals.json"])
-    };
-  }
-
-  if (normalizedConfig.deploymentKind === "container") {
-    const discoveredRoot = await resolveOpenClawRootPathForProbe(normalizedConfig);
-    if (discoveredRoot) {
-      return {
-        rootPath: discoveredRoot,
-        configPath: await firstExistingChildPathForConfig(normalizedConfig, discoveredRoot, ["openclaw.json"]),
-        approvalsPath: await firstExistingChildPathForConfig(normalizedConfig, discoveredRoot, ["exec-approvals.json"])
-      };
-    }
-  }
-
-  for (const candidate of await openClawRootCandidatesForConfig(normalizedConfig)) {
-    if (!candidate || !(await pathExistsForConfig(normalizedConfig, candidate))) {
-      continue;
-    }
-
-    return {
-      rootPath: candidate,
-      configPath: await firstExistingChildPathForConfig(normalizedConfig, candidate, ["openclaw.json"]),
-      approvalsPath: await firstExistingChildPathForConfig(normalizedConfig, candidate, ["exec-approvals.json"])
+      rootPath: discoveryPaths.rootPath,
+      configPath: discoveryPaths.configPath,
+      approvalsPath: await firstExistingChildPathForConfig(
+        normalizedConfig,
+        discoveryPaths.rootPath,
+        ["exec-approvals.json"]
+      )
     };
   }
 

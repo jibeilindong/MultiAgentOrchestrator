@@ -20,6 +20,7 @@ Completed:
 - upgraded the Swift container probe to the same CLI + gateway contract, and started reusing `openclaw.json` gateway parsing across local and container deployments
 - upgraded the Electron container probe to the same CLI + gateway contract, and removed the special-case assumption that container mode can skip gateway handshake
 - added a testable Electron `openclaw-discovery` helper so container mode now prefers in-container root discovery before falling back to explicit candidates, reducing reliance on `workspaceMountPath` guesswork
+- Electron probe roots, inventory discovery, and governance path resolution now begin converging on one `resolveOpenClawDiscoveryPaths` entry point, reducing duplicated root/config parsing inside `main.ts`
 
 In progress:
 

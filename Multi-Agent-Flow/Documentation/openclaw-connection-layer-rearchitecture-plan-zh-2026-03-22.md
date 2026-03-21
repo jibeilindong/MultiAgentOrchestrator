@@ -20,6 +20,7 @@
 - Swift 侧 container probe 已升级为 CLI + gateway 双阶段探测，`preferredGatewayConfig` 与 `openclaw.json` 的 gateway 解析逻辑开始在 local/container 之间复用
 - Electron 侧 container probe 已升级为 CLI + gateway 双阶段探测，桌面端 `buildOpenClawProbeContract` 不再把 container 视为“无需 gateway handshake”的特例
 - Electron 侧新增可测试的 `openclaw-discovery` helper，container 模式在拿不到 CLI config path 时会优先尝试容器内 root 发现，再回退到显式候选顺序，开始减少对 `workspaceMountPath` 猜测路径的依赖
+- Electron 侧 probe root、inventory discovery、governance path 现已开始复用统一的 `resolveOpenClawDiscoveryPaths` 入口，减少 `main.ts` 内部分叉的 root/config 解析逻辑
 
 当前进行中：
 

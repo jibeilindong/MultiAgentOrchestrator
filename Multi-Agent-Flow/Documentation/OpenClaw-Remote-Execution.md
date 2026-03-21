@@ -111,6 +111,8 @@ Workflow Editor 与 OpenClaw 远程执行之间的正确衔接顺序是：
 
 ## 相关文档
 
+- [OpenClaw 交互方案](openclaw-interaction-architecture-zh-2026-03-22.md)
+- [OpenClaw 交互开发计划](openclaw-interaction-development-plan-zh-2026-03-22.md)
 - [Workflow Editor Guide](Workflow-Editor-Guide.md)
 - [OpenClaw 连接层重构方案](openclaw-connection-layer-rearchitecture-plan-zh-2026-03-22.md)
 - [OpenClaw Agent Runtime 协议](/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/docs/openclaw-agent-runtime-protocol.md)

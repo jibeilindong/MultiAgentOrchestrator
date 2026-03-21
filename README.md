@@ -117,6 +117,8 @@ npm run validate:openclaw-runtime
 相关说明见：
 
 - [Workflow Editor Guide](Multi-Agent-Flow/Documentation/Workflow-Editor-Guide.md)
+- [OpenClaw 交互方案](Multi-Agent-Flow/Documentation/openclaw-interaction-architecture-zh-2026-03-22.md)
+- [OpenClaw 交互开发计划](Multi-Agent-Flow/Documentation/openclaw-interaction-development-plan-zh-2026-03-22.md)
 - [OpenClaw 连接层重构方案](Multi-Agent-Flow/Documentation/openclaw-connection-layer-rearchitecture-plan-zh-2026-03-22.md)
 - [OpenClaw Agent Runtime 协议](docs/openclaw-agent-runtime-protocol.md)
 - [Agent 模板库与 SOUL 纯净原则](docs/agent-template-library.md)
