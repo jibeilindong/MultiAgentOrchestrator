@@ -426,6 +426,7 @@ class AppState: ObservableObject {
     @Published var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
     @Published private(set) var canUndoWorkflowChange: Bool = false
     @Published private(set) var canRedoWorkflowChange: Bool = false
+    @Published private(set) var isApplyingWorkflowConfiguration: Bool = false
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
@@ -445,6 +446,15 @@ class AppState: ObservableObject {
         let gatewaySessionKey: String
         let agentID: UUID
         let agentName: String
+    }
+
+    var hasPendingWorkflowConfiguration: Bool {
+        guard let runtimeState = currentProject?.runtimeState else { return false }
+        return runtimeState.workflowConfigurationRevision != runtimeState.appliedWorkflowConfigurationRevision
+    }
+
+    var lastAppliedWorkflowConfigurationAt: Date? {
+        currentProject?.runtimeState.lastAppliedWorkflowAt
     }
     
     init() {
@@ -611,6 +621,11 @@ class AppState: ObservableObject {
     private func syncConversationPermissions(for workflows: [Workflow], in project: inout MAProject) {
         let permissions = conversationPermissions(for: workflows)
         project.permissions = permissions
+    }
+
+    private func markWorkflowConfigurationPending(in project: inout MAProject) {
+        project.runtimeState.workflowConfigurationRevision += 1
+        project.runtimeState.lastUpdated = Date()
     }
 
     private func conversationPermissions(for workflows: [Workflow]) -> [Permission] {
@@ -1524,14 +1539,17 @@ class AppState: ObservableObject {
     }
     
     func updateWorkflow(_ workflow: Workflow) {
-        guard let index = currentProject?.workflows.firstIndex(where: { $0.id == workflow.id }) else { return }
+        guard var project = currentProject,
+              let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) else { return }
         let deduplication = enforceUniqueAgentNodes(in: workflow)
-        currentProject?.workflows[index] = deduplication.workflow
-        if var syncedWorkflow = currentProject?.workflows[index] {
-            syncCanvasColorGroups(in: &syncedWorkflow)
-            currentProject?.workflows[index] = syncedWorkflow
-        }
-        currentProject?.updatedAt = Date()
+        project.workflows[index] = deduplication.workflow
+        var syncedWorkflow = project.workflows[index]
+        syncCanvasColorGroups(in: &syncedWorkflow)
+        project.workflows[index] = syncedWorkflow
+        syncConversationPermissions(for: project.workflows, in: &project)
+        markWorkflowConfigurationPending(in: &project)
+        project.updatedAt = Date()
+        currentProject = project
         objectWillChange.send()
         
         // 避免频繁拖拽/编辑时反复同步任务列表。
@@ -1562,6 +1580,7 @@ class AppState: ObservableObject {
         project.workflows[index] = deduplication.workflow
         syncCanvasColorGroups(in: &project.workflows[index])
         syncConversationPermissions(for: project.workflows, in: &project)
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
@@ -1682,23 +1701,15 @@ class AppState: ObservableObject {
         guard let agent = ensureAgent(named: agentName, description: "OpenClaw Agent: \(agentName)") else { return }
 
         _ = ensureAgentNode(agentID: agent.id, suggestedPosition: snapPointToGrid(position))
-        openClawManager.activateAgent(agent)
     }
 
     func removeNodes(_ nodeIDs: Set<UUID>) {
         guard !nodeIDs.isEmpty else { return }
 
-        let workflowSnapshot = currentProject?.workflows.first
-        let removedAgentIDs = Set((workflowSnapshot?.nodes ?? [])
-            .filter { nodeIDs.contains($0.id) }
-            .compactMap(\.agentID))
-
         updateMainWorkflow { workflow in
             workflow.nodes.removeAll { nodeIDs.contains($0.id) }
             workflow.edges.removeAll { nodeIDs.contains($0.fromNodeID) || nodeIDs.contains($0.toNodeID) }
         }
-
-        removedAgentIDs.forEach(openClawManager.terminateAgent)
     }
 
     func removeNode(_ nodeID: UUID) {
@@ -1842,23 +1853,6 @@ class AppState: ObservableObject {
             }
         }
 
-        if let workflow = currentProject?.workflows.first {
-            let nodesByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
-            for candidate in newCandidates {
-                guard let sourceNode = nodesByID[candidate.fromNodeID],
-                      let targetNode = nodesByID[candidate.toNodeID],
-                      sourceNode.type == .agent,
-                      targetNode.type == .agent,
-                      let sourceAgentID = sourceNode.agentID,
-                      let targetAgentID = targetNode.agentID else { continue }
-
-                setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
-                if bidirectional {
-                    setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
-                }
-            }
-        }
-
         return BatchConnectionResult(
             preview: preview,
             createdEdgeIDs: createdEdgeIDs,
@@ -1880,14 +1874,6 @@ class AppState: ObservableObject {
 
         updateMainWorkflow { workflow in
             upsertEdge(from: fromNodeID, to: toNodeID, bidirectional: bidirectional, workflow: &workflow)
-        }
-
-        if let sourceAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == fromNodeID })?.agentID,
-           let targetAgentID = currentProject?.workflows.first?.nodes.first(where: { $0.id == toNodeID })?.agentID {
-            setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
-            if bidirectional {
-                setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
-            }
         }
     }
 
@@ -1940,16 +1926,6 @@ class AppState: ObservableObject {
 
         updateMainWorkflow { workflow in
             upsertEdge(from: sourceNodeID, to: targetNodeID, bidirectional: bidirectional, workflow: &workflow)
-        }
-
-        if sourceNode.type == .agent,
-           targetNode.type == .agent,
-           let sourceAgentID = sourceNode.agentID,
-           let targetAgentID = targetNode.agentID {
-            setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
-            if bidirectional {
-                setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
-            }
         }
     }
 
@@ -2011,6 +1987,7 @@ class AppState: ObservableObject {
         }
 
         project.permissions = conversationPermissions(for: project.workflows)
+        markWorkflowConfigurationPending(in: &project)
 
         project.updatedAt = Date()
         currentProject = project
@@ -2153,20 +2130,11 @@ class AppState: ObservableObject {
     }
 
     func setEdgeCommunicationDirection(edgeID: UUID, bidirectional: Bool) {
-        guard let workflow = currentProject?.workflows.first,
-              let edge = workflow.edges.first(where: { $0.id == edgeID }) else { return }
+        guard currentProject?.workflows.first?.edges.contains(where: { $0.id == edgeID }) == true else { return }
 
         updateMainWorkflow { workflow in
             guard let edgeIndex = workflow.edges.firstIndex(where: { $0.id == edgeID }) else { return }
             workflow.edges[edgeIndex].isBidirectional = bidirectional
-        }
-
-        if let sourceAgentID = workflow.nodes.first(where: { $0.id == edge.fromNodeID })?.agentID,
-           let targetAgentID = workflow.nodes.first(where: { $0.id == edge.toNodeID })?.agentID {
-            setPermission(fromAgentID: sourceAgentID, toAgentID: targetAgentID, type: .allow)
-            if bidirectional {
-                setPermission(fromAgentID: targetAgentID, toAgentID: sourceAgentID, type: .allow)
-            }
         }
     }
 
@@ -2516,30 +2484,83 @@ class AppState: ObservableObject {
             )
         }
 
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
+    }
 
-        syncOpenClawCommunicationAllowListIfNeeded(project: project, reason: "permission_updated")
+    func applyPendingWorkflowConfiguration(completion: ((Bool, String) -> Void)? = nil) {
+        guard !isApplyingWorkflowConfiguration else {
+            completion?(false, LocalizedString.text("workflow_apply_in_progress"))
+            return
+        }
+
+        guard var project = snapshotCurrentProject() else {
+            completion?(false, LocalizedString.text("workflow_apply_project_required"))
+            return
+        }
+
+        let requestedRevision = project.runtimeState.workflowConfigurationRevision
+        guard requestedRevision != project.runtimeState.appliedWorkflowConfigurationRevision else {
+            completion?(true, LocalizedString.text("workflow_apply_no_pending"))
+            return
+        }
+
+        syncConversationPermissions(for: project.workflows, in: &project)
+        isApplyingWorkflowConfiguration = true
+
+        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] stageSuccess, stageMessage in
+            guard let self else {
+                completion?(stageSuccess, stageMessage)
+                return
+            }
+
+            self.openClawService.addLog(stageSuccess ? .info : .warning, "[workflow_apply] \(stageMessage)")
+            guard stageSuccess else {
+                self.isApplyingWorkflowConfiguration = false
+                completion?(false, stageMessage)
+                return
+            }
+
+            self.syncOpenClawCommunicationAllowListIfNeeded(project: project, reason: "workflow_apply") { allowListSuccess, allowListMessage in
+                let combinedMessage = "\(stageMessage) \(allowListMessage)".trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if allowListSuccess,
+                   var refreshedProject = self.currentProject,
+                   refreshedProject.id == project.id,
+                   refreshedProject.runtimeState.workflowConfigurationRevision == requestedRevision {
+                    refreshedProject.permissions = self.conversationPermissions(for: refreshedProject.workflows)
+                    refreshedProject.runtimeState.appliedWorkflowConfigurationRevision = requestedRevision
+                    refreshedProject.runtimeState.lastAppliedWorkflowAt = Date()
+                    refreshedProject.updatedAt = Date()
+                    self.currentProject = refreshedProject
+                    self.persistCurrentProjectSilently()
+                }
+
+                self.isApplyingWorkflowConfiguration = false
+                completion?(allowListSuccess, combinedMessage)
+            }
+        }
     }
 
     private func syncOpenClawCommunicationAllowListIfNeeded(
         project: MAProject,
         reason: String,
-        then: (() -> Void)? = nil
+        completion: ((Bool, String) -> Void)? = nil
     ) {
         var projected = project
         projected.permissions = conversationPermissions(for: projected.workflows)
 
         openClawManager.syncAgentCommunicationAllowLists(from: projected, using: openClawManager.config) { [weak self] success, message in
             guard let self else {
-                then?()
+                completion?(success, message)
                 return
             }
 
             let level: ExecutionLogEntry.LogLevel = success ? .info : .warning
             self.openClawService.addLog(level, "[\(reason)] \(message)")
-            then?()
+            completion?(success, message)
         }
     }
 

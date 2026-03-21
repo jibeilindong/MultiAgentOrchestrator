@@ -102,6 +102,9 @@ struct RuntimeState: Codable {
     var failedDispatches: [RuntimeDispatchRecord]
     var agentStates: [String: String]
     var runtimeEvents: [OpenClawRuntimeEvent]
+    var workflowConfigurationRevision: Int
+    var appliedWorkflowConfigurationRevision: Int
+    var lastAppliedWorkflowAt: Date?
     var lastUpdated: Date
 
     enum CodingKeys: String, CodingKey {
@@ -113,6 +116,9 @@ struct RuntimeState: Codable {
         case failedDispatches
         case agentStates
         case runtimeEvents
+        case workflowConfigurationRevision
+        case appliedWorkflowConfigurationRevision
+        case lastAppliedWorkflowAt
         case lastUpdated
     }
     
@@ -125,6 +131,9 @@ struct RuntimeState: Codable {
         self.failedDispatches = []
         self.agentStates = [:]
         self.runtimeEvents = []
+        self.workflowConfigurationRevision = 0
+        self.appliedWorkflowConfigurationRevision = 0
+        self.lastAppliedWorkflowAt = nil
         self.lastUpdated = Date()
     }
 
@@ -138,6 +147,9 @@ struct RuntimeState: Codable {
         failedDispatches = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .failedDispatches) ?? []
         agentStates = try container.decodeIfPresent([String: String].self, forKey: .agentStates) ?? [:]
         runtimeEvents = try container.decodeIfPresent([OpenClawRuntimeEvent].self, forKey: .runtimeEvents) ?? []
+        workflowConfigurationRevision = try container.decodeIfPresent(Int.self, forKey: .workflowConfigurationRevision) ?? 0
+        appliedWorkflowConfigurationRevision = try container.decodeIfPresent(Int.self, forKey: .appliedWorkflowConfigurationRevision) ?? 0
+        lastAppliedWorkflowAt = try container.decodeIfPresent(Date.self, forKey: .lastAppliedWorkflowAt)
         lastUpdated = try container.decodeIfPresent(Date.self, forKey: .lastUpdated) ?? Date()
     }
 
@@ -151,6 +163,9 @@ struct RuntimeState: Codable {
         try container.encode(failedDispatches, forKey: .failedDispatches)
         try container.encode(agentStates, forKey: .agentStates)
         try container.encode(runtimeEvents, forKey: .runtimeEvents)
+        try container.encode(workflowConfigurationRevision, forKey: .workflowConfigurationRevision)
+        try container.encode(appliedWorkflowConfigurationRevision, forKey: .appliedWorkflowConfigurationRevision)
+        try container.encodeIfPresent(lastAppliedWorkflowAt, forKey: .lastAppliedWorkflowAt)
         try container.encode(lastUpdated, forKey: .lastUpdated)
     }
 }

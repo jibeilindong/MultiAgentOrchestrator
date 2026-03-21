@@ -123,6 +123,7 @@ struct WorkflowEditorView: View {
                 onAssignBatchTargets: assignBatchTargetsFromSelection,
                 onPreviewBatchConnections: previewBatchConnections,
                 onCancelBatchConnections: cancelBatchConnectionMode,
+                onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() },
                 onSave: { appState.saveProject() }
             )
             .zIndex(1000)
@@ -965,6 +966,7 @@ struct EditorToolbar: View {
     var onAssignBatchTargets: () -> Void
     var onPreviewBatchConnections: () -> Void
     var onCancelBatchConnections: () -> Void
+    var onApplyWorkflow: () -> Void
     var onSave: () -> Void
 
     @State private var quickAddTemplateID: String = AgentTemplateCatalog.defaultTemplateID
@@ -1171,10 +1173,23 @@ struct EditorToolbar: View {
                     .help(isRunning ? LocalizedString.text("stop_test_tooltip") : LocalizedString.text("run_test_tooltip"))
 
                     toolbarIconButton(
+                        systemName: appState.hasPendingWorkflowConfiguration ? "checkmark.seal.fill" : "checkmark.seal",
+                        title: appState.isApplyingWorkflowConfiguration
+                            ? LocalizedString.text("applying")
+                            : LocalizedString.text("apply_workflow"),
+                        action: onApplyWorkflow,
+                        tooltip: appState.hasPendingWorkflowConfiguration
+                            ? LocalizedString.text("apply_workflow_tooltip_pending")
+                            : LocalizedString.text("apply_workflow_tooltip_idle"),
+                        prominent: appState.hasPendingWorkflowConfiguration && !appState.isApplyingWorkflowConfiguration
+                    )
+                    .disabled(!appState.hasPendingWorkflowConfiguration || appState.isApplyingWorkflowConfiguration)
+
+                    toolbarIconButton(
                         systemName: "square.and.arrow.down",
-                        title: LocalizedString.save,
+                        title: LocalizedString.text("confirm_workflow_setup"),
                         action: onSave,
-                        tooltip: LocalizedString.text("save_tooltip")
+                        tooltip: LocalizedString.text("confirm_workflow_setup_tooltip")
                     )
                 }
             }
@@ -1231,6 +1246,12 @@ struct EditorToolbar: View {
 
             if appState.isAutoSaving || appState.lastAutoSaveTime != nil {
                 toolbarSaveStatusView
+                    .padding(.top, 8)
+            } else if appState.hasPendingWorkflowConfiguration {
+                workflowApplyStatusView
+                    .padding(.top, 8)
+            } else if let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
+                workflowAppliedStatusView(lastApplied)
                     .padding(.top, 8)
             }
         }
@@ -1544,6 +1565,48 @@ struct EditorToolbar: View {
                     .stroke(Color.black.opacity(0.06), lineWidth: 1)
             )
         }
+    }
+
+    private var workflowApplyStatusView: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.badge.exclamationmark")
+                .foregroundColor(.orange)
+            Text(LocalizedString.text("workflow_apply_pending"))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.82))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func workflowAppliedStatusView(_ lastApplied: Date) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundColor(.green)
+            Text(LocalizedString.format("workflow_applied_at", lastApplied.formatted(date: .omitted, time: .shortened)))
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.82))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
     }
 
     private func toggleConnectMode() {

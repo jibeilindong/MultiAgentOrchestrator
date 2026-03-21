@@ -1632,7 +1632,8 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
                 guard view.bounds.contains(location) else { return event }
-                if self.shouldIgnoreLocation(location) {
+                if (!self.tracking && self.hitInteractiveControl(at: event.locationInWindow)) ||
+                    self.shouldIgnoreLocation(location) {
                     return event
                 }
 
@@ -1682,6 +1683,32 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
                     return event
                 }
             }
+        }
+
+        private func hitInteractiveControl(at windowLocation: CGPoint) -> Bool {
+            guard let view,
+                  let window = view.window,
+                  let contentView = window.contentView else {
+                return false
+            }
+
+            let point = contentView.convert(windowLocation, from: nil)
+            guard let hitView = contentView.hitTest(point) else {
+                return false
+            }
+
+            var currentView: NSView? = hitView
+            while currentView != nil {
+                if currentView is NSControl || currentView is NSTextView {
+                    return true
+                }
+                if currentView == view {
+                    return false
+                }
+                currentView = currentView?.superview
+            }
+
+            return false
         }
 
         func detach() {
