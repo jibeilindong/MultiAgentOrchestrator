@@ -1383,7 +1383,9 @@ class AppState: ObservableObject {
             workflow.nodes.append(node)
 
             if let previousNodeID {
-                workflow.edges.append(WorkflowEdge(from: previousNodeID, to: node.id))
+                var edge = WorkflowEdge(from: previousNodeID, to: node.id)
+                edge.isBidirectional = true
+                workflow.edges.append(edge)
             }
 
             previousNodeID = node.id
@@ -2193,7 +2195,7 @@ class AppState: ObservableObject {
     func connectNodesBatch(
         sourceNodeIDs: Set<UUID>,
         targetNodeIDs: Set<UUID>,
-        bidirectional: Bool = false,
+        bidirectional: Bool = true,
         sharedLabel: String = "",
         sharedColorHex: String? = nil,
         requiresApproval: Bool = false
@@ -2243,7 +2245,7 @@ class AppState: ObservableObject {
         label: String = "",
         conditionExpression: String = "",
         requiresApproval: Bool = false,
-        bidirectional: Bool = false
+        bidirectional: Bool = true
     ) {
         guard fromNodeID != toNodeID else { return }
 
@@ -2285,7 +2287,7 @@ class AppState: ObservableObject {
         return createdNodeID
     }
 
-    func connectNodes(from sourceNodeID: UUID, to targetNodeID: UUID, bidirectional: Bool = false) {
+    func connectNodes(from sourceNodeID: UUID, to targetNodeID: UUID, bidirectional: Bool = true) {
         guard let project = currentProject,
               let workflow = project.workflows.first,
               let sourceNode = workflow.nodes.first(where: { $0.id == sourceNodeID }),
@@ -5210,7 +5212,9 @@ class AppState: ObservableObject {
         return pairs.compactMap { pair in
             guard let sourceNodeID = nodeIDByAgentID[pair.fromAgentID],
                   let targetNodeID = nodeIDByAgentID[pair.toAgentID] else { return nil }
-            return WorkflowEdge(from: sourceNodeID, to: targetNodeID)
+            var edge = WorkflowEdge(from: sourceNodeID, to: targetNodeID)
+            edge.isBidirectional = true
+            return edge
         }
     }
 

@@ -13,6 +13,7 @@
 4. 本方案中的模板特指 agent 模板，不包括工作流模板。
 5. 作为标准化 agent 模板，要求相关文件、路径和内容都必须具备，并且尽可能完整、充实、标准。
 6. 模板文件绝对不能参与工作流。只有从模板复制并物化出来的 agent，才能进入工作流。
+7. 旧模板兼容不是设计目标。新模板系统上线后，旧模板要么人工改造为新标准模板，要么直接废弃后重建。
 
 这意味着，本方案不再走任何“项目内模板库”或“项目持有模板绑定”的路线，而是转为“独立模板资产库”路线。
 
@@ -428,6 +429,7 @@ TemplateAssetDocument
 - 路径必须稳定、可预测
 - 内容应尽可能完整、充实、标准
 - 除非明确标记为 draft，否则应避免只包含占位内容的模板
+- 配套文档的职责应尽量与当前编辑器/运行时表面已经使用的文档职责保持一致，例如 `AGENTS.md`、`IDENTITY.md`、`USER.md`、`TOOLS.md`、`BOOTSTRAP.md`、`HEARTBEAT.md`、`MEMORY.md`
 
 ## 模板血缘模型
 
@@ -440,7 +442,7 @@ TemplateLineage
 - sourceRevision
 - importedFromPath
 - importedFromSoulHash
-- createdReason: built-in-fork | new-from-scratch | soul-import | package-import | migrated-legacy
+- createdReason: built-in-fork | new-from-scratch | soul-import | package-import | rebuilt-from-legacy
 ```
 
 这样就能支持：
@@ -449,7 +451,7 @@ TemplateLineage
 - 从已有模板 fork
 - 从 SOUL 导入
 - 从 OpenClaw 导入
-- 从旧版全局快照迁移
+- 从旧模板人工重建
 
 同时不需要把任何模板信息写入项目。
 
@@ -468,13 +470,14 @@ TemplateLineage
 - 原地编辑
 - 在可变 store 里以相同 ID 做 override
 
-## 二、旧版 built-in override 的迁移方式
+## 二、旧版 built-in override 的处理方式
 
-旧版全局快照中的 built-in override，不再保留“原 ID 覆盖”语义，而应在迁移时转成：
+新系统中不需要保留旧版 built-in override 的兼容迁移。
 
-- 用户模板库中的 forked asset
+新系统上线后：
 
-并在 lineage 中记录它来自哪个 built-in。
+- 旧 override 可以被人工重建为新的标准模板
+- 或者直接废弃
 
 ## 模板创建模型
 
@@ -629,13 +632,13 @@ TemplateLineage
 - 返回纯净的 agent 状态
 - 不向项目注入模板元数据
 
-## 五、`TemplateMigrationService`
+## 五、`TemplateRefactoringService`
 
 职责：
 
-- 迁移旧版大 JSON 快照
-- 拆分模板正文与偏好状态
-- 将旧 built-in override 转为用户 fork 模板
+- 在需要时辅助将旧模板重建为新标准文件集
+- 判断旧模板是否值得保留
+- 支持“废弃后重建”的流程
 
 ## 文件系统能力补充建议
 
@@ -666,17 +669,25 @@ templateRevisionDirectory(for templateID:)
 
 这能让模板资产遵从本软件文件系统设计，同时又不污染项目存储。
 
-## 迁移计划
+## 落地采用计划
 
-## Phase 0：兼容读取旧库
+新模板系统不需要承担旧模板兼容任务。
 
-继续兼容读取旧版文件：
+这意味着：
 
-- `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`
+- 不需要为旧模板存储做兼容读取器
+- 不需要保证旧模板可以被自动高质量转换
+- 旧模板可以人工改造到新格式
+- 旧模板也可以直接废弃后重建
 
-## Phase 1：存储拆分
+推荐默认策略是：
 
-将旧数据迁移到新的模板库结构：
+- 只重建那些仍然确实有价值的模板
+- 其余旧模板直接废弃
+
+## Phase 1：建立新模板库
+
+直接建立新的模板库根目录：
 
 ```text
 Application Support/Multi-Agent-Flow/Libraries/Templates/
@@ -685,12 +696,13 @@ Application Support/Multi-Agent-Flow/Libraries/Templates/
   templates/<template-id>/...
 ```
 
-迁移规则：
+只向其中放入：
 
-- built-in override -> user-owned fork asset
-- custom template -> user-owned asset
-- favorites / recents / order -> `preferences.json`
-- 零散旧模板统一规范化为标准文件集
+- 新标准内置模板
+- 新创建的用户模板
+- 人工重建后通过校验的新模板
+
+任何旧模板如果没有被明确重建到新标准文件集并通过校验，就不应进入新模板库。
 
 ## Phase 2：替换服务层
 
@@ -700,6 +712,8 @@ Application Support/Multi-Agent-Flow/Libraries/Templates/
 - `UserTemplateLibraryStore`
 - `TemplateAssetService`
 - `TemplateMaterializationService`
+
+此时旧模板 store 可以直接忽略或删除。
 
 ## Phase 3：模板包导入导出
 
@@ -765,7 +779,8 @@ Agent 检视区仍然可以支持：
 6. 每个 agent 模板资产都必须带有完整标准文件集，而不只是 `template.json + SOUL.md`。
 7. 模板应用必须是“复制后立即断联”的单向物化动作。
 8. 模板绝不参与工作流持久化或运行时参与。
-9. 第一阶段不修改 `.maoproj`。
+9. 不为旧模板兼容投入实现成本，旧模板只走“人工改造”或“直接废弃重建”两条路。
+10. 第一阶段不修改 `.maoproj`。
 
 ## 方案收益
 

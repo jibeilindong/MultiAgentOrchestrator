@@ -94,8 +94,8 @@ struct AgentTemplateSoulSpec: Hashable, Codable {
     var successCriteria: [String]
 }
 
-struct AgentTemplateValidationIssue: Hashable, Identifiable {
-    enum Severity: String, Hashable {
+struct AgentTemplateValidationIssue: Hashable, Identifiable, Codable {
+    enum Severity: String, Hashable, Codable {
         case warning
         case error
     }

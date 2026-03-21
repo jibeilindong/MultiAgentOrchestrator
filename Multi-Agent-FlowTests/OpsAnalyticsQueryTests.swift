@@ -655,7 +655,7 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         )
 
         let traceRow = try XCTUnwrap(service.snapshot.traceRows.first(where: { $0.id == result.id }))
-        XCTAssertEqual(traceRow.agentName, "Planner")
+        XCTAssertEqual(traceRow.agentName, agent.name)
         XCTAssertEqual(traceRow.status, .completed)
         XCTAssertEqual(traceRow.outputType, .agentFinalResponse)
         XCTAssertEqual(traceRow.sourceLabel, "Runtime")
@@ -664,7 +664,7 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         let detail = try XCTUnwrap(service.traceDetail(projectID: project.id, traceID: result.id))
         XCTAssertEqual(detail.id, result.id)
         XCTAssertEqual(detail.service, "multi-agent-flow.execution")
-        XCTAssertEqual(detail.agentName, "Planner")
+        XCTAssertEqual(detail.agentName, agent.name)
         XCTAssertEqual(detail.executionStatus, .completed)
         XCTAssertEqual(detail.outputType, .agentFinalResponse)
         XCTAssertEqual(detail.routingAction, "selected")
@@ -693,9 +693,9 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         XCTAssertEqual(detail.attributes["transport_kind"], "gateway_agent")
         XCTAssertEqual(detail.attributes["session_id"], "runtime-acceptance-session")
         XCTAssertEqual(detail.eventsText?.components(separatedBy: "\n").count, 3)
-        XCTAssertTrue(detail.eventsText?.contains("task.dispatch | User -> Planner | Drafted execution request") == true)
-        XCTAssertTrue(detail.eventsText?.contains("task.result | Planner -> Orchestrator | Prepared runtime summary | refs: workspace_file: \(artifactPath)") == true)
-        XCTAssertTrue(detail.eventsText?.contains("task.route | Planner -> Reviewer | Escalate for verification") == true)
+        XCTAssertTrue(detail.eventsText?.contains("task.dispatch | User -> \(agent.name) | Drafted execution request") == true)
+        XCTAssertTrue(detail.eventsText?.contains("task.result | \(agent.name) -> Orchestrator | Prepared runtime summary | refs: workspace_file: \(artifactPath)") == true)
+        XCTAssertTrue(detail.eventsText?.contains("task.route | \(agent.name) -> Reviewer | Escalate for verification") == true)
     }
 
     func testProtocolOutcomeFeedbackPromotesRepeatedRepairsIntoAgentMemory() throws {

@@ -563,6 +563,7 @@ struct WorkflowEditorView: View {
                 newEdge.displayColorHex = sourceEdge.displayColorHex
                 newEdge.conditionExpression = sourceEdge.conditionExpression
                 newEdge.requiresApproval = sourceEdge.requiresApproval
+                newEdge.isBidirectional = sourceEdge.isBidirectional
                 newEdge.dataMapping = sourceEdge.dataMapping
                 workflow.edges.append(newEdge)
             }

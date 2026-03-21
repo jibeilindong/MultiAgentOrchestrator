@@ -82,6 +82,7 @@ class OpenClawManager: ObservableObject {
     private var cachedLocalWorkspaceConfigModificationDate: Date?
     private var cachedLocalGatewayConfig: OpenClawConfig?
     private var cachedLocalGatewayConfigModificationDate: Date?
+    private var cachedLocalGatewayConfigFallbackKey: String?
     
     var backupDirectory: URL {
         localOpenClawRootURL().appendingPathComponent("backups", isDirectory: true)
@@ -744,7 +745,7 @@ class OpenClawManager: ObservableObject {
     ) {
         switch config.deploymentKind {
         case .local:
-            runLocalConnectionTest(binaryPath: resolveOpenClawPath(for: config), completion: completion)
+            runLocalConnectionTest(config: config, completion: completion)
         case .container:
             runContainerConnectionTest(config: config, completion: completion)
         case .remoteServer:
@@ -3167,9 +3168,47 @@ class OpenClawManager: ObservableObject {
     private func localLoopbackGatewayConfig(using baseConfig: OpenClawConfig) -> OpenClawConfig? {
         let configURL = localOpenClawRootURL().appendingPathComponent("openclaw.json")
         let currentModificationDate = (try? fileManager.attributesOfItem(atPath: configURL.path)[.modificationDate] as? Date) ?? nil
+        let fallbackToken = baseConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackKey = [
+            String(baseConfig.port),
+            fallbackToken,
+            String(baseConfig.timeout),
+            baseConfig.defaultAgent,
+            baseConfig.autoConnect ? "auto" : "manual"
+        ].joined(separator: "|")
 
-        if cachedLocalGatewayConfigModificationDate == currentModificationDate {
+        if cachedLocalGatewayConfigModificationDate == currentModificationDate,
+           cachedLocalGatewayConfigFallbackKey == fallbackKey {
             return cachedLocalGatewayConfig
+        }
+
+        func cache(_ gatewayConfig: OpenClawConfig?) -> OpenClawConfig? {
+            cachedLocalGatewayConfig = gatewayConfig
+            cachedLocalGatewayConfigModificationDate = currentModificationDate
+            cachedLocalGatewayConfigFallbackKey = fallbackKey
+            return gatewayConfig
+        }
+
+        func fallbackGatewayConfig(port: Int? = nil) -> OpenClawConfig? {
+            let resolvedPort = port ?? baseConfig.port
+            guard resolvedPort > 0 else { return cache(nil) }
+
+            return cache(
+                OpenClawConfig(
+                    deploymentKind: .remoteServer,
+                    host: "127.0.0.1",
+                    port: resolvedPort,
+                    useSSL: false,
+                    apiKey: fallbackToken,
+                    defaultAgent: baseConfig.defaultAgent,
+                    timeout: baseConfig.timeout,
+                    autoConnect: baseConfig.autoConnect,
+                    localBinaryPath: baseConfig.localBinaryPath,
+                    container: baseConfig.container,
+                    cliQuietMode: baseConfig.cliQuietMode,
+                    cliLogLevel: baseConfig.cliLogLevel
+                )
+            )
         }
 
         guard
@@ -3178,23 +3217,17 @@ class OpenClawManager: ObservableObject {
             let root = json as? [String: Any],
             let gateway = root["gateway"] as? [String: Any]
         else {
-            cachedLocalGatewayConfig = nil
-            cachedLocalGatewayConfigModificationDate = currentModificationDate
-            return nil
+            return fallbackGatewayConfig()
         }
 
         let mode = (stringValue(gateway, keys: ["mode"]) ?? "local").lowercased()
         guard mode == "local" else {
-            cachedLocalGatewayConfig = nil
-            cachedLocalGatewayConfigModificationDate = currentModificationDate
-            return nil
+            return cache(nil)
         }
 
         let port = intValue(gateway, keys: ["port"]) ?? baseConfig.port
         guard port > 0 else {
-            cachedLocalGatewayConfig = nil
-            cachedLocalGatewayConfigModificationDate = currentModificationDate
-            return nil
+            return fallbackGatewayConfig(port: baseConfig.port)
         }
 
         let auth = gateway["auth"] as? [String: Any] ?? [:]
@@ -3207,19 +3240,13 @@ class OpenClawManager: ObservableObject {
         case "none":
             resolvedToken = ""
         case "token":
-            guard !normalizedToken.isEmpty else {
-                cachedLocalGatewayConfig = nil
-                cachedLocalGatewayConfigModificationDate = currentModificationDate
-                return nil
-            }
-            resolvedToken = normalizedToken
+            resolvedToken = normalizedToken.isEmpty ? fallbackToken : normalizedToken
         default:
-            cachedLocalGatewayConfig = nil
-            cachedLocalGatewayConfigModificationDate = currentModificationDate
-            return nil
+            return cache(nil)
         }
 
-        let gatewayConfig = OpenClawConfig(
+        return cache(
+            OpenClawConfig(
             deploymentKind: .remoteServer,
             host: "127.0.0.1",
             port: port,
@@ -3232,11 +3259,8 @@ class OpenClawManager: ObservableObject {
             container: baseConfig.container,
             cliQuietMode: baseConfig.cliQuietMode,
             cliLogLevel: baseConfig.cliLogLevel
+            )
         )
-
-        cachedLocalGatewayConfig = gatewayConfig
-        cachedLocalGatewayConfigModificationDate = currentModificationDate
-        return gatewayConfig
     }
 
     private func existingSoulURL(in rootURL: URL) -> URL? {
@@ -3871,10 +3895,11 @@ class OpenClawManager: ObservableObject {
     }
 
     private func runLocalConnectionTest(
-        binaryPath: String,
+        config: OpenClawConfig,
         completion: @escaping (Bool, String, [String]) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
+            let binaryPath = self.resolveOpenClawPath(for: config)
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 DispatchQueue.main.async {
                     completion(false, "未找到 OpenClaw 可执行文件：\(binaryPath)", [])
@@ -3901,15 +3926,24 @@ class OpenClawManager: ObservableObject {
                 let message: String
 
                 if success {
-                    message = "连接成功，发现 \(agentNames.count) 个 OpenClaw agents"
+                    message = "OpenClaw CLI 可用，发现 \(agentNames.count) 个 agents"
                 } else {
                     let fallback = output.trimmingCharacters(in: .whitespacesAndNewlines)
                     message = fallback.isEmpty ? "OpenClaw 本地连接失败" : fallback
                 }
 
-                DispatchQueue.main.async {
-                    if success {
-                        self.discoveryResults = self.inspectOpenClawAgents(using: .default, fallbackAgentNames: agentNames)
+                guard success else {
+                    DispatchQueue.main.async {
+                        self.discoveryResults = []
+                        self.agents = []
+                        completion(false, message, [])
+                    }
+                    return
+                }
+
+                guard let gatewayConfig = self.preferredGatewayConfig(using: config) else {
+                    DispatchQueue.main.async {
+                        self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: agentNames)
                         if self.discoveryResults.isEmpty {
                             self.discoveryResults = agentNames.map {
                                 ProjectOpenClawDetectedAgentRecord(
@@ -3917,15 +3951,48 @@ class OpenClawManager: ObservableObject {
                                     name: $0,
                                     directoryValidated: false,
                                     configValidated: false,
-                                    issues: ["未发现可验证的 agent 文件，仅保留 CLI 结果。"]
+                                    issues: ["CLI 可用，但本地 Gateway 配置不可用。"]
                                 )
                             }
                         }
                         self.agents = self.discoveryResults.map(\.name)
-                    } else {
-                        self.discoveryResults = []
+                        completion(false, "OpenClaw CLI 可用，但本地 Gateway 配置不可用。", agentNames)
                     }
-                    completion(success, message, agentNames)
+                    return
+                }
+
+                _Concurrency.Task {
+                    do {
+                        let probe = try await self.gatewayClient.probe(using: gatewayConfig)
+                        let resolvedAgentNames = probe.agentNames.isEmpty ? agentNames : probe.agentNames
+
+                        DispatchQueue.main.async {
+                            self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: resolvedAgentNames)
+                            if self.discoveryResults.isEmpty {
+                                self.discoveryResults = resolvedAgentNames.map {
+                                    ProjectOpenClawDetectedAgentRecord(
+                                        id: $0,
+                                        name: $0,
+                                        directoryValidated: false,
+                                        configValidated: false,
+                                        issues: ["未发现可验证的 agent 文件，仅保留 CLI/Gateway 结果。"]
+                                    )
+                                }
+                            }
+                            self.agents = self.discoveryResults.map(\.name)
+                            completion(
+                                true,
+                                "本地 OpenClaw CLI 与 Gateway 连接成功：ws://127.0.0.1:\(gatewayConfig.port)",
+                                resolvedAgentNames
+                            )
+                        }
+                    } catch {
+                        DispatchQueue.main.async {
+                            self.discoveryResults = self.inspectOpenClawAgents(using: config, fallbackAgentNames: agentNames)
+                            self.agents = self.discoveryResults.map(\.name)
+                            completion(false, "OpenClaw CLI 可用，但 Gateway 不可用：\(error.localizedDescription)", agentNames)
+                        }
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {

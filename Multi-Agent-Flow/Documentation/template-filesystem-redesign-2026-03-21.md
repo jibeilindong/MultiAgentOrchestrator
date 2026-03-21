@@ -13,6 +13,7 @@ This redesign updates the template system so it matches the software's filesyste
 4. Templates here mean agent templates only, not workflow templates.
 5. As standardized agent templates, required files, paths, and related contents must all exist and should be as complete, filled-out, and standardized as practical.
 6. Templates must never participate in workflows. Only copied, materialized agents may participate in workflows.
+7. Legacy template compatibility is not a design goal. After the new system is adopted, old templates should be either manually rebuilt to the new standard or discarded and recreated.
 
 This document replaces any earlier direction that treated templates as project-owned or project-bound entities.
 
@@ -428,6 +429,7 @@ Rules:
 - paths must be stable and predictable
 - content should be as complete and filled-out as practical
 - placeholder-only templates should be avoided unless explicitly marked as draft
+- companion documents should align with the current document responsibilities already used by the editor/runtime surface, such as `AGENTS.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `BOOTSTRAP.md`, `HEARTBEAT.md`, and `MEMORY.md`
 
 ## Lineage model
 
@@ -440,7 +442,7 @@ TemplateLineage
 - sourceRevision
 - importedFromPath
 - importedFromSoulHash
-- createdReason: built-in-fork | new-from-scratch | soul-import | package-import | migrated-legacy
+- createdReason: built-in-fork | new-from-scratch | soul-import | package-import | rebuilt-from-legacy
 ```
 
 This supports circulation and secondary development without coupling templates to projects.
@@ -460,7 +462,12 @@ Disallowed behavior:
 - editing built-in in place
 - overriding built-in by reusing the same ID in the mutable store
 
-Legacy built-in overrides from the old snapshot should be migrated into user-owned forked assets.
+Old built-in overrides do not need compatibility migration in the new system.
+
+After the new system is adopted:
+
+- old overrides may be manually rebuilt as new standard templates
+- or discarded
 
 ## Creation model
 
@@ -614,13 +621,13 @@ Responsibilities:
 - generate the standard companion documents expected by the editor/runtime surface
 - return pure agent state without introducing project-side template metadata
 
-## `TemplateMigrationService`
+## `TemplateRefactoringService`
 
 Responsibilities:
 
-- migrate the old monolithic snapshot
-- split content from preferences
-- convert legacy built-in overrides into user-owned fork assets
+- help rebuild old templates into the new standard file set when desired
+- validate whether an old template is worth keeping
+- support discard-and-recreate workflows
 
 ## Filesystem helpers to add
 
@@ -654,17 +661,25 @@ templateRevisionDirectory(for templateID:)
 
 This keeps template assets aligned with the software filesystem design without polluting project storage.
 
-## Migration plan
+## Adoption plan
 
-## Phase 0: compatibility read
+The new template system does not need to preserve legacy template compatibility.
 
-Continue reading the old legacy file if present:
+That means:
 
-- `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`
+- no compatibility reader is required for old template storage
+- no automatic conversion quality needs to be guaranteed
+- old templates may be manually rebuilt into the new format
+- old templates may also be discarded and recreated from scratch
 
-## Phase 1: split storage
+The recommended default is:
 
-Migrate legacy data into:
+- rebuild only the templates that are still genuinely useful
+- discard the rest
+
+## Phase 1: establish the new library
+
+Create the new library root directly:
 
 ```text
 Application Support/Multi-Agent-Flow/Libraries/Templates/
@@ -673,12 +688,13 @@ Application Support/Multi-Agent-Flow/Libraries/Templates/
   templates/<template-id>/...
 ```
 
-Migration rules:
+Populate it only with:
 
-- built-in overrides become user-owned forks
-- custom templates become user-owned assets
-- favorites, recents, and order move into `preferences.json`
-- loose legacy templates are normalized into the standard file set
+- new built-in templates in the new standard
+- newly created user templates
+- manually rebuilt templates that pass the new standard
+
+No legacy template should be admitted into the new library unless it is explicitly rebuilt to satisfy the new standard file set and validation rules.
 
 ## Phase 2: switch services
 
@@ -688,6 +704,8 @@ Replace `AgentTemplateLibraryStore` with:
 - `UserTemplateLibraryStore`
 - `TemplateAssetService`
 - `TemplateMaterializationService`
+
+At this point, the old template store can simply be ignored or removed.
 
 ## Phase 3: package import/export
 
@@ -749,7 +767,8 @@ Based on the current repository direction, the recommended concrete decisions ar
 6. Require every agent template asset to carry a complete standard file set, not only `template.json` plus `SOUL.md`.
 7. Make template application a strict copy-and-sever materialization step.
 8. Keep templates completely outside workflow persistence and runtime participation.
-9. Keep `.maoproj` unchanged in the first rollout.
+9. Do not spend implementation effort on legacy template compatibility; rebuild or discard old templates instead.
+10. Keep `.maoproj` unchanged in the first rollout.
 
 ## Main benefits
 

@@ -275,6 +275,105 @@ private struct AnalyticsAnomalyProjectionDocument: Codable, Equatable {
     var anomalies: [AnalyticsAnomalyProjectionEntry]
 }
 
+private struct AnalyticsLiveRunWorkflowProjectionEntry: Codable, Equatable {
+    var workflowID: UUID
+    var workflowName: String
+    var sessionCount: Int
+    var activeSessionCount: Int
+    var activeNodeCount: Int
+    var failedNodeCount: Int
+    var waitingApprovalNodeCount: Int
+    var lastUpdatedAt: Date?
+}
+
+private struct AnalyticsLiveRunProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var runtimeSessionID: String
+    var activeSessionCount: Int
+    var totalSessionCount: Int
+    var queuedDispatchCount: Int
+    var inflightDispatchCount: Int
+    var failedDispatchCount: Int
+    var waitingApprovalCount: Int
+    var latestErrorText: String?
+    var activeWorkflowCount: Int
+    var workflows: [AnalyticsLiveRunWorkflowProjectionEntry]
+}
+
+private struct AnalyticsSessionProjectionEntry: Codable, Equatable {
+    var sessionID: String
+    var workflowIDs: [String]
+    var messageCount: Int
+    var taskCount: Int
+    var eventCount: Int
+    var dispatchCount: Int
+    var receiptCount: Int
+    var queuedDispatchCount: Int
+    var inflightDispatchCount: Int
+    var completedDispatchCount: Int
+    var failedDispatchCount: Int
+    var latestFailureText: String?
+    var lastUpdatedAt: Date?
+    var isProjectRuntimeSession: Bool
+}
+
+private struct AnalyticsSessionProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var sessions: [AnalyticsSessionProjectionEntry]
+}
+
+private struct AnalyticsNodeRuntimeProjectionEntry: Codable, Equatable {
+    var workflowID: UUID
+    var workflowName: String
+    var nodeID: UUID
+    var title: String
+    var agentID: UUID?
+    var agentName: String?
+    var status: String
+    var incomingEdgeCount: Int
+    var outgoingEdgeCount: Int
+    var relatedSessionIDs: [String]
+    var queuedDispatchCount: Int
+    var inflightDispatchCount: Int
+    var completedDispatchCount: Int
+    var failedDispatchCount: Int
+    var waitingApprovalCount: Int
+    var receiptCount: Int
+    var averageDuration: TimeInterval?
+    var lastUpdatedAt: Date?
+    var latestDetail: String?
+}
+
+private struct AnalyticsNodeRuntimeProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var nodes: [AnalyticsNodeRuntimeProjectionEntry]
+}
+
+private struct AnalyticsWorkflowHealthProjectionEntry: Codable, Equatable {
+    var workflowID: UUID
+    var workflowName: String
+    var nodeCount: Int
+    var edgeCount: Int
+    var sessionCount: Int
+    var activeNodeCount: Int
+    var failedNodeCount: Int
+    var waitingApprovalNodeCount: Int
+    var completedNodeCount: Int
+    var idleNodeCount: Int
+    var recentFailureCount: Int
+    var pendingApprovalCount: Int
+    var lastUpdatedAt: Date?
+}
+
+private struct AnalyticsWorkflowHealthProjectionDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var workflows: [AnalyticsWorkflowHealthProjectionEntry]
+}
+
 private struct WorkflowCommunicationRouteDocument: Codable, Equatable {
     var edgeID: UUID
     var fromNodeID: UUID
@@ -587,6 +686,26 @@ struct ProjectFileSystem {
             .appendingPathComponent("anomalies.json", isDirectory: false)
     }
 
+    func analyticsLiveRunProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("live-run.json", isDirectory: false)
+    }
+
+    func analyticsWorkflowHealthProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("workflow-health.json", isDirectory: false)
+    }
+
+    func analyticsSessionProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("sessions.json", isDirectory: false)
+    }
+
+    func analyticsNodeRuntimeProjectionURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        analyticsProjectionDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("nodes-runtime.json", isDirectory: false)
+    }
+
     func validateProject(_ project: MAProject) throws {
         try validateNodeAgentBindings(workflows: project.workflows, knownAgentIDs: Set(project.agents.map(\.id)))
     }
@@ -747,6 +866,7 @@ struct ProjectFileSystem {
     private func writeAnalyticsProjectionState(for project: MAProject, under appSupportRootDirectory: URL) throws {
         let projectionRootURL = analyticsProjectionDirectory(for: project.id, under: appSupportRootDirectory)
         try fileManager.createDirectory(at: projectionRootURL, withIntermediateDirectories: true)
+        let generatedAt = Date()
 
         let workflowCount = project.workflows.count
         let nodeCount = project.workflows.reduce(0) { $0 + $1.nodes.count }
@@ -759,7 +879,7 @@ struct ProjectFileSystem {
         try encode(
             AnalyticsOverviewProjectionDocument(
                 projectID: project.id,
-                generatedAt: Date(),
+                generatedAt: generatedAt,
                 workflowCount: workflowCount,
                 nodeCount: nodeCount,
                 agentCount: project.agents.count,
@@ -802,7 +922,7 @@ struct ProjectFileSystem {
         try encode(
             AnalyticsTraceProjectionDocument(
                 projectID: project.id,
-                generatedAt: Date(),
+                generatedAt: generatedAt,
                 traces: traces
             ),
             to: analyticsTraceProjectionURL(for: project.id, under: appSupportRootDirectory)
@@ -847,10 +967,53 @@ struct ProjectFileSystem {
         try encode(
             AnalyticsAnomalyProjectionDocument(
                 projectID: project.id,
-                generatedAt: Date(),
+                generatedAt: generatedAt,
                 anomalies: executionAnomalies + logAnomalies
             ),
             to: analyticsAnomalyProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+
+        let sessionEntries = makeAnalyticsSessionProjectionEntries(for: project)
+        let nodeRuntimeEntries = makeAnalyticsNodeRuntimeProjectionEntries(for: project)
+        let workflowHealthEntries = makeAnalyticsWorkflowHealthProjectionEntries(
+            for: project,
+            nodeEntries: nodeRuntimeEntries,
+            sessionEntries: sessionEntries
+        )
+        let liveRunDocument = makeAnalyticsLiveRunProjectionDocument(
+            for: project,
+            sessionEntries: sessionEntries,
+            workflowHealthEntries: workflowHealthEntries,
+            generatedAt: generatedAt
+        )
+
+        try encode(
+            liveRunDocument,
+            to: analyticsLiveRunProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+        try encode(
+            AnalyticsSessionProjectionDocument(
+                projectID: project.id,
+                generatedAt: generatedAt,
+                sessions: sessionEntries
+            ),
+            to: analyticsSessionProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+        try encode(
+            AnalyticsNodeRuntimeProjectionDocument(
+                projectID: project.id,
+                generatedAt: generatedAt,
+                nodes: nodeRuntimeEntries
+            ),
+            to: analyticsNodeRuntimeProjectionURL(for: project.id, under: appSupportRootDirectory)
+        )
+        try encode(
+            AnalyticsWorkflowHealthProjectionDocument(
+                projectID: project.id,
+                generatedAt: generatedAt,
+                workflows: workflowHealthEntries
+            ),
+            to: analyticsWorkflowHealthProjectionURL(for: project.id, under: appSupportRootDirectory)
         )
     }
 
@@ -2108,6 +2271,335 @@ struct ProjectFileSystem {
                 isProjectRuntimeSession: project.runtimeState.sessionID == sessionID
             )
         }
+    }
+
+    private func makeAnalyticsSessionProjectionEntries(for project: MAProject) -> [AnalyticsSessionProjectionEntry] {
+        let dispatches = runtimeDispatchEnvelopes(from: project.runtimeState)
+        let sessionIDs = Set([project.runtimeState.sessionID])
+            .union(project.messages.compactMap { workbenchSessionID(from: $0.metadata) })
+            .union(project.tasks.compactMap { workbenchSessionID(from: $0.metadata) })
+            .union(dispatches.compactMap { normalizedSessionID($0.record.sessionKey) })
+            .union(project.runtimeState.runtimeEvents.compactMap { normalizedSessionID($0.sessionKey) })
+            .union(project.executionResults.compactMap { normalizedSessionID($0.sessionID) })
+            .sorted()
+
+        return sessionIDs.map { sessionID in
+            let sessionDispatches = dispatches.filter { normalizedSessionID($0.record.sessionKey) == sessionID }
+            let sessionEvents = project.runtimeState.runtimeEvents.filter { normalizedSessionID($0.sessionKey) == sessionID }
+            let sessionReceipts = project.executionResults.filter { normalizedSessionID($0.sessionID) == sessionID }
+            let sessionMessages = project.messages.filter { workbenchSessionID(from: $0.metadata) == sessionID }
+            let sessionTasks = project.tasks.filter { workbenchSessionID(from: $0.metadata) == sessionID }
+
+            let workflowIDs = Set(
+                sessionDispatches.compactMap(\.record.workflowID)
+                    + sessionEvents.compactMap(\.workflowId)
+                    + sessionMessages.compactMap { workflowIDFromMetadata($0.metadata)?.uuidString }
+                    + sessionTasks.compactMap { workflowIDFromMetadata($0.metadata)?.uuidString }
+            )
+            .sorted()
+
+            let latestFailureText = (
+                sessionDispatches.compactMap(\.record.errorMessage)
+                + sessionReceipts
+                    .filter { $0.status == .failed }
+                    .map { truncatedText($0.summaryText, limit: 160) }
+            )
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+
+            return AnalyticsSessionProjectionEntry(
+                sessionID: sessionID,
+                workflowIDs: workflowIDs,
+                messageCount: sessionMessages.count,
+                taskCount: sessionTasks.count,
+                eventCount: sessionEvents.count,
+                dispatchCount: sessionDispatches.count,
+                receiptCount: sessionReceipts.count,
+                queuedDispatchCount: sessionDispatches.filter { $0.stateBucket == "queued" }.count,
+                inflightDispatchCount: sessionDispatches.filter { $0.stateBucket == "inflight" }.count,
+                completedDispatchCount: sessionDispatches.filter { $0.stateBucket == "completed" }.count,
+                failedDispatchCount: sessionDispatches.filter { $0.stateBucket == "failed" }.count,
+                latestFailureText: latestFailureText,
+                lastUpdatedAt: (
+                    sessionDispatches.map(\.record.updatedAt)
+                    + sessionEvents.map(\.timestamp)
+                    + sessionReceipts.compactMap { $0.completedAt ?? $0.startedAt }
+                    + sessionMessages.map(\.timestamp)
+                    + sessionTasks.map { $0.completedAt ?? $0.startedAt ?? $0.createdAt }
+                ).max(),
+                isProjectRuntimeSession: project.runtimeState.sessionID == sessionID
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.isProjectRuntimeSession != rhs.isProjectRuntimeSession {
+                return lhs.isProjectRuntimeSession
+            }
+            return (lhs.lastUpdatedAt ?? .distantPast) > (rhs.lastUpdatedAt ?? .distantPast)
+        }
+    }
+
+    private func makeAnalyticsNodeRuntimeProjectionEntries(for project: MAProject) -> [AnalyticsNodeRuntimeProjectionEntry] {
+        let dispatches = runtimeDispatchEnvelopes(from: project.runtimeState)
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0.name) })
+
+        return project.workflows
+            .flatMap { workflow in
+                workflow.nodes.map { node in
+                    let relatedDispatches = analyticsRelatedDispatchEnvelopes(for: node, in: dispatches)
+                    let relatedReceipts = project.executionResults.filter { $0.nodeID == node.id }
+                    let latestReceipt = relatedReceipts.sorted {
+                        ($0.completedAt ?? $0.startedAt) > ($1.completedAt ?? $1.startedAt)
+                    }.first
+                    let averageDuration: TimeInterval? = {
+                        let durations = relatedReceipts.compactMap(\.duration)
+                        guard !durations.isEmpty else { return nil }
+                        return durations.reduce(0, +) / Double(durations.count)
+                    }()
+
+                    let relatedSessionIDs = Set(
+                        relatedDispatches.compactMap { normalizedSessionID($0.record.sessionKey) }
+                            + project.runtimeState.runtimeEvents.compactMap { event in
+                                guard normalizedUUIDValue(event.nodeId) == node.id.uuidString.lowercased() else { return nil }
+                                return normalizedSessionID(event.sessionKey)
+                            }
+                            + relatedReceipts.compactMap { normalizedSessionID($0.sessionID) }
+                            + project.tasks
+                                .filter { $0.workflowNodeID == node.id }
+                                .compactMap { workbenchSessionID(from: $0.metadata) }
+                    )
+                    .sorted()
+
+                    return AnalyticsNodeRuntimeProjectionEntry(
+                        workflowID: workflow.id,
+                        workflowName: workflow.name,
+                        nodeID: node.id,
+                        title: node.title,
+                        agentID: node.agentID,
+                        agentName: node.agentID.flatMap { agentNamesByID[$0] },
+                        status: analyticsRuntimeStatus(
+                            for: node,
+                            dispatches: relatedDispatches,
+                            latestReceipt: latestReceipt
+                        ),
+                        incomingEdgeCount: workflow.edges.filter { $0.toNodeID == node.id }.count,
+                        outgoingEdgeCount: workflow.edges.filter { $0.fromNodeID == node.id }.count,
+                        relatedSessionIDs: relatedSessionIDs,
+                        queuedDispatchCount: relatedDispatches.filter { $0.stateBucket == "queued" }.count,
+                        inflightDispatchCount: relatedDispatches.filter { $0.stateBucket == "inflight" }.count,
+                        completedDispatchCount: relatedDispatches.filter { $0.stateBucket == "completed" }.count,
+                        failedDispatchCount: relatedDispatches.filter { $0.stateBucket == "failed" }.count,
+                        waitingApprovalCount: relatedDispatches.filter { $0.record.status == .waitingApproval }.count,
+                        receiptCount: relatedReceipts.count,
+                        averageDuration: averageDuration,
+                        lastUpdatedAt: (
+                            relatedDispatches.map(\.record.updatedAt)
+                            + relatedReceipts.compactMap { $0.completedAt ?? $0.startedAt }
+                        ).max(),
+                        latestDetail: analyticsLatestDetailText(receipt: latestReceipt, dispatches: relatedDispatches)
+                    )
+                }
+            }
+            .sorted { lhs, rhs in
+                if analyticsRuntimeStatusRank(lhs.status) != analyticsRuntimeStatusRank(rhs.status) {
+                    return analyticsRuntimeStatusRank(lhs.status) < analyticsRuntimeStatusRank(rhs.status)
+                }
+                if lhs.workflowName != rhs.workflowName {
+                    return lhs.workflowName.localizedCaseInsensitiveCompare(rhs.workflowName) == .orderedAscending
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+
+    private func makeAnalyticsWorkflowHealthProjectionEntries(
+        for project: MAProject,
+        nodeEntries: [AnalyticsNodeRuntimeProjectionEntry],
+        sessionEntries: [AnalyticsSessionProjectionEntry]
+    ) -> [AnalyticsWorkflowHealthProjectionEntry] {
+        let approvalMessages = project.messages.filter { $0.status == .waitingForApproval }
+        let approvalDispatches = runtimeDispatchEnvelopes(from: project.runtimeState)
+            .filter { $0.record.status == .waitingApproval }
+
+        return project.workflows.map { workflow in
+            let workflowNodeEntries = nodeEntries.filter { $0.workflowID == workflow.id }
+            let workflowSessions = sessionEntries.filter { $0.workflowIDs.contains(workflow.id.uuidString) }
+            let workflowNodeIDs = Set(workflow.nodes.map(\.id))
+            let recentFailureCount = project.executionResults.filter {
+                $0.status == .failed && workflowNodeIDs.contains($0.nodeID)
+            }.count
+            let pendingApprovalCount = approvalMessages.filter {
+                workflowIDFromMetadata($0.metadata) == workflow.id
+            }.count + approvalDispatches.filter { $0.record.workflowID == workflow.id.uuidString }.count
+
+            return AnalyticsWorkflowHealthProjectionEntry(
+                workflowID: workflow.id,
+                workflowName: workflow.name,
+                nodeCount: workflow.nodes.count,
+                edgeCount: workflow.edges.count,
+                sessionCount: workflowSessions.count,
+                activeNodeCount: workflowNodeEntries.filter {
+                    ["queued", "inflight", "waitingApproval"].contains($0.status)
+                }.count,
+                failedNodeCount: workflowNodeEntries.filter { $0.status == "failed" }.count,
+                waitingApprovalNodeCount: workflowNodeEntries.filter { $0.status == "waitingApproval" }.count,
+                completedNodeCount: workflowNodeEntries.filter { $0.status == "completed" }.count,
+                idleNodeCount: workflowNodeEntries.filter { $0.status == "idle" }.count,
+                recentFailureCount: recentFailureCount,
+                pendingApprovalCount: pendingApprovalCount,
+                lastUpdatedAt: (
+                    workflowNodeEntries.compactMap(\.lastUpdatedAt)
+                    + workflowSessions.compactMap(\.lastUpdatedAt)
+                ).max()
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.failedNodeCount != rhs.failedNodeCount {
+                return lhs.failedNodeCount > rhs.failedNodeCount
+            }
+            if lhs.waitingApprovalNodeCount != rhs.waitingApprovalNodeCount {
+                return lhs.waitingApprovalNodeCount > rhs.waitingApprovalNodeCount
+            }
+            return (lhs.lastUpdatedAt ?? .distantPast) > (rhs.lastUpdatedAt ?? .distantPast)
+        }
+    }
+
+    private func makeAnalyticsLiveRunProjectionDocument(
+        for project: MAProject,
+        sessionEntries: [AnalyticsSessionProjectionEntry],
+        workflowHealthEntries: [AnalyticsWorkflowHealthProjectionEntry],
+        generatedAt: Date
+    ) -> AnalyticsLiveRunProjectionDocument {
+        let latestErrorText = (
+            project.runtimeState.failedDispatches.compactMap(\.errorMessage)
+            + project.executionResults
+                .filter { $0.status == .failed }
+                .map { truncatedText($0.summaryText, limit: 160) }
+        )
+        .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+
+        let workflowEntries = workflowHealthEntries.map { entry in
+            let matchingSessions = sessionEntries.filter { $0.workflowIDs.contains(entry.workflowID.uuidString) }
+            return AnalyticsLiveRunWorkflowProjectionEntry(
+                workflowID: entry.workflowID,
+                workflowName: entry.workflowName,
+                sessionCount: matchingSessions.count,
+                activeSessionCount: matchingSessions.filter {
+                    $0.queuedDispatchCount > 0 || $0.inflightDispatchCount > 0
+                }.count,
+                activeNodeCount: entry.activeNodeCount,
+                failedNodeCount: entry.failedNodeCount,
+                waitingApprovalNodeCount: entry.waitingApprovalNodeCount,
+                lastUpdatedAt: entry.lastUpdatedAt
+            )
+        }
+
+        return AnalyticsLiveRunProjectionDocument(
+            projectID: project.id,
+            generatedAt: generatedAt,
+            runtimeSessionID: project.runtimeState.sessionID,
+            activeSessionCount: sessionEntries.filter {
+                $0.queuedDispatchCount > 0 || $0.inflightDispatchCount > 0
+            }.count,
+            totalSessionCount: sessionEntries.count,
+            queuedDispatchCount: project.runtimeState.dispatchQueue.count,
+            inflightDispatchCount: project.runtimeState.inflightDispatches.count,
+            failedDispatchCount: project.runtimeState.failedDispatches.count,
+            waitingApprovalCount: project.messages.filter { $0.status == .waitingForApproval }.count
+                + project.runtimeState.inflightDispatches.filter { $0.status == .waitingApproval }.count,
+            latestErrorText: latestErrorText,
+            activeWorkflowCount: workflowEntries.filter {
+                $0.activeNodeCount > 0 || $0.activeSessionCount > 0 || $0.failedNodeCount > 0
+            }.count,
+            workflows: workflowEntries
+        )
+    }
+
+    private func analyticsRelatedDispatchEnvelopes(
+        for node: WorkflowNode,
+        in dispatches: [RuntimeDispatchEnvelopeDocument]
+    ) -> [RuntimeDispatchEnvelopeDocument] {
+        dispatches.filter { envelope in
+            let record = envelope.record
+            return normalizedUUIDValue(record.nodeID) == node.id.uuidString.lowercased()
+                || (node.agentID != nil && normalizedUUIDValue(record.targetAgentID) == node.agentID?.uuidString.lowercased())
+                || (node.agentID != nil && normalizedUUIDValue(record.sourceAgentID) == node.agentID?.uuidString.lowercased())
+        }
+    }
+
+    private func analyticsRuntimeStatus(
+        for node: WorkflowNode,
+        dispatches: [RuntimeDispatchEnvelopeDocument],
+        latestReceipt: ExecutionResult?
+    ) -> String {
+        if dispatches.contains(where: { $0.record.status == .failed || $0.record.status == .aborted || $0.record.status == .expired }) {
+            return "failed"
+        }
+        if dispatches.contains(where: { $0.record.status == .waitingApproval }) {
+            return "waitingApproval"
+        }
+        if dispatches.contains(where: { [.running, .accepted, .dispatched].contains($0.record.status) }) {
+            return "inflight"
+        }
+        if dispatches.contains(where: { [.created, .waitingDependency].contains($0.record.status) }) {
+            return "queued"
+        }
+        if let latestReceipt {
+            switch latestReceipt.status {
+            case .failed:
+                return "failed"
+            case .completed:
+                return "completed"
+            case .running:
+                return "inflight"
+            case .waiting:
+                return "queued"
+            case .idle:
+                return node.type == .start ? "completed" : "idle"
+            }
+        }
+        return node.type == .start ? "completed" : "idle"
+    }
+
+    private func analyticsLatestDetailText(
+        receipt: ExecutionResult?,
+        dispatches: [RuntimeDispatchEnvelopeDocument]
+    ) -> String? {
+        if let error = dispatches.compactMap(\.record.errorMessage).last,
+           !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return truncatedText(error, limit: 160)
+        }
+
+        if let receipt {
+            if !receipt.summaryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return truncatedText(receipt.summaryText, limit: 160)
+            }
+            if !receipt.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return truncatedText(receipt.output, limit: 160)
+            }
+        }
+
+        return dispatches.last.map { truncatedText($0.record.summary, limit: 160) }
+    }
+
+    private func analyticsRuntimeStatusRank(_ status: String) -> Int {
+        switch status {
+        case "failed":
+            return 0
+        case "waitingApproval":
+            return 1
+        case "inflight":
+            return 2
+        case "queued":
+            return 3
+        case "completed":
+            return 4
+        default:
+            return 5
+        }
+    }
+
+    private func normalizedUUIDValue(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.lowercased()
     }
 
     private func mergeAgents(

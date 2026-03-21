@@ -215,7 +215,7 @@ struct AgentPropertiesView: View {
     }
 
     private var selectedTemplate: AgentTemplate {
-        AgentTemplateCatalog.template(withID: selectedTemplateID) ?? AgentTemplateCatalog.defaultTemplate
+        templateLibrary.template(withID: selectedTemplateID) ?? AgentTemplateCatalog.defaultTemplate
     }
 
     private var templateRecommendationContext: TemplateRecommendationContext {
@@ -404,6 +404,11 @@ struct AgentPropertiesView: View {
                                     saveAgentChanges()
                                 }
                                 .disabled(!hasChanges)
+
+                                Button("另存为模板") {
+                                    saveCurrentAgentAsTemplate()
+                                }
+                                .disabled(selectedAgent == nil)
                                 
                                 Spacer()
                                 
@@ -517,6 +522,16 @@ struct AgentPropertiesView: View {
         
         appState.updateAgent(updatedAgent, reload: true)
     }
+
+    private func saveCurrentAgentAsTemplate() {
+        guard let draftAgent = draftAgentForTemplateAsset() else { return }
+        let savedTemplate = templateLibrary.createTemplate(
+            from: draftAgent,
+            basedOnTemplateID: selectedTemplateID
+        )
+        selectedTemplateID = savedTemplate.id
+        showingTemplateManager = true
+    }
     
     private func deleteAgent() {
         guard let agent = selectedAgent,
@@ -544,7 +559,7 @@ struct AgentPropertiesView: View {
     }
 
     private func matchingTemplateID(for agent: Agent) -> String {
-        if let exactMatch = AgentTemplateCatalog.templates.first(where: {
+        if let exactMatch = templateLibrary.templates.first(where: {
             $0.identity == agent.identity &&
             $0.summary == agent.description &&
             $0.capabilities == agent.capabilities &&
@@ -553,7 +568,7 @@ struct AgentPropertiesView: View {
             return exactMatch.id
         }
 
-        if let identityMatch = AgentTemplateCatalog.templates.first(where: { $0.identity == agent.identity }) {
+        if let identityMatch = templateLibrary.templates.first(where: { $0.identity == agent.identity }) {
             return identityMatch.id
         }
 
@@ -572,6 +587,34 @@ struct AgentPropertiesView: View {
         openClawRuntimeProfile = "default"
         openClawMemoryBackupPath = ""
         selectedTemplateID = AgentTemplateCatalog.defaultTemplateID
+    }
+
+    private func draftAgentForTemplateAsset() -> Agent? {
+        guard let selectedAgent else { return nil }
+
+        var draftAgent = selectedAgent
+        draftAgent.name = agentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? selectedAgent.name
+            : agentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftAgent.identity = agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "generalist"
+            : agentIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftAgent.description = agentDescription
+        draftAgent.soulMD = soulMD
+        draftAgent.capabilities = capabilities
+        draftAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftAgent.openClawDefinition.agentIdentifier = openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? draftAgent.name
+            : openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftAgent.openClawDefinition.modelIdentifier = openClawModelIdentifier
+        draftAgent.openClawDefinition.runtimeProfile = openClawRuntimeProfile
+        draftAgent.openClawDefinition.memoryBackupPath = openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        draftAgent.updatedAt = Date()
+        return draftAgent
     }
 }
 
@@ -1410,10 +1453,11 @@ struct TemplateLibraryManagerSheet: View {
     @ViewBuilder
     private var headerBar: some View {
         HStack {
-            Text("模板库管理")
+            Text("模板资产库管理")
                 .font(.headline)
             Spacer()
-            exportJSONMenu
+            exportAssetMenu
+            exportExchangeJSONMenu
             exportSoulMenu
             modePicker
             Button("关闭") { dismiss() }
@@ -1422,8 +1466,30 @@ struct TemplateLibraryManagerSheet: View {
     }
 
     @ViewBuilder
-    private var exportJSONMenu: some View {
-        Menu("导出 JSON") {
+    private var exportAssetMenu: some View {
+        Menu("导出模板资产") {
+            Button("导出当前模板资产") {
+                guard let selectedTemplate else { return }
+                exportTemplateAsset(templateID: selectedTemplate.id)
+            }
+            .disabled(selectedTemplate == nil)
+
+            Button("导出筛选结果") {
+                exportFilteredTemplateAssets()
+            }
+            .disabled(filteredTemplates.isEmpty || filteredTemplates.count == sortedTemplates.count)
+
+            Button("导出全部") {
+                exportAllTemplateAssets()
+            }
+            .disabled(sortedTemplates.isEmpty)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    @ViewBuilder
+    private var exportExchangeJSONMenu: some View {
+        Menu("导出交换 JSON") {
             Button("导出筛选结果") {
                 exportFilteredTemplates()
             }
@@ -1506,7 +1572,11 @@ struct TemplateLibraryManagerSheet: View {
                 .buttonStyle(.bordered)
 
                 Menu("导入") {
-                    Button("导入 JSON 模板") {
+                    Button("导入模板资产目录") {
+                        importTemplateAssets()
+                    }
+
+                    Button("导入 JSON 交换文件") {
                         importTemplates()
                     }
 
@@ -1640,7 +1710,7 @@ struct TemplateLibraryManagerSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(templateLibrary.isBuiltInTemplate(template.id) ? "内置模板" : "自定义模板")
+                            Text(templateLibrary.isBuiltInTemplate(template.id) ? "系统模板" : "模板资产")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             Text(template.id)
@@ -1648,10 +1718,16 @@ struct TemplateLibraryManagerSheet: View {
                                 .textSelection(.enabled)
                         }
                         Spacer()
-                        Button("导出当前模板") {
-                            exportTemplate(templateID: template.id)
+                        Button("导出模板资产") {
+                            exportTemplateAsset(templateID: template.id)
                         }
                         .buttonStyle(.bordered)
+
+                        Button("打开资产目录") {
+                            openTemplateAssetDirectory(for: template)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(templateLibrary.templateAssetDirectoryURL(for: template.id) == nil)
 
                         Button("载入 SOUL.md") {
                             importSoulIntoDraft(template: template)
@@ -1681,16 +1757,7 @@ struct TemplateLibraryManagerSheet: View {
                         .buttonStyle(.bordered)
                         .disabled((selectedTemplateSortIndex ?? (sortedTemplates.count - 1)) >= sortedTemplates.count - 1)
 
-                        if templateLibrary.isBuiltInTemplate(template.id) {
-                            Button("重置内置覆盖") {
-                                templateLibrary.resetBuiltInTemplate(template.id)
-                                if let reloaded = templateLibrary.template(withID: template.id) {
-                                    self.draft = TemplateEditorDraft(template: reloaded)
-                                    feedbackMessage = "已重置内置模板覆盖。"
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                        } else {
+                        if !templateLibrary.isBuiltInTemplate(template.id) {
                             Button("删除自定义模板", role: .destructive) {
                                 let fallbackID = AgentTemplateCatalog.defaultTemplateID
                                 templateLibrary.deleteCustomTemplate(template.id)
@@ -1720,10 +1787,19 @@ struct TemplateLibraryManagerSheet: View {
                         }
                         .buttonStyle(.bordered)
 
-                        Button("保存修改") {
+                        Button(templateLibrary.isBuiltInTemplate(template.id) ? "保存为新模板" : "保存修改") {
                             saveDraft(baseTemplate: template, draft: draft)
                         }
                         .buttonStyle(.borderedProminent)
+                    }
+
+                    if templateLibrary.isBuiltInTemplate(template.id) {
+                        Text("系统模板是只读来源。对它的修改在保存时会自动分叉为新的独立模板资产。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("系统模板没有本地模板资产目录；如需流通或二次开发，请先导出为模板资产包。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
 
                     TemplateDraftEditor(
@@ -1761,11 +1837,19 @@ struct TemplateLibraryManagerSheet: View {
 
     private func saveDraft(baseTemplate: AgentTemplate, draft: TemplateEditorDraft) {
         let updated = draft.applying(to: baseTemplate)
-        templateLibrary.upsert(updated)
-        selectedTemplateManagerID = updated.id
-        selectedTemplateID = updated.id
-        self.draft = TemplateEditorDraft(template: updated)
-        feedbackMessage = updated.validationIssues.isEmpty ? "模板已保存，并通过规范校验。" : "模板已保存，但仍有 \(updated.validationIssues.count) 个校验问题。"
+        let persisted = templateLibrary.upsert(updated)
+        selectedTemplateManagerID = persisted.id
+        selectedTemplateID = persisted.id
+        self.draft = TemplateEditorDraft(template: persisted)
+        if templateLibrary.isBuiltInTemplate(baseTemplate.id) {
+            feedbackMessage = persisted.validationIssues.isEmpty
+                ? "已从系统模板分叉出新的模板资产，并完成保存。"
+                : "已从系统模板分叉出新的模板资产，但仍有 \(persisted.validationIssues.count) 个校验问题。"
+        } else {
+            feedbackMessage = persisted.validationIssues.isEmpty
+                ? "模板已保存，并通过规范校验。"
+                : "模板已保存，但仍有 \(persisted.validationIssues.count) 个校验问题。"
+        }
     }
 
     private func autofillMissingFields(for template: AgentTemplate, draft: TemplateEditorDraft) {
@@ -1800,11 +1884,13 @@ struct TemplateLibraryManagerSheet: View {
             return
         }
 
-        templateLibrary.upsert(fixResult.template)
+        let persisted = templateLibrary.upsert(fixResult.template)
         if selectedTemplateManagerID == templateID {
-            draft = TemplateEditorDraft(template: fixResult.template)
+            selectedTemplateManagerID = persisted.id
+            selectedTemplateID = persisted.id
+            draft = TemplateEditorDraft(template: persisted)
         }
-        feedbackMessage = "已自动补齐模板 \(fixResult.template.name) 的 \(fixResult.changedFields.count) 个缺失字段。"
+        feedbackMessage = "已自动补齐模板 \(persisted.name) 的 \(fixResult.changedFields.count) 个缺失字段。"
     }
 
     private func cleanupManagementLeaks(_ templateID: String) {
@@ -1815,11 +1901,13 @@ struct TemplateLibraryManagerSheet: View {
             return
         }
 
-        templateLibrary.upsert(cleanupResult.template)
+        let persisted = templateLibrary.upsert(cleanupResult.template)
         if selectedTemplateManagerID == templateID {
-            draft = TemplateEditorDraft(template: cleanupResult.template)
+            selectedTemplateManagerID = persisted.id
+            selectedTemplateID = persisted.id
+            draft = TemplateEditorDraft(template: persisted)
         }
-        feedbackMessage = "已清理模板 \(cleanupResult.template.name) 中的管理信息：\(cleanupResult.removedPhrases.joined(separator: "、"))。"
+        feedbackMessage = "已清理模板 \(persisted.name) 中的管理信息：\(cleanupResult.removedPhrases.joined(separator: "、"))。"
     }
 
     private func autoFixTemplates(_ templateIDs: [String]) {
@@ -1835,12 +1923,14 @@ struct TemplateLibraryManagerSheet: View {
         for template in templatesToFix {
             let fixResult = AgentTemplateAutoFixer.autofillMissingFields(in: template)
             guard fixResult.hasChanges else { continue }
-            templateLibrary.upsert(fixResult.template)
-            fixedTemplateNames.append(fixResult.template.name)
+            let persisted = templateLibrary.upsert(fixResult.template)
+            fixedTemplateNames.append(persisted.name)
             totalChangedFields += fixResult.changedFields.count
 
             if selectedTemplateManagerID == template.id {
-                draft = TemplateEditorDraft(template: fixResult.template)
+                selectedTemplateManagerID = persisted.id
+                selectedTemplateID = persisted.id
+                draft = TemplateEditorDraft(template: persisted)
             }
         }
 
@@ -1865,12 +1955,14 @@ struct TemplateLibraryManagerSheet: View {
         for template in templatesToClean {
             let cleanupResult = AgentTemplateManagementCleaner.cleanupLeaks(in: template)
             guard cleanupResult.hasChanges else { continue }
-            templateLibrary.upsert(cleanupResult.template)
-            cleanedTemplateNames.append(cleanupResult.template.name)
+            let persisted = templateLibrary.upsert(cleanupResult.template)
+            cleanedTemplateNames.append(persisted.name)
             removedPhrases.formUnion(cleanupResult.removedPhrases)
 
             if selectedTemplateManagerID == template.id {
-                draft = TemplateEditorDraft(template: cleanupResult.template)
+                selectedTemplateManagerID = persisted.id
+                selectedTemplateID = persisted.id
+                draft = TemplateEditorDraft(template: persisted)
             }
         }
 
@@ -1903,6 +1995,30 @@ struct TemplateLibraryManagerSheet: View {
         }
     }
 
+    private func importTemplateAssets() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "导入模板资产"
+        panel.message = "选择一个或多个模板资产目录，或选择包含多个模板资产目录的上级目录。"
+        panel.begin { response in
+            guard response == .OK else { return }
+            do {
+                let imported = try templateLibrary.importTemplateAssets(from: panel.urls)
+                if let first = imported.first {
+                    selectedTemplateManagerID = first.id
+                    selectedTemplateID = first.id
+                    draft = TemplateEditorDraft(template: first)
+                }
+                feedbackMessage = "已导入 \(imported.count) 个模板资产。"
+            } catch {
+                feedbackMessage = "模板资产导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     private func importSoulAsTemplate() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -1927,11 +2043,11 @@ struct TemplateLibraryManagerSheet: View {
                 imported.soulSpec = parsed.spec
                 imported = imported.sanitizedForPersistence()
 
-                templateLibrary.upsert(imported)
-                selectedTemplateManagerID = imported.id
-                selectedTemplateID = imported.id
-                draft = TemplateEditorDraft(template: imported)
-                feedbackMessage = "已从 SOUL.md 创建模板：\(imported.name)"
+                let persisted = templateLibrary.upsert(imported)
+                selectedTemplateManagerID = persisted.id
+                selectedTemplateID = persisted.id
+                draft = TemplateEditorDraft(template: persisted)
+                feedbackMessage = "已从 SOUL.md 创建模板：\(persisted.name)"
             } catch {
                 feedbackMessage = "SOUL.md 导入失败：\(error.localizedDescription)"
             }
@@ -1971,18 +2087,21 @@ struct TemplateLibraryManagerSheet: View {
         }
     }
 
-    private func exportTemplate(templateID: String) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "\(templateID).json"
+    private func exportTemplateAsset(templateID: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择导出目录"
+        panel.message = "模板将以标准模板资产目录形式导出到所选目录。"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                let data = try templateLibrary.exportTemplates([templateID])
-                try data.write(to: url, options: .atomic)
-                feedbackMessage = "模板已导出到 \(url.lastPathComponent)。"
+                let exportedURL = try templateLibrary.exportTemplateAsset(templateID, to: url)
+                feedbackMessage = "模板资产已导出到 \(exportedURL.lastPathComponent)。"
             } catch {
-                feedbackMessage = "导出失败：\(error.localizedDescription)"
+                feedbackMessage = "模板资产导出失败：\(error.localizedDescription)"
             }
         }
     }
@@ -2029,7 +2148,7 @@ struct TemplateLibraryManagerSheet: View {
                 .foregroundColor(.secondary)
 
             HStack(spacing: 6) {
-                Text(templateLibrary.isBuiltInTemplate(template.id) ? "内置" : "自定义")
+                Text(templateLibrary.isBuiltInTemplate(template.id) ? "系统" : "资产")
                     .font(.caption2)
                     .foregroundColor(.secondary)
 
@@ -2078,6 +2197,20 @@ struct TemplateLibraryManagerSheet: View {
                 feedbackMessage = "导出全部失败：\(error.localizedDescription)"
             }
         }
+    }
+
+    private func exportFilteredTemplateAssets() {
+        exportTemplateAssets(
+            filteredTemplates.map(\.id),
+            containerName: "filtered-template-assets"
+        )
+    }
+
+    private func exportAllTemplateAssets() {
+        exportTemplateAssets(
+            sortedTemplates.map(\.id),
+            containerName: "all-template-assets"
+        )
     }
 
     private func exportFilteredTemplates() {
@@ -2137,6 +2270,42 @@ struct TemplateLibraryManagerSheet: View {
         }
     }
 
+    private func exportTemplateAssets(_ templateIDs: [String], containerName: String) {
+        guard !templateIDs.isEmpty else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择导出目录"
+        panel.message = "系统会在所选目录下创建一个模板资产导出文件夹。"
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        panel.begin { response in
+            guard response == .OK, let baseDirectoryURL = panel.url else { return }
+
+            let exportRootURL = uniqueExportDirectory(named: containerName, in: baseDirectoryURL)
+
+            do {
+                try FileManager.default.createDirectory(at: exportRootURL, withIntermediateDirectories: true)
+                let exportedURLs = try templateLibrary.exportTemplateAssets(templateIDs, to: exportRootURL)
+                feedbackMessage = "已导出 \(exportedURLs.count) 个模板资产到 \(exportRootURL.lastPathComponent)。"
+            } catch {
+                feedbackMessage = "模板资产批量导出失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func openTemplateAssetDirectory(for template: AgentTemplate) {
+        guard let assetURL = templateLibrary.templateAssetDirectoryURL(for: template.id) else {
+            feedbackMessage = "该模板当前没有可直接打开的本地模板资产目录。"
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([assetURL])
+        feedbackMessage = "已打开模板资产目录：\(assetURL.lastPathComponent)。"
+    }
+
     private func exportFileBaseName(for template: AgentTemplate) -> String {
         let preferredName = template.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = preferredName.isEmpty ? template.id : preferredName
@@ -2149,6 +2318,20 @@ struct TemplateLibraryManagerSheet: View {
             .trimmingCharacters(in: CharacterSet(charactersIn: "-. "))
 
         return cleaned.isEmpty ? template.id.replacingOccurrences(of: ".", with: "-") : cleaned
+    }
+
+    private func uniqueExportDirectory(named preferredName: String, in parentDirectory: URL) -> URL {
+        let trimmed = preferredName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName = trimmed.isEmpty ? "template-assets-export" : trimmed
+        var candidateURL = parentDirectory.appendingPathComponent(baseName, isDirectory: true)
+        var suffix = 2
+
+        while FileManager.default.fileExists(atPath: candidateURL.path) {
+            candidateURL = parentDirectory.appendingPathComponent("\(baseName)-\(suffix)", isDirectory: true)
+            suffix += 1
+        }
+
+        return candidateURL
     }
 
     private func summaryText(from mission: String) -> String {

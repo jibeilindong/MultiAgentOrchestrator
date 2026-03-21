@@ -328,19 +328,28 @@ struct WorkbenchConversationView: View {
             HSplitView {
                 dialogueAndReceiptsPane
                     .frame(minWidth: 500, idealWidth: 560)
-                MonitoringDashboardView()
+                OpsCenterDashboardView(
+                    displayMode: .embedded,
+                    preferredWorkflowID: selectedWorkflow?.id
+                )
                     .frame(minWidth: 360, idealWidth: 780, maxWidth: .infinity, maxHeight: .infinity)
             }
         case .topBottom:
             VSplitView {
                 dialogueAndReceiptsPane
                     .frame(minHeight: 280, idealHeight: 360)
-                MonitoringDashboardView()
+                OpsCenterDashboardView(
+                    displayMode: .embedded,
+                    preferredWorkflowID: selectedWorkflow?.id
+                )
                     .frame(minHeight: 280, idealHeight: 420)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .dashboardOnly:
-            MonitoringDashboardView()
+            OpsCenterDashboardView(
+                displayMode: .embedded,
+                preferredWorkflowID: selectedWorkflow?.id
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

@@ -67,7 +67,7 @@ struct ContentView: View {
                             switch selectedTab {
                             case 0: WorkflowEditorView(zoomScale: $zoomScale)
                             case 1: WorkbenchConversationView(messageManager: appState.messageManager)
-                            case 2: MonitoringDashboardView()
+                            case 2: OpsCenterDashboardView(displayMode: .fullScreen)
                             default: WorkflowEditorView(zoomScale: $zoomScale)
                             }
                         }

@@ -1,6 +1,13 @@
 import Foundation
+import CryptoKit
 
 actor OpenClawGatewayClient {
+    private static let gatewayClientID = "gateway-client"
+    private static let gatewayClientMode = "backend"
+    private static let gatewayRole = "operator"
+    private static let gatewayScopes = ["operator.admin"]
+    private static let gatewayDeviceFamily = "desktop"
+
     struct RemoteAgentRecord: Hashable {
         let id: String
         let name: String
@@ -68,6 +75,18 @@ actor OpenClawGatewayClient {
         let token: String?
         let timeoutSeconds: Int
         let fingerprint: String
+        let deviceIdentity: GatewayDeviceIdentity
+    }
+
+    private struct GatewayDeviceIdentity: Codable, Equatable {
+        let version: Int
+        let deviceID: String
+        let privateKeyRawBase64: String
+        let createdAtMilliseconds: Int64
+
+        var privateKeyRawRepresentation: Data {
+            Data(base64Encoded: privateKeyRawBase64) ?? Data()
+        }
     }
 
     private struct GatewayResponseFrame {
@@ -558,28 +577,27 @@ actor OpenClawGatewayClient {
         runtimeConfig: RuntimeConfiguration,
         challengePayload: [String: Any]
     ) -> [String: Any] {
+        let signedAtMilliseconds = Int(Date().timeIntervalSince1970 * 1000)
+        let platform = runtimePlatformIdentifier()
+        let clientVersion = runtimeClientVersion()
         var payload: [String: Any] = [
             "minProtocol": 3,
             "maxProtocol": 3,
             "client": [
-                "id": "multi-agent-flow",
-                "version": "0.1.0",
-                "platform": "macos",
-                "mode": "operator"
+                "id": Self.gatewayClientID,
+                "displayName": "Multi-Agent-Flow",
+                "version": clientVersion,
+                "platform": platform,
+                "deviceFamily": Self.gatewayDeviceFamily,
+                "mode": Self.gatewayClientMode
             ],
-            "role": "operator",
-            "scopes": [
-                "operator.admin",
-                "operator.read",
-                "operator.write",
-                "operator.approvals",
-                "operator.pairing"
-            ],
+            "role": Self.gatewayRole,
+            "scopes": Self.gatewayScopes,
             "caps": [],
             "commands": [],
             "permissions": [:],
             "locale": Locale.current.identifier,
-            "userAgent": "Multi-Agent-Flow/0.1.0"
+            "userAgent": "Multi-Agent-Flow/\(clientVersion)"
         ]
 
         if let token = runtimeConfig.token, !token.isEmpty {
@@ -587,8 +605,26 @@ actor OpenClawGatewayClient {
         }
 
         if let nonce = challengePayload["nonce"] as? String, !nonce.isEmpty {
+            let signaturePayload = buildDeviceAuthPayloadV3(
+                deviceID: runtimeConfig.deviceIdentity.deviceID,
+                clientID: Self.gatewayClientID,
+                clientMode: Self.gatewayClientMode,
+                role: Self.gatewayRole,
+                scopes: Self.gatewayScopes,
+                signedAtMilliseconds: signedAtMilliseconds,
+                token: runtimeConfig.token,
+                nonce: nonce,
+                platform: platform,
+                deviceFamily: Self.gatewayDeviceFamily
+            )
             payload["device"] = [
-                "id": "multi-agent-flow-operator",
+                "id": runtimeConfig.deviceIdentity.deviceID,
+                "publicKey": publicKeyRawBase64URL(for: runtimeConfig.deviceIdentity),
+                "signature": signDevicePayload(
+                    signaturePayload,
+                    with: runtimeConfig.deviceIdentity
+                ),
+                "signedAt": signedAtMilliseconds,
                 "nonce": nonce
             ]
         }
@@ -902,6 +938,7 @@ actor OpenClawGatewayClient {
         }
 
         let token = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let deviceIdentity = try loadOrCreateDeviceIdentity()
         return RuntimeConfiguration(
             webSocketURL: url,
             token: token.isEmpty ? nil : token,
@@ -910,8 +947,10 @@ actor OpenClawGatewayClient {
                 config.useSSL ? "wss" : "ws",
                 host.lowercased(),
                 String(config.port),
-                token
-            ].joined(separator: "|")
+                token,
+                deviceIdentity.deviceID
+            ].joined(separator: "|"),
+            deviceIdentity: deviceIdentity
         )
     }
 
@@ -1001,6 +1040,171 @@ actor OpenClawGatewayClient {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private func runtimePlatformIdentifier() -> String {
+#if os(macOS)
+        return "darwin"
+#else
+        return ProcessInfo.processInfo.operatingSystemVersionString
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+#endif
+    }
+
+    private func runtimeClientVersion() -> String {
+        if let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+           let buildVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        {
+            let short = shortVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+            let build = buildVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !short.isEmpty, !build.isEmpty {
+                return "\(short) (\(build))"
+            }
+            if !short.isEmpty {
+                return short
+            }
+            if !build.isEmpty {
+                return build
+            }
+        }
+        return "0.1.0"
+    }
+
+    private func buildDeviceAuthPayloadV3(
+        deviceID: String,
+        clientID: String,
+        clientMode: String,
+        role: String,
+        scopes: [String],
+        signedAtMilliseconds: Int,
+        token: String?,
+        nonce: String,
+        platform: String,
+        deviceFamily: String
+    ) -> String {
+        [
+            "v3",
+            deviceID,
+            clientID,
+            clientMode,
+            role,
+            scopes.joined(separator: ","),
+            String(signedAtMilliseconds),
+            token ?? "",
+            nonce,
+            normalizedDeviceMetadataForAuth(platform),
+            normalizedDeviceMetadataForAuth(deviceFamily)
+        ].joined(separator: "|")
+    }
+
+    private func normalizedDeviceMetadataForAuth(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func loadOrCreateDeviceIdentity() throws -> GatewayDeviceIdentity {
+        let fileURL = try gatewayDeviceIdentityFileURL()
+
+        if let existing = try loadStoredDeviceIdentity(from: fileURL) {
+            return existing
+        }
+
+        let privateKey = Curve25519.Signing.PrivateKey()
+        let publicKeyRaw = Data(privateKey.publicKey.rawRepresentation)
+        let identity = GatewayDeviceIdentity(
+            version: 1,
+            deviceID: sha256Hex(publicKeyRaw),
+            privateKeyRawBase64: Data(privateKey.rawRepresentation).base64EncodedString(),
+            createdAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+
+        try persistDeviceIdentity(identity, to: fileURL)
+        return identity
+    }
+
+    private func gatewayDeviceIdentityFileURL() throws -> URL {
+        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw gatewayError("无法定位应用支持目录，无法创建 OpenClaw 设备身份。")
+        }
+
+        return appSupportURL
+            .appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+            .appendingPathComponent("OpenClaw", isDirectory: true)
+            .appendingPathComponent("identity", isDirectory: true)
+            .appendingPathComponent("device-identity.json", isDirectory: false)
+    }
+
+    private func loadStoredDeviceIdentity(from fileURL: URL) throws -> GatewayDeviceIdentity? {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return nil
+        }
+
+        let data = try Data(contentsOf: fileURL)
+        let stored = try JSONDecoder().decode(GatewayDeviceIdentity.self, from: data)
+        let privateKeyRaw = Data(base64Encoded: stored.privateKeyRawBase64) ?? Data()
+        let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: privateKeyRaw)
+        let derivedDeviceID = sha256Hex(Data(privateKey.publicKey.rawRepresentation))
+
+        if derivedDeviceID == stored.deviceID {
+            return stored
+        }
+
+        let repairedIdentity = GatewayDeviceIdentity(
+            version: stored.version,
+            deviceID: derivedDeviceID,
+            privateKeyRawBase64: stored.privateKeyRawBase64,
+            createdAtMilliseconds: stored.createdAtMilliseconds
+        )
+        try persistDeviceIdentity(repairedIdentity, to: fileURL)
+        return repairedIdentity
+    }
+
+    private func persistDeviceIdentity(_ identity: GatewayDeviceIdentity, to fileURL: URL) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        var data = try encoder.encode(identity)
+        data.append(0x0A)
+        try data.write(to: fileURL, options: .atomic)
+        try? fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: fileURL.path
+        )
+    }
+
+    private func publicKeyRawBase64URL(for identity: GatewayDeviceIdentity) -> String {
+        guard let privateKey = try? Curve25519.Signing.PrivateKey(
+            rawRepresentation: identity.privateKeyRawRepresentation
+        ) else {
+            return ""
+        }
+        return Data(privateKey.publicKey.rawRepresentation).base64URLEncodedString()
+    }
+
+    private func signDevicePayload(
+        _ payload: String,
+        with identity: GatewayDeviceIdentity
+    ) -> String {
+        guard let privateKey = try? Curve25519.Signing.PrivateKey(
+            rawRepresentation: identity.privateKeyRawRepresentation
+        ),
+        let signature = try? privateKey.signature(for: Data(payload.utf8))
+        else {
+            return ""
+        }
+
+        return signature.base64URLEncodedString()
+    }
+
+    private func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private func encodeJSONObject(_ object: [String: Any]) throws -> Data {
         guard JSONSerialization.isValidJSONObject(object) else {
             throw gatewayError("Gateway request contains non-JSON data.")
@@ -1014,6 +1218,15 @@ actor OpenClawGatewayClient {
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: message]
         )
+    }
+}
+
+private extension Data {
+    nonisolated func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 }
 

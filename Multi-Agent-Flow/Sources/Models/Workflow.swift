@@ -626,7 +626,7 @@ struct WorkflowEdge: Identifiable, Codable, Hashable {
         self.displayColorHex = nil
         self.conditionExpression = ""
         self.requiresApproval = false
-        self.isBidirectional = false
+        self.isBidirectional = true
     }
 
     init(from decoder: Decoder) throws {
