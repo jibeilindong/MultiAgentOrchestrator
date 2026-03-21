@@ -342,7 +342,7 @@ struct OpenClawConfigView: View {
                                 Text(agent.issues.isEmpty ? LocalizedString.text("directory_openclaw_validated") : agent.issues.joined(separator: " · "))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                if let path = agent.copiedToProjectPath {
+                                if let path = agent.soulPath ?? agent.copiedToProjectPath ?? agent.directoryPath {
                                     Text(path)
                                         .font(.caption2)
                                         .foregroundColor(.secondary)

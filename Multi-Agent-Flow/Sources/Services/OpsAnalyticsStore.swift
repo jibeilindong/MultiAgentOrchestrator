@@ -570,6 +570,17 @@ final class OpsAnalyticsStore {
         let memoryRate = totalAgents > 0 ? (Double(trackedMemoryAgents) / Double(totalAgents)) * 100.0 : 0.0
         let gatewayExecutions = executionResults.filter { ($0.transportKind ?? "").hasPrefix("gateway_") }.count
         let gatewayAdoptionRate = totalExecutions > 0 ? (Double(gatewayExecutions) / Double(totalExecutions)) * 100.0 : 0.0
+        let workflowHotPathExecutions = executionResults.filter { result in
+            let sessionID = result.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return sessionID.hasPrefix("workflow-")
+        }
+        let matchedHotPathExecutions = workflowHotPathExecutions.filter {
+            ($0.transportKind ?? "").lowercased() == "gateway_agent"
+        }
+        let hotPathMismatchCount = workflowHotPathExecutions.count - matchedHotPathExecutions.count
+        let hotPathAdoptionRate = workflowHotPathExecutions.isEmpty
+            ? 0.0
+            : (Double(matchedHotPathExecutions.count) / Double(workflowHotPathExecutions.count)) * 100.0
         let firstChunkLatencies = executionResults.compactMap(\.firstChunkLatencyMs).map(Double.init)
         let completionLatencies = executionResults.compactMap(\.completionLatencyMs).map(Double.init)
         let averageFirstChunkLatency = firstChunkLatencies.isEmpty
@@ -685,6 +696,31 @@ final class OpsAnalyticsStore {
                 "total_runs": "\(totalExecutions)"
             ]
         )
+        upsertGoalMetric(
+            db: db,
+            projectID: projectID,
+            date: dateString,
+            goal: "transport_efficiency",
+            metric: "workflow_hot_path_adoption_rate",
+            value: hotPathAdoptionRate,
+            unit: "%",
+            breakdown: [
+                "workflow_runs": "\(workflowHotPathExecutions.count)",
+                "gateway_agent_runs": "\(matchedHotPathExecutions.count)"
+            ]
+        )
+        upsertGoalMetric(
+            db: db,
+            projectID: projectID,
+            date: dateString,
+            goal: "transport_efficiency",
+            metric: "workflow_hot_path_mismatch_count",
+            value: Double(hotPathMismatchCount),
+            unit: "count",
+            breakdown: [
+                "workflow_runs": "\(workflowHotPathExecutions.count)"
+            ]
+        )
         if let averageFirstChunkLatency {
             upsertGoalMetric(
                 db: db,
@@ -725,6 +761,9 @@ final class OpsAnalyticsStore {
         for result in executionResults {
             let traceID = result.id.uuidString.replacingOccurrences(of: "-", with: "")
             deleteSpans(db: db, traceID: traceID)
+            let normalizedSessionID = result.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let expectsWorkflowHotPath = normalizedSessionID.hasPrefix("workflow-")
+            let matchedWorkflowHotPath = expectsWorkflowHotPath && (result.transportKind ?? "").lowercased() == "gateway_agent"
 
             let attributes: [String: String] = [
                 "agent_id": result.agentID.uuidString,
@@ -742,6 +781,8 @@ final class OpsAnalyticsStore {
                 "protocol_event_count": String(result.runtimeEvents.count),
                 "protocol_ref_count": String(result.runtimeRefCount),
                 "protocol_event_types": result.runtimeEventTypesSummary,
+                "workflow_hot_path_expected": expectsWorkflowHotPath ? "true" : "false",
+                "workflow_hot_path_matched": matchedWorkflowHotPath ? "true" : "false",
                 "output_text": result.renderedOutputText,
                 "preview_text": result.previewText
             ]

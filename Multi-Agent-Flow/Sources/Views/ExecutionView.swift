@@ -249,6 +249,13 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
             let successRate = total > 0 ? Double(completed) / Double(total) * 100 : 0
             let gatewayRuns = openClawService.executionResults.filter { ($0.transportKind ?? "").hasPrefix("gateway_") }.count
             let gatewayAdoption = total > 0 ? Double(gatewayRuns) / Double(total) * 100 : 0
+            let workflowRuns = openClawService.executionResults.filter { result in
+                let sessionID = result.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+                return sessionID.hasPrefix("workflow-")
+            }
+            let hotPathRuns = workflowRuns.filter { ($0.transportKind ?? "").lowercased() == "gateway_agent" }.count
+            let hotPathAdoption = workflowRuns.isEmpty ? 0 : Double(hotPathRuns) / Double(workflowRuns.count) * 100
+            let hotPathMismatches = workflowRuns.filter { ($0.transportKind ?? "").lowercased() != "gateway_agent" }.count
             let firstResponseSamples = openClawService.executionResults.compactMap(\.firstChunkLatencyMs)
             let averageFirstResponseMs = firstResponseSamples.isEmpty
                 ? nil
@@ -265,6 +272,10 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                         color: successRate > 80 ? .green : .orange)
                 StatCard(title: "Gateway", value: String(format: "%.1f%%", gatewayAdoption),
                         color: gatewayAdoption >= 80 ? .green : .orange)
+                StatCard(title: "Hot Path", value: workflowRuns.isEmpty ? "N/A" : String(format: "%.1f%%", hotPathAdoption),
+                        color: workflowRuns.isEmpty ? .secondary : (hotPathAdoption >= 80 ? .green : .orange))
+                StatCard(title: "Mismatch", value: "\(hotPathMismatches)",
+                        color: hotPathMismatches == 0 ? .green : .red)
                 StatCard(title: "首响", value: averageFirstResponseMs.map(formatLatency) ?? "N/A",
                         color: (averageFirstResponseMs ?? 9999) <= 1200 ? .green : .orange)
                 StatCard(title: "Protocol", value: "\(runtimeEventCount)", color: runtimeEventCount > 0 ? .purple : .secondary)
@@ -346,6 +357,12 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                     .foregroundColor(.secondary)
             }
 
+            if let verificationNote = workflowHotPathVerificationNote(report: report) {
+                Text(verificationNote)
+                    .font(.caption)
+                    .foregroundColor(workflowHotPathVerificationColor(report: report))
+            }
+
             ForEach(sortedSummaries) { summary in
                 HStack(spacing: 16) {
                     Text(summary.transport.displayName)
@@ -366,6 +383,23 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .frame(width: 110, alignment: .leading)
+
+                    if let actualPathLabel = benchmarkActualPathLabel(
+                        transport: summary.transport,
+                        report: report
+                    ) {
+                        Text(actualPathLabel)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(width: 140, alignment: .leading)
+                    }
+
+                    if let verificationLabel = benchmarkVerificationLabel(summary) {
+                        Text(verificationLabel)
+                            .font(.caption)
+                            .foregroundColor(benchmarkVerificationColor(summary))
+                            .frame(width: 88, alignment: .leading)
+                    }
 
                     if let spreadLabel = benchmarkSpreadLabel(summary) {
                         Text(spreadLabel)
@@ -444,6 +478,60 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
         }
 
         return "Range \(formatLatency(Double(fastest)))-\(formatLatency(Double(slowest)))"
+    }
+
+    private func benchmarkActualPathLabel(
+        transport: TransportBenchmarkKind,
+        report: TransportBenchmarkReport
+    ) -> String? {
+        let actualKinds = Set(
+            report.samples
+                .filter { $0.transport == transport }
+                .compactMap(\.actualTransportKind)
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+        guard !actualKinds.isEmpty else { return nil }
+        return "Path " + actualKinds.sorted().joined(separator: ", ")
+    }
+
+    private func benchmarkVerificationLabel(_ summary: TransportBenchmarkSummary) -> String? {
+        guard let expectedTransportKind = summary.expectedTransportKind else { return nil }
+        if summary.expectedTransportMismatchCount > 0 {
+            return "Mismatch \(summary.expectedTransportMismatchCount)"
+        }
+        if summary.expectedTransportMatchedCount > 0 {
+            return "Verified"
+        }
+        if summary.actualTransportKinds.isEmpty {
+            return nil
+        }
+        return "Expected \(expectedTransportKind)"
+    }
+
+    private func benchmarkVerificationColor(_ summary: TransportBenchmarkSummary) -> Color {
+        if summary.expectedTransportMismatchCount > 0 {
+            return .red
+        }
+        if summary.expectedTransportMatchedCount > 0 {
+            return .green
+        }
+        return .secondary
+    }
+
+    private func workflowHotPathVerificationNote(report: TransportBenchmarkReport) -> String? {
+        guard let summary = benchmarkSummary(for: .workflowHotPath, in: report) else { return nil }
+        if summary.expectedTransportMismatchCount > 0 {
+            return "Workflow hot path verification failed: expected gateway_agent, observed \(summary.actualTransportKinds.joined(separator: ", "))."
+        }
+        if summary.expectedTransportMatchedCount > 0 {
+            return "Workflow hot path verified on gateway_agent."
+        }
+        return nil
+    }
+
+    private func workflowHotPathVerificationColor(report: TransportBenchmarkReport) -> Color {
+        guard let summary = benchmarkSummary(for: .workflowHotPath, in: report) else { return .secondary }
+        return benchmarkVerificationColor(summary)
     }
 
     private func benchmarkRecommendationLabel(

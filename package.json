@@ -10,6 +10,8 @@
     "dev": "npm run dev --workspace @multi-agent-flow/desktop",
     "validate:compat": "npm run validate:compat --workspace @multi-agent-flow/core",
     "validate:openclaw-runtime": "./scripts/validate-openclaw-runtime.sh",
+    "validate:workflow-hot-path": "bash ./scripts/validate-workflow-hot-path.sh",
+    "benchmark:hot-path": "node ./scripts/inspect-transport-benchmark.mjs",
     "desktop:pack": "npm run pack --workspace @multi-agent-flow/desktop",
     "desktop:dist": "npm run dist --workspace @multi-agent-flow/desktop",
     "desktop:dist:mac": "npm run dist:mac --workspace @multi-agent-flow/desktop",

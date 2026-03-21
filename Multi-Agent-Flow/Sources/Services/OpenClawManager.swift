@@ -6,6 +6,66 @@
 import Foundation
 import Combine
 
+private let openClawSoulFileNames = ["SOUL.md", "soul.md"]
+private let openClawSoulNestedDirectories = ["", "agent", "private"]
+
+func openClawSoulCandidateURLs(in rootURL: URL, maxAncestorDepth: Int = 2) -> [URL] {
+    var directories: [URL] = []
+    var current = rootURL
+
+    for depth in 0...max(0, maxAncestorDepth) {
+        directories.append(current)
+        if depth == maxAncestorDepth {
+            break
+        }
+
+        let parent = current.deletingLastPathComponent()
+        if parent.path == current.path || parent.path.isEmpty {
+            break
+        }
+        current = parent
+    }
+
+    var candidates: [URL] = []
+    var seen = Set<String>()
+
+    for directory in directories {
+        for nested in openClawSoulNestedDirectories {
+            let baseDirectory = nested.isEmpty
+                ? directory
+                : directory.appendingPathComponent(nested, isDirectory: true)
+
+            for filename in openClawSoulFileNames {
+                let candidate = baseDirectory.appendingPathComponent(filename, isDirectory: false)
+                if seen.insert(candidate.path).inserted {
+                    candidates.append(candidate)
+                }
+            }
+        }
+    }
+
+    return candidates
+}
+
+func existingOpenClawSoulURL(
+    in rootURL: URL,
+    maxAncestorDepth: Int = 2,
+    fileManager: FileManager = .default
+) -> URL? {
+    openClawSoulCandidateURLs(in: rootURL, maxAncestorDepth: maxAncestorDepth)
+        .first { fileManager.fileExists(atPath: $0.path) }
+}
+
+func preferredOpenClawSoulURL(
+    in rootURL: URL,
+    maxAncestorDepth: Int = 2,
+    fileManager: FileManager = .default
+) -> URL {
+    existingOpenClawSoulURL(in: rootURL, maxAncestorDepth: maxAncestorDepth, fileManager: fileManager)
+        ?? openClawSoulCandidateURLs(in: rootURL, maxAncestorDepth: maxAncestorDepth).first
+        ?? rootURL.appendingPathComponent("SOUL.md", isDirectory: false)
+}
+
 class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
     private let fileManager = FileManager.default
@@ -93,6 +153,13 @@ class OpenClawManager: ObservableObject {
             self.modelIdentifier = modelIdentifier
             self.installedSkills = installedSkills
         }
+    }
+
+    struct WorkspaceIsolationConflict: Hashable {
+        let normalizedPath: String
+        let displayPath: String
+        let agentNames: [String]
+        let agentIdentifiers: [String]
     }
 
     struct ClawHubSkillRecord: Identifiable, Hashable {
@@ -681,12 +748,12 @@ class OpenClawManager: ObservableObject {
                 }
             }
 
-            let soulPath = sourceDirectory.appendingPathComponent("SOUL.md")
-            let fallbackSoulPath = sourceDirectory.appendingPathComponent("soul.md")
             var soulText = "# \(record.name)\n"
-            if let content = try? String(contentsOf: soulPath, encoding: .utf8) {
-                soulText = content
-            } else if let content = try? String(contentsOf: fallbackSoulPath, encoding: .utf8) {
+            let resolvedSoulURL = firstNonEmptyPath(record.soulPath)
+                .map { URL(fileURLWithPath: $0, isDirectory: false) }
+                ?? existingOpenClawSoulURL(in: sourceDirectory, maxAncestorDepth: 0)
+            if let resolvedSoulURL,
+               let content = try? String(contentsOf: resolvedSoulURL, encoding: .utf8) {
                 soulText = content
             }
 
@@ -707,7 +774,7 @@ class OpenClawManager: ObservableObject {
             agent.capabilities = capabilities
             agent.openClawDefinition.agentIdentifier = record.name
             agent.openClawDefinition.memoryBackupPath = privateRoot.path
-            agent.openClawDefinition.soulSourcePath = preferredSoulURL(in: sourceDirectory).path
+            agent.openClawDefinition.soulSourcePath = (resolvedSoulURL ?? preferredOpenClawSoulURL(in: sourceDirectory, maxAncestorDepth: 0)).path
             agent.openClawDefinition.runtimeProfile = "imported"
             agent.updatedAt = Date()
             project.agents.append(agent)
@@ -1886,6 +1953,83 @@ class OpenClawManager: ObservableObject {
         return nil
     }
 
+    func workspaceIsolationConflicts(for agents: [Agent]) -> [WorkspaceIsolationConflict] {
+        var agentsByPath: [String: [Agent]] = [:]
+        var displayPathByNormalizedPath: [String: String] = [:]
+
+        for agent in agents {
+            guard let workspacePath = resolvedWorkspacePath(for: agent),
+                  let normalizedPath = normalizeWorkspacePath(workspacePath) else {
+                continue
+            }
+
+            agentsByPath[normalizedPath, default: []].append(agent)
+            displayPathByNormalizedPath[normalizedPath] = workspacePath
+        }
+
+        return agentsByPath
+            .compactMap { entry in
+                let uniqueAgents = Array(Set(entry.value)).sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+                guard uniqueAgents.count > 1 else { return nil }
+
+                let identifiers = uniqueAgents.map { agent in
+                    let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return identifier.isEmpty ? agent.name : identifier
+                }
+
+                return WorkspaceIsolationConflict(
+                    normalizedPath: entry.key,
+                    displayPath: displayPathByNormalizedPath[entry.key] ?? entry.key,
+                    agentNames: uniqueAgents.map(\.name),
+                    agentIdentifiers: identifiers
+                )
+            }
+            .sorted { lhs, rhs in
+                lhs.displayPath.localizedCaseInsensitiveCompare(rhs.displayPath) == .orderedAscending
+            }
+    }
+
+    func workspaceIsolationConflicts(for workflow: Workflow, agents: [Agent]) -> [WorkspaceIsolationConflict] {
+        let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        let workflowAgents = workflow.nodes.compactMap { node in
+            node.agentID.flatMap { agentByID[$0] }
+        }
+        return workspaceIsolationConflicts(for: workflowAgents)
+    }
+
+    func resolvedWorkspacePath(for agent: Agent) -> String? {
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if let localWorkspace = localAgentWorkspacePath(matching: candidateNames) {
+            return localWorkspace
+        }
+
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey))
+        if !normalizedNames.isEmpty,
+           let record = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
+            return firstNonEmptyPath(record.workspacePath, record.directoryPath, record.copiedToProjectPath)
+        }
+
+        return nil
+    }
+
+    private func normalizeWorkspacePath(_ path: String) -> String? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let normalized = URL(fileURLWithPath: trimmed, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : normalized
+    }
+
     private func existingLocalAgentSoulURL(matching candidateNames: [String]) -> URL? {
         if let workspacePath = localAgentWorkspacePath(matching: candidateNames) {
             let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
@@ -1897,6 +2041,12 @@ class OpenClawManager: ObservableObject {
         let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
         if !normalizedNames.isEmpty {
             if let record = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
+                if let soulPath = firstNonEmptyPath(record.soulPath) {
+                    let soulURL = URL(fileURLWithPath: soulPath, isDirectory: false)
+                    if FileManager.default.fileExists(atPath: soulURL.path) {
+                        return soulURL
+                    }
+                }
                 if let copiedRoot = firstNonEmptyPath(record.copiedToProjectPath),
                    let soulURL = existingSoulURL(in: URL(fileURLWithPath: copiedRoot, isDirectory: true)) {
                     return soulURL
@@ -2037,6 +2187,9 @@ class OpenClawManager: ObservableObject {
 
         let normalizedNames = Set(candidateNames.map(normalizeAgentKey))
         if let detectedRecord = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
+            if let soulPath = firstNonEmptyPath(detectedRecord.soulPath) {
+                sources.append(URL(fileURLWithPath: soulPath, isDirectory: false))
+            }
             if let directoryPath = firstNonEmptyPath(detectedRecord.directoryPath) {
                 sources.append(preferredSoulURL(in: URL(fileURLWithPath: directoryPath, isDirectory: true)))
             }
@@ -2270,12 +2423,7 @@ class OpenClawManager: ObservableObject {
     }
 
     private func existingSoulURL(in rootURL: URL) -> URL? {
-        let preferred = rootURL.appendingPathComponent("SOUL.md")
-        if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
-
-        let fallback = rootURL.appendingPathComponent("soul.md")
-        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
-        return nil
+        existingOpenClawSoulURL(in: rootURL, maxAncestorDepth: 2)
     }
 
     private struct DirectoryInspection {
@@ -2336,18 +2484,21 @@ class OpenClawManager: ObservableObject {
                 ? URL(fileURLWithPath: workspacePath!, isDirectory: true)
                 : nil
             let workspaceValidated = workspaceURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-            let sourceDirectoryPath = workspaceValidated ? workspaceURL?.path : directory?.path
-            let directoryValidated = workspaceValidated || directory != nil
+            let directoryValidated = directory != nil
             let configValidated = configCandidate != nil
+            let soulSearchRoots = [
+                directory.map { URL(fileURLWithPath: $0.path, isDirectory: true) },
+                workspaceValidated ? workspaceURL : nil
+            ].compactMap { $0 }
+            let soulURL = soulSearchRoots.compactMap { rootURL in
+                existingOpenClawSoulURL(in: rootURL, maxAncestorDepth: rootURL == workspaceURL ? 2 : 0)
+            }.first
 
             if !directoryValidated {
-                issues.append("workspace 目录未找到")
-            } else if let sourceDirectoryPath {
-                let soulURL = URL(fileURLWithPath: sourceDirectoryPath, isDirectory: true)
-                if existingSoulURL(in: soulURL) == nil {
-                    issues.append("缺少 SOUL.md")
-                }
-            } else {
+                issues.append("agent 目录未找到")
+            }
+
+            if soulURL == nil {
                 issues.append("缺少 SOUL.md")
             }
 
@@ -2358,15 +2509,16 @@ class OpenClawManager: ObservableObject {
             let name = configCandidate?.name ?? directory?.name ?? key
             let recordID = [
                 name,
-                sourceDirectoryPath ?? "",
+                directory?.path ?? "",
                 configCandidate?.configPath ?? ""
             ].joined(separator: "|")
 
             return ProjectOpenClawDetectedAgentRecord(
                 id: recordID,
                 name: name,
-                directoryPath: sourceDirectoryPath,
+                directoryPath: directory?.path,
                 configPath: configCandidate?.configPath,
+                soulPath: soulURL?.path,
                 workspacePath: configCandidate?.workspacePath ?? directory?.workspacePath,
                 statePath: configCandidate?.statePath ?? directory?.statePath,
                 directoryValidated: directoryValidated,
@@ -2409,9 +2561,7 @@ class OpenClawManager: ObservableObject {
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
             guard values?.isDirectory == true else { return nil }
 
-            let soulFile = url.appendingPathComponent("SOUL.md")
-            let fallbackSoulFile = url.appendingPathComponent("soul.md")
-            let hasSoulFile = FileManager.default.fileExists(atPath: soulFile.path) || FileManager.default.fileExists(atPath: fallbackSoulFile.path)
+            let hasSoulFile = existingOpenClawSoulURL(in: url, maxAncestorDepth: 0) != nil
 
             let workspacePath = firstExistingChildPath(in: url, candidates: ["workspace", "workspaces", "job", "jobs"])
             let statePath = firstExistingChildPath(in: url, candidates: ["state", "status", "runtime", "private"])
@@ -2482,11 +2632,7 @@ class OpenClawManager: ObservableObject {
     }
 
     private func preferredSoulURL(in rootURL: URL) -> URL {
-        let preferred = rootURL.appendingPathComponent("SOUL.md")
-        let fallback = rootURL.appendingPathComponent("soul.md")
-        if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
-        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
-        return preferred
+        preferredOpenClawSoulURL(in: rootURL, maxAncestorDepth: 2)
     }
 
     private func stringValue(_ dictionary: [String: Any], keys: [String]) -> String? {

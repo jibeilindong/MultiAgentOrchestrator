@@ -2039,6 +2039,7 @@ private func fastAgentCollectionSoulSourcePath(
         if let records = detectedRootsByNormalizedName[name] {
             for record in records {
                 let roots = [
+                    record.soulPath.map { URL(fileURLWithPath: $0, isDirectory: false).deletingLastPathComponent().path },
                     record.copiedToProjectPath,
                     record.directoryPath,
                     record.workspacePath
@@ -2074,22 +2075,7 @@ private func fastAgentCollectionSoulSourcePath(
 }
 
 private func fastExistingAgentCollectionSoulURL(in rootURL: URL) -> URL? {
-    let fileManager = FileManager.default
-    let parentURL = rootURL.deletingLastPathComponent()
-    let candidates = [
-        rootURL.appendingPathComponent("SOUL.md", isDirectory: false),
-        rootURL.appendingPathComponent("soul.md", isDirectory: false),
-        parentURL.appendingPathComponent("SOUL.md", isDirectory: false),
-        parentURL.appendingPathComponent("soul.md", isDirectory: false)
-    ]
-
-    var seen = Set<String>()
-    for candidate in candidates where seen.insert(candidate.path).inserted {
-        if fileManager.fileExists(atPath: candidate.path) {
-            return candidate
-        }
-    }
-    return nil
+    existingOpenClawSoulURL(in: rootURL, maxAncestorDepth: 2)
 }
 
 private func fastMirrorSoulCandidatePaths(for agent: Agent, mirrorRootPaths: [String]) -> [String] {
@@ -3303,22 +3289,13 @@ struct ArchitectureView: View {
                         selectedNodeForProperty = node
                     },
                     onNodeSecondarySelected: { node in
-                        selectedEdgeForProperty = nil
-                        showEdgePropertyPanel = false
-                        selectedNodeForProperty = node
-                        showNodePropertyPanel = true
+                        presentNodePropertyPanel(for: node)
                     },
                     onEdgeSelected: { edge in
-                        selectedNodeForProperty = nil
-                        showNodePropertyPanel = false
-                        selectedEdgeForProperty = edge
-                        showEdgePropertyPanel = true
+                        presentEdgePropertyPanel(for: edge)
                     },
                     onEdgeSecondarySelected: { edge in
-                        selectedNodeForProperty = nil
-                        showNodePropertyPanel = false
-                        selectedEdgeForProperty = edge
-                        showEdgePropertyPanel = true
+                        presentEdgePropertyPanel(for: edge)
                     },
                     onDropAgent: { agentName, location in
                         self.addAgentNodeToCanvas(agentName: agentName, at: location)
@@ -3407,6 +3384,20 @@ struct ArchitectureView: View {
         }
 
         return nil
+    }
+
+    private func presentNodePropertyPanel(for node: WorkflowNode) {
+        selectedEdgeForProperty = nil
+        showEdgePropertyPanel = false
+        selectedNodeForProperty = node
+        showNodePropertyPanel = true
+    }
+
+    private func presentEdgePropertyPanel(for edge: WorkflowEdge) {
+        selectedNodeForProperty = nil
+        showNodePropertyPanel = false
+        selectedEdgeForProperty = edge
+        showEdgePropertyPanel = true
     }
 }
 
@@ -3912,6 +3903,9 @@ struct NodePropertyPanel: View {
         .onAppear {
             loadNodeData()
         }
+        .onChange(of: node) { _, _ in
+            loadNodeData()
+        }
     }
     
     private func getAgent(id: UUID) -> Agent? {
@@ -3928,7 +3922,9 @@ struct NodePropertyPanel: View {
 
         if let agentID = node.agentID,
            let agent = getAgent(id: agentID) {
-            nodeTitle = agent.name
+            if nodeTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                nodeTitle = agent.name
+            }
             agentDescription = agent.description
             if let loaded = appState.loadAgentSoulMDFromSource(agentID: agentID) {
                 soulConfig = loaded.content
@@ -3941,8 +3937,15 @@ struct NodePropertyPanel: View {
     }
     
     private func saveChanges() {
+        let existingNodes = appState.currentProject?.workflows.first?.nodes ?? []
+        let normalizedTitle = WorkflowNode.normalizedTitle(
+            requestedTitle: nodeTitle,
+            nodeType: node.type,
+            existingNodes: existingNodes,
+            excludingNodeID: node.id
+        )
         var updatedNode = node
-        updatedNode.title = node.type == .agent ? "" : nodeTitle
+        updatedNode.title = normalizedTitle
         updatedNode.displayColorHex = CanvasStylePalette.normalizedHex(nodeDisplayColorHex)
         appState.updateNode(updatedNode)
 
@@ -3954,7 +3957,7 @@ struct NodePropertyPanel: View {
             } else {
                 soulSourcePath = appState.loadAgentSoulMDFromSource(agentID: agentID)?.sourcePath
             }
-            agent.name = nodeTitle
+            agent.name = normalizedTitle
             agent.description = agentDescription
             agent.soulMD = soulConfig
             agent.openClawDefinition.soulSourcePath = soulSourcePath ?? agent.openClawDefinition.soulSourcePath
@@ -4247,6 +4250,14 @@ struct EdgePropertyPanel: View {
             dataMappingText = formattedDataMapping(edge.dataMapping)
             edgeDisplayColorHex = CanvasStylePalette.normalizedHex(edge.displayColorHex)
         }
+        .onChange(of: edge) { _, newEdge in
+            label = newEdge.label
+            conditionExpression = newEdge.conditionExpression
+            requiresApproval = newEdge.requiresApproval
+            isBidirectional = isBidirectionalEdge(newEdge)
+            dataMappingText = formattedDataMapping(newEdge.dataMapping)
+            edgeDisplayColorHex = CanvasStylePalette.normalizedHex(newEdge.displayColorHex)
+        }
     }
 
     private var sourceName: String { endpointName(for: edge.fromNodeID) }
@@ -4289,13 +4300,13 @@ struct EdgePropertyPanel: View {
             return LocalizedString.text("unknown_value")
         }
 
+        if !node.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return node.title
+        }
+
         if let agentID = node.agentID,
            let agent = appState.currentProject?.agents.first(where: { $0.id == agentID }) {
             return agent.name
-        }
-
-        if !node.title.isEmpty {
-            return node.title
         }
 
         return node.type.rawValue.capitalized

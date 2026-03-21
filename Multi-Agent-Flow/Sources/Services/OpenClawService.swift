@@ -268,6 +268,7 @@ struct WorkbenchEntryExecution {
 enum TransportBenchmarkKind: String, Codable, CaseIterable, Identifiable {
     case gatewayChat = "gateway_chat"
     case gatewayAgent = "gateway_agent"
+    case workflowHotPath = "workflow_hot_path"
     case cli = "cli"
 
     var id: String { rawValue }
@@ -278,6 +279,8 @@ enum TransportBenchmarkKind: String, Codable, CaseIterable, Identifiable {
             return "Gateway Chat"
         case .gatewayAgent:
             return "Gateway Agent"
+        case .workflowHotPath:
+            return "Workflow Hot Path"
         case .cli:
             return "CLI"
         }
@@ -290,6 +293,7 @@ struct TransportBenchmarkSample: Codable, Identifiable {
     let iteration: Int
     let success: Bool
     let sessionID: String?
+    let actualTransportKind: String?
     let startedAt: Date
     let completedAt: Date
     let firstChunkLatencyMs: Int?
@@ -302,6 +306,7 @@ struct TransportBenchmarkSample: Codable, Identifiable {
         iteration: Int,
         success: Bool,
         sessionID: String?,
+        actualTransportKind: String?,
         startedAt: Date,
         completedAt: Date,
         firstChunkLatencyMs: Int?,
@@ -314,6 +319,7 @@ struct TransportBenchmarkSample: Codable, Identifiable {
         self.iteration = iteration
         self.success = success
         self.sessionID = sessionID
+        self.actualTransportKind = actualTransportKind
         self.startedAt = startedAt
         self.completedAt = completedAt
         self.firstChunkLatencyMs = firstChunkLatencyMs
@@ -328,6 +334,10 @@ struct TransportBenchmarkSummary: Codable, Identifiable {
     let sampleCount: Int
     let successCount: Int
     let failureCount: Int
+    let actualTransportKinds: [String]
+    let expectedTransportKind: String?
+    let expectedTransportMatchedCount: Int
+    let expectedTransportMismatchCount: Int
     let averageFirstChunkLatencyMs: Double?
     let averageCompletionLatencyMs: Double?
     let fastestCompletionLatencyMs: Int?
@@ -558,10 +568,33 @@ class OpenClawService: ObservableObject {
         let resolvedIdentifier: String
     }
 
+    private struct RuntimeRetryPolicy {
+        let allowRetry: Bool
+        let maxRetries: Int
+    }
+
     private struct AgentCLICapabilities {
         var supportsQuiet: Bool
         var supportsLogLevel: Bool
         var supportsJSONOnly: Bool
+    }
+
+    private struct RuntimeDispatchGuardrails {
+        let directTargets: [RoutingTargetDescriptor]
+        let approvalRequiredTargets: [RoutingTargetDescriptor]
+        let writeScope: [String]
+        let toolScope: [String]
+        let fallbackRoutingPolicy: WorkflowFallbackRoutingPolicy
+
+        var requiresApproval: Bool {
+            !approvalRequiredTargets.isEmpty
+        }
+    }
+
+    private struct RoutingDecisionValidation {
+        let sanitizedDecision: WorkflowRoutingDecision?
+        let approvalRequiredTargets: [RoutingTargetDescriptor]
+        let rejectedTargets: [String]
     }
     
     // 初始化时检测连接状态
@@ -831,6 +864,9 @@ class OpenClawService: ObservableObject {
         precompletedNodeIDs: [UUID] = [],
         agentOutputMode: AgentOutputMode = .structuredJSON,
         onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
+        onNodeDispatched: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onNodeAccepted: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onNodeProgress: ((OpenClawRuntimeEvent) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
@@ -839,6 +875,17 @@ class OpenClawService: ObservableObject {
         guard managerConnected else {
             lastError = "Not connected to OpenClaw Gateway"
             addLog(.error, "Cannot execute: Not connected to OpenClaw Gateway")
+            completion([])
+            return
+        }
+
+        let workspaceConflicts = OpenClawManager.shared.workspaceIsolationConflicts(for: workflow, agents: agents)
+        if !workspaceConflicts.isEmpty {
+            let message = workspaceConflicts.map { conflict in
+                "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
+            }.joined(separator: " | ")
+            lastError = "Workspace isolation conflict"
+            addLog(.error, "Cannot execute workflow until agent workspaces are isolated: \(message)")
             completion([])
             return
         }
@@ -889,6 +936,9 @@ class OpenClawService: ObservableObject {
             seedResults: preloadedResults,
             agentOutputMode: agentOutputMode,
             onNodeStream: onNodeStream,
+            onNodeDispatched: onNodeDispatched,
+            onNodeAccepted: onNodeAccepted,
+            onNodeProgress: onNodeProgress,
             onNodeCompleted: onNodeCompleted
         ) { nodeResults in
             self.executionResults = nodeResults
@@ -915,8 +965,28 @@ class OpenClawService: ObservableObject {
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel = .off,
         onStream: ((String) -> Void)? = nil,
+        onDispatched: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onAccepted: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onProgress: ((OpenClawRuntimeEvent) -> Void)? = nil,
         completion: @escaping (WorkbenchEntryExecution) -> Void
     ) {
+        let workspaceConflicts = OpenClawManager.shared.workspaceIsolationConflicts(for: workflow, agents: agents)
+        if !workspaceConflicts.isEmpty {
+            let message = workspaceConflicts.map { conflict in
+                "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
+            }.joined(separator: " | ")
+            let failedResult = ExecutionResult(
+                nodeID: node.id,
+                agentID: node.agentID ?? UUID(),
+                status: .failed,
+                output: "Workspace isolation conflict: \(message)",
+                outputType: .errorSummary
+            )
+            addLog(.error, "Cannot execute workbench entry until agent workspaces are isolated: \(message)", nodeID: node.id)
+            completion(WorkbenchEntryExecution(result: failedResult, downstreamNodes: []))
+            return
+        }
+
         guard let agentID = node.agentID,
               let agent = agents.first(where: { $0.id == agentID }) else {
             let failedResult = ExecutionResult(
@@ -952,6 +1022,13 @@ class OpenClawService: ObservableObject {
             agents: agents,
             outgoingEdges: outgoingEdges
         )
+        let guardrails = runtimeDispatchGuardrails(
+            for: agent,
+            node: node,
+            workflow: workflow,
+            outgoingEdges: outgoingEdges,
+            agents: agents
+        )
 
         executeNodeOnOpenClaw(
             node: node,
@@ -959,11 +1036,15 @@ class OpenClawService: ObservableObject {
             prompt: prompt,
             isEntryNode: true,
             downstreamTargets: downstreamTargets,
+            guardrails: guardrails,
             instructionStyle: .fastWorkbenchEntry,
             sessionID: sessionID,
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: true,
             outputMode: .plainStreaming,
+            onDispatched: onDispatched,
+            onAccepted: onAccepted,
+            onProgress: onProgress,
             onStream: onStream
         ) { [weak self] result, routingDecision in
             guard let self else { return }
@@ -1112,6 +1193,9 @@ class OpenClawService: ObservableObject {
         seedResults: [ExecutionResult] = [],
         agentOutputMode: AgentOutputMode,
         onNodeStream: ((NodeStreamUpdate) -> Void)? = nil,
+        onNodeDispatched: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onNodeAccepted: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onNodeProgress: ((OpenClawRuntimeEvent) -> Void)? = nil,
         onNodeCompleted: ((ExecutionResult) -> Void)? = nil,
         completion: @escaping ([ExecutionResult]) -> Void
     ) {
@@ -1197,6 +1281,13 @@ class OpenClawService: ObservableObject {
                 nodeID: node.id,
                 agentID: agent.id
             )
+            let guardrails = self.runtimeDispatchGuardrails(
+                for: agent,
+                node: node,
+                workflow: workflow,
+                outgoingEdges: outgoingEdges,
+                agents: agents
+            )
             
             // 调用OpenClaw执行节点
             executeNodeOnOpenClaw(
@@ -1204,9 +1295,13 @@ class OpenClawService: ObservableObject {
                 agent: agent,
                 prompt: prompt,
                 isEntryNode: entryNodeIDs.contains(node.id),
-                downstreamTargets: routingTargets(for: node, workflow: workflow, agents: agents, outgoingEdges: outgoingEdges),
+                downstreamTargets: guardrails.directTargets,
+                guardrails: guardrails,
                 sessionID: nodeSessionID,
                 outputMode: agentOutputMode,
+                onDispatched: onNodeDispatched,
+                onAccepted: onNodeAccepted,
+                onProgress: onNodeProgress,
                 onStream: { chunk in
                     onNodeStream?(
                         NodeStreamUpdate(
@@ -1227,10 +1322,9 @@ class OpenClawService: ObservableObject {
                     self.executionState?.completedNodes.append(node.id)
                     self.addLog(.success, "Node completed: \(agent.name)", nodeID: node.id)
 
-                    let downstreamTargets = self.routingTargets(for: node, workflow: workflow, agents: agents, outgoingEdges: outgoingEdges)
                     let selectedTargets = self.resolveRoutingTargets(
                         from: routingDecision,
-                        availableTargets: downstreamTargets,
+                        availableTargets: guardrails.directTargets,
                         node: node,
                         outputType: result.outputType,
                         fallbackPolicy: workflow.fallbackRoutingPolicy
@@ -1259,11 +1353,17 @@ class OpenClawService: ObservableObject {
         prompt: String?,
         isEntryNode: Bool = false,
         downstreamTargets: [RoutingTargetDescriptor] = [],
+        guardrails: RuntimeDispatchGuardrails? = nil,
         instructionStyle: WorkflowInstructionStyle = .standard,
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel? = nil,
         trackActiveRemoteRun: Bool = false,
         outputMode: AgentOutputMode = .structuredJSON,
+        dispatchAttempt: Int = 1,
+        dispatchIdempotencyKey: String? = nil,
+        onDispatched: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onAccepted: ((OpenClawRuntimeEvent) -> Void)? = nil,
+        onProgress: ((OpenClawRuntimeEvent) -> Void)? = nil,
         onStream: ((String) -> Void)? = nil,
         completion: @escaping (ExecutionResult, WorkflowRoutingDecision?) -> Void
     ) {
@@ -1271,6 +1371,17 @@ class OpenClawService: ObservableObject {
         let targetAgentID = resolvedAgentIdentifier(for: agent)
         let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTransportKind = runtimeTransportKind(for: outputMode, sessionID: normalizedSessionID)
+        let retryPolicy = runtimeRetryPolicy(isEntryNode: isEntryNode)
+        let runtimeIdempotencyKey = dispatchIdempotencyKey ?? UUID().uuidString
+        let effectiveGuardrails = guardrails ?? RuntimeDispatchGuardrails(
+            directTargets: downstreamTargets,
+            approvalRequiredTargets: [],
+            writeScope: runtimeWriteScope(for: agent),
+            toolScope: runtimeToolScope(for: agent, directTargets: downstreamTargets, approvalTargets: []),
+            fallbackRoutingPolicy: .stop
+        )
+        let serializedWriteScope = effectiveGuardrails.writeScope.joined(separator: "|")
+        let serializedToolScope = effectiveGuardrails.toolScope.joined(separator: "|")
         let dispatchEvent = makeRuntimeEvent(
             eventType: .taskDispatch,
             source: runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
@@ -1279,6 +1390,8 @@ class OpenClawService: ObservableObject {
             deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
             node: node,
             sessionKey: normalizedSessionID,
+            idempotencyKey: runtimeIdempotencyKey,
+            attempt: dispatchAttempt,
             payload: [
                 "intent": "respond",
                 "summary": (prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -1289,13 +1402,18 @@ class OpenClawService: ObservableObject {
             ],
             constraints: [
                 "timeoutSeconds": String(max(1, agentConfig.timeout)),
-                "thinkingLevel": thinkingLevel?.rawValue ?? "off"
+                "thinkingLevel": thinkingLevel?.rawValue ?? "off",
+                "writeScope": serializedWriteScope,
+                "toolScope": serializedToolScope
             ],
             control: [
-                "requiresApproval": "false",
-                "fallbackRoutingPolicy": "stop"
+                "requiresApproval": effectiveGuardrails.requiresApproval ? "true" : "false",
+                "fallbackRoutingPolicy": effectiveGuardrails.fallbackRoutingPolicy.rawValue,
+                "allowRetry": retryPolicy.allowRetry ? "true" : "false",
+                "maxRetries": String(max(retryPolicy.maxRetries, 1))
             ]
         )
+        onDispatched?(dispatchEvent)
 
         // 构建执行指令
         let instruction = buildInstruction(
@@ -1304,8 +1422,55 @@ class OpenClawService: ObservableObject {
             prompt: prompt,
             isEntryNode: isEntryNode,
             downstreamTargets: downstreamTargets,
+            guardrails: effectiveGuardrails,
             style: instructionStyle
         )
+
+        let acceptedEvent = makeRuntimeEvent(
+            eventType: .taskAccepted,
+            source: runtimeAgentActor(id: targetAgentID, name: agent.name),
+            target: runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
+            transportKind: resolvedTransportKind,
+            deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+            node: node,
+            sessionKey: normalizedSessionID,
+            parentEventId: dispatchEvent.id,
+            idempotencyKey: runtimeIdempotencyKey,
+            attempt: dispatchAttempt,
+            payload: [
+                "accepted": "true",
+                "status": "accepted"
+            ]
+        )
+        onAccepted?(acceptedEvent)
+
+        var progressEvent: OpenClawRuntimeEvent?
+        func emitProgressIfNeeded(from chunk: String) {
+            let summary = chunk
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .compactSingleLinePreview(limit: 120)
+            guard !summary.isEmpty else { return }
+            guard progressEvent == nil else { return }
+
+            let event = makeRuntimeEvent(
+                eventType: .taskProgress,
+                source: runtimeAgentActor(id: targetAgentID, name: agent.name),
+                target: runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
+                transportKind: resolvedTransportKind,
+                deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                node: node,
+                sessionKey: normalizedSessionID,
+                parentEventId: acceptedEvent.id,
+                idempotencyKey: runtimeIdempotencyKey,
+                attempt: dispatchAttempt,
+                payload: [
+                    "status": "running",
+                    "summary": summary
+                ]
+            )
+            progressEvent = event
+            onProgress?(event)
+        }
 
         // 调用openclaw agent命令
         callOpenClawAgent(
@@ -1315,8 +1480,55 @@ class OpenClawService: ObservableObject {
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: trackActiveRemoteRun,
             outputMode: outputMode,
-            onPartial: onStream
+            onPartial: { chunk in
+                emitProgressIfNeeded(from: chunk)
+                onStream?(chunk)
+            }
         ) { success, parsedOutput in
+            let isTimeoutFailure = !success && self.isLikelyTimeoutFailure(parsedOutput.text)
+            let canRetryAfterFailure = isTimeoutFailure
+                && retryPolicy.allowRetry
+                && dispatchAttempt < max(retryPolicy.maxRetries, 1)
+
+            if canRetryAfterFailure {
+                let nextAttempt = dispatchAttempt + 1
+                self.addLog(
+                    .warning,
+                    "Node timed out: \(agent.name). Retrying attempt \(nextAttempt)/\(max(retryPolicy.maxRetries, 1)).",
+                    nodeID: node.id
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    guard let self else { return }
+                    self.executeNodeOnOpenClaw(
+                        node: node,
+                        agent: agent,
+                        prompt: prompt,
+                        isEntryNode: isEntryNode,
+                        downstreamTargets: downstreamTargets,
+                        guardrails: effectiveGuardrails,
+                        instructionStyle: instructionStyle,
+                        sessionID: sessionID,
+                        thinkingLevel: thinkingLevel,
+                        trackActiveRemoteRun: trackActiveRemoteRun,
+                        outputMode: outputMode,
+                        dispatchAttempt: nextAttempt,
+                        dispatchIdempotencyKey: runtimeIdempotencyKey,
+                        onDispatched: onDispatched,
+                        onAccepted: onAccepted,
+                        onProgress: onProgress,
+                        onStream: onStream,
+                        completion: completion
+                    )
+                }
+                return
+            }
+
+            let routingValidation = self.validateRoutingDecision(
+                parsedOutput.routingDecision,
+                directTargets: effectiveGuardrails.directTargets,
+                approvalTargets: effectiveGuardrails.approvalRequiredTargets,
+                node: node
+            )
             let status: ExecutionStatus = success ? .completed : .failed
             let completedAt = Date()
             let resultEvent = self.makeRuntimeEvent(
@@ -1327,7 +1539,9 @@ class OpenClawService: ObservableObject {
                 deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
                 node: node,
                 sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
-                parentEventId: dispatchEvent.id,
+                parentEventId: acceptedEvent.id,
+                idempotencyKey: runtimeIdempotencyKey,
+                attempt: dispatchAttempt,
                 payload: success
                     ? [
                         "status": "success",
@@ -1337,11 +1551,15 @@ class OpenClawService: ObservableObject {
                             : parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines)
                       ]
                     : [
-                        "code": "E_AGENT_EXECUTION_FAILED",
+                        "code": isTimeoutFailure ? "E_RUNTIME_DISPATCH_TIMEOUT" : "E_AGENT_EXECUTION_FAILED",
                         "message": parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? "OpenClaw agent execution failed."
+                            ? (isTimeoutFailure
+                                ? "OpenClaw agent execution timed out."
+                                : "OpenClaw agent execution failed.")
                             : parsedOutput.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                        "retryable": "false"
+                        "retryable": isTimeoutFailure && retryPolicy.allowRetry && dispatchAttempt < max(retryPolicy.maxRetries, 1)
+                            ? "true"
+                            : "false"
                       ]
             )
             let routeEvent = parsedOutput.routingDecision.map { decision in
@@ -1361,7 +1579,31 @@ class OpenClawService: ObservableObject {
                     ]
                 )
             }
-            let runtimeEvents = [dispatchEvent, resultEvent] + (routeEvent.map { [$0] } ?? [])
+            let approvalEvents = routingValidation.approvalRequiredTargets.map { target in
+                self.makeRuntimeEvent(
+                    eventType: .taskApprovalRequired,
+                    source: self.runtimeAgentActor(id: targetAgentID, name: agent.name),
+                    target: self.runtimeSystemActor(kind: .orchestrator, id: "workflow.router"),
+                    transportKind: resolvedTransportKind,
+                    deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                    node: node,
+                    sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
+                    parentEventId: routeEvent?.id ?? resultEvent.id,
+                    payload: [
+                        "approvalScope": "edge",
+                        "approvalKey": "\(node.id.uuidString)->\(target.node.id.uuidString)",
+                        "requestedAction": "route",
+                        "targetAgentId": target.resolvedIdentifier,
+                        "reason": "Routing to \(target.agent.name) requires operator approval."
+                    ]
+                )
+            }
+            let runtimeEvents =
+                [dispatchEvent, acceptedEvent]
+                + (progressEvent.map { [$0] } ?? [])
+                + [resultEvent]
+                + (routeEvent.map { [$0] } ?? [])
+                + approvalEvents
             let result = ExecutionResult(
                 nodeID: node.id,
                 agentID: agent.id,
@@ -1372,15 +1614,15 @@ class OpenClawService: ObservableObject {
                 transportKind: parsedOutput.transportKind,
                 firstChunkLatencyMs: parsedOutput.firstChunkLatencyMs,
                 completionLatencyMs: parsedOutput.completionLatencyMs,
-                routingAction: parsedOutput.routingDecision?.action.rawValue,
-                routingTargets: parsedOutput.routingDecision?.targets ?? [],
-                routingReason: parsedOutput.routingDecision?.reason,
+                routingAction: routingValidation.sanitizedDecision?.action.rawValue,
+                routingTargets: routingValidation.sanitizedDecision?.targets ?? [],
+                routingReason: routingValidation.sanitizedDecision?.reason ?? parsedOutput.routingDecision?.reason,
                 runtimeEvents: runtimeEvents,
-                primaryRuntimeEvent: routeEvent ?? resultEvent,
+                primaryRuntimeEvent: approvalEvents.last ?? routeEvent ?? resultEvent,
                 startedAt: nodeStartedAt,
                 completedAt: completedAt
             )
-            completion(result, parsedOutput.routingDecision)
+            completion(result, routingValidation.sanitizedDecision)
         }
     }
 
@@ -1394,12 +1636,11 @@ class OpenClawService: ObservableObject {
 
     private func runtimeTransportKind(for outputMode: AgentOutputMode, sessionID: String?) -> String {
         let deploymentKind = OpenClawManager.shared.config.deploymentKind
-        switch deploymentKind {
-        case .remoteServer:
-            return (sessionID?.isEmpty == false || outputMode == .plainStreaming) ? "gateway_chat" : "gateway_agent"
-        case .local, .container:
-            return "cli"
-        }
+        return OpenClawTransportRouting.runtimeTransportKind(
+            deploymentKind: deploymentKind,
+            outputMode: outputMode,
+            sessionID: sessionID
+        ).rawValue
     }
 
     private func makeRuntimeEvent(
@@ -1411,6 +1652,8 @@ class OpenClawService: ObservableObject {
         node: WorkflowNode,
         sessionKey: String?,
         parentEventId: String? = nil,
+        idempotencyKey: String? = nil,
+        attempt: Int? = 1,
         payload: [String: String],
         constraints: [String: String] = [:],
         control: [String: String] = [:]
@@ -1422,7 +1665,8 @@ class OpenClawService: ObservableObject {
             nodeId: node.id.uuidString,
             sessionKey: sessionKey,
             parentEventId: parentEventId,
-            idempotencyKey: UUID().uuidString,
+            idempotencyKey: idempotencyKey ?? UUID().uuidString,
+            attempt: attempt,
             source: source,
             target: target,
             transport: OpenClawRuntimeTransport(kind: resolvedTransport, deploymentKind: deploymentKind),
@@ -1440,6 +1684,7 @@ class OpenClawService: ObservableObject {
         prompt: String?,
         isEntryNode: Bool,
         downstreamTargets: [RoutingTargetDescriptor],
+        guardrails: RuntimeDispatchGuardrails,
         style: WorkflowInstructionStyle
     ) -> String {
         let normalizedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1454,6 +1699,18 @@ class OpenClawService: ObservableObject {
                 return "- \(target.agent.name) (agent_id: \(target.resolvedIdentifier), node: \(nodeLabel))"
             }
         }
+        let approvalLines: [String]
+        if guardrails.approvalRequiredTargets.isEmpty {
+            approvalLines = ["- None."]
+        } else {
+            approvalLines = guardrails.approvalRequiredTargets.map { target in
+                let title = target.node.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let nodeLabel = title.isEmpty ? target.node.id.uuidString : title
+                return "- \(target.agent.name) (agent_id: \(target.resolvedIdentifier), node: \(nodeLabel))"
+            }
+        }
+        let writeScopeText = guardrails.writeScope.isEmpty ? "- No explicit write scope resolved." : guardrails.writeScope.map { "- \($0)" }.joined(separator: "\n")
+        let toolScopeText = guardrails.toolScope.isEmpty ? "- No explicit tool scope resolved." : guardrails.toolScope.map { "- \($0)" }.joined(separator: "\n")
 
         switch style {
         case .standard:
@@ -1490,6 +1747,17 @@ class OpenClawService: ObservableObject {
             Downstream Candidates:
             \(candidateLines.joined(separator: "\n"))
 
+            Approval-Required Downstream Agents:
+            \(approvalLines.joined(separator: "\n"))
+
+            Runtime Guardrails:
+            - You must not contact or delegate to agents outside the allowed downstream candidate list.
+            - If you need an approval-required target, explain it in your visible reply and include it in routing JSON; do not contact it directly.
+            - Restrict file writes to the paths below.
+            \(writeScopeText)
+            - Restrict tool usage to the scopes below.
+            \(toolScopeText)
+
             Routing Output Contract:
             - After your normal visible reply, append exactly one valid single-line JSON object as the last non-empty line.
             - Use this schema:
@@ -1518,12 +1786,227 @@ class OpenClawService: ObservableObject {
             Downstream Candidates:
             \(candidateLines.joined(separator: "\n"))
 
+            Approval-Required Downstream Agents:
+            \(approvalLines.joined(separator: "\n"))
+
+            Runtime Guardrails:
+            - Do not directly contact approval-required targets.
+            - Keep writes inside:
+            \(writeScopeText)
+            - Limit tools to:
+            \(toolScopeText)
+
             Append exactly one JSON object as the last non-empty line:
             {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
             Allowed action values: "stop", "selected", "all".
             Keep the JSON on its own line with no Markdown fence.
             """
         }
+    }
+
+    private func runtimeDispatchGuardrails(
+        for agent: Agent,
+        node: WorkflowNode,
+        workflow: Workflow,
+        outgoingEdges: [UUID: [WorkflowEdge]],
+        agents: [Agent]
+    ) -> RuntimeDispatchGuardrails {
+        let buckets = routingTargetBuckets(
+            for: node,
+            workflow: workflow,
+            agents: agents,
+            outgoingEdges: outgoingEdges
+        )
+        return RuntimeDispatchGuardrails(
+            directTargets: buckets.directTargets,
+            approvalRequiredTargets: buckets.approvalTargets,
+            writeScope: runtimeWriteScope(for: agent),
+            toolScope: runtimeToolScope(for: agent, directTargets: buckets.directTargets, approvalTargets: buckets.approvalTargets),
+            fallbackRoutingPolicy: workflow.fallbackRoutingPolicy
+        )
+    }
+
+    private func runtimeWriteScope(for agent: Agent) -> [String] {
+        var scopes: [String] = []
+
+        if let workspacePath = OpenClawManager.shared.resolvedWorkspacePath(for: agent)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !workspacePath.isEmpty {
+            scopes.append(workspacePath)
+        }
+
+        if let memoryBackupPath = agent.openClawDefinition.memoryBackupPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !memoryBackupPath.isEmpty {
+            scopes.append(memoryBackupPath)
+        }
+
+        return Array(Set(scopes)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func runtimeToolScope(
+        for agent: Agent,
+        directTargets: [RoutingTargetDescriptor],
+        approvalTargets: [RoutingTargetDescriptor]
+    ) -> [String] {
+        var scopes = agent.capabilities
+            .map { normalizedToolScopeKey($0) }
+            .filter { !$0.isEmpty && $0 != "basic" }
+
+        if !directTargets.isEmpty || !approvalTargets.isEmpty {
+            scopes.append("workflow.route")
+        }
+
+        return Array(Set(scopes)).sorted()
+    }
+
+    private func normalizedToolScopeKey(_ value: String) -> String {
+        let filtered = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .map { character -> Character in
+                switch character {
+                case "a"..."z", "0"..."9", ".", "-", "_":
+                    return character
+                default:
+                    return "-"
+                }
+            }
+        return String(filtered)
+            .replacingOccurrences(of: "--", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    private func validateRoutingDecision(
+        _ decision: WorkflowRoutingDecision?,
+        directTargets: [RoutingTargetDescriptor],
+        approvalTargets: [RoutingTargetDescriptor],
+        node: WorkflowNode
+    ) -> RoutingDecisionValidation {
+        guard let decision else {
+            return RoutingDecisionValidation(sanitizedDecision: nil, approvalRequiredTargets: [], rejectedTargets: [])
+        }
+
+        switch decision.action {
+        case .stop:
+            return RoutingDecisionValidation(sanitizedDecision: decision, approvalRequiredTargets: [], rejectedTargets: [])
+        case .all:
+            if !approvalTargets.isEmpty {
+                let names = approvalTargets.map(\.agent.name).joined(separator: ", ")
+                addLog(.warning, "Routing request includes approval-required targets and they will remain blocked until approved: \(names)", nodeID: node.id)
+            }
+            return RoutingDecisionValidation(
+                sanitizedDecision: WorkflowRoutingDecision(action: .all, targets: directTargets.map(\.resolvedIdentifier), reason: decision.reason),
+                approvalRequiredTargets: approvalTargets,
+                rejectedTargets: []
+            )
+        case .selected:
+            var allowedTargets: [RoutingTargetDescriptor] = []
+            var approvalRequiredSelections: [RoutingTargetDescriptor] = []
+            var rejectedTargets: [String] = []
+
+            for requestedTarget in decision.targets {
+                if let directTarget = directTargets.first(where: { routeTargetMatches([requestedTarget], candidate: $0) }) {
+                    if !allowedTargets.contains(where: { $0.node.id == directTarget.node.id }) {
+                        allowedTargets.append(directTarget)
+                    }
+                    continue
+                }
+
+                if let approvalTarget = approvalTargets.first(where: { routeTargetMatches([requestedTarget], candidate: $0) }) {
+                    if !approvalRequiredSelections.contains(where: { $0.node.id == approvalTarget.node.id }) {
+                        approvalRequiredSelections.append(approvalTarget)
+                    }
+                    continue
+                }
+
+                rejectedTargets.append(requestedTarget)
+            }
+
+            if !approvalRequiredSelections.isEmpty {
+                let names = approvalRequiredSelections.map(\.agent.name).joined(separator: ", ")
+                addLog(.warning, "Routing request to \(names) requires approval and was withheld from direct execution.", nodeID: node.id)
+            }
+
+            if !rejectedTargets.isEmpty {
+                addLog(.warning, "Routing request referenced unsupported targets and they were rejected: \(rejectedTargets.joined(separator: ", "))", nodeID: node.id)
+            }
+
+            let sanitizedDecision: WorkflowRoutingDecision
+            if allowedTargets.isEmpty {
+                sanitizedDecision = WorkflowRoutingDecision(
+                    action: .stop,
+                    targets: [],
+                    reason: decision.reason ?? "all requested targets were blocked by runtime guardrails"
+                )
+            } else {
+                sanitizedDecision = WorkflowRoutingDecision(
+                    action: .selected,
+                    targets: allowedTargets.map(\.resolvedIdentifier),
+                    reason: decision.reason
+                )
+            }
+
+            return RoutingDecisionValidation(
+                sanitizedDecision: sanitizedDecision,
+                approvalRequiredTargets: approvalRequiredSelections,
+                rejectedTargets: rejectedTargets
+            )
+        }
+    }
+
+    private func routingTargetBuckets(
+        for node: WorkflowNode,
+        workflow: Workflow,
+        agents: [Agent],
+        outgoingEdges: [UUID: [WorkflowEdge]]
+    ) -> (directTargets: [RoutingTargetDescriptor], approvalTargets: [RoutingTargetDescriptor]) {
+        let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
+        let agentByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+        let edges = outgoingEdges[node.id, default: []]
+
+        var directTargets: [RoutingTargetDescriptor] = []
+        var approvalTargets: [RoutingTargetDescriptor] = []
+        var seenDirect = Set<UUID>()
+        var seenApproval = Set<UUID>()
+
+        for edge in edges {
+            let condition = edge.conditionExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard condition.isEmpty || evaluateExpression(condition, workflow: workflow) else {
+                continue
+            }
+
+            guard let candidateNode = nodeByID[edge.toNodeID],
+                  candidateNode.type == .agent,
+                  let agentID = candidateNode.agentID,
+                  let candidateAgent = agentByID[agentID] else {
+                continue
+            }
+
+            let descriptor = RoutingTargetDescriptor(
+                node: candidateNode,
+                agent: candidateAgent,
+                resolvedIdentifier: resolvedAgentIdentifier(for: candidateAgent)
+            )
+
+            if edge.requiresApproval {
+                guard seenApproval.insert(candidateNode.id).inserted else { continue }
+                approvalTargets.append(descriptor)
+            } else {
+                guard seenDirect.insert(candidateNode.id).inserted else { continue }
+                directTargets.append(descriptor)
+            }
+        }
+
+        let sorter: (RoutingTargetDescriptor, RoutingTargetDescriptor) -> Bool = { lhs, rhs in
+            self.nodeSort(lhs.node, rhs.node)
+        }
+        return (
+            directTargets.sorted(by: sorter),
+            approvalTargets.sorted(by: sorter)
+        )
     }
 
     private func routingTargets(
@@ -1876,13 +2359,11 @@ class OpenClawService: ObservableObject {
                     sessionID: sessionID,
                     agentIdentifier: resolvedAgent.identifier
                 )
-                let hasSessionID: Bool
-                if let sessionID {
-                    hasSessionID = !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                } else {
-                    hasSessionID = false
-                }
-                let transportKind = hasSessionID ? "gateway_chat" : "gateway_agent"
+                let useGatewayChatTransport = self.prefersGatewayChatTransport(
+                    sessionID: sessionID,
+                    outputMode: outputMode
+                )
+                let transportKind = useGatewayChatTransport ? "gateway_chat" : "gateway_agent"
                 let shouldStreamPlainOutput: Bool
                 switch outputMode {
                 case .plainStreaming:
@@ -1921,7 +2402,7 @@ class OpenClawService: ObservableObject {
                             }
                         }
                         let result: OpenClawGatewayClient.AgentExecutionResult
-                        if let sessionID, !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        if useGatewayChatTransport {
                             await MainActor.run {
                                 self.addLog(
                                     .info,
@@ -2048,6 +2529,10 @@ class OpenClawService: ObservableObject {
             switch transportPreference {
             case .gatewayOnly:
                 let completionLatencyMs = durationMs(since: executionStartedAt)
+                let preferredTransportKind = self.prefersGatewayChatTransport(
+                    sessionID: sessionID,
+                    outputMode: outputMode
+                ) ? "gateway_chat" : "gateway_agent"
                 DispatchQueue.main.async {
                     completion(
                         false,
@@ -2055,7 +2540,7 @@ class OpenClawService: ObservableObject {
                             text: "Gateway transport is unavailable for the current OpenClaw configuration.",
                             type: .errorSummary,
                             sessionID: sessionID,
-                            transportKind: sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? "gateway_chat" : "gateway_agent",
+                            transportKind: preferredTransportKind,
                             completionLatencyMs: completionLatencyMs,
                             routingDecision: nil
                         )
@@ -2324,6 +2809,16 @@ class OpenClawService: ObservableObject {
             return "agent:\(normalizedAgent):\(sanitizedGatewaySessionComponent(base))"
         }
         return "agent:\(normalizedAgent):main"
+    }
+
+    private func prefersGatewayChatTransport(
+        sessionID: String?,
+        outputMode: AgentOutputMode
+    ) -> Bool {
+        OpenClawTransportRouting.prefersGatewayChatTransport(
+            sessionID: sessionID,
+            outputMode: outputMode
+        )
     }
 
     private func normalizedGatewayAgentID(_ rawValue: String) -> String {
@@ -2712,6 +3207,29 @@ class OpenClawService: ObservableObject {
         return "OpenClaw agent execution failed (exit code \(exitCode))."
     }
 
+    private func runtimeRetryPolicy(isEntryNode: Bool) -> RuntimeRetryPolicy {
+        RuntimeRetryPolicy(
+            allowRetry: !isEntryNode,
+            maxRetries: isEntryNode ? 1 : 2
+        )
+    }
+
+    private func isLikelyTimeoutFailure(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+
+        let timeoutMarkers = [
+            "timed out",
+            "timeout",
+            "request timed out",
+            "execution timeout",
+            "deadline exceeded",
+            "超时",
+            "逾时"
+        ]
+        return timeoutMarkers.contains { normalized.contains($0) }
+    }
+
     private func truncatedLog(_ text: String, maxLength: Int = 2000) -> String {
         guard text.count > maxLength else { return text }
         return "\(text.prefix(maxLength)) …"
@@ -3063,6 +3581,8 @@ class OpenClawService: ObservableObject {
                 switch transport {
                 case .gatewayChat:
                     sharedSessionID = "benchmark-\(UUID().uuidString.lowercased())"
+                case .workflowHotPath:
+                    sharedSessionID = "workflow-benchmark-\(UUID().uuidString.lowercased())"
                 case .gatewayAgent, .cli:
                     sharedSessionID = nil
                 }
@@ -3098,6 +3618,7 @@ class OpenClawService: ObservableObject {
                         iteration: iteration,
                         success: outcome.success,
                         sessionID: outcome.output.sessionID ?? sharedSessionID,
+                        actualTransportKind: outcome.output.transportKind,
                         startedAt: invocationStartedAt,
                         completedAt: completedAt,
                         firstChunkLatencyMs: outcome.output.firstChunkLatencyMs,
@@ -3110,7 +3631,7 @@ class OpenClawService: ObservableObject {
                     let logLevel: ExecutionLogEntry.LogLevel = outcome.success ? .success : .error
                     self.addLog(
                         logLevel,
-                        "Benchmark \(transport.displayName) #\(iteration): first=\(sample.firstChunkLatencyMs.map(String.init) ?? "n/a")ms, total=\(sample.completionLatencyMs.map(String.init) ?? "n/a")ms"
+                        "Benchmark \(transport.displayName) #\(iteration): actual=\(sample.actualTransportKind ?? "unknown"), first=\(sample.firstChunkLatencyMs.map(String.init) ?? "n/a")ms, total=\(sample.completionLatencyMs.map(String.init) ?? "n/a")ms"
                     )
                 }
             }
@@ -3362,9 +3883,9 @@ class OpenClawService: ObservableObject {
     private func availableBenchmarkTransports(for config: OpenClawConfig) -> [TransportBenchmarkKind] {
         if OpenClawManager.shared.preferredGatewayConfig(using: config) != nil {
             if config.deploymentKind == .remoteServer {
-                return [.gatewayChat, .gatewayAgent]
+                return [.gatewayChat, .gatewayAgent, .workflowHotPath]
             }
-            return [.gatewayChat, .gatewayAgent, .cli]
+            return [.gatewayChat, .gatewayAgent, .workflowHotPath, .cli]
         }
         return [.cli]
     }
@@ -3403,6 +3924,9 @@ class OpenClawService: ObservableObject {
             case .gatewayAgent:
                 benchmarkSessionID = nil
                 transportPreference = .gatewayOnly
+            case .workflowHotPath:
+                benchmarkSessionID = sessionID
+                transportPreference = .gatewayOnly
             case .cli:
                 benchmarkSessionID = nil
                 transportPreference = .cliOnly
@@ -3424,29 +3948,11 @@ class OpenClawService: ObservableObject {
     private func summarizeTransportBenchmarkSamples(
         _ samples: [TransportBenchmarkSample]
     ) -> [TransportBenchmarkSummary] {
-        Dictionary(grouping: samples, by: \.transport)
-            .map { transport, groupedSamples in
-                let successCount = groupedSamples.filter(\.success).count
-                let failureCount = groupedSamples.count - successCount
-                let firstChunkValues = groupedSamples.compactMap(\.firstChunkLatencyMs).map(Double.init)
-                let completionValues = groupedSamples.compactMap(\.completionLatencyMs).map(Double.init)
+        OpenClawTransportRouting.summarizeTransportBenchmarkSamples(samples)
+    }
 
-                return TransportBenchmarkSummary(
-                    transport: transport,
-                    sampleCount: groupedSamples.count,
-                    successCount: successCount,
-                    failureCount: failureCount,
-                    averageFirstChunkLatencyMs: firstChunkValues.isEmpty
-                        ? nil
-                        : firstChunkValues.reduce(0, +) / Double(firstChunkValues.count),
-                    averageCompletionLatencyMs: completionValues.isEmpty
-                        ? nil
-                        : completionValues.reduce(0, +) / Double(completionValues.count),
-                    fastestCompletionLatencyMs: groupedSamples.compactMap(\.completionLatencyMs).min(),
-                    slowestCompletionLatencyMs: groupedSamples.compactMap(\.completionLatencyMs).max()
-                )
-            }
-            .sorted { $0.transport.displayName < $1.transport.displayName }
+    private func expectedBenchmarkTransportKind(for transport: TransportBenchmarkKind) -> String? {
+        OpenClawTransportRouting.expectedBenchmarkTransportKind(for: transport)?.rawValue
     }
 
     private func persistTransportBenchmarkReport(_ report: TransportBenchmarkReport) -> URL? {

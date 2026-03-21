@@ -27,6 +27,9 @@ export interface RuntimeDispatchRecord {
   attempt: number;
   status: OpenClawRuntimeTaskStatus;
   transportKind: OpenClawRuntimeTransportKind;
+  timeoutSeconds?: number | null;
+  allowRetry: boolean;
+  maxRetries?: number | null;
   queuedAt: SwiftDate;
   updatedAt: SwiftDate;
   completedAt?: SwiftDate | null;

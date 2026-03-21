@@ -45,6 +45,10 @@ declare global {
     sessionID?: string | null;
     thinkingLevel?: string | null;
     timeoutSeconds?: number | null;
+    writeScope?: string[] | null;
+    toolScope?: string[] | null;
+    requiresApproval?: boolean | null;
+    fallbackRoutingPolicy?: string | null;
   }
 
   interface OpenClawRoutingDecision {

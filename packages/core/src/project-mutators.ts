@@ -13,6 +13,7 @@ import type {
 } from "@multi-agent-flow/domain";
 import { toSwiftDate } from "./swift-date";
 import { createUUID } from "./uuid";
+import { normalizeWorkflowNodeTitle } from "./workflow-node-naming";
 
 function withUpdatedAt(project: MAProject): MAProject {
   return {
@@ -894,6 +895,7 @@ export function addNodeToWorkflow(
 ): MAProject {
   return updateWorkflow(project, workflowId, (workflow) => {
     const nodeIndex = workflow.nodes.length;
+    const title = normalizeWorkflowNodeTitle(workflow, nodeType, "");
 
     return {
       ...workflow,
@@ -907,7 +909,7 @@ export function addNodeToWorkflow(
             x: 120 + nodeIndex * 160,
             y: nodeType === "start" ? 120 : 260
           },
-          title: nodeType === "start" ? "Start" : `Agent Node ${nodeIndex + 1}`,
+          title,
           displayColorHex: null,
           conditionExpression: "",
           loopEnabled: false,
@@ -944,18 +946,37 @@ export function assignAgentToNodes(
 
   const agentName = project.agents.find((agent) => agent.id === agentId)?.name;
 
-  return updateWorkflow(project, workflowId, (workflow) => ({
-    ...workflow,
-    nodes: workflow.nodes.map((node) =>
-      nodeIdSet.has(node.id)
-        ? {
-            ...node,
-            agentID: agentId,
-            title: agentName && node.type === "agent" ? agentName : node.title
+  return updateWorkflow(project, workflowId, (workflow) => {
+    const nextNodes = [...workflow.nodes];
+
+    for (const [index, node] of workflow.nodes.entries()) {
+      if (!nodeIdSet.has(node.id)) {
+        continue;
+      }
+
+      const requestedTitle = agentName && node.type === "agent" ? agentName : node.title;
+      nextNodes[index] = {
+        ...node,
+        agentID: agentId,
+        title: normalizeWorkflowNodeTitle(
+          {
+            ...workflow,
+            nodes: nextNodes
+          },
+          node.type,
+          requestedTitle,
+          {
+            excludeNodeId: node.id
           }
-        : node
-    )
-  }));
+        )
+      };
+    }
+
+    return {
+      ...workflow,
+      nodes: nextNodes
+    };
+  });
 }
 
 export function renameWorkflowNode(
@@ -970,7 +991,9 @@ export function renameWorkflowNode(
       node.id === nodeId
         ? {
             ...node,
-            title
+            title: normalizeWorkflowNodeTitle(workflow, node.type, title, {
+              excludeNodeId: node.id
+            })
           }
         : node
     )

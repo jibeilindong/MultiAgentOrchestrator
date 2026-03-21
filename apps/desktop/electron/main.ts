@@ -79,6 +79,10 @@ interface OpenClawAgentExecutionRequest {
   sessionID?: string | null;
   thinkingLevel?: string | null;
   timeoutSeconds?: number | null;
+  writeScope?: string[] | null;
+  toolScope?: string[] | null;
+  requiresApproval?: boolean | null;
+  fallbackRoutingPolicy?: string | null;
 }
 
 interface OpenClawRoutingDecision {
@@ -215,11 +219,13 @@ function buildRuntimeEventsForExecution(
     },
     constraints: {
       timeoutSeconds: request.timeoutSeconds ?? config.timeout ?? null,
-      thinkingLevel: trimmedString(request.thinkingLevel) || null
+      thinkingLevel: trimmedString(request.thinkingLevel) || null,
+      writeScope: Array.isArray(request.writeScope) ? request.writeScope.filter(Boolean) : [],
+      toolScope: Array.isArray(request.toolScope) ? request.toolScope.filter(Boolean) : []
     },
     control: {
-      requiresApproval: false,
-      fallbackRoutingPolicy: "stop",
+      requiresApproval: request.requiresApproval === true,
+      fallbackRoutingPolicy: trimmedString(request.fallbackRoutingPolicy) || "stop",
       allowRetry: true,
       maxRetries: 1,
       priority: "medium"

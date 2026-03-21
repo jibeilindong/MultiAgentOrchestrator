@@ -37,6 +37,9 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
     var attempt: Int
     var status: RuntimeDispatchStatus
     var transportKind: OpenClawRuntimeTransportKind
+    var timeoutSeconds: Int?
+    var allowRetry: Bool
+    var maxRetries: Int?
     var queuedAt: Date
     var updatedAt: Date
     var completedAt: Date?
@@ -57,6 +60,9 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
         attempt: Int = 1,
         status: RuntimeDispatchStatus,
         transportKind: OpenClawRuntimeTransportKind,
+        timeoutSeconds: Int? = nil,
+        allowRetry: Bool = false,
+        maxRetries: Int? = nil,
         queuedAt: Date = Date(),
         updatedAt: Date = Date(),
         completedAt: Date? = nil,
@@ -76,6 +82,9 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
         self.attempt = attempt
         self.status = status
         self.transportKind = transportKind
+        self.timeoutSeconds = timeoutSeconds
+        self.allowRetry = allowRetry
+        self.maxRetries = maxRetries
         self.queuedAt = queuedAt
         self.updatedAt = updatedAt
         self.completedAt = completedAt
@@ -182,6 +191,7 @@ struct ProjectOpenClawDetectedAgentRecord: Codable, Identifiable, Hashable {
     var name: String
     var directoryPath: String?
     var configPath: String?
+    var soulPath: String?
     var workspacePath: String?
     var statePath: String?
     var directoryValidated: Bool
@@ -196,6 +206,7 @@ struct ProjectOpenClawDetectedAgentRecord: Codable, Identifiable, Hashable {
         name: String,
         directoryPath: String? = nil,
         configPath: String? = nil,
+        soulPath: String? = nil,
         workspacePath: String? = nil,
         statePath: String? = nil,
         directoryValidated: Bool = false,
@@ -209,6 +220,7 @@ struct ProjectOpenClawDetectedAgentRecord: Codable, Identifiable, Hashable {
         self.name = name
         self.directoryPath = directoryPath
         self.configPath = configPath
+        self.soulPath = soulPath
         self.workspacePath = workspacePath
         self.statePath = statePath
         self.directoryValidated = directoryValidated
@@ -459,6 +471,12 @@ struct MAProject: Codable, Identifiable {
     func permission(from: Agent, to: Agent) -> PermissionType {
         if from.id == to.id {
             return .allow  // 自身总是允许
+        }
+
+        if let explicitPermission = permissions.first(where: {
+            $0.fromAgentID == from.id && $0.toAgentID == to.id
+        }) {
+            return explicitPermission.permissionType
         }
 
         if isConversationAllowed(from: from.id, to: to.id) {

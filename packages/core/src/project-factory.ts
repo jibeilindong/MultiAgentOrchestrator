@@ -83,6 +83,10 @@ function createDefaultRuntimeState(now: number): RuntimeState {
   return {
     sessionID: createUUID(),
     messageQueue: [],
+    dispatchQueue: [],
+    inflightDispatches: [],
+    completedDispatches: [],
+    failedDispatches: [],
     agentStates: {},
     runtimeEvents: [],
     lastUpdated: now

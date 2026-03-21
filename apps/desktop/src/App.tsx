@@ -271,6 +271,107 @@ function buildWorkflowOutgoingEdges(workflow: Workflow): Map<string, WorkflowEdg
   return outgoing;
 }
 
+interface LiveExecutionGuardrails {
+  writeScope: string[];
+  toolScope: string[];
+  requiresApproval: boolean;
+  fallbackRoutingPolicy: WorkflowFallbackRoutingPolicy;
+  directTargetKeys: string[];
+  approvalTargetKeys: string[];
+}
+
+function resolveDetectedWorkspacePaths(project: MAProject, agentId: string): string[] {
+  const agent = project.agents.find((item) => item.id === agentId) ?? null;
+  if (!agent) {
+    return [];
+  }
+
+  const matchKeys = new Set(
+    [agent.name, agent.openClawDefinition.agentIdentifier]
+      .map((value) => normalizeRouteKey(value ?? ""))
+      .filter(Boolean)
+  );
+
+  const paths = project.openClaw.detectedAgents
+    .filter((record) => matchKeys.has(normalizeRouteKey(record.name)))
+    .flatMap((record) => [record.workspacePath, record.directoryPath])
+    .filter((value): value is string => Boolean(value && value.trim()));
+
+  return Array.from(new Set(paths)).sort((left, right) => left.localeCompare(right));
+}
+
+function buildLiveExecutionGuardrails(
+  project: MAProject,
+  workflow: Workflow,
+  nodeId: string,
+  agentId: string
+): LiveExecutionGuardrails {
+  const agent = project.agents.find((item) => item.id === agentId) ?? null;
+  const outgoingEdges = buildWorkflowOutgoingEdges(workflow).get(nodeId) ?? [];
+  const nodeMap = new Map(workflow.nodes.map((node) => [node.id, node] as const));
+
+  const directTargetKeys: string[] = [];
+  const approvalTargetKeys: string[] = [];
+
+  for (const edge of outgoingEdges) {
+    const targetNode = nodeMap.get(edge.toNodeID);
+    const targetAgent = project.agents.find((item) => item.id === targetNode?.agentID) ?? null;
+    const identifier = targetAgent?.openClawDefinition.agentIdentifier?.trim() || targetAgent?.name?.trim() || targetNode?.id;
+    if (!identifier) {
+      continue;
+    }
+
+    if (edge.requiresApproval) {
+      approvalTargetKeys.push(identifier);
+    } else {
+      directTargetKeys.push(identifier);
+    }
+  }
+
+  const toolScope = Array.from(
+    new Set(
+      [
+        ...(agent?.capabilities ?? [])
+          .map((value) => normalizeRouteKey(value).replace(/[^a-z0-9._-]/g, "-"))
+          .filter((value) => value && value !== "basic"),
+        ...(outgoingEdges.length > 0 ? ["workflow.route"] : [])
+      ]
+    )
+  ).sort((left, right) => left.localeCompare(right));
+
+  return {
+    writeScope: resolveDetectedWorkspacePaths(project, agentId),
+    toolScope,
+    requiresApproval: approvalTargetKeys.length > 0,
+    fallbackRoutingPolicy: workflow.fallbackRoutingPolicy,
+    directTargetKeys: Array.from(new Set(directTargetKeys)).sort((left, right) => left.localeCompare(right)),
+    approvalTargetKeys: Array.from(new Set(approvalTargetKeys)).sort((left, right) => left.localeCompare(right))
+  };
+}
+
+function augmentLiveExecutionPrompt(prompt: string, guardrails: LiveExecutionGuardrails): string {
+  const sections = [prompt.trim()];
+  const allowedTargetsText =
+    guardrails.directTargetKeys.length > 0 ? guardrails.directTargetKeys.join(", ") : "(none)";
+  const approvalTargetsText =
+    guardrails.approvalTargetKeys.length > 0 ? guardrails.approvalTargetKeys.join(", ") : "(none)";
+  const writeScopeText = guardrails.writeScope.length > 0 ? guardrails.writeScope.join(", ") : "(unresolved)";
+  const toolScopeText = guardrails.toolScope.length > 0 ? guardrails.toolScope.join(", ") : "(unresolved)";
+
+  sections.push(
+    [
+      "Runtime Guardrails:",
+      `- Allowed downstream targets: ${allowedTargetsText}`,
+      `- Approval-required downstream targets: ${approvalTargetsText}`,
+      `- Restrict writes to: ${writeScopeText}`,
+      `- Limit tools to: ${toolScopeText}`,
+      "- Do not directly contact approval-required targets; request routing instead."
+    ].join("\n")
+  );
+
+  return sections.filter(Boolean).join("\n\n");
+}
+
 function resolveLiveRoutingTargets(
   project: MAProject,
   workflow: Workflow,
@@ -815,12 +916,22 @@ export function App() {
         continue;
       }
       visitCounts.set(targetNode.id, nextVisitCount);
+      const guardrails = buildLiveExecutionGuardrails(
+        currentProject,
+        workflow,
+        targetNode.id,
+        targetAgent.id
+      );
 
       const execution = await requireDesktopApi().executeOpenClawAgent(currentProject.openClaw.config, {
         agentIdentifier: resolveRuntimeAgentIdentifier(currentProject, targetAgent.id),
-        message: prompt,
+        message: augmentLiveExecutionPrompt(prompt, guardrails),
         sessionID: `workbench-${currentProject.runtimeState.sessionID}-${workflow.id}-${targetAgent.id}`,
-        timeoutSeconds: currentProject.openClaw.config.timeout
+        timeoutSeconds: currentProject.openClaw.config.timeout,
+        writeScope: guardrails.writeScope,
+        toolScope: guardrails.toolScope,
+        requiresApproval: guardrails.requiresApproval,
+        fallbackRoutingPolicy: guardrails.fallbackRoutingPolicy
       });
 
       liveExecutions.push({
@@ -873,11 +984,21 @@ export function App() {
       };
     }
 
+    const leadGuardrails = buildLiveExecutionGuardrails(
+      currentProject,
+      workflow,
+      leadEntryNode.id,
+      leadAgent.id
+    );
     const liveExecution = await requireDesktopApi().executeOpenClawAgent(currentProject.openClaw.config, {
       agentIdentifier: resolveRuntimeAgentIdentifier(currentProject, leadAgent.id),
-      message: prompt,
+      message: augmentLiveExecutionPrompt(prompt, leadGuardrails),
       sessionID: `workbench-${currentProject.runtimeState.sessionID}-${workflow.id}-${leadAgent.id}`,
-      timeoutSeconds: currentProject.openClaw.config.timeout
+      timeoutSeconds: currentProject.openClaw.config.timeout,
+      writeScope: leadGuardrails.writeScope,
+      toolScope: leadGuardrails.toolScope,
+      requiresApproval: leadGuardrails.requiresApproval,
+      fallbackRoutingPolicy: leadGuardrails.fallbackRoutingPolicy
     });
 
     const initialExecution: Parameters<typeof publishWorkbenchPromptWithLiveExecution>[3][number] = {

@@ -365,7 +365,9 @@ class ImportExportService {
             var soulMD = ""
             var skills: [String] = []
 
-            let soulSourcePath = preferredSoulSourcePath(in: sourceRootURL)
+            let soulSourcePath = existingOpenClawSoulURL(in: dirURL, maxAncestorDepth: 0)
+                ?? existingOpenClawSoulURL(in: sourceRootURL, maxAncestorDepth: 2)
+                ?? preferredOpenClawSoulURL(in: dirURL, maxAncestorDepth: 0)
             if let content = try? String(contentsOf: soulSourcePath, encoding: .utf8) {
                 soulMD = content
             }
@@ -385,31 +387,6 @@ class ImportExportService {
         }
         
         return configs
-    }
-
-    private func preferredSoulSourcePath(in agentRoot: URL) -> URL {
-        let preferred = agentRoot.appendingPathComponent("SOUL.md")
-        if fileManager.fileExists(atPath: preferred.path) {
-            return preferred
-        }
-
-        let fallback = agentRoot.appendingPathComponent("soul.md")
-        if fileManager.fileExists(atPath: fallback.path) {
-            return fallback
-        }
-
-        let nestedRoot = agentRoot.appendingPathComponent("agent", isDirectory: true)
-        let nestedPreferred = nestedRoot.appendingPathComponent("SOUL.md")
-        if fileManager.fileExists(atPath: nestedPreferred.path) {
-            return nestedPreferred
-        }
-
-        let nestedFallback = nestedRoot.appendingPathComponent("soul.md")
-        if fileManager.fileExists(atPath: nestedFallback.path) {
-            return nestedFallback
-        }
-
-        return preferred
     }
 
     private func preferredSkillsDirectory(in agentRoot: URL) -> URL {

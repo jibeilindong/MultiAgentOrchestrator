@@ -568,6 +568,17 @@ final class OpsAnalyticsService: ObservableObject {
         let memoryRate = totalAgents > 0 ? Double(trackedMemoryAgents) / Double(totalAgents) : nil
         let gatewayExecutions = executionResults.filter { ($0.transportKind ?? "").hasPrefix("gateway_") }
         let gatewayAdoptionRate = totalExecutions > 0 ? Double(gatewayExecutions.count) / Double(totalExecutions) : nil
+        let workflowHotPathExecutions = executionResults.filter { result in
+            let sessionID = result.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return sessionID.hasPrefix("workflow-")
+        }
+        let matchedHotPathExecutions = workflowHotPathExecutions.filter {
+            ($0.transportKind ?? "").lowercased() == "gateway_agent"
+        }
+        let hotPathMismatchCount = workflowHotPathExecutions.count - matchedHotPathExecutions.count
+        let hotPathAdoptionRate = workflowHotPathExecutions.isEmpty
+            ? nil
+            : Double(matchedHotPathExecutions.count) / Double(workflowHotPathExecutions.count)
         let firstChunkLatencies = executionResults.compactMap(\.firstChunkLatencyMs).map(Double.init)
         let averageFirstChunkLatencyMs = firstChunkLatencies.isEmpty
             ? nil
@@ -615,6 +626,17 @@ final class OpsAnalyticsService: ObservableObject {
                 valueText: gatewayAdoptionRate.map { "\($0.percentageString)" } ?? "No data",
                 detailText: "\(gatewayExecutions.count) of \(totalExecutions) runs used native gateway transport",
                 status: makeRateStatus(gatewayAdoptionRate, healthy: 0.8, warning: 0.4)
+            ),
+            OpsGoalCard(
+                id: "hot_path_integrity",
+                title: "Hot Path Integrity",
+                valueText: hotPathAdoptionRate.map { "\($0.percentageString)" } ?? "No data",
+                detailText: workflowHotPathExecutions.isEmpty
+                    ? "No workflow hot-path runs captured yet"
+                    : "\(matchedHotPathExecutions.count)/\(workflowHotPathExecutions.count) workflow runs hit gateway_agent, mismatches \(hotPathMismatchCount)",
+                status: hotPathMismatchCount == 0
+                    ? makeRateStatus(hotPathAdoptionRate, healthy: 0.95, warning: 0.8)
+                    : .critical
             ),
             OpsGoalCard(
                 id: "first_response_latency",

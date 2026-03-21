@@ -142,7 +142,12 @@ struct OpenClawAgentImportSheet: View {
                         .foregroundColor(.secondary)
                 }
 
-                if let path = record.directoryPath {
+                if let soulPath = record.soulPath {
+                    Text(soulPath)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                } else if let path = record.directoryPath {
                     Text(path)
                         .font(.caption2)
                         .foregroundColor(.secondary)

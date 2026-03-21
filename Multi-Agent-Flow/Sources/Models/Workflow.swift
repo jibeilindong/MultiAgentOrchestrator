@@ -358,6 +358,14 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         case inputParameters
         case outputParameters
     }
+
+    private struct TitleSegments {
+        let functionDescription: String
+        let taskDomain: String
+        let sequence: Int?
+    }
+
+    private static let validTitlePattern = try! NSRegularExpression(pattern: #"^([^-]+)-([^-]+)-([1-9]\d*)$"#)
     
     init(type: NodeType) {
         self.init(id: UUID(), type: type)
@@ -367,11 +375,183 @@ struct WorkflowNode: Identifiable, Codable, Hashable {
         self.id = id
         self.type = type
         self.position = .zero
-        self.title = type == .start ? "Start" : ""
+        self.title = type == .start ? "开始-工作流-1" : "功能描述-任务领域-1"
         self.displayColorHex = nil
         self.conditionExpression = ""
         self.loopEnabled = false
         self.maxIterations = 1
+    }
+
+    static func isValidTitle(_ title: String) -> Bool {
+        let normalized = normalizeWhitespace(normalizeDash(title))
+        let range = NSRange(location: 0, length: normalized.utf16.count)
+        return validTitlePattern.firstMatch(in: normalized, options: [], range: range) != nil
+    }
+
+    static func normalizedTitle(
+        requestedTitle: String,
+        nodeType: NodeType,
+        existingNodes: [WorkflowNode],
+        excludingNodeID: UUID? = nil,
+        fallbackFunctionDescription: String? = nil,
+        fallbackTaskDomain: String? = nil
+    ) -> String {
+        let fallbackTitle = normalizeWhitespace(fallbackFunctionDescription ?? "")
+        let rawTitle = normalizeWhitespace(requestedTitle).isEmpty ? fallbackTitle : requestedTitle
+        let parsed = parseRequestedTitle(
+            rawTitle,
+            nodeType: nodeType,
+            fallbackFunctionDescription: fallbackFunctionDescription,
+            fallbackTaskDomain: fallbackTaskDomain
+        )
+        let sequence = nextAvailableSequence(
+            for: parsed.functionDescription,
+            taskDomain: parsed.taskDomain,
+            existingNodes: existingNodes,
+            excludingNodeID: excludingNodeID,
+            preferredSequence: parsed.sequence
+        )
+        return "\(parsed.functionDescription)-\(parsed.taskDomain)-\(sequence)"
+    }
+
+    private static func parseRequestedTitle(
+        _ title: String,
+        nodeType: NodeType,
+        fallbackFunctionDescription: String?,
+        fallbackTaskDomain: String?
+    ) -> TitleSegments {
+        let defaults = defaultTitleSegments(
+            for: nodeType,
+            fallbackFunctionDescription: fallbackFunctionDescription,
+            fallbackTaskDomain: fallbackTaskDomain
+        )
+        let normalized = normalizeWhitespace(normalizeDash(title))
+        let parts = normalized
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .map { normalizeWhitespace(String($0)) }
+            .filter { !$0.isEmpty }
+
+        guard !parts.isEmpty else {
+            return TitleSegments(
+                functionDescription: defaults.functionDescription,
+                taskDomain: defaults.taskDomain,
+                sequence: nil
+            )
+        }
+
+        if parts.count >= 3, let explicitSequence = Int(parts[parts.count - 1]), explicitSequence > 0 {
+            let functionDescription = sanitizeTitleSegment(
+                parts.dropLast(2).joined(separator: " "),
+                fallback: defaults.functionDescription
+            )
+            let taskDomain = sanitizeTitleSegment(parts[parts.count - 2], fallback: defaults.taskDomain)
+            return TitleSegments(
+                functionDescription: functionDescription,
+                taskDomain: taskDomain,
+                sequence: explicitSequence
+            )
+        }
+
+        if parts.count >= 2 {
+            return TitleSegments(
+                functionDescription: sanitizeTitleSegment(
+                    parts.dropLast().joined(separator: " "),
+                    fallback: defaults.functionDescription
+                ),
+                taskDomain: sanitizeTitleSegment(parts[parts.count - 1], fallback: defaults.taskDomain),
+                sequence: nil
+            )
+        }
+
+        return TitleSegments(
+            functionDescription: sanitizeTitleSegment(parts[0], fallback: defaults.functionDescription),
+            taskDomain: defaults.taskDomain,
+            sequence: nil
+        )
+    }
+
+    private static func parseExistingTitle(_ title: String) -> TitleSegments? {
+        let normalized = normalizeWhitespace(normalizeDash(title))
+        let range = NSRange(location: 0, length: normalized.utf16.count)
+        guard let match = validTitlePattern.firstMatch(in: normalized, options: [], range: range),
+              let functionRange = Range(match.range(at: 1), in: normalized),
+              let domainRange = Range(match.range(at: 2), in: normalized),
+              let sequenceRange = Range(match.range(at: 3), in: normalized),
+              let sequence = Int(normalized[sequenceRange]),
+              sequence > 0 else {
+            return nil
+        }
+
+        return TitleSegments(
+            functionDescription: sanitizeTitleSegment(String(normalized[functionRange]), fallback: ""),
+            taskDomain: sanitizeTitleSegment(String(normalized[domainRange]), fallback: ""),
+            sequence: sequence
+        )
+    }
+
+    private static func defaultTitleSegments(
+        for nodeType: NodeType,
+        fallbackFunctionDescription: String?,
+        fallbackTaskDomain: String?
+    ) -> (functionDescription: String, taskDomain: String) {
+        let defaultFunctionDescription = nodeType == .start ? "开始" : "功能描述"
+        let defaultTaskDomain = nodeType == .start ? "工作流" : "任务领域"
+        return (
+            sanitizeTitleSegment(fallbackFunctionDescription ?? "", fallback: defaultFunctionDescription),
+            sanitizeTitleSegment(fallbackTaskDomain ?? "", fallback: defaultTaskDomain)
+        )
+    }
+
+    private static func nextAvailableSequence(
+        for functionDescription: String,
+        taskDomain: String,
+        existingNodes: [WorkflowNode],
+        excludingNodeID: UUID?,
+        preferredSequence: Int?
+    ) -> Int {
+        let key = titleKey(functionDescription: functionDescription, taskDomain: taskDomain)
+        var usedSequences = Set<Int>()
+
+        for node in existingNodes {
+            if let excludingNodeID, node.id == excludingNodeID {
+                continue
+            }
+            guard let parsed = parseExistingTitle(node.title),
+                  titleKey(functionDescription: parsed.functionDescription, taskDomain: parsed.taskDomain) == key,
+                  let sequence = parsed.sequence else {
+                continue
+            }
+            usedSequences.insert(sequence)
+        }
+
+        if let preferredSequence, preferredSequence > 0, !usedSequences.contains(preferredSequence) {
+            return preferredSequence
+        }
+
+        var next = 1
+        while usedSequences.contains(next) {
+            next += 1
+        }
+        return next
+    }
+
+    private static func titleKey(functionDescription: String, taskDomain: String) -> String {
+        "\(functionDescription.lowercased())::\(taskDomain.lowercased())"
+    }
+
+    private static func normalizeDash(_ value: String) -> String {
+        value.replacingOccurrences(of: "[－—–]+", with: "-", options: .regularExpression)
+    }
+
+    private static func normalizeWhitespace(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
+    private static func sanitizeTitleSegment(_ value: String, fallback: String) -> String {
+        let normalized = normalizeWhitespace(normalizeDash(value).replacingOccurrences(of: "-", with: " "))
+        return normalized.isEmpty ? fallback : normalized
     }
 
     init(from decoder: Decoder) throws {

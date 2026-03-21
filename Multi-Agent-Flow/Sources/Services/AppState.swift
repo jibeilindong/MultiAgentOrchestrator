@@ -632,12 +632,24 @@ class AppState: ObservableObject {
                 let key = "\(fromAgentID.uuidString)->\(toAgentID.uuidString)"
                 guard seenPairs.insert(key).inserted else { continue }
 
-                permissions.append(Permission(fromAgentID: fromAgentID, toAgentID: toAgentID, permissionType: .allow))
+                permissions.append(
+                    Permission(
+                        fromAgentID: fromAgentID,
+                        toAgentID: toAgentID,
+                        permissionType: edge.requiresApproval ? .requireApproval : .allow
+                    )
+                )
 
                 if edge.isBidirectional {
                     let reverseKey = "\(toAgentID.uuidString)->\(fromAgentID.uuidString)"
                     guard seenPairs.insert(reverseKey).inserted else { continue }
-                    permissions.append(Permission(fromAgentID: toAgentID, toAgentID: fromAgentID, permissionType: .allow))
+                    permissions.append(
+                        Permission(
+                            fromAgentID: toAgentID,
+                            toAgentID: fromAgentID,
+                            permissionType: edge.requiresApproval ? .requireApproval : .allow
+                        )
+                    )
                 }
             }
         }
@@ -1026,7 +1038,12 @@ class AppState: ObservableObject {
         for agent in agents {
             var node = WorkflowNode(type: .agent)
             node.agentID = agent.id
-            node.title = agent.name
+            node.title = WorkflowNode.normalizedTitle(
+                requestedTitle: agent.name,
+                nodeType: .agent,
+                existingNodes: workflow.nodes,
+                excludingNodeID: node.id
+            )
             node.position = CGPoint(x: x, y: y)
             workflow.nodes.append(node)
 
@@ -1044,7 +1061,12 @@ class AppState: ObservableObject {
     private func makeStartNode(position: CGPoint = .zero) -> WorkflowNode {
         var node = WorkflowNode(type: .start)
         node.position = position
-        node.title = "Start"
+        node.title = WorkflowNode.normalizedTitle(
+            requestedTitle: "开始",
+            nodeType: .start,
+            existingNodes: [],
+            excludingNodeID: node.id
+        )
         return node
     }
 
@@ -1541,12 +1563,24 @@ class AppState: ObservableObject {
                 guard !workflow.nodes.contains(where: { $0.type == .start }) else { return }
                 var node = WorkflowNode(type: .start)
                 node.position = snappedPosition
+                node.title = WorkflowNode.normalizedTitle(
+                    requestedTitle: node.title,
+                    nodeType: node.type,
+                    existingNodes: workflow.nodes,
+                    excludingNodeID: node.id
+                )
                 workflow.nodes.insert(node, at: 0)
             }
         case .agent:
             updateMainWorkflow { workflow in
                 var node = WorkflowNode(type: type)
                 node.position = snappedPosition
+                node.title = WorkflowNode.normalizedTitle(
+                    requestedTitle: node.title,
+                    nodeType: node.type,
+                    existingNodes: workflow.nodes,
+                    excludingNodeID: node.id
+                )
                 workflow.nodes.append(node)
             }
         }
@@ -1768,6 +1802,7 @@ class AppState: ObservableObject {
     @discardableResult
     func ensureAgentNode(agentID: UUID, suggestedPosition: CGPoint = CGPoint(x: 0, y: 0)) -> UUID? {
         guard let workflow = ensureMainWorkflow() else { return nil }
+        let agentName = currentProject?.agents.first(where: { $0.id == agentID })?.name
 
         if let existingNode = workflow.nodes.first(where: { $0.agentID == agentID && $0.type == .agent }) {
             return existingNode.id
@@ -1783,6 +1818,13 @@ class AppState: ObservableObject {
             var newNode = WorkflowNode(type: .agent)
             newNode.agentID = agentID
             newNode.position = suggestedPosition
+            newNode.title = WorkflowNode.normalizedTitle(
+                requestedTitle: agentName ?? "",
+                nodeType: .agent,
+                existingNodes: workflow.nodes,
+                excludingNodeID: newNode.id,
+                fallbackFunctionDescription: agentName
+            )
             createdNodeID = newNode.id
             workflow.nodes.append(newNode)
         }
@@ -1885,16 +1927,34 @@ class AppState: ObservableObject {
     }
 
     func updateNode(_ nodeID: UUID, updates: (inout WorkflowNode) -> Void) {
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: (currentProject?.agents ?? []).map { ($0.id, $0.name) })
         updateMainWorkflow { workflow in
             guard let index = workflow.nodes.firstIndex(where: { $0.id == nodeID }) else { return }
             updates(&workflow.nodes[index])
+            let updatedNode = workflow.nodes[index]
+            workflow.nodes[index].title = WorkflowNode.normalizedTitle(
+                requestedTitle: updatedNode.title,
+                nodeType: updatedNode.type,
+                existingNodes: workflow.nodes,
+                excludingNodeID: updatedNode.id,
+                fallbackFunctionDescription: updatedNode.agentID.flatMap { agentNamesByID[$0] }
+            )
         }
     }
 
     func updateNode(_ updatedNode: WorkflowNode) {
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: (currentProject?.agents ?? []).map { ($0.id, $0.name) })
         updateMainWorkflow { workflow in
             guard let index = workflow.nodes.firstIndex(where: { $0.id == updatedNode.id }) else { return }
-            workflow.nodes[index] = updatedNode
+            var normalizedNode = updatedNode
+            normalizedNode.title = WorkflowNode.normalizedTitle(
+                requestedTitle: updatedNode.title,
+                nodeType: updatedNode.type,
+                existingNodes: workflow.nodes,
+                excludingNodeID: updatedNode.id,
+                fallbackFunctionDescription: updatedNode.agentID.flatMap { agentNamesByID[$0] }
+            )
+            workflow.nodes[index] = normalizedNode
         }
     }
 
@@ -2257,6 +2317,10 @@ class AppState: ObservableObject {
 
         if !keys.isEmpty {
             if let record = openClawManager.discoveryResults.first(where: { keys.contains(normalizeAgentKey($0.name)) }) {
+                if let soulPath = firstNonEmptyPath(record.soulPath) {
+                    let soulURL = URL(fileURLWithPath: soulPath, isDirectory: false)
+                    roots.append(soulURL.deletingLastPathComponent())
+                }
                 if let copied = firstNonEmptyPath(record.copiedToProjectPath) {
                     roots.append(URL(fileURLWithPath: copied, isDirectory: true))
                 }
@@ -2281,42 +2345,11 @@ class AppState: ObservableObject {
     }
 
     private func existingSoulFileURL(in rootURL: URL) -> URL? {
-        for ancestor in ancestorDirectories(from: rootURL, maxDepth: 3) {
-            let preferred = ancestor.appendingPathComponent("SOUL.md")
-            if FileManager.default.fileExists(atPath: preferred.path) {
-                return preferred
-            }
-
-            let fallback = ancestor.appendingPathComponent("soul.md")
-            if FileManager.default.fileExists(atPath: fallback.path) {
-                return fallback
-            }
-        }
-        return nil
-    }
-
-    private func ancestorDirectories(from url: URL, maxDepth: Int) -> [URL] {
-        var directories: [URL] = [url]
-        var current = url
-
-        for _ in 0..<maxDepth {
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path || parent.path.isEmpty {
-                break
-            }
-            directories.append(parent)
-            current = parent
-        }
-
-        return directories
+        existingOpenClawSoulURL(in: rootURL, maxAncestorDepth: 3)
     }
 
     private func preferredSoulURL(in rootURL: URL) -> URL {
-        let preferred = rootURL.appendingPathComponent("SOUL.md")
-        let fallback = rootURL.appendingPathComponent("soul.md")
-        if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
-        if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
-        return preferred
+        preferredOpenClawSoulURL(in: rootURL, maxAncestorDepth: 3)
     }
 
     private func firstNonEmptyPath(_ candidates: String?...) -> String? {
@@ -2660,6 +2693,17 @@ class AppState: ObservableObject {
             failures.append("存在 \(invalidIdentifiers.count) 个 agent 缺少可用的 OpenClaw 标识。")
         }
 
+        let workflowAgents = agentNodes.compactMap { node in
+            node.agentID.flatMap { agentByID[$0] }
+        }
+        let workspaceConflicts = openClawManager.workspaceIsolationConflicts(for: workflowAgents)
+        if !workspaceConflicts.isEmpty {
+            let summaries = workspaceConflicts.map { conflict in
+                "\(conflict.agentNames.joined(separator: " / ")) -> \(conflict.displayPath)"
+            }
+            failures.append("检测到 agent workspace 冲突：\(summaries.joined(separator: "；"))")
+        }
+
         let reachableAgentIDs = Set(openClawService.executionPlan(for: workflow).map(\.id))
         let unreachableAgents = agentNodes.filter { !reachableAgentIDs.contains($0.id) }
         if !unreachableAgents.isEmpty {
@@ -2668,6 +2712,11 @@ class AppState: ObservableObject {
 
         if workflow.fallbackRoutingPolicy != .stop {
             warnings.append("当前工作流启用了 '\(workflow.fallbackRoutingPolicy.displayName)' 兜底策略，未输出路由指令时仍可能继续触发下游。")
+        }
+
+        let approvalEdges = workflow.edges.filter(\.requiresApproval)
+        if !approvalEdges.isEmpty && openClawManager.config.deploymentKind == .remoteServer {
+            warnings.append("当前工作流包含 \(approvalEdges.count) 条需要审批的边，但 remoteServer 模式暂不支持把审批白名单同步到 OpenClaw 运行时。")
         }
 
         let findings = failures + warnings
@@ -2896,13 +2945,7 @@ class AppState: ObservableObject {
             if var mutableProject = self.currentProject {
                 mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
                 if let runtimeEvent = userMessage.runtimeEvent {
-                    mutableProject.runtimeState.dispatchQueue.removeAll { $0.id == runtimeEvent.id }
-                    mutableProject.runtimeState.dispatchQueue.append(
-                        self.makeRuntimeDispatchRecord(
-                            from: runtimeEvent,
-                            status: .dispatched
-                        )
-                    )
+                    self.appendRuntimeEvents([runtimeEvent], to: &mutableProject.runtimeState)
                 }
                 mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
                 mutableProject.runtimeState.lastUpdated = Date()
@@ -3023,7 +3066,9 @@ class AppState: ObservableObject {
                     }
                     if let dispatchEventID = userMessage.runtimeEvent?.id {
                         mutableProject.runtimeState.dispatchQueue.removeAll { $0.id == dispatchEventID }
-                        mutableProject.runtimeState.inflightDispatches.removeAll { $0.id == dispatchEventID }
+                        mutableProject.runtimeState.inflightDispatches.removeAll { inflight in
+                            inflight.id == dispatchEventID || inflight.parentEventID == dispatchEventID
+                        }
                     }
 
                     for result in results {
@@ -3050,7 +3095,15 @@ class AppState: ObservableObject {
                     )
                     let completedDispatches = terminalDispatches.filter { !failedIDs.contains($0.id) }
                     let failedDispatches = terminalDispatches.filter { failedIDs.contains($0.id) }
+                    let terminalParentIDs = Set(terminalDispatches.compactMap(\.parentEventID))
+                    if !terminalParentIDs.isEmpty {
+                        mutableProject.runtimeState.inflightDispatches.removeAll { terminalParentIDs.contains($0.id) }
+                    }
                     if !completedDispatches.isEmpty {
+                        self.removeSupersededFailedDispatches(
+                            for: completedDispatches,
+                            in: &mutableProject.runtimeState
+                        )
                         let completedIDs = Set(completedDispatches.map(\.id))
                         mutableProject.runtimeState.completedDispatches.removeAll { completedIDs.contains($0.id) }
                         mutableProject.runtimeState.completedDispatches.append(contentsOf: completedDispatches)
@@ -3060,7 +3113,7 @@ class AppState: ObservableObject {
                         mutableProject.runtimeState.failedDispatches.removeAll { failedRecordIDs.contains($0.id) }
                         mutableProject.runtimeState.failedDispatches.append(contentsOf: failedDispatches)
                     }
-                    mutableProject.runtimeState.runtimeEvents.append(contentsOf: results.flatMap(\.runtimeEvents))
+                    self.appendRuntimeEvents(results.flatMap(\.runtimeEvents), to: &mutableProject.runtimeState)
                     mutableProject.runtimeState.lastUpdated = Date()
                     mutableProject.updatedAt = Date()
                     self.currentProject = mutableProject
@@ -3108,6 +3161,42 @@ class AppState: ObservableObject {
                         let timestamp = Date()
                         firstChunkAt = timestamp
                         recordWorkbenchLatency("firstChunkMs", label: "first_chunk", at: timestamp)
+                    }
+                },
+                onDispatched: { [weak self] dispatchEvent in
+                    guard let self else { return }
+                    if var mutableProject = self.currentProject {
+                        self.enqueueRuntimeDispatch(
+                            dispatchEvent,
+                            in: &mutableProject.runtimeState
+                        )
+                        mutableProject.runtimeState.lastUpdated = Date()
+                        mutableProject.updatedAt = Date()
+                        self.currentProject = mutableProject
+                    }
+                },
+                onAccepted: { [weak self] acceptedEvent in
+                    guard let self else { return }
+                    if var mutableProject = self.currentProject {
+                        self.promoteRuntimeDispatchToInflight(
+                            acceptedEvent,
+                            in: &mutableProject.runtimeState
+                        )
+                        mutableProject.runtimeState.lastUpdated = Date()
+                        mutableProject.updatedAt = Date()
+                        self.currentProject = mutableProject
+                    }
+                },
+                onProgress: { [weak self] progressEvent in
+                    guard let self else { return }
+                    if var mutableProject = self.currentProject {
+                        self.promoteRuntimeDispatchToRunning(
+                            progressEvent,
+                            in: &mutableProject.runtimeState
+                        )
+                        mutableProject.runtimeState.lastUpdated = Date()
+                        mutableProject.updatedAt = Date()
+                        self.currentProject = mutableProject
                     }
                 }
             ) { [weak self] entryExecution in
@@ -3165,7 +3254,43 @@ class AppState: ObservableObject {
                     entryNodeIDsOverride: backgroundEntryNodeIDs,
                     preloadedResults: [entryResult],
                     precompletedNodeIDs: [leadNode.id],
-                    agentOutputMode: .plainStreaming
+                    agentOutputMode: .plainStreaming,
+                    onNodeDispatched: { [weak self] dispatchEvent in
+                        guard let self else { return }
+                        if var mutableProject = self.currentProject {
+                            self.enqueueRuntimeDispatch(
+                                dispatchEvent,
+                                in: &mutableProject.runtimeState
+                            )
+                            mutableProject.runtimeState.lastUpdated = Date()
+                            mutableProject.updatedAt = Date()
+                            self.currentProject = mutableProject
+                        }
+                    },
+                    onNodeAccepted: { [weak self] acceptedEvent in
+                        guard let self else { return }
+                        if var mutableProject = self.currentProject {
+                            self.promoteRuntimeDispatchToInflight(
+                                acceptedEvent,
+                                in: &mutableProject.runtimeState
+                            )
+                            mutableProject.runtimeState.lastUpdated = Date()
+                            mutableProject.updatedAt = Date()
+                            self.currentProject = mutableProject
+                        }
+                    },
+                    onNodeProgress: { [weak self] progressEvent in
+                        guard let self else { return }
+                        if var mutableProject = self.currentProject {
+                            self.promoteRuntimeDispatchToRunning(
+                                progressEvent,
+                                in: &mutableProject.runtimeState
+                            )
+                            mutableProject.runtimeState.lastUpdated = Date()
+                            mutableProject.updatedAt = Date()
+                            self.currentProject = mutableProject
+                        }
+                    }
                 ) { [weak self] results in
                     guard self != nil else { return }
                     completeWorkbenchExecution(results: results)
@@ -3430,6 +3555,12 @@ class AppState: ObservableObject {
         
         var newNode = WorkflowNode(type: .agent)
         newNode.position = CGPoint(x: 200, y: 200)
+        newNode.title = WorkflowNode.normalizedTitle(
+            requestedTitle: newNode.title,
+            nodeType: newNode.type,
+            existingNodes: workflow.nodes,
+            excludingNodeID: newNode.id
+        )
         workflow.nodes.append(newNode)
         
         if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
@@ -3816,11 +3947,245 @@ class AppState: ObservableObject {
             attempt: event.attempt ?? 1,
             status: status,
             transportKind: event.transport.kind,
+            timeoutSeconds: Int(event.constraints["timeoutSeconds"] ?? ""),
+            allowRetry: Self.parseBool(event.control["allowRetry"]) ?? false,
+            maxRetries: Int(event.control["maxRetries"] ?? ""),
             queuedAt: event.timestamp,
             updatedAt: completedAt ?? event.timestamp,
             completedAt: completedAt,
             errorMessage: errorMessage
         )
+    }
+
+    private func promoteRuntimeDispatchToInflight(
+        _ acceptedEvent: OpenClawRuntimeEvent,
+        in runtimeState: inout RuntimeState
+    ) {
+        expireStaleRuntimeDispatches(in: &runtimeState)
+        appendRuntimeEvents([acceptedEvent], to: &runtimeState)
+        let inheritedDispatch = runtimeState.dispatchQueue.first { $0.id == acceptedEvent.parentEventId }
+        if let dispatchEventID = acceptedEvent.parentEventId {
+            runtimeState.dispatchQueue.removeAll { $0.id == dispatchEventID }
+        }
+        removeDuplicatePendingDispatches(for: acceptedEvent, in: &runtimeState)
+        removeSupersededFailedDispatches(for: acceptedEvent, in: &runtimeState)
+        var inflightRecord = makeRuntimeDispatchRecord(
+            from: acceptedEvent,
+            status: .accepted
+        )
+        if let inheritedDispatch {
+            inflightRecord.timeoutSeconds = inheritedDispatch.timeoutSeconds
+            inflightRecord.allowRetry = inheritedDispatch.allowRetry
+            inflightRecord.maxRetries = inheritedDispatch.maxRetries
+            inflightRecord.summary = inheritedDispatch.summary
+            inflightRecord.idempotencyKey = inheritedDispatch.idempotencyKey
+            inflightRecord.queuedAt = inheritedDispatch.queuedAt
+        }
+        runtimeState.inflightDispatches.removeAll { $0.id == acceptedEvent.id }
+        runtimeState.inflightDispatches.append(inflightRecord)
+    }
+
+    private func promoteRuntimeDispatchToRunning(
+        _ progressEvent: OpenClawRuntimeEvent,
+        in runtimeState: inout RuntimeState
+    ) {
+        expireStaleRuntimeDispatches(in: &runtimeState)
+        appendRuntimeEvents([progressEvent], to: &runtimeState)
+
+        guard let parentEventID = progressEvent.parentEventId else { return }
+        guard let inflightIndex = runtimeState.inflightDispatches.firstIndex(where: { $0.id == parentEventID }) else {
+            return
+        }
+
+        runtimeState.inflightDispatches[inflightIndex].status = .running
+        runtimeState.inflightDispatches[inflightIndex].updatedAt = progressEvent.timestamp
+        let summary = progressEvent.summaryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !summary.isEmpty {
+            runtimeState.inflightDispatches[inflightIndex].summary = summary
+        }
+    }
+
+    private func enqueueRuntimeDispatch(
+        _ dispatchEvent: OpenClawRuntimeEvent,
+        in runtimeState: inout RuntimeState
+    ) {
+        expireStaleRuntimeDispatches(in: &runtimeState)
+        appendRuntimeEvents([dispatchEvent], to: &runtimeState)
+        removeDuplicatePendingDispatches(for: dispatchEvent, in: &runtimeState)
+        removeSupersededFailedDispatches(for: dispatchEvent, in: &runtimeState)
+        runtimeState.dispatchQueue.removeAll { $0.id == dispatchEvent.id }
+        runtimeState.inflightDispatches.removeAll { $0.parentEventID == dispatchEvent.id }
+        runtimeState.completedDispatches.removeAll { $0.parentEventID == dispatchEvent.id }
+        runtimeState.failedDispatches.removeAll { $0.parentEventID == dispatchEvent.id }
+        runtimeState.dispatchQueue.append(
+            makeRuntimeDispatchRecord(
+                from: dispatchEvent,
+                status: .dispatched
+            )
+        )
+    }
+
+    private func expireStaleRuntimeDispatches(
+        in runtimeState: inout RuntimeState,
+        now: Date = Date()
+    ) {
+        let staleQueued = staleDispatches(in: runtimeState.dispatchQueue, now: now)
+        let staleInflight = staleDispatches(in: runtimeState.inflightDispatches, now: now)
+        let staleDispatches = staleQueued + staleInflight
+        guard !staleDispatches.isEmpty else { return }
+
+        let staleIDs = Set(staleDispatches.map(\.id))
+        runtimeState.dispatchQueue.removeAll { staleIDs.contains($0.id) }
+        runtimeState.inflightDispatches.removeAll { staleIDs.contains($0.id) }
+
+        let timeoutEvents = staleDispatches.map { makeRuntimeDispatchTimeoutEvent(from: $0, at: now) }
+        appendRuntimeEvents(timeoutEvents, to: &runtimeState)
+
+        let timedOutRecords = staleDispatches.map { dispatch -> RuntimeDispatchRecord in
+            var expiredDispatch = dispatch
+            expiredDispatch.status = .expired
+            expiredDispatch.updatedAt = now
+            expiredDispatch.completedAt = now
+            expiredDispatch.errorMessage = dispatch.allowRetry && canRetry(dispatch)
+                ? "Dispatch timed out before completion. Eligible for retry."
+                : "Dispatch timed out before completion."
+            return expiredDispatch
+        }
+
+        let expiredIDs = Set(timedOutRecords.map(\.id))
+        runtimeState.failedDispatches.removeAll { expiredIDs.contains($0.id) }
+        runtimeState.failedDispatches.append(contentsOf: timedOutRecords)
+    }
+
+    private func staleDispatches(
+        in dispatches: [RuntimeDispatchRecord],
+        now: Date
+    ) -> [RuntimeDispatchRecord] {
+        dispatches.filter { dispatch in
+            guard dispatch.completedAt == nil else { return false }
+            let timeoutSeconds = dispatch.timeoutSeconds ?? Int(openClawService.executionTimeout.rounded())
+            let effectiveTimeout = max(timeoutSeconds, 1)
+            return now.timeIntervalSince(dispatch.updatedAt) > TimeInterval(effectiveTimeout)
+        }
+    }
+
+    private func removeDuplicatePendingDispatches(
+        for event: OpenClawRuntimeEvent,
+        in runtimeState: inout RuntimeState
+    ) {
+        guard let idempotencyKey = event.idempotencyKey, !idempotencyKey.isEmpty else { return }
+        runtimeState.dispatchQueue.removeAll {
+            $0.id != event.id
+                && $0.idempotencyKey == idempotencyKey
+                && $0.targetAgentID == event.target.agentId
+        }
+        runtimeState.inflightDispatches.removeAll {
+            $0.id != event.id
+                && $0.idempotencyKey == idempotencyKey
+                && $0.targetAgentID == event.target.agentId
+        }
+    }
+
+    private func removeSupersededFailedDispatches(
+        for event: OpenClawRuntimeEvent,
+        in runtimeState: inout RuntimeState
+    ) {
+        guard let idempotencyKey = event.idempotencyKey, !idempotencyKey.isEmpty else { return }
+        runtimeState.failedDispatches.removeAll {
+            $0.idempotencyKey == idempotencyKey
+                && $0.targetAgentID == event.target.agentId
+        }
+    }
+
+    private func removeSupersededFailedDispatches(
+        for dispatches: [RuntimeDispatchRecord],
+        in runtimeState: inout RuntimeState
+    ) {
+        let identities = Set(
+            dispatches.compactMap { dispatch -> String? in
+                guard let idempotencyKey = dispatch.idempotencyKey, !idempotencyKey.isEmpty else { return nil }
+                return "\(dispatch.targetAgentID)|\(idempotencyKey)"
+            }
+        )
+        guard !identities.isEmpty else { return }
+
+        runtimeState.failedDispatches.removeAll { failedDispatch in
+            guard let idempotencyKey = failedDispatch.idempotencyKey, !idempotencyKey.isEmpty else { return false }
+            return identities.contains("\(failedDispatch.targetAgentID)|\(idempotencyKey)")
+        }
+    }
+
+    private func canRetry(_ dispatch: RuntimeDispatchRecord) -> Bool {
+        guard dispatch.allowRetry else { return false }
+        guard let maxRetries = dispatch.maxRetries else { return true }
+        return dispatch.attempt < maxRetries
+    }
+
+    private func makeRuntimeDispatchTimeoutEvent(
+        from dispatch: RuntimeDispatchRecord,
+        at timestamp: Date
+    ) -> OpenClawRuntimeEvent {
+        OpenClawRuntimeEvent(
+            eventType: .taskError,
+            timestamp: timestamp,
+            workflowId: dispatch.workflowID,
+            nodeId: dispatch.nodeID,
+            runId: dispatch.runID,
+            sessionKey: dispatch.sessionKey,
+            parentEventId: dispatch.eventID,
+            idempotencyKey: dispatch.idempotencyKey,
+            attempt: dispatch.attempt,
+            source: OpenClawRuntimeActor(
+                kind: .system,
+                agentId: "runtime.mailbox",
+                agentName: "runtime.mailbox"
+            ),
+            target: OpenClawRuntimeActor(
+                kind: .agent,
+                agentId: dispatch.targetAgentID,
+                agentName: dispatch.targetAgentID
+            ),
+            transport: OpenClawRuntimeTransport(
+                kind: dispatch.transportKind,
+                deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue
+            ),
+            payload: [
+                "code": "E_RUNTIME_DISPATCH_TIMEOUT",
+                "message": dispatch.allowRetry && canRetry(dispatch)
+                    ? "Runtime dispatch timed out before completion and is eligible for retry."
+                    : "Runtime dispatch timed out before completion.",
+                "retryable": dispatch.allowRetry && canRetry(dispatch) ? "true" : "false",
+                "summary": dispatch.summary
+            ]
+        )
+    }
+
+    private func appendRuntimeEvents(
+        _ events: [OpenClawRuntimeEvent],
+        to runtimeState: inout RuntimeState
+    ) {
+        guard !events.isEmpty else { return }
+
+        let existingIDs = Set(runtimeState.runtimeEvents.map(\.id))
+        let uniqueEvents = events.filter { !existingIDs.contains($0.id) }
+        guard !uniqueEvents.isEmpty else { return }
+        runtimeState.runtimeEvents.append(contentsOf: uniqueEvents)
+    }
+
+    private static func parseBool(_ value: String?) -> Bool? {
+        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return nil
+        }
+
+        switch normalized {
+        case "true", "1", "yes", "y":
+            return true
+        case "false", "0", "no", "n":
+            return false
+        default:
+            return nil
+        }
     }
 
     private func makeTranscriptRuntimeEvent(
@@ -4012,7 +4377,13 @@ class AppState: ObservableObject {
 
             var node = existingNodesByAgentID[descriptor.agent.id] ?? WorkflowNode(type: .agent)
             node.agentID = descriptor.agent.id
-            node.title = descriptor.agent.name
+            node.title = WorkflowNode.normalizedTitle(
+                requestedTitle: descriptor.agent.name,
+                nodeType: .agent,
+                existingNodes: Array(existingNodesByAgentID.values) + generated.map(\.node),
+                excludingNodeID: node.id,
+                fallbackFunctionDescription: descriptor.agent.name
+            )
             node.position = centeredPosition
 
             generated.append(
