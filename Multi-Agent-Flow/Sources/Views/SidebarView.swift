@@ -68,6 +68,9 @@ struct SidebarView: View {
                     Button(action: { appState.saveProject() }) {
                         Label(LocalizedString.save, systemImage: "square.and.arrow.down")
                     }
+                    Button(action: { appState.saveDraft() }) {
+                        Label(LocalizedString.text("save_draft"), systemImage: "square.and.arrow.down.on.square")
+                    }
                     Button(action: { appState.saveProjectAs() }) {
                         Label(LocalizedString.text("save_as"), systemImage: "square.and.arrow.down.on.square")
                     }
@@ -126,6 +129,15 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.bordered)
                 .help(LocalizedString.saveProject)
+                .disabled(appState.currentProject == nil)
+
+                Button(action: { appState.saveDraft() }) {
+                    Label(LocalizedString.text("save_draft"), systemImage: "square.and.arrow.down.on.square")
+                        .font(.caption)
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.bordered)
+                .help(LocalizedString.text("save_draft_tooltip"))
                 .disabled(appState.currentProject == nil)
 
                 if appState.currentProject != nil {

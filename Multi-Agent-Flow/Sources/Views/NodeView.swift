@@ -7,6 +7,45 @@
 
 import SwiftUI
 
+struct NodeDisplayParts: Equatable {
+    let primary: String
+    let secondary: String?
+    let sequence: String?
+
+    static func parse(from rawTitle: String) -> NodeDisplayParts {
+        let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return NodeDisplayParts(primary: "", secondary: nil, sequence: nil)
+        }
+
+        let segments = trimmed
+            .split(separator: "-", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        switch segments.count {
+        case 3...:
+            return NodeDisplayParts(
+                primary: segments[0],
+                secondary: segments[1],
+                sequence: segments[2]
+            )
+        case 2:
+            return NodeDisplayParts(
+                primary: segments[0],
+                secondary: segments[1],
+                sequence: nil
+            )
+        default:
+            return NodeDisplayParts(
+                primary: segments[0],
+                secondary: nil,
+                sequence: nil
+            )
+        }
+    }
+}
+
 struct NodeView: View {
     @ObservedObject private var localizationManager = LocalizationManager.shared
     let node: WorkflowNode
@@ -38,13 +77,6 @@ struct NodeView: View {
         nodeCard
     }
 
-    private var nodeTypeIcon: String {
-        switch node.type {
-        case .start: return "play.circle.fill"
-        case .agent: return "person.circle.fill"
-        }
-    }
-    
     private var nodeTitle: String {
         if let title = optionalText(node.title) {
             return title
@@ -67,6 +99,10 @@ struct NodeView: View {
             case .simplifiedChinese: return "节点"
             }
         }
+    }
+
+    private var nodeDisplayParts: NodeDisplayParts {
+        NodeDisplayParts.parse(from: nodeTitle)
     }
     
     private var nodeColor: Color {
@@ -119,29 +155,42 @@ struct NodeView: View {
     
     private var nodeWidth: CGFloat {
         switch node.type {
-        case .start: return 100
-        case .agent: return 110
+        case .start: return 134
+        case .agent: return 148
         }
     }
 
     private var nodeHeight: CGFloat {
         switch node.type {
-        case .start: return 68
-        case .agent: return hasNoOutgoingConnections ? 92 : 78
+        case .start:
+            return isConnectingMode && !isConnectSource ? 170 : 148
+        case .agent:
+            var height: CGFloat = 160
+            if hasNoOutgoingConnections {
+                height += 24
+            }
+            if isConnectingMode && !isConnectSource {
+                height += 22
+            }
+            return height
         }
     }
 
     private var nodeCard: some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 8) {
             if node.nestingLevel > 0 {
                 NestingLevelBadge(level: node.nestingLevel)
             }
 
-            nodeHeader
+            nameStack
+            sequenceBadge
+            statDivider
             connectionCountLabel
             noOutgoingWarning
             connectionHint
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
         .frame(width: nodeWidth, height: nodeHeight)
         .background(nodeBackgroundShape)
         .shadow(color: nodeShadowColor, radius: nodeShadowRadius, x: 0, y: nodeShadowYOffset)
@@ -172,25 +221,83 @@ struct NodeView: View {
         }
     }
 
-    private var nodeHeader: some View {
-        HStack(spacing: 4) {
-            Image(systemName: nodeTypeIcon)
-                .font(.title3)
-                .foregroundColor(nodeColor)
-
-            Text(nodeTitle)
-                .font(.system(size: 12 * textScale))
+    private var nameStack: some View {
+        VStack(spacing: 4) {
+            Text(nodeDisplayParts.primary)
+                .font(.system(size: 13 * textScale, weight: .bold, design: .rounded))
                 .lineLimit(1)
+                .minimumScaleFactor(0.72)
                 .foregroundColor(textColor)
+                .frame(maxWidth: .infinity)
+                .multilineTextAlignment(.center)
+                .tracking(0.2)
+
+            if let secondary = nodeDisplayParts.secondary {
+                Text(secondary)
+                    .font(.system(size: 11 * textScale, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .foregroundColor(textColor.opacity(0.85))
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sequenceBadge: some View {
+        if let sequence = nodeDisplayParts.sequence {
+            ZStack {
+                Circle()
+                    .fill(nodeColor.gradient)
+                Circle()
+                    .stroke(Color.white.opacity(0.65), lineWidth: 1.2)
+                Text(sequence)
+                    .font(.system(size: 13 * textScale, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            .frame(width: 34, height: 34)
+            .shadow(color: nodeColor.opacity(0.28), radius: 6, x: 0, y: 3)
         }
     }
 
     private var connectionCountLabel: some View {
-        Text(connectionCountText)
-            .font(.system(size: 9 * textScale, weight: .medium, design: .rounded))
-            .lineLimit(1)
-            .foregroundColor(textColor.opacity(0.8))
-            .minimumScaleFactor(0.75)
+        HStack(spacing: 6) {
+            connectionStatPill(
+                label: inboundLabel,
+                value: incomingConnections,
+                color: nodeColor.opacity(0.18)
+            )
+            connectionStatPill(
+                label: outboundLabel,
+                value: outgoingConnections,
+                color: nodeColor.opacity(0.12)
+            )
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var statDivider: some View {
+        Capsule()
+            .fill(nodeColor.opacity(0.16))
+            .frame(width: 44, height: 3)
+    }
+
+    private func connectionStatPill(label: String, value: Int, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 8 * textScale, weight: .bold, design: .rounded))
+                .foregroundColor(textColor.opacity(0.7))
+            Text("\(value)")
+                .font(.system(size: 9 * textScale, weight: .bold, design: .rounded))
+                .foregroundColor(textColor)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color)
+        .clipShape(Capsule())
     }
 
     private var noOutgoingWarning: some View {
@@ -335,14 +442,25 @@ struct NodeView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var connectionCountText: String {
+    private var inboundLabel: String {
         switch localizationManager.currentLanguage {
         case .english:
-            return "In \(incomingConnections)  Out \(outgoingConnections)"
+            return "IN"
         case .traditionalChinese:
-            return "入 \(incomingConnections)  出 \(outgoingConnections)"
+            return "入"
         case .simplifiedChinese:
-            return "入 \(incomingConnections)  出 \(outgoingConnections)"
+            return "入"
+        }
+    }
+
+    private var outboundLabel: String {
+        switch localizationManager.currentLanguage {
+        case .english:
+            return "OUT"
+        case .traditionalChinese:
+            return "出"
+        case .simplifiedChinese:
+            return "出"
         }
     }
 

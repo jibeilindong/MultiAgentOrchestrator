@@ -218,6 +218,8 @@ struct ThemeSettingsView: View {
 }
 
 struct AdvancedSettingsView: View {
+    @EnvironmentObject var appState: AppState
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(LocalizedString.advanced)
@@ -225,7 +227,7 @@ struct AdvancedSettingsView: View {
             
             VStack(alignment: .leading, spacing: 12) {
                 Toggle(LocalizedString.text("debug_mode"), isOn: .constant(false))
-                Toggle(LocalizedString.autoSave, isOn: .constant(true))
+                Toggle(LocalizedString.text("draft_auto_save"), isOn: $appState.autoSaveEnabled)
                 Toggle(LocalizedString.text("show_hints"), isOn: .constant(true))
             }
             .padding()

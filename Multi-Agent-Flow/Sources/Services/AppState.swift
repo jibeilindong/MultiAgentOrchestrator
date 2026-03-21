@@ -63,6 +63,10 @@ class ProjectManager: ObservableObject {
         appSupportRootDirectory.appendingPathComponent("AutoSave", isDirectory: true)
     }
 
+    var draftsDirectory: URL {
+        appSupportRootDirectory.appendingPathComponent("Drafts", isDirectory: true)
+    }
+
     var analyticsRootDirectory: URL {
         appSupportRootDirectory.appendingPathComponent("Analytics", isDirectory: true)
     }
@@ -79,6 +83,7 @@ class ProjectManager: ObservableObject {
         try? fileManager.createDirectory(at: openClawSessionRootDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: defaultWorkspaceRootDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: analyticsRootDirectory, withIntermediateDirectories: true)
     }
     
@@ -96,6 +101,10 @@ class ProjectManager: ObservableObject {
     func projectURL(for name: String) -> URL {
         projectsDirectory.appendingPathComponent("\(name).maoproj")
     }
+
+    func draftURL(for projectID: UUID) -> URL {
+        draftsDirectory.appendingPathComponent("draft_\(projectID.uuidString).maoproj")
+    }
     
     func saveProject(_ project: MAProject, to url: URL? = nil) throws -> URL {
         let destinationURL = url ?? projectURL(for: project.name)
@@ -110,6 +119,45 @@ class ProjectManager: ObservableObject {
     func loadProject(from url: URL) throws -> MAProject {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(MAProject.self, from: data)
+    }
+
+    func saveDraft(_ project: MAProject) throws -> URL {
+        let destinationURL = draftURL(for: project.id)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(project)
+        try data.write(to: destinationURL, options: .atomic)
+        return destinationURL
+    }
+
+    func loadDraft(for projectID: UUID) throws -> MAProject {
+        try loadProject(from: draftURL(for: projectID))
+    }
+
+    func removeDraft(for projectID: UUID) {
+        let url = draftURL(for: projectID)
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try? fileManager.removeItem(at: url)
+    }
+
+    func latestDraftURL() -> URL? {
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: draftsDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
+            return nil
+        }
+
+        return contents
+            .filter { $0.pathExtension == "maoproj" }
+            .sorted { lhs, rhs in
+                modificationDate(for: lhs) > modificationDate(for: rhs)
+            }
+            .first
+    }
+
+    func modificationDate(for url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
     }
     
     func uniqueProjectName(baseName: String = "New Project") -> String {
@@ -142,6 +190,7 @@ class ProjectManager: ObservableObject {
     func deleteProject(at url: URL, projectID: UUID? = nil) {
         try? FileManager.default.removeItem(at: url)
         if let projectID {
+            removeDraft(for: projectID)
             try? FileManager.default.removeItem(
                 at: defaultWorkspaceRootDirectory.appendingPathComponent(projectID.uuidString, isDirectory: true)
             )
@@ -384,11 +433,18 @@ struct CanvasDisplaySettings: Codable {
 }
 
 class AppState: ObservableObject {
+    enum DraftSaveKind {
+        case automatic
+        case manual
+        case restored
+    }
+
     let objectWillChange = ObservableObjectPublisher()
     private var cancellables = Set<AnyCancellable>()
     
     // 项目管理器
     let projectManager = ProjectManager.shared
+    private let settingsManager = SettingsManager.shared
     
     // OpenClaw管理器
     let openClawManager = OpenClawManager.shared
@@ -401,10 +457,15 @@ class AppState: ObservableObject {
             objectWillChange.send()
         }
         didSet {
+            if let project = currentProject,
+               project.runtimeState.workflowConfigurationRevision == project.runtimeState.appliedWorkflowConfigurationRevision {
+                appliedProjectSnapshot = project
+            }
             refreshOpsAnalytics()
         }
     }
     @Published var currentProjectFileURL: URL?
+    private var appliedProjectSnapshot: MAProject?
     
     // 选中的节点ID
     @Published var selectedNodeID: UUID?
@@ -430,10 +491,19 @@ class AppState: ObservableObject {
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
-    private let autoSaveInterval: TimeInterval = 60 // 每60秒自动保存
-    @Published var autoSaveEnabled: Bool = true
-    @Published var lastAutoSaveTime: Date?
-    @Published var isAutoSaving: Bool = false
+    @Published var autoSaveEnabled: Bool = SettingsManager.shared.autoSaveEnabled {
+        didSet {
+            settingsManager.autoSaveEnabled = autoSaveEnabled
+            if autoSaveEnabled {
+                startAutoSave()
+            } else {
+                stopAutoSave()
+            }
+        }
+    }
+    @Published var lastDraftSaveTime: Date?
+    @Published var lastDraftSaveKind: DraftSaveKind?
+    @Published var isSavingDraft: Bool = false
     private var workflowUndoStack: [MAProject] = []
     private var workflowRedoStack: [MAProject] = []
     private let persistenceQueue = DispatchQueue(label: "MultiAgentFlow.AppState.persistence", qos: .utility)
@@ -456,11 +526,17 @@ class AppState: ObservableObject {
     var lastAppliedWorkflowConfigurationAt: Date? {
         currentProject?.runtimeState.lastAppliedWorkflowAt
     }
+
+    private var projectPendingConfirmation: Bool {
+        hasPendingWorkflowConfiguration
+    }
     
     init() {
         loadToolbarPreferences()
         bindProjectState()
-        startAutoSave()
+        if autoSaveEnabled {
+            startAutoSave()
+        }
     }
     
     deinit {
@@ -470,6 +546,7 @@ class AppState: ObservableObject {
     // 自动保存功能
     func startAutoSave() {
         stopAutoSave()
+        let autoSaveInterval = TimeInterval(max(1, settingsManager.autoSaveInterval) * 60)
         autoSaveTimer = Timer.scheduledTimer(withTimeInterval: autoSaveInterval, repeats: true) { [weak self] _ in
             self?.performAutoSave()
         }
@@ -568,6 +645,28 @@ class AppState: ObservableObject {
         project.memoryData = buildMemoryData(project: project)
         project.runtimeState.lastUpdated = Date()
         currentProject = project
+
+        if var confirmedProject = appliedProjectSnapshot, confirmedProject.id == project.id {
+            confirmedProject.tasks = project.tasks
+            confirmedProject.messages = project.messages
+            confirmedProject.executionResults = project.executionResults
+            confirmedProject.executionLogs = project.executionLogs
+            confirmedProject.openClaw = project.openClaw
+            confirmedProject.taskData = project.taskData
+            confirmedProject.workspaceIndex = project.workspaceIndex
+            confirmedProject.memoryData = project.memoryData
+            confirmedProject.runtimeState.sessionID = project.runtimeState.sessionID
+            confirmedProject.runtimeState.messageQueue = project.runtimeState.messageQueue
+            confirmedProject.runtimeState.dispatchQueue = project.runtimeState.dispatchQueue
+            confirmedProject.runtimeState.inflightDispatches = project.runtimeState.inflightDispatches
+            confirmedProject.runtimeState.completedDispatches = project.runtimeState.completedDispatches
+            confirmedProject.runtimeState.failedDispatches = project.runtimeState.failedDispatches
+            confirmedProject.runtimeState.agentStates = project.runtimeState.agentStates
+            confirmedProject.runtimeState.runtimeEvents = project.runtimeState.runtimeEvents
+            confirmedProject.runtimeState.lastUpdated = project.runtimeState.lastUpdated
+            confirmedProject.updatedAt = project.updatedAt
+            appliedProjectSnapshot = confirmedProject
+        }
     }
 
     private func refreshOpsAnalytics() {
@@ -768,56 +867,27 @@ class AppState: ObservableObject {
     
     private func performAutoSave() {
         guard autoSaveEnabled, let project = snapshotCurrentProject() else { return }
-        
-        isAutoSaving = true
-        
-        // 保存到用户默认目录
-        let fileManager = FileManager.default
-        let projectDir = projectManager.autoSaveDirectory
-        
-        do {
-            try fileManager.createDirectory(at: projectDir, withIntermediateDirectories: true)
-            
-            let fileName = "autosave_\(project.id.uuidString.prefix(8)).maoproj"
-            let fileURL = projectDir.appendingPathComponent(fileName)
-            
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(project)
-            try data.write(to: fileURL)
-            
-            lastAutoSaveTime = Date()
-            print("自动保存成功: \(fileURL.path)")
-        } catch {
-            print("自动保存失败: \(error)")
-        }
-        
-        isAutoSaving = false
+        guard projectPendingConfirmation else { return }
+
+        persistDraft(project, kind: .automatic)
     }
     
-    // 加载自动保存的项目
+    // 加载最近的草稿项目
     func loadAutoSavedProject() -> MAProject? {
-        let fileManager = FileManager.default
-        let projectDir = projectManager.autoSaveDirectory
-        
+        guard let latestFile = projectManager.latestDraftURL() else { return nil }
+
         do {
-            let files = try fileManager.contentsOfDirectory(at: projectDir, includingPropertiesForKeys: [.contentModificationDateKey])
-            let latestFile = files.filter { $0.pathExtension == "maoproj" }
-                .sorted { (url1: URL, url2: URL) in
-                    let date1 = (try? url1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
-                    let date2 = (try? url2.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
-                    return date1 > date2
-                }
-                .first
-            
-            if let latestFile = latestFile {
-                return try projectManager.loadProject(from: latestFile)
-            }
+            return try projectManager.loadProject(from: latestFile)
         } catch {
-            print("加载自动保存失败: \(error)")
+            print("加载草稿失败: \(error)")
         }
-        
+
         return nil
+    }
+
+    func saveDraft() {
+        guard let project = snapshotCurrentProject() else { return }
+        persistDraft(project, kind: .manual)
     }
     
     func createNewProject() {
@@ -842,6 +912,7 @@ class AppState: ObservableObject {
         openClawService.resetExecutionSnapshot()
         openClawManager.restore(from: project.openClaw)
         currentProject = project
+        appliedProjectSnapshot = project
 
         do {
             currentProjectFileURL = try projectManager.saveProject(project, to: projectManager.projectURL(for: resolvedName))
@@ -862,7 +933,7 @@ class AppState: ObservableObject {
     }
 
     func saveProjectAs() {
-        guard let project = snapshotCurrentProject() else { return }
+        guard let project = snapshotProjectForPersistence() else { return }
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.maoproject]
@@ -876,18 +947,21 @@ class AppState: ObservableObject {
     }
 
     private func saveProject(to url: URL) {
-        guard let project = snapshotCurrentProject() else { return }
+        guard let project = snapshotProjectForPersistence() else { return }
 
         do {
             currentProjectFileURL = try projectManager.saveProject(project, to: url)
-            currentProject = project
+            appliedProjectSnapshot = project
+            if !projectPendingConfirmation {
+                clearDraftFile(for: project.id, resetDraftStatus: true)
+            }
         } catch {
             print("保存项目失败: \(error)")
         }
     }
 
     private func persistCurrentProjectSilently() {
-        guard let project = snapshotCurrentProject() else { return }
+        guard let project = snapshotProjectForPersistence() else { return }
         persistProjectSilently(project)
     }
 
@@ -909,6 +983,9 @@ class AppState: ObservableObject {
         if clearProjectReference {
             currentProjectFileURL = nil
             currentProject = nil
+            appliedProjectSnapshot = nil
+            lastDraftSaveTime = nil
+            lastDraftSaveKind = nil
         }
     }
 
@@ -916,18 +993,70 @@ class AppState: ObservableObject {
     private func writeAgentSoulToProjectMirror(
         agent: Agent,
         project: MAProject
-    ) -> (success: Bool, message: String, path: String?) {
+    ) -> (success: Bool, message: String, path: String?, privateRootPath: String?, metadataPath: String?) {
         guard let soulURL = openClawManager.projectMirrorSoulURL(for: agent, in: project) else {
-            return (false, LocalizedString.text("soul_mirror_path_not_found"), nil)
+            return (false, LocalizedString.text("soul_mirror_path_not_found"), nil, nil, nil)
         }
 
         do {
-            try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try agent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
-            return (true, LocalizedString.format("wrote_to_path", soulURL.path), soulURL.path)
+            let agentRootURL = soulURL.deletingLastPathComponent()
+            let privateRootURL = agentRootURL.appendingPathComponent("private", isDirectory: true)
+            let metadataURL = agentRootURL.appendingPathComponent("agent.json", isDirectory: false)
+
+            let mirroredAgent = Self.preparedMirroredAgentForProjectMirror(
+                agent: agent,
+                soulPath: soulURL.path,
+                privateRootPath: privateRootURL.path,
+                importedAt: Date()
+            )
+
+            try FileManager.default.createDirectory(at: agentRootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: privateRootURL, withIntermediateDirectories: true)
+            try mirroredAgent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let metadata = try encoder.encode(mirroredAgent)
+            try metadata.write(to: metadataURL, options: .atomic)
+
+            return (
+                true,
+                LocalizedString.format("wrote_to_path", soulURL.path),
+                soulURL.path,
+                privateRootURL.path,
+                metadataURL.path
+            )
         } catch {
-            return (false, LocalizedString.format("write_project_mirror_failed", error.localizedDescription), nil)
+            return (
+                false,
+                LocalizedString.format("write_project_mirror_failed", error.localizedDescription),
+                nil,
+                nil,
+                nil
+            )
         }
+    }
+
+    private func materializeProjectAgentMirrors(in project: inout MAProject) -> (success: Bool, message: String) {
+        for index in project.agents.indices {
+            let agent = project.agents[index]
+            let mirrorWrite = writeAgentSoulToProjectMirror(agent: agent, project: project)
+            guard mirrorWrite.success,
+                  let soulPath = mirrorWrite.path,
+                  let privateRootPath = mirrorWrite.privateRootPath else {
+                return (false, mirrorWrite.message)
+            }
+
+            project.agents[index] = Self.preparedMirroredAgentForProjectMirror(
+                agent: agent,
+                soulPath: soulPath,
+                privateRootPath: privateRootPath,
+                importedAt: Date()
+            )
+            project.agents[index].updatedAt = Date()
+        }
+
+        return (true, LocalizedString.text("workflow_apply_pending"))
     }
     
     // 关闭当前项目
@@ -946,6 +1075,9 @@ class AppState: ObservableObject {
         if currentProject != nil {
             syncCurrentProjectFromManagers()
             persistCurrentProjectSilently()
+            if autoSaveEnabled {
+                performAutoSave()
+            }
         }
         stopAutoSave()
     }
@@ -964,7 +1096,7 @@ class AppState: ObservableObject {
 
     func openProject(at url: URL) {
         do {
-            let project = try projectManager.loadProject(from: url)
+            let project = try resolvedProjectForOpening(at: url)
             teardownCurrentProjectSession(persistProject: currentProject != nil, clearProjectReference: true)
             restoreProject(project, from: url)
         } catch {
@@ -996,6 +1128,24 @@ class AppState: ObservableObject {
             hydratedProject.permissions = conversationPermissions(for: hydratedProject.workflows)
         }
         currentProject = hydratedProject
+        appliedProjectSnapshot = hydratedProject
+        if let draftURL = url.flatMap({ _ in projectManager.draftURL(for: hydratedProject.id) }),
+           FileManager.default.fileExists(atPath: draftURL.path),
+           projectManager.modificationDate(for: draftURL) >= projectManager.modificationDate(for: url ?? draftURL),
+           hydratedProject.runtimeState.workflowConfigurationRevision != hydratedProject.runtimeState.appliedWorkflowConfigurationRevision {
+            lastDraftSaveTime = projectManager.modificationDate(for: draftURL)
+            lastDraftSaveKind = .restored
+            openClawService.addLog(
+                .info,
+                LocalizedString.format(
+                    "draft_restored_at",
+                    lastDraftSaveTime?.formatted(date: .omitted, time: .shortened) ?? ""
+                )
+            )
+        } else {
+            lastDraftSaveTime = nil
+            lastDraftSaveKind = nil
+        }
 
         if deduplication.removedNodeCount > 0 {
             openClawService.addLog(
@@ -1245,6 +1395,59 @@ class AppState: ObservableObject {
         project.runtimeState.lastUpdated = Date()
         project.updatedAt = Date()
         return project
+    }
+
+    private func snapshotProjectForPersistence() -> MAProject? {
+        if projectPendingConfirmation {
+            return appliedProjectSnapshot
+        }
+        return snapshotCurrentProject()
+    }
+
+    private func persistDraft(_ project: MAProject, kind: DraftSaveKind) {
+        isSavingDraft = true
+
+        do {
+            let fileURL = try projectManager.saveDraft(project)
+            let savedAt = projectManager.modificationDate(for: fileURL)
+            lastDraftSaveTime = savedAt
+            lastDraftSaveKind = kind
+            print("草稿保存成功: \(fileURL.path)")
+        } catch {
+            print("草稿保存失败: \(error)")
+        }
+
+        isSavingDraft = false
+    }
+
+    private func clearDraftFile(for projectID: UUID, resetDraftStatus: Bool) {
+        projectManager.removeDraft(for: projectID)
+        guard resetDraftStatus else { return }
+        lastDraftSaveTime = nil
+        lastDraftSaveKind = nil
+    }
+
+    private func resolvedProjectForOpening(at url: URL) throws -> MAProject {
+        let confirmedProject = try projectManager.loadProject(from: url)
+        let draftURL = projectManager.draftURL(for: confirmedProject.id)
+
+        guard FileManager.default.fileExists(atPath: draftURL.path) else {
+            return confirmedProject
+        }
+
+        let confirmedDate = projectManager.modificationDate(for: url)
+        let draftDate = projectManager.modificationDate(for: draftURL)
+
+        guard draftDate >= confirmedDate else {
+            return confirmedProject
+        }
+
+        let draftProject = try projectManager.loadDraft(for: confirmedProject.id)
+        guard draftProject.id == confirmedProject.id else {
+            return confirmedProject
+        }
+
+        return draftProject
     }
 
     private func persistProjectSilently(_ project: MAProject) {
@@ -2183,28 +2386,10 @@ class AppState: ObservableObject {
                 )
             }
         }
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-
-        let mirrorWrite = writeAgentSoulToProjectMirror(agent: normalizedAgent, project: project)
-        if mirrorWrite.success, let path = mirrorWrite.path,
-           let refreshedProject = currentProject,
-           let refreshedIndex = refreshedProject.agents.firstIndex(where: { $0.id == normalizedAgent.id }) {
-            currentProject?.agents[refreshedIndex].openClawDefinition.soulSourcePath = path
-        }
-        persistCurrentProjectSilently()
-
-        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] success, message in
-            guard let self else { return }
-            DispatchQueue.main.async {
-                self.openClawService.addLog(success ? .success : .warning, message)
-            }
-        }
-
-        if reload {
-            reloadAgent(normalizedAgent.id)
-        }
     }
 
     func loadAgentSoulMDFromSource(agentID: UUID) -> (content: String, sourcePath: String?)? {
@@ -2233,25 +2418,14 @@ class AppState: ObservableObject {
             return (false, LocalizedString.text("agent_not_found"))
         }
 
-        var agent = project.agents[index]
-        agent.soulMD = soulMD
-
-        let mirrorWrite = writeAgentSoulToProjectMirror(agent: agent, project: project)
-        guard mirrorWrite.success else {
-            return (false, mirrorWrite.message)
-        }
-
-        if let path = mirrorWrite.path {
-            project.agents[index].openClawDefinition.soulSourcePath = path
-        }
         project.agents[index].soulMD = soulMD
         project.agents[index].updatedAt = Date()
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-        persistCurrentProjectSilently()
 
-        return (true, mirrorWrite.message)
+        return (true, LocalizedString.text("workflow_apply_pending"))
     }
 
     func refreshAgentSoulMDFromSource(agentID: UUID) -> (success: Bool, message: String) {
@@ -2270,10 +2444,10 @@ class AppState: ObservableObject {
             project.agents[index].soulMD = content
             project.agents[index].openClawDefinition.soulSourcePath = soulURL.path
             project.agents[index].updatedAt = Date()
+            markWorkflowConfigurationPending(in: &project)
             project.updatedAt = Date()
             currentProject = project
             objectWillChange.send()
-            persistCurrentProjectSilently()
             return (true, LocalizedString.format("reloaded_from_path", soulURL.path))
         } catch {
             return (false, LocalizedString.format("read_soul_failed", error.localizedDescription))
@@ -2347,10 +2521,10 @@ class AppState: ObservableObject {
 
         mutate(&project.agents[index].openClawDefinition)
         project.agents[index].updatedAt = Date()
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-        persistCurrentProjectSilently()
     }
 
     private func resolveAgentSoulFileURL(for agent: Agent) -> URL? {
@@ -2508,6 +2682,13 @@ class AppState: ObservableObject {
         }
 
         syncConversationPermissions(for: project.workflows, in: &project)
+        let mirrorMaterialization = materializeProjectAgentMirrors(in: &project)
+        guard mirrorMaterialization.success else {
+            completion?(false, mirrorMaterialization.message)
+            return
+        }
+
+        currentProject = project
         isApplyingWorkflowConfiguration = true
 
         openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] stageSuccess, stageMessage in
@@ -2535,6 +2716,7 @@ class AppState: ObservableObject {
                     refreshedProject.runtimeState.lastAppliedWorkflowAt = Date()
                     refreshedProject.updatedAt = Date()
                     self.currentProject = refreshedProject
+                    self.appliedProjectSnapshot = refreshedProject
                     self.persistCurrentProjectSilently()
                 }
 
@@ -3552,25 +3734,86 @@ class AppState: ObservableObject {
     }
     
     // 添加新 Agent
+    @MainActor
     @discardableResult
     func addNewAgent(named name: String = "New Agent", templateID: String? = nil) -> Agent? {
         guard var project = currentProject else { return nil }
-        let resolvedName = Agent.normalizedName(
+        let template = templateID.flatMap(AgentTemplateCatalog.template(withID:))
+        let resolvedName = Self.resolvedNewAgentName(
             requestedName: name,
+            template: template,
             existingAgents: project.agents
         )
         var newAgent = Agent(name: resolvedName)
-        if let templateID, let template = AgentTemplateCatalog.template(withID: templateID) {
+        if let template {
             newAgent.apply(template: template)
         } else {
             newAgent.description = "Description"
         }
-        newAgent.openClawDefinition.agentIdentifier = resolvedName
+        newAgent = Self.preparedDraftAgentForDeferredMaterialization(newAgent, agentIdentifier: resolvedName)
+
         project.agents.append(newAgent)
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
         return newAgent
+    }
+
+    static func resolvedNewAgentName(
+        requestedName: String = "New Agent",
+        template: AgentTemplate?,
+        existingAgents: [Agent]
+    ) -> String {
+        let normalizedRequestedName = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName: String
+
+        if let template,
+           normalizedRequestedName.isEmpty || normalizedRequestedName == "New Agent" {
+            baseName = template.name
+        } else {
+            baseName = requestedName
+        }
+
+        return Agent.normalizedName(
+            requestedName: baseName,
+            existingAgents: existingAgents
+        )
+    }
+
+    static func preparedMirroredAgentForProjectMirror(
+        agent: Agent,
+        soulPath: String,
+        privateRootPath: String,
+        importedAt: Date
+    ) -> Agent {
+        var mirroredAgent = agent
+        mirroredAgent.openClawDefinition.soulSourcePath = soulPath
+        mirroredAgent.openClawDefinition.lastImportedSoulPath = soulPath
+        mirroredAgent.openClawDefinition.lastImportedAt = importedAt
+
+        if (mirroredAgent.openClawDefinition.memoryBackupPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty ?? true) {
+            mirroredAgent.openClawDefinition.memoryBackupPath = privateRootPath
+        }
+
+        return mirroredAgent
+    }
+
+    static func preparedDraftAgentForDeferredMaterialization(
+        _ agent: Agent,
+        agentIdentifier: String? = nil
+    ) -> Agent {
+        var draftAgent = agent
+        if let agentIdentifier {
+            draftAgent.openClawDefinition.agentIdentifier = agentIdentifier
+        }
+        draftAgent.openClawDefinition.soulSourcePath = nil
+        draftAgent.openClawDefinition.lastImportedSoulPath = nil
+        draftAgent.openClawDefinition.lastImportedAt = nil
+        draftAgent.openClawDefinition.memoryBackupPath = nil
+        return draftAgent
     }
 
     func copyAgent(_ agent: Agent) -> Bool {
@@ -3596,6 +3839,7 @@ class AppState: ObservableObject {
         guard var project = currentProject else { return nil }
 
         project.agents.append(sourceAgent)
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
@@ -3609,10 +3853,10 @@ class AppState: ObservableObject {
 
         let duplicated = makeCopiedAgent(from: agent, suffix: suffix, offset: offset)
         project.agents.append(duplicated)
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-        persistCurrentProjectSilently()
         return duplicated
     }
 
@@ -3654,11 +3898,10 @@ class AppState: ObservableObject {
             }
         }
 
+        markWorkflowConfigurationPending(in: &project)
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
-        persistCurrentProjectSilently()
-        openClawManager.terminateAgent(agentID)
     }
 
     private func makeCopiedAgent(from agent: Agent, suffix: String, offset: CGPoint) -> Agent {
@@ -3670,7 +3913,7 @@ class AppState: ObservableObject {
         copied.capabilities = agent.capabilities
         copied.colorHex = agent.colorHex
         copied.openClawDefinition = agent.openClawDefinition
-        copied.openClawDefinition.agentIdentifier = copied.name
+        copied = Self.preparedDraftAgentForDeferredMaterialization(copied, agentIdentifier: copied.name)
         copied.updatedAt = Date()
         return copied
     }
@@ -3700,6 +3943,7 @@ class AppState: ObservableObject {
         
         if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
             project.workflows[index] = workflow
+            markWorkflowConfigurationPending(in: &project)
             currentProject = project
         }
         objectWillChange.send()

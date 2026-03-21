@@ -1233,6 +1233,14 @@ struct EditorToolbar: View {
                         prominent: appState.hasPendingWorkflowConfiguration && !appState.isApplyingWorkflowConfiguration
                     )
                     .disabled(!appState.hasPendingWorkflowConfiguration || appState.isApplyingWorkflowConfiguration)
+
+                    toolbarIconButton(
+                        systemName: "square.and.arrow.down.on.square",
+                        title: LocalizedString.text("save_draft"),
+                        action: { appState.saveDraft() },
+                        tooltip: LocalizedString.text("save_draft_tooltip")
+                    )
+                    .disabled(appState.currentProject == nil)
                 }
             }
 
@@ -1286,7 +1294,7 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isAutoSaving || appState.lastAutoSaveTime != nil {
+            if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
                 toolbarSaveStatusView
                     .padding(.top, 8)
             } else if appState.hasPendingWorkflowConfiguration {
@@ -1575,11 +1583,11 @@ struct EditorToolbar: View {
 
     @ViewBuilder
     private var toolbarSaveStatusView: some View {
-        if appState.isAutoSaving {
+        if appState.isSavingDraft {
             HStack(spacing: 6) {
                 ProgressView()
                     .scaleEffect(0.65)
-                Text(LocalizedString.saving)
+                Text(LocalizedString.text("saving_draft"))
                     .font(.system(size: 11.5, weight: .medium))
                     .lineLimit(1)
             }
@@ -1594,11 +1602,11 @@ struct EditorToolbar: View {
                 Capsule(style: .continuous)
                     .stroke(Color.black.opacity(0.06), lineWidth: 1)
             )
-        } else if let lastSave = appState.lastAutoSaveTime {
+        } else if let lastSave = appState.lastDraftSaveTime {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundColor(.green)
-                Text(LocalizedString.format("saved_at", lastSave.formatted(date: .omitted, time: .shortened)))
+                Text(draftStatusText(for: lastSave))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -1613,6 +1621,18 @@ struct EditorToolbar: View {
                 Capsule(style: .continuous)
                     .stroke(Color.black.opacity(0.06), lineWidth: 1)
             )
+        }
+    }
+
+    private func draftStatusText(for date: Date) -> String {
+        let formattedDate = date.formatted(date: .omitted, time: .shortened)
+        switch appState.lastDraftSaveKind {
+        case .automatic:
+            return LocalizedString.format("draft_auto_saved_at", formattedDate)
+        case .restored:
+            return LocalizedString.format("draft_restored_at", formattedDate)
+        case .manual, .none:
+            return LocalizedString.format("draft_saved_at", formattedDate)
         }
     }
 
