@@ -1,196 +1,387 @@
-# Template System Redesign Aligned With Project Filesystem
+# Agent Template System Redesign Aligned With Filesystem Architecture
 
-Last updated: 2026-03-21
+Last updated: 2026-03-22
 Status: Proposed
 
-## Why redesign
+## Purpose
 
-The current template system is functionally rich, but its storage model no longer matches the rest of the project architecture.
+This redesign updates the template system so it matches the software's filesystem architecture while following the following product principles:
 
-Today we have two different worlds:
+1. Templates must be completely decoupled from projects. Projects must not contain template metadata, template bindings, template revisions, or embedded template snapshots.
+2. Templates are standardized assets. They must be portable, exchangeable, forkable, extensible, and creatable from scratch.
+3. Templates must obey the software's filesystem design instead of remaining a monolithic global JSON blob.
+4. Templates here mean agent templates only, not workflow templates.
+5. As standardized agent templates, required files, paths, and related contents must all exist and should be as complete, filled-out, and standardized as practical.
+6. Templates must never participate in workflows. Only copied, materialized agents may participate in workflows.
 
-- Project runtime and design state are already managed per project under `Application Support/Multi-Agent-Flow/Projects/<project-id>/...`.
-- Template content is still stored as a global snapshot in `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`.
+This document replaces any earlier direction that treated templates as project-owned or project-bound entities.
 
-This creates several problems:
+## Problem statement
 
-1. Template assets are not project-owned.
-2. A project cannot carry its own template history, revisions, or local presets.
-3. Applied templates leave almost no provenance on node-local design files.
-4. Global built-in overrides can silently change future behavior without becoming part of project storage.
-5. Template content, user preference state, and import helper state are mixed into one store.
-6. The current design does not align with the file-system rule that future reuse should happen through presets, not shared live agents.
+The current template system is useful, but its storage model is inconsistent with the rest of the architecture.
 
-This document redesigns the template system so it becomes a first-class part of the managed project filesystem while preserving the existing `node = agent = 1:1` model.
+Today:
 
-## Existing constraints we must preserve
+- project runtime and design state are being moved into managed project roots under `Application Support/Multi-Agent-Flow/Projects/<project-id>/...`
+- template content is still stored in a single global snapshot file:
+  - `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`
 
-From the current project filesystem plan and codebase:
+This causes several issues:
 
-- `.maoproj` compatibility must remain.
-- `MAProject` remains the shared assembly model.
-- `node = agent = 1:1 execution unit` remains true.
-- Template reuse must happen through presets, not through shared live agents.
-- Node-local `agent.json`, `binding.json`, and OpenClaw workspace files remain the execution-facing surface.
-- `SOUL.md` remains the materialized runtime artifact for an agent.
+1. Templates are not modeled as first-class filesystem assets.
+2. Template content, user preferences, and import-helper state are mixed together.
+3. Templates are hard to package, circulate, extend, and version cleanly.
+4. The storage shape does not match the managed-storage conventions used elsewhere in the app.
+5. Projects may appear to depend on whatever global template state exists on the current machine.
+6. The current model does not enforce the idea that a template should be a complete standard agent package.
 
-The redesign therefore must not turn templates into shared mutable live objects.
+## Non-negotiable constraints
 
-## Core redesign principles
+The redesign must preserve:
 
-### 1. Split content from preference state
+- `.maoproj` compatibility
+- `MAProject` as the shared assembly model
+- `node = agent = 1:1 execution unit`
+- current node-local agent materialization behavior
+- `SOUL.md` as the materialized execution-facing artifact
 
-Template content and user preferences are different things and should not live in the same snapshot.
+The key implication is:
 
-- Template content:
-  - built-in templates
-  - user custom templates
-  - project templates
-  - imported SOUL-derived templates
-- Preference state:
-  - favorites
-  - recents
-  - picker order
-  - custom function-description suggestions
+- templates may influence agent creation
+- templates must not become shared live runtime objects
+- projects must continue to store only materialized agent state, not template state
 
-### 2. Split scope into system, user, and project
+## Core principles
 
-The new template architecture has three scopes:
+## 1. Project-template decoupling
 
-- System scope:
-  - read-only built-in catalog shipped with the app
-- User scope:
-  - reusable personal presets and picker preferences
-- Project scope:
-  - templates owned by one managed project and stored under that project root
+Projects must be fully decoupled from template assets.
 
-### 3. Preserve materialization semantics
+A project should store:
 
-Applying a template should still materialize agent state into the node-owned agent instance.
+- node-owned agent state
+- workflow state
+- runtime state
+- OpenClaw state
 
-- A node does not "share" a live template.
-- A node stores a reference to the template revision it was created from.
-- The materialized agent remains independently editable afterward.
+A project must not store:
 
-This means templates become provenance-bearing presets, not runtime inheritance chains.
+- template IDs
+- template revisions
+- template bindings
+- template libraries
+- embedded copies of template assets
+- workflow-time participation of template files
 
-### 4. Make template lineage explicit
+Template application is therefore a strict one-way materialization step:
 
-Every project-owned template and every node that applies one should carry lineage metadata:
+- select template
+- copy template into an agent draft
+- persist only the resulting node-owned agent state into the project
 
-- where the template came from
-- which revision was applied
-- whether the node has drifted away from that revision
+## 2. Templates are standardized agent assets
 
-### 5. Make project portability deterministic
+Templates are not editor-local presets or partial prompt fragments. They are reusable software assets for agents.
 
-A managed project must be reproducible from its own internal files.
+A template asset must support:
 
-- If a node was created from a template, the project should contain the template revision that was applied.
-- Reopening the project on another machine must not require the original global user template library to reconstruct context.
+- creation from scratch
+- import from `SOUL.md`
+- import from OpenClaw-derived material
+- export as a portable package
+- forking and secondary development
+- versioning and revision history
+- validation and testing
 
-## New storage topology
+## 3. Filesystem-native template design
 
-## User-level storage
+Templates should follow the same filesystem philosophy already used by the app:
 
-User-level storage continues to live under Application Support, but it is narrowed to reusable presets and preferences.
+- explicit roots
+- manifests
+- split documents
+- stable identifiers
+- generated artifacts separated from source documents
+- predictable paths
+
+The template system should therefore move away from a single monolithic JSON snapshot and adopt a managed library layout.
+
+## 4. Complete standard file set
+
+Each template should represent a complete standard agent package rather than only a `template.json` plus one prompt body.
+
+This means:
+
+- required files should exist
+- required paths should be stable
+- companion files should be generated
+- content should be as complete and standardized as practical
+
+The editor should be able to copy a template and immediately produce a standard agent that is directly usable if the user makes no changes.
+
+## 5. Copy, then sever all relation
+
+Template usage must follow a strict copy-and-sever model.
+
+When a user applies a template:
+
+- the editor copies the template content into a new or existing agent draft
+- the result becomes a normal node-owned agent
+- if the user edits the agent afterward, the edits belong only to that agent
+- the agent no longer has any relation to the source template
+
+When a user saves an agent as a template:
+
+- the editor creates a new template asset file set
+- the new template does not retain a live relation to the source agent
+- the source agent remains just an agent
+
+This rule is absolute:
+
+- templates do not track agents
+- agents do not track templates
+
+## 6. Templates never participate in workflows
+
+Templates are completely independent from workflows.
+
+They may be used by the editor as source material to create an agent, but:
+
+- template files are not workflow nodes
+- template files are not workflow resources
+- template files are not runtime participants
+- template files are not saved as part of workflow state
+
+Only copied, materialized agents may participate in workflows.
+
+## Recommended architecture
+
+The new architecture has three layers:
+
+- System catalog
+  - immutable built-in templates shipped with the app
+- User library
+  - user-owned template assets and user preferences
+- Exchange packages
+  - portable template bundles for circulation, import, export, and secondary development
+
+Notably absent:
+
+- project template scope
+
+Projects consume templates through copy/materialization only. Projects do not own or persist templates.
+
+## Scope model
+
+## System scope
+
+System scope contains built-in templates provided by the application.
+
+Properties:
+
+- read-only
+- versioned by app release
+- cannot be edited in place
+- can be forked into the user library
+
+## User scope
+
+User scope contains templates owned by the current user.
+
+Properties:
+
+- editable
+- versioned
+- importable and exportable
+- forkable from built-ins or other user templates
+- usable as the source for agent materialization
+
+## Exchange scope
+
+Exchange scope is not a runtime store but a packaging format.
+
+It is used for:
+
+- asset circulation
+- sharing across machines
+- review and collaboration
+- secondary development
+- future repository or marketplace integration
+
+## Filesystem layout
+
+## 1. Built-in catalog
+
+Built-in templates should be represented as immutable assets in the application bundle or generated app-support cache.
+
+Conceptual shape:
+
+```text
+System Templates/
+  manifest.json
+  templates/
+    <template-id>/
+      template.json
+      SOUL.md
+      AGENTS.md
+      IDENTITY.md
+      USER.md
+      TOOLS.md
+      BOOTSTRAP.md
+      HEARTBEAT.md
+      MEMORY.md
+```
+
+The exact physical location can remain implementation-defined, but the structure should match the managed-asset pattern.
+
+## 2. User template library
+
+The user template library becomes the authoritative mutable library.
+
+Recommended location:
 
 ```text
 Application Support/Multi-Agent-Flow/
   Libraries/
     Templates/
+      manifest.json
       preferences.json
-      library.json
+      indexes/
+        tags.json
+        capabilities.json
+        search.json
       templates/
         <template-id>/
           template.json
           SOUL.md
-```
-
-### `preferences.json`
-
-Stores non-project-specific UI state:
-
-- favorite template IDs
-- recent template IDs
-- ordered template IDs for the picker
-- custom function-description suggestions
-
-### `library.json`
-
-Stores lightweight library metadata:
-
-- schema version
-- template IDs
-- last updated at
-
-### `templates/<template-id>/template.json`
-
-Stores the user-owned template document:
-
-- full template content
-- lineage
-- revision
-- validation summary
-
-Built-in templates are not stored here. This directory only stores user-owned presets and compatibility-migrated global overrides.
-
-## Project-level storage
-
-Templates become a first-class design asset under the managed project root.
-
-```text
-Application Support/Multi-Agent-Flow/Projects/<project-id>/
-  design/
-    project.json
-    templates/
-      library.json
-      templates/
-        <project-template-id>/
-          template.json
-          SOUL.md
+          AGENTS.md
+          IDENTITY.md
+          USER.md
+          TOOLS.md
+          BOOTSTRAP.md
+          HEARTBEAT.md
+          MEMORY.md
           lineage.json
-    workflows/
-      <workflow-id>/
-        workflow.json
-        nodes/
-          <node-id>/
-            node.json
-            agent.json
-            template-binding.json
-            openclaw/
-              binding.json
-              workspace/
-                SOUL.md
-                AGENTS.md
-                USER.md
-                IDENTITY.md
-                TOOLS.md
-                HEARTBEAT.md
-                BOOTSTRAP.md
-                MEMORY.md
-                memory/
-                skills/
+          revisions/
+            <revision-id>.json
+          extensions/
+            README.md
+            examples/
+            tests/
+            assets/
 ```
 
-### Why `design/templates/`
+### Why this layout
 
-This is design-time content, not runtime session state.
+This layout treats each template as an independent asset root instead of a row inside a shared blob.
 
-- It belongs next to `project.json`, `workflow.json`, `node.json`, and `agent.json`.
-- It is part of the authored project, not just a UI convenience layer.
-- It matches the current internal-storage direction where design assets are decomposed under `design/`.
+Benefits:
 
-## New domain model
+- each template has a stable directory
+- revision history can be added incrementally
+- extension material has a natural home
+- exchange/import/export becomes simpler
+- asset-level tooling becomes possible later
+- each template can exist as a complete standard agent package
 
-## Template content document
+## 3. Portable exchange package
 
-Introduce a storage-facing template document with explicit provenance and revision metadata.
+Templates should have a package format that can be zipped, copied, reviewed, and imported.
+
+Recommended unpacked structure:
 
 ```text
-ProjectTemplateDocument
+template-package/
+  package.json
+  templates/
+    <template-id>/
+      template.json
+      SOUL.md
+      AGENTS.md
+      IDENTITY.md
+      USER.md
+      TOOLS.md
+      BOOTSTRAP.md
+      HEARTBEAT.md
+      MEMORY.md
+      lineage.json
+      extensions/
+```
+
+This makes templates portable without tying them to a specific project.
+
+## What projects store after the redesign
+
+Projects continue to store only materialized design/runtime state.
+
+They keep:
+
+- `agent.json`
+- node-local OpenClaw workspace files
+- materialized `SOUL.md`
+- workflow state
+- runtime state
+
+They do not keep:
+
+- template-binding files
+- template revision references
+- template lineage references
+- project-owned template directories
+- live links back to template assets
+
+This is the strict interpretation of project-template decoupling.
+
+## Template application model
+
+## One-way materialization
+
+Applying a template should work like this:
+
+1. Resolve the selected template from system or user scope.
+2. Copy the template into a standard agent draft in the editor.
+3. Materialize template files and fields into the node-owned agent:
+   - identity
+   - description
+   - capabilities
+   - color
+   - rendered `SOUL.md`
+   - related standard companion documents as required by the editor/runtime surface
+4. Persist only the resulting node-owned agent state into the project.
+5. Regenerate node-local OpenClaw workspace documents from that materialized agent.
+
+No template reference is stored in the project.
+
+## After application
+
+Once the node-owned agent has been created:
+
+- it is independent
+- later edits do not affect the source template
+- template reapplication must be an explicit user action
+- if the user makes no edits, the copied result should already be directly usable as a standard agent
+
+This matches the intended rule: templates are source assets, not live dependencies.
+
+## Provenance handling without project coupling
+
+Since projects must not store template metadata, provenance should live outside the project.
+
+Recommended approach:
+
+- template lineage is stored inside the template asset itself
+- optional editor-local recent-application history can be stored in user scope
+- the project stores only the materialized result
+
+If the product later needs provenance for audit or debugging, it should be implemented as optional user-side editor state, not as part of project persistence.
+
+## Template document model
+
+Each template asset should use a document like:
+
+```text
+TemplateAssetDocument
 - id
-- scope: system | user | project
 - revision
 - displayName
 - meta
@@ -202,483 +393,381 @@ ProjectTemplateDocument
 - updatedAt
 ```
 
-### `lineage`
+Where:
+
+- `meta` contains management metadata
+- `soulSpec` contains the structured SOUL source
+- `renderedSoulHash` captures the current materialized `SOUL.md` fingerprint
+- `lineage` records template origin and fork history
+
+This document is the structured index/spec entry. It does not replace the rest of the standard template file set.
+
+## Standard template file set
+
+Each template asset should contain a complete standard file set for an agent template package.
+
+Minimum recommended file set:
+
+```text
+<template-id>/
+  template.json
+  SOUL.md
+  AGENTS.md
+  IDENTITY.md
+  USER.md
+  TOOLS.md
+  BOOTSTRAP.md
+  HEARTBEAT.md
+  MEMORY.md
+  lineage.json
+```
+
+Rules:
+
+- all required files must exist
+- paths must be stable and predictable
+- content should be as complete and filled-out as practical
+- placeholder-only templates should be avoided unless explicitly marked as draft
+
+## Lineage model
+
+Recommended lineage structure:
 
 ```text
 TemplateLineage
-- sourceScope: system | user | project | imported-soul | imported-openclaw
+- sourceScope: system | user | imported-soul | imported-openclaw | imported-package
 - sourceTemplateID
 - sourceRevision
-- sourceProjectID
 - importedFromPath
 - importedFromSoulHash
-- createdReason: built-in-snapshot | fork | import | project-local | migrated-override
+- createdReason: built-in-fork | new-from-scratch | soul-import | package-import | migrated-legacy
 ```
 
-This gives us a durable answer to "where did this template come from?"
+This supports circulation and secondary development without coupling templates to projects.
 
-## Node template binding
+## Built-in template behavior
 
-Add a node-local template binding file instead of hiding provenance inside free-form agent fields.
+Built-ins should become truly immutable.
 
-```text
-NodeTemplateBindingDocument
-- nodeID
-- agentID
-- projectTemplateID
-- projectTemplateRevision
-- sourceScope
-- sourceTemplateID
-- appliedAt
-- materializedSoulHash
-- driftStatus: clean | modified | detached | missing-template
-- lastCheckedAt
-```
+Allowed behavior:
 
-### Why a separate `template-binding.json`
+- view built-in
+- apply built-in
+- fork built-in into user library
 
-This follows the current project filesystem style:
+Disallowed behavior:
 
-- `agent.json` stores the node-owned agent definition.
-- `openclaw/binding.json` stores OpenClaw linkage.
-- `template-binding.json` should store template linkage.
+- editing built-in in place
+- overriding built-in by reusing the same ID in the mutable store
 
-This keeps authored agent state, OpenClaw state, and preset lineage clearly separated.
+Legacy built-in overrides from the old snapshot should be migrated into user-owned forked assets.
 
-## Agent document changes
+## Creation model
 
-`NodeAgentDesignDocument` should stay focused on the actual node-owned agent state:
+Templates should support three creation paths:
 
-- name
-- identity
-- description
-- capabilities
-- color
-- timestamps
-- OpenClaw definition
+## 1. Create from scratch
 
-It should not become the primary storage for template catalog content.
+The user can create a blank template asset directly in the user library.
 
-Optional future addition:
+Even when created from scratch, the result should still be expanded into the standard template file set, not left as a partial prompt stub.
 
-- `lastTemplateApplicationAt`
-- `lastTemplateMaterializedHash`
+## 2. Create from existing SOUL
 
-But even if those are added, the canonical linkage should still live in `template-binding.json`.
+Import a standalone `SOUL.md` and turn it into a template asset.
 
-## Built-in catalog behavior
+Recommended output:
 
-Built-in templates should become immutable from the storage perspective.
+- structured `template.json`
+- rendered `SOUL.md`
+- standard companion documents
+- lineage marked as `imported-soul`
 
-### Current problem
+## 3. Create from existing template
 
-Today the store allows "built-in overrides" using the same template ID. That makes it hard to understand whether a project is using:
+Fork a built-in or user template into a new user-owned template asset.
 
-- the shipped built-in template
-- a user override of that built-in template
-- a forked custom template
+Recommended output:
 
-### New behavior
+- new asset ID
+- new revision
+- full standard file set
+- lineage pointing back to the source template and revision
 
-Built-ins remain read-only in the system catalog.
+## Save agent as template
 
-When a user wants to modify a built-in template:
+The editor should also support saving an existing agent as a new template asset.
 
-1. In user scope:
-   - save as user preset fork
-2. In project scope:
-   - save as project template fork
+Rules:
 
-For migration compatibility we can still ingest existing built-in overrides from the legacy snapshot, but after migration they should be treated as user-owned templates with lineage pointing back to the built-in source.
+- the system creates a new template asset file set
+- the new template is independent from the source agent
+- the source agent remains only an agent
+- no reverse relation is retained
 
-## Template application model
+## Secondary development model
 
-## Applying a template to a node
+To support secondary development, each template asset directory should allow optional extension material:
 
-When the user applies a template to create or update a node-owned agent:
+- `README.md`
+- examples
+- tests
+- assets
 
-1. Resolve the selected template from system, user, or project scope.
-2. Snapshot that template into the project template library if the exact revision is not already present there.
-3. Materialize template fields into the node-owned agent:
-   - identity
-   - description
-   - capabilities
-   - color
-   - rendered `SOUL.md`
-4. Write `template-binding.json`.
-5. Write node-local OpenClaw workspace files from the materialized agent.
+This lets a template evolve beyond a single prompt/spec document and become a standardized reusable capability package.
 
-This gives us both:
-
-- reproducible project-owned template history
-- independent node-owned execution state
-
-## Editing a node after template application
-
-After the node is created, the agent remains editable.
-
-If the user edits:
-
-- `identity`
-- `description`
-- `capabilities`
-- `SOUL.md`
-
-the node should not mutate the source template automatically.
-
-Instead:
-
-- the node remains materialized
-- `template-binding.json` drift status becomes `modified`
-- the UI can offer:
-  - reapply template
-  - save current node as project template
-  - fork current node into user template
-
-This is much safer than implicit two-way synchronization.
-
-## Recommended drift logic
-
-Compare the node’s current materialized fields against the bound template revision:
-
-- if equal:
-  - `clean`
-- if only formatting-normalized SOUL changed:
-  - still `clean`
-- if semantic fields changed:
-  - `modified`
-- if bound project template no longer exists:
-  - `missing-template`
-- if user explicitly chooses "break link":
-  - `detached`
-
-## Project assembly behavior
-
-## Internal managed project loading
-
-`ProjectFileSystem.loadAssembledProject(...)` should continue to assemble a regular `MAProject`, but the template library should be loaded as a sibling design asset.
-
-Assembly responsibilities become:
-
-- `project.json`:
-  - workflow IDs
-  - optional template IDs
-- `design/templates/...`:
-  - project-owned template library
-- `nodes/<node-id>/agent.json`:
-  - node-owned materialized agent state
-- `nodes/<node-id>/template-binding.json`:
-  - provenance and drift metadata
-
-The assembled `MAProject` can remain largely unchanged for compatibility. Template design assets do not need to be runtime-critical to reconstruct the existing behavior.
-
-## `.maoproj` compatibility strategy
-
-There are two acceptable rollout levels.
-
-### Level 1: zero contract change
-
-Keep `.maoproj` exactly as-is.
-
-- Node-owned agents still carry fully materialized `identity`, `description`, `capabilities`, and `soulMD`.
-- Project templates remain an internal managed-storage asset only.
-- Export/import preserves behavior even if template provenance is lost outside managed storage.
-
-This is the safest first migration.
-
-### Level 2: additive contract extension
-
-Add optional template metadata to the shared model later.
-
-Possible additions:
-
-- `projectTemplateData`
-- `nodeTemplateBindings`
-
-These must stay optional so older `.maoproj` files still load without issue.
-
-Recommendation:
-
-- implement Level 1 first
-- only move to Level 2 if project-portable template authoring becomes a product requirement
-
-## User library behavior
-
-The user library should stop acting like the single source of truth for all template content.
-
-Instead it becomes:
-
-- a reusable personal preset library
-- a source from which projects can import or snapshot templates
-- the home of picker preferences
-
-This means a project should never depend on a user-library template staying unchanged after the node has already been created.
-
-## Import and export flows
-
-## Import `SOUL.md` as template
-
-Current behavior should split into two destinations:
-
-- import to user library
-- import to current project
-
-Default recommendation:
-
-- from the project UI, import into current project
-- from a global template manager, import into user library
-
-## Import OpenClaw agent
-
-When importing an OpenClaw agent:
-
-1. keep the materialized agent import behavior
-2. parse `SOUL.md`
-3. attempt template recommendation
-4. if the user accepts a template match:
-   - snapshot the matched template revision into project scope
-   - write `template-binding.json`
-5. if no acceptable match exists:
-   - offer "save imported SOUL as project template"
-
-This is better aligned with the current OpenClaw managed-copy flow because imported agents already become project-managed artifacts.
-
-## Import/export JSON template packs
-
-JSON export should become scope-aware.
-
-- user template export:
-  - exports user presets
-- project template export:
-  - exports project-owned templates
-
-Project template export should come from `design/templates/`, not from the user library store.
+Secondary development must still preserve the rule that template assets remain outside workflows.
 
 ## Validation redesign
 
-Validation should also split by level.
+Validation should operate at the template-asset level.
 
-### Template document validation
-
-Checks the stored template itself:
+Checks include:
 
 - required SOUL sections
-- management leak words
+- required standard files exist
+- required paths are valid
+- companion documents are not missing
+- management-leak phrases
 - item count warnings
-- invalid lineage
-- duplicate IDs or revision mismatch
+- invalid IDs or revision data
+- lineage consistency
+- optional extension-material integrity
 
-### Template binding validation
+Validation should no longer assume that templates are embedded in projects.
 
-Checks project-node linkage:
+## Import and export flows
 
-- missing project template
-- bound revision missing
-- drifted node state
-- source template lineage broken
+## Import `SOUL.md`
 
-### Materialization validation
+Import target:
 
-Checks execution-facing files:
+- user template library
 
-- `openclaw/workspace/SOUL.md` matches node-owned agent materialization
-- rendered SOUL hash matches binding metadata
+Not:
+
+- current project
+
+The project may still apply the resulting template afterward, but the imported template remains a library asset, not a project asset.
+
+## Import OpenClaw-derived material
+
+If an imported OpenClaw agent yields a valuable `SOUL.md`, the user may choose to:
+
+- materialize it only into the project as an agent
+- or save it into the user template library as a new template asset
+
+If saved as a template, it should be normalized into the full standard template file set rather than stored as a loose SOUL-only artifact.
+
+## Export template packs
+
+Export should produce a portable template package from user-library assets.
+
+This package should be suitable for:
+
+- circulation
+- review
+- backup
+- secondary development
+- future repository or marketplace ingestion
 
 ## Service decomposition
 
-The current `AgentTemplateLibraryStore` mixes too many responsibilities. Replace it with scoped services.
+The current `AgentTemplateLibraryStore` mixes too many concerns.
 
-### `SystemTemplateCatalog`
+Recommended replacement:
+
+## `SystemTemplateCatalog`
 
 Responsibilities:
 
 - expose immutable built-in templates
-- no persistence
+- no mutable persistence
 
-### `UserTemplateLibraryStore`
-
-Responsibilities:
-
-- load/save user-owned templates
-- load/save picker preferences
-- manage favorites, recents, custom descriptions
-
-### `ProjectTemplateStore`
+## `UserTemplateLibraryStore`
 
 Responsibilities:
 
-- load/save `design/templates/`
-- manage project template revisions
-- create project-local snapshots when templates are applied
-- provide template lineage lookup for nodes
+- load/save user-owned template assets
+- load/save preferences
+- manage recents, favorites, picker order
+- manage import/export of template packages
 
-### `TemplateMaterializationService`
-
-Responsibilities:
-
-- render `SOUL.md` from template documents
-- apply template to node-owned agent state
-- calculate hashes and drift
-
-### `TemplateMigrationService`
+## `TemplateAssetService`
 
 Responsibilities:
 
-- migrate legacy global snapshot
-- split content and preferences
-- convert built-in overrides into user-owned forks
+- create template from scratch
+- fork template
+- save agent as template
+- parse and generate `SOUL.md`
+- generate the complete standard file set
+- maintain lineage and revisions
+- run validation
 
-## Proposed file additions in `ProjectFileSystem`
+## `TemplateMaterializationService`
 
-Add path helpers analogous to the existing workflow/node helpers:
+Responsibilities:
+
+- apply a template to an agent draft
+- render materialized `SOUL.md`
+- generate the standard companion documents expected by the editor/runtime surface
+- return pure agent state without introducing project-side template metadata
+
+## `TemplateMigrationService`
+
+Responsibilities:
+
+- migrate the old monolithic snapshot
+- split content from preferences
+- convert legacy built-in overrides into user-owned fork assets
+
+## Filesystem helpers to add
+
+The filesystem layer should gain template-library path helpers, but these helpers should be separate from `ProjectFileSystem`.
+
+Recommended direction:
+
+- keep `ProjectFileSystem` focused on project roots
+- add a dedicated `TemplateFileSystem`
+
+Suggested helpers:
 
 ```text
-designTemplatesRootDirectory(for projectID:)
-projectTemplateLibraryURL(for projectID:)
-projectTemplateRootDirectory(for templateID:, projectID:)
-projectTemplateDocumentURL(for templateID:, projectID:)
-projectTemplateSoulURL(for templateID:, projectID:)
-nodeTemplateBindingURL(for nodeID:, workflowID:, projectID:)
+templateLibraryRootDirectory()
+templateManifestURL()
+templatePreferencesURL()
+templateIndexesRootDirectory()
+templateRootDirectory(for templateID:)
+templateDocumentURL(for templateID:)
+templateSoulURL(for templateID:)
+templateAgentsURL(for templateID:)
+templateIdentityURL(for templateID:)
+templateUserURL(for templateID:)
+templateToolsURL(for templateID:)
+templateBootstrapURL(for templateID:)
+templateHeartbeatURL(for templateID:)
+templateMemoryURL(for templateID:)
+templateLineageURL(for templateID:)
+templateRevisionDirectory(for templateID:)
 ```
 
-Recommended authoritative paths:
-
-```text
-Projects/<project-id>/design/templates/library.json
-Projects/<project-id>/design/templates/templates/<template-id>/template.json
-Projects/<project-id>/design/templates/templates/<template-id>/SOUL.md
-Projects/<project-id>/design/workflows/<workflow-id>/nodes/<node-id>/template-binding.json
-```
+This keeps template assets aligned with the software filesystem design without polluting project storage.
 
 ## Migration plan
 
 ## Phase 0: compatibility read
 
-Keep reading the legacy file:
+Continue reading the old legacy file if present:
 
 - `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`
 
-If present, migrate it once into:
+## Phase 1: split storage
 
-- `Libraries/Templates/preferences.json`
-- `Libraries/Templates/library.json`
-- `Libraries/Templates/templates/<template-id>/...`
+Migrate legacy data into:
 
-## Phase 1: service split
+```text
+Application Support/Multi-Agent-Flow/Libraries/Templates/
+  manifest.json
+  preferences.json
+  templates/<template-id>/...
+```
+
+Migration rules:
+
+- built-in overrides become user-owned forks
+- custom templates become user-owned assets
+- favorites, recents, and order move into `preferences.json`
+- loose legacy templates are normalized into the standard file set
+
+## Phase 2: switch services
 
 Replace `AgentTemplateLibraryStore` with:
 
 - `SystemTemplateCatalog`
 - `UserTemplateLibraryStore`
+- `TemplateAssetService`
+- `TemplateMaterializationService`
 
-No project template storage yet.
+## Phase 3: package import/export
 
-## Phase 2: project template storage
+Introduce portable template packages and asset-level import/export.
 
-Add:
+## Phase 4: secondary-development support
 
-- `design/templates/`
-- `template-binding.json`
-- snapshot-on-apply behavior
+Allow optional `extensions/`, `examples/`, and `tests/` inside template asset roots.
 
-## Phase 3: drift-aware UI
-
-Show node/template relationship in the editor:
-
-- from built-in/user/project template
-- clean or modified
-- reapply
-- fork to project template
-- save node as template
-
-## Phase 4: optional `.maoproj` additive metadata
-
-Only if portability of project template assets becomes necessary outside managed storage.
-
-## UI redesign implications
+## UI implications
 
 ## Template picker
 
-The picker should display source scope explicitly:
+The picker should show:
 
-- System
-- User
-- Project
-
-Recommended quick sections:
-
-- recommended
-- recent
+- built-in templates
+- user templates
 - favorites
-- current project templates
-- user presets
-- system templates
+- recents
+- recommendations
+
+It should not imply that templates belong to the current project.
 
 ## Template manager
 
-Split the current manager into two entry surfaces:
+The current manager should become a user-library manager.
 
-- User Template Library
-- Project Template Library
+Main actions:
 
-Operations:
-
-- fork built-in to user
-- fork built-in to project
-- import SOUL to user/project
-- promote node to project template
-- export project template pack
+- create from scratch
+- fork from built-in or user template
+- import `SOUL.md`
+- import package
+- save agent as template
+- export package
+- validate template asset
 
 ## Agent inspector
 
-Show template provenance next to SOUL content:
+The inspector may still allow:
 
-- applied from which template
-- which revision
-- drift status
+- choose template
+- apply template
+- reapply template manually
 
-Actions:
+But it should not persist template references into project state.
 
-- reapply template
-- detach from template
-- save current node as template
+Once applied, the result shown in the inspector is just a normal agent.
 
-## Recommended implementation decisions
+## Recommended decisions for this repository
 
-These are the choices recommended for this repo specifically:
+Based on the current repository direction, the recommended concrete decisions are:
 
-1. Built-in templates remain immutable.
-2. User preferences move out of the template content snapshot.
-3. Project-owned templates live under `design/templates/`.
-4. Applying a template snapshots it into project scope before materialization.
-5. Nodes store provenance in `template-binding.json`.
-6. Nodes remain independently editable after template application.
-7. `.maoproj` remains unchanged in the first rollout.
+1. Remove project-owned template storage from the plan.
+2. Keep projects fully free of template metadata.
+3. Treat templates as standardized user and system assets.
+4. Introduce a dedicated template filesystem separate from `ProjectFileSystem`.
+5. Make built-ins immutable and fork-only.
+6. Require every agent template asset to carry a complete standard file set, not only `template.json` plus `SOUL.md`.
+7. Make template application a strict copy-and-sever materialization step.
+8. Keep templates completely outside workflow persistence and runtime participation.
+9. Keep `.maoproj` unchanged in the first rollout.
 
-## Benefits of this redesign
+## Main benefits
 
 After this redesign:
 
-- template storage matches the managed project filesystem architecture
-- projects become reproducible without depending on a mutable global template library
-- node-local design files can explain where an agent came from
-- built-in, user, and project templates stop being conflated
-- OpenClaw imports and SOUL imports can produce project-owned presets naturally
-- future Electron migration gets a cleaner storage boundary
+- templates are fully decoupled from projects
+- templates become portable standardized assets
+- the filesystem model becomes cleaner and more consistent
+- projects remain simple and focused on materialized design/runtime state
+- template circulation and secondary development become possible
+- the editor can copy a template and directly yield a usable standard agent
 
 ## Main tradeoff
 
-The main tradeoff is duplication:
+The main tradeoff is reduced project-side provenance.
 
-- a template may exist in system scope
-- then be forked into user scope
-- then be snapshotted into project scope
+Since projects must not store template metadata:
 
-This duplication is intentional. It buys us:
+- a reopened project cannot reliably tell which template originally generated a node unless that information is re-inferred from agent content
 
-- reproducibility
-- provenance
-- project isolation
-- no hidden cross-project mutation
-
-That tradeoff is worth it for this codebase because the current filesystem direction already favors explicit managed copies over implicit external references.
+This is an intentional consequence of strict decoupling. Under the new principles, portability and standardization of template assets take priority over project-side template lineage.

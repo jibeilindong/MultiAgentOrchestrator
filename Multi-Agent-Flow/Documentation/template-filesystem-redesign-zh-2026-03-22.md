@@ -1,222 +1,387 @@
-# 面向项目文件系统的模板系统重设计方案
+# 面向文件系统架构的 Agent 模板系统重设计方案
 
 最后更新：2026-03-22
 状态：Proposed
 
-## 背景与问题
+## 方案目标
 
-当前模板系统功能已经比较完整，但它的存储方式和项目文件系统重构后的方向并不一致。
+本次重设计要让模板系统与本软件的文件系统架构保持一致，并严格遵守以下产品原则：
 
-现在实际上存在两套不同的世界：
+1. 模板与项目完全解耦，项目中不包含模板元数据、模板绑定、模板修订或模板快照。
+2. 模板是一种标准化资产，可以流通、复用、fork、扩展、二次开发，也可以从零创建。
+3. 模板系统必须遵从本软件的文件系统设计，不能继续停留在单一全局 JSON 快照的形态。
+4. 本方案中的模板特指 agent 模板，不包括工作流模板。
+5. 作为标准化 agent 模板，要求相关文件、路径和内容都必须具备，并且尽可能完整、充实、标准。
+6. 模板文件绝对不能参与工作流。只有从模板复制并物化出来的 agent，才能进入工作流。
 
-- 项目的运行态和设计态，已经逐步迁移到 `Application Support/Multi-Agent-Flow/Projects/<project-id>/...` 下面的 managed project root。
-- 模板内容仍然集中存放在全局文件 `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json` 中。
+这意味着，本方案不再走任何“项目内模板库”或“项目持有模板绑定”的路线，而是转为“独立模板资产库”路线。
 
-这会带来几个明显问题：
+## 当前问题
 
-1. 模板资产不属于项目。
-2. 项目无法携带自己的模板历史、模板修订和项目局部 preset。
-3. 节点应用模板之后，node-local 设计文件里几乎没有模板血缘信息。
-4. 全局的内置模板覆盖会影响未来行为，但这种变化并不会进入项目存储。
-5. 模板正文、用户偏好、导入辅助状态都混在一个 store 里。
-6. 这和当前文件系统设计里的原则不一致：未来模板复用应该通过 preset，而不是共享 live agent。
+现在模板系统虽然可用，但存储模型和整个应用正在推进的文件系统架构并不一致。
 
-因此，需要把模板系统重构成 managed project filesystem 的一等公民，同时继续保持当前的 `node = agent = 1:1` 执行模型不变。
+当前实际上存在两套不同的存储世界：
 
-## 必须保持的约束
+- 项目的设计态和运行态，正在迁移到 `Application Support/Multi-Agent-Flow/Projects/<project-id>/...` 下面的 managed project root。
+- 模板内容仍然集中放在单个全局文件里：
+  - `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`
 
-结合当前代码和文件系统重构计划，下面这些约束不能破坏：
+这会带来几个问题：
 
-- `.maoproj` 兼容性必须保留。
-- `MAProject` 仍然是共享装配模型。
-- `node = agent = 1:1 execution unit` 不能变化。
-- 模板复用必须通过 preset，而不是共享活体 agent。
-- node-local `agent.json`、`binding.json`、OpenClaw workspace 文件仍然是执行侧主表面。
-- `SOUL.md` 仍然是 agent 的物化运行产物。
+1. 模板不是一等文件系统资产。
+2. 模板正文、用户偏好、导入辅助状态混在一起。
+3. 模板很难被稳定地打包、流通、版本化、扩展。
+4. 模板存储方式与当前 managed-storage 方向不统一。
+5. 项目容易看起来依赖本机当前的全局模板状态。
+6. 当前模型没有严格保证“模板本身应该是完整标准 agent 包”的要求。
 
-这意味着模板系统不能被设计成“节点直接挂到一个可变模板对象上”，否则会和现在的设计方向冲突。
+## 必须保留的约束
 
-## 重设计目标
+本次重设计仍然必须保留以下约束：
 
-本次重设计的目标不是做一个更复杂的 prompt 模板引擎，而是把模板系统变成：
+- `.maoproj` 兼容性
+- `MAProject` 继续作为共享装配模型
+- `node = agent = 1:1 execution unit`
+- 当前 node-local agent 物化逻辑
+- `SOUL.md` 继续作为执行侧物化产物
 
-- 可分层管理
-- 可进入项目存储
-- 可追踪来源和修订
-- 可与 node-local agent 物化状态协同
-- 可兼容现有 `.maoproj` 和 UI 语义
+换句话说：
 
-## 核心设计原则
+- 模板可以参与 agent 创建
+- 但模板不能变成运行时共享 live object
+- 项目继续只保存物化后的 agent 状态，而不是模板状态
 
-### 1. 模板内容与偏好状态分离
+## 核心原则
 
-模板正文和用户偏好不是同一种资产，不应该继续存放在同一个快照文件里。
+## 1. 项目与模板完全解耦
 
-模板内容包括：
+项目必须与模板资产完全解耦。
 
-- 内置模板
-- 用户自定义模板
-- 项目模板
-- 从 SOUL 导入得到的模板
+项目应保存：
 
-偏好状态包括：
+- node-owned agent 状态
+- workflow 状态
+- runtime 状态
+- OpenClaw 状态
 
-- 收藏
-- 最近使用
-- 选择器排序
-- 自定义功能描述候选
+项目不应保存：
 
-### 2. 引入 system / user / project 三层作用域
+- template ID
+- template revision
+- template binding
+- 模板库
+- 模板资产快照
+- 模板文件在工作流中的任何参与信息
 
-新的模板体系分成三层：
+因此，模板应用必须被视为一次严格的单向物化动作：
 
-- System scope
-  - 应用内置模板目录，只读
-- User scope
-  - 用户个人可复用 preset 和模板选择偏好
-- Project scope
-  - 当前项目拥有的模板资产，存放在项目自己的 managed root 下
+- 用户选择模板
+- 编辑器复制模板内容到 agent 草稿
+- 项目中只保存最终物化出来的 node-owned agent 状态
 
-### 3. 保持“模板应用后物化”的语义
+## 2. 模板是标准化的 agent 资产
 
-模板应用到节点时，仍然应该把内容物化到 node-owned agent 上。
+模板不应只是“编辑器里的一个选项”或“局部提示词片段”，而应是一类真正可管理、可流通的软件资产。
 
-也就是说：
+模板资产必须支持：
 
-- 节点不共享 live template
-- 节点只记录它来自哪个模板修订
-- 节点上的 agent 之后仍然可以独立编辑
+- 从零创建
+- 从 `SOUL.md` 导入
+- 从 OpenClaw 产物导入
+- 导出为可移植 package
+- fork 与二次开发
+- 版本与修订
+- 校验与测试
 
-模板在这里是“带血缘信息的 preset”，不是“运行时继承链”。
+## 3. 模板遵从文件系统设计
 
-### 4. 血缘信息必须显式可见
+模板系统应遵从本软件现有的文件系统设计哲学：
 
-无论是项目模板本身，还是由模板创建出来的节点，都应该能回答几个问题：
+- 明确的根目录
+- 清晰的 manifest
+- 拆分后的文档结构
+- 稳定 ID
+- 源文档与生成产物分离
+- 可预测的路径结构
 
-- 这个模板从哪里来
-- 当前节点应用的是哪个模板修订
-- 节点内容是否已经偏离模板
+因此，模板不能继续只是一个大 JSON 文件，而应演进为一个正式的 managed asset library。
 
-### 5. 项目需要可自洽、可迁移
+## 4. 模板必须是完整标准文件集
 
-managed project 在另一个机器上重新打开时，应该尽量仅依赖项目自身文件就能重建设计上下文。
+每个模板都应代表一个完整的标准 agent 包，而不是只有 `template.json` 加一段 prompt。
 
-具体来说：
+这意味着：
 
-- 如果一个节点是从模板创建的，那么项目里应该保存它当时使用的模板修订。
-- 不能要求目标机器上恰好存在同一个全局模板库，才能理解这个项目的设计来源。
+- 必需文件要齐全
+- 必需路径要稳定
+- 配套文档要存在
+- 内容要尽可能完整、标准、充实
 
-## 新的存储分层
+目标是：编辑器复制模板后，如果用户不做任何修改，就已经得到一个可直接使用的标准 agent。
 
-## 一、用户级模板库
+## 5. 复制后立即彻底断联
 
-用户级模板库仍然放在 Application Support 下，但只负责“个人模板资产 + 个人偏好”。
+模板使用必须遵循“复制，然后完全断联”的模型。
 
-建议目录：
+当用户应用模板时：
+
+- 编辑器复制模板内容到新的或已有的 agent 草稿
+- 复制结果变成普通 node-owned agent
+- 用户后续对该 agent 的修改，只属于该 agent
+- 这个 agent 与源模板不再有任何关系
+
+当用户将一个 agent 保存为模板时：
+
+- 系统创建一套新的模板资产文件
+- 新模板与原 agent 不保留 live relation
+- 原 agent 仍然只是 agent
+
+这条规则必须绝对成立：
+
+- 模板不追踪 agent
+- agent 不追踪模板
+
+## 6. 模板绝不参与工作流
+
+模板与工作流完全独立。
+
+模板可以被编辑器拿来作为“创建 agent 的源材料”，但：
+
+- 模板文件不是 workflow node
+- 模板文件不是 workflow resource
+- 模板文件不是 runtime participant
+- 模板文件不会作为 workflow state 的一部分保存
+
+只有从模板复制并物化出来的 agent 才能参与工作流。
+
+## 总体架构
+
+新的模板系统建议拆成三层：
+
+- System catalog
+  - 应用内置模板，只读
+- User library
+  - 用户拥有的模板资产和用户偏好
+- Exchange package
+  - 用于流通、导入导出、二次开发的模板包
+
+这里特别强调：
+
+- 不再引入 project template scope
+
+项目只消费模板生成的结果，不持有模板本体。
+
+## 作用域模型
+
+## 一、System scope
+
+System scope 用于保存应用内置模板。
+
+特征：
+
+- 只读
+- 跟随应用版本
+- 不允许原地修改
+- 允许 fork 到用户模板库
+
+## 二、User scope
+
+User scope 用于保存用户自己的模板资产。
+
+特征：
+
+- 可编辑
+- 可版本化
+- 可导入导出
+- 可从内置模板或其他用户模板 fork
+- 可作为 agent 物化的来源
+
+## 三、Exchange scope
+
+Exchange scope 不是运行时 store，而是一种打包形态。
+
+它用于：
+
+- 模板流通
+- 跨机器迁移
+- 审阅与共享
+- 二次开发
+- 将来的模板仓库或 marketplace 能力
+
+## 文件系统布局
+
+## 一、内置模板目录
+
+内置模板应以只读资产形式存在于应用 bundle 或其生成缓存中。
+
+概念结构建议如下：
+
+```text
+System Templates/
+  manifest.json
+  templates/
+    <template-id>/
+      template.json
+      SOUL.md
+      AGENTS.md
+      IDENTITY.md
+      USER.md
+      TOOLS.md
+      BOOTSTRAP.md
+      HEARTBEAT.md
+      MEMORY.md
+```
+
+具体物理位置可以根据实现决定，但结构上应遵循 managed asset 的形式。
+
+## 二、用户模板库
+
+用户模板库应成为唯一可变、可持续演化的模板主库。
+
+建议位置：
 
 ```text
 Application Support/Multi-Agent-Flow/
   Libraries/
     Templates/
+      manifest.json
       preferences.json
-      library.json
+      indexes/
+        tags.json
+        capabilities.json
+        search.json
       templates/
         <template-id>/
           template.json
           SOUL.md
-```
-
-### `preferences.json`
-
-只放用户偏好，不放模板正文：
-
-- favorite template IDs
-- recent template IDs
-- ordered template IDs
-- custom function-description suggestions
-
-### `library.json`
-
-只放轻量索引信息：
-
-- schema version
-- template IDs
-- last updated at
-
-### `templates/<template-id>/template.json`
-
-这里只保存用户拥有的模板文档：
-
-- 模板正文
-- lineage
-- revision
-- validation 摘要
-
-注意：
-
-- 内置模板不应该复制到这里
-- 这里主要用于用户 fork、导入、迁移而来的 preset
-
-## 二、项目级模板库
-
-项目模板库应该成为 `design/` 下的一类正式设计资产。
-
-建议目录：
-
-```text
-Application Support/Multi-Agent-Flow/Projects/<project-id>/
-  design/
-    project.json
-    templates/
-      library.json
-      templates/
-        <project-template-id>/
-          template.json
-          SOUL.md
+          AGENTS.md
+          IDENTITY.md
+          USER.md
+          TOOLS.md
+          BOOTSTRAP.md
+          HEARTBEAT.md
+          MEMORY.md
           lineage.json
-    workflows/
-      <workflow-id>/
-        workflow.json
-        nodes/
-          <node-id>/
-            node.json
-            agent.json
-            template-binding.json
-            openclaw/
-              binding.json
-              workspace/
-                SOUL.md
-                AGENTS.md
-                USER.md
-                IDENTITY.md
-                TOOLS.md
-                HEARTBEAT.md
-                BOOTSTRAP.md
-                MEMORY.md
-                memory/
-                skills/
+          revisions/
+            <revision-id>.json
+          extensions/
+            README.md
+            examples/
+            tests/
+            assets/
 ```
 
-### 为什么要放在 `design/templates/`
+### 为什么采用这种结构
 
-因为模板是设计态资产，不是运行态状态。
+因为这样每个模板都会拥有自己的独立目录，而不是作为某个大 JSON 文件里的一行数据存在。
 
-它：
+这样做的好处是：
 
-- 应该和 `project.json`、`workflow.json`、`node.json`、`agent.json` 放在同一层级语义中
-- 是项目设计的一部分，而不只是 UI 辅助功能
-- 符合当前内部存储把 design asset 逐步拆分到 `design/` 下的方向
+- 每个模板有稳定的 asset root
+- 修订历史可以自然追加
+- 扩展材料有自己的归宿
+- 导入导出更简单
+- 后续可以做基于资产的 tooling
+- 每个模板都可以成为一套完整标准 agent 包
 
-## 新的领域模型
+## 三、可移植模板包
 
-## 一、模板文档模型
+模板应支持可移植的 package 格式，便于打包、复制、审阅、共享和导入。
 
-建议引入显式带修订和血缘信息的模板文档：
+建议解包后结构如下：
 
 ```text
-ProjectTemplateDocument
+template-package/
+  package.json
+  templates/
+    <template-id>/
+      template.json
+      SOUL.md
+      AGENTS.md
+      IDENTITY.md
+      USER.md
+      TOOLS.md
+      BOOTSTRAP.md
+      HEARTBEAT.md
+      MEMORY.md
+      lineage.json
+      extensions/
+```
+
+这样模板就可以独立流通，而不依赖某个具体项目。
+
+## 重设计后项目保存什么
+
+重设计后，项目仍然只保存物化后的设计态和运行态内容。
+
+项目保留：
+
+- `agent.json`
+- node-local OpenClaw workspace 文件
+- 物化后的 `SOUL.md`
+- workflow 状态
+- runtime 状态
+
+项目不保留：
+
+- template-binding 文件
+- template revision 信息
+- template lineage 信息
+- 项目级模板目录
+- 回指模板资产的 live link
+
+这就是“项目与模板完全解耦”的严格落地方式。
+
+## 模板应用模型
+
+## 一、单向物化
+
+模板应用到节点时建议按下面的方式工作：
+
+1. 从 system 或 user scope 中解析出选中的模板。
+2. 编辑器先把模板复制为一个标准 agent 草稿。
+3. 将模板文件和字段物化到 node-owned agent：
+   - identity
+   - description
+   - capabilities
+   - color
+   - 渲染后的 `SOUL.md`
+   - 编辑器/运行时表面需要的标准配套文档
+4. 项目中只保存这个物化后的 agent 状态。
+5. 再基于该 agent 继续生成 node-local OpenClaw workspace 文件。
+
+项目里不保存模板引用。
+
+## 二、应用后的节点状态
+
+节点一旦创建完成：
+
+- 它就是独立的
+- 后续编辑不会影响源模板
+- 若要再次使用模板，必须由用户显式触发“重新应用”
+- 如果用户不做修改，这个结果本身就应该已经是可直接使用的标准 agent
+
+这与当前“模板是源资产，不是 live dependency”的方向一致。
+
+## 在不耦合项目的前提下处理血缘
+
+由于项目中不应保存模板信息，所以模板血缘不应写入项目。
+
+推荐做法是：
+
+- 模板血缘保存在模板资产内部
+- 编辑器如果需要记录最近应用历史，可放在用户侧辅助状态里
+- 项目里只保存物化后的结果
+
+如果将来产品确实需要审计或追溯，也应优先作为用户侧 editor state，而不是项目持久化的一部分。
+
+## 模板文档模型
+
+每个模板资产建议使用类似下面的文档结构：
+
+```text
+TemplateAssetDocument
 - id
-- scope: system | user | project
 - revision
 - displayName
 - meta
@@ -230,493 +395,395 @@ ProjectTemplateDocument
 
 其中：
 
-- `meta` 继续承担分类、摘要、能力标签、颜色等管理信息
-- `soulSpec` 继续承担 role / mission / workflow / guardrails 等 SOUL 结构化内容
-- `renderedSoulHash` 用来标记当前渲染后的 `SOUL.md` 指纹
+- `meta` 负责管理字段
+- `soulSpec` 负责结构化 SOUL 源内容
+- `renderedSoulHash` 记录当前渲染出的 `SOUL.md` 指纹
+- `lineage` 记录模板来源和 fork 历史
 
-## 二、模板血缘模型
+这个文档只是结构化索引和规格入口，不替代其余标准模板文件集。
 
-建议显式建模模板来源：
+## 标准模板文件集
+
+每个模板资产都应带有一套完整的标准 agent 模板文件集。
+
+最低建议文件集：
+
+```text
+<template-id>/
+  template.json
+  SOUL.md
+  AGENTS.md
+  IDENTITY.md
+  USER.md
+  TOOLS.md
+  BOOTSTRAP.md
+  HEARTBEAT.md
+  MEMORY.md
+  lineage.json
+```
+
+规则：
+
+- 必需文件必须齐全
+- 路径必须稳定、可预测
+- 内容应尽可能完整、充实、标准
+- 除非明确标记为 draft，否则应避免只包含占位内容的模板
+
+## 模板血缘模型
+
+建议模板资产使用类似以下的 lineage 结构：
 
 ```text
 TemplateLineage
-- sourceScope: system | user | project | imported-soul | imported-openclaw
+- sourceScope: system | user | imported-soul | imported-openclaw | imported-package
 - sourceTemplateID
 - sourceRevision
-- sourceProjectID
 - importedFromPath
 - importedFromSoulHash
-- createdReason: built-in-snapshot | fork | import | project-local | migrated-override
+- createdReason: built-in-fork | new-from-scratch | soul-import | package-import | migrated-legacy
 ```
 
-这样无论是：
+这样就能支持：
 
 - 从内置模板 fork
+- 从已有模板 fork
 - 从 SOUL 导入
 - 从 OpenClaw 导入
-- 从旧全局库迁移
+- 从旧版全局快照迁移
 
-都能追溯来源。
-
-## 三、节点模板绑定模型
-
-节点不应该只保存“当前 agent 长什么样”，还应该保存“它最初是由哪个模板修订物化而来”。
-
-建议新增 node-local 文件：
-
-```text
-NodeTemplateBindingDocument
-- nodeID
-- agentID
-- projectTemplateID
-- projectTemplateRevision
-- sourceScope
-- sourceTemplateID
-- appliedAt
-- materializedSoulHash
-- driftStatus: clean | modified | detached | missing-template
-- lastCheckedAt
-```
-
-### 为什么要单独做 `template-binding.json`
-
-这和当前文件系统分工是统一的：
-
-- `agent.json` 保存节点自有 agent 定义
-- `openclaw/binding.json` 保存 OpenClaw 绑定关系
-- `template-binding.json` 保存模板绑定和血缘关系
-
-这样比把模板来源偷偷塞进 `agent.json` 更清晰，也更便于后续校验和 UI 展示。
-
-## 四、`agent.json` 的边界
-
-`NodeAgentDesignDocument` 应继续只负责 node-owned agent 的现实状态：
-
-- name
-- identity
-- description
-- capabilities
-- color
-- timestamps
-- OpenClaw definition
-
-它不应该成为模板目录的主存储位置。
-
-如果未来需要附加一些轻量元数据，可以考虑增加：
-
-- `lastTemplateApplicationAt`
-- `lastTemplateMaterializedHash`
-
-但这类字段只是补充，真正的模板血缘仍然应由 `template-binding.json` 负责。
+同时不需要把任何模板信息写入项目。
 
 ## 内置模板行为调整
 
-## 一、当前问题
+## 一、内置模板必须真正只读
 
-当前实现允许对内置模板做覆盖，并继续沿用原始模板 ID。这样会导致语义不清：
+内置模板只允许：
 
-- 这是应用自带的 built-in 吗
-- 这是用户覆盖后的 built-in 吗
-- 这是 fork 出来的自定义模板吗
+- 查看
+- 应用
+- fork 到用户模板库
 
-从项目文件系统角度看，这种状态不利于稳定复原。
+内置模板不应再支持：
 
-## 二、新建议
+- 原地编辑
+- 在可变 store 里以相同 ID 做 override
 
-内置模板改成真正只读。
+## 二、旧版 built-in override 的迁移方式
 
-当用户要修改内置模板时，不再做“同 ID 覆盖”，而是明确 fork：
+旧版全局快照中的 built-in override，不再保留“原 ID 覆盖”语义，而应在迁移时转成：
 
-1. fork 到 user scope
-2. 或 fork 到 project scope
+- 用户模板库中的 forked asset
 
-兼容迁移时，可以把旧版 built-in override 自动转成 user-owned template，并用 lineage 指回原 built-in 模板。
+并在 lineage 中记录它来自哪个 built-in。
 
-## 模板应用模型
+## 模板创建模型
 
-## 一、节点创建或应用模板时的流程
+模板应支持四种主要创建路径。
 
-当用户选择一个模板来创建节点，或者将模板应用到一个已有节点时，建议流程如下：
+## 一、从零创建
 
-1. 从 system / user / project 三个作用域中解析出选中的模板。
-2. 如果当前项目里还没有这个精确修订的模板快照，则先把它快照进 project template library。
-3. 把模板内容物化到 node-owned agent：
-   - identity
-   - description
-   - capabilities
-   - color
-   - 渲染后的 `SOUL.md`
-4. 写入 `template-binding.json`。
-5. 用当前物化后的 agent 继续生成 node-local OpenClaw workspace 文件。
+用户可以直接在用户模板库里创建空白模板资产。
 
-这样就同时满足：
+即使从零创建，结果也应该被扩展成完整的标准模板文件集，而不是停留在一个零散 prompt stub 上。
 
-- 项目内可复原
-- 节点执行态独立
+## 二、从 `SOUL.md` 创建
 
-## 二、节点后续编辑行为
+将独立的 `SOUL.md` 导入并生成模板资产。
 
-节点创建后，用户仍然可以继续编辑 agent：
+推荐输出：
 
-- identity
-- description
-- capabilities
-- `SOUL.md`
+- 结构化 `template.json`
+- 渲染后的 `SOUL.md`
+- 标准配套文档
+- `lineage = imported-soul`
 
-这些编辑不应该反向修改源模板，也不应该隐式同步回模板库。
+## 三、从已有模板 fork
 
-正确行为应是：
+把内置模板或用户模板 fork 成新的用户模板资产。
 
-- 节点保持为独立物化态
-- `template-binding.json` 中的 `driftStatus` 变成 `modified`
-- UI 提供明确动作：
-  - 重新应用模板
-  - 另存为项目模板
-  - fork 成用户模板
+推荐输出：
 
-这样比双向同步安全得多。
+- 新 asset ID
+- 新 revision
+- 完整标准文件集
+- lineage 指向来源模板和来源 revision
 
-## 三、建议的漂移判断逻辑
+## 四、从现有 agent 另存为模板
 
-将节点当前物化内容与绑定模板修订进行比较：
+编辑器还应支持将一个现有 agent 保存成新的模板资产。
 
-- 如果一致：
-  - `clean`
-- 如果只是格式变化，语义等价：
-  - 仍然算 `clean`
-- 如果核心字段发生变化：
-  - `modified`
-- 如果绑定的项目模板已不存在：
-  - `missing-template`
-- 如果用户主动断开绑定：
-  - `detached`
+规则：
 
-## 与项目装配流程的关系
+- 系统创建一套新的模板资产文件
+- 新模板与原 agent 完全独立
+- 原 agent 仍然只是 agent
+- 不保留反向关联
 
-## 一、内部装配
+## 模板二次开发模型
 
-`ProjectFileSystem.loadAssembledProject(...)` 仍然可以继续装配成普通 `MAProject`，不需要一上来就改变整个共享模型。
+为了支持模板资产的持续演化和二次开发，建议每个模板目录允许携带扩展材料：
 
-模板相关责任可以拆成：
+- `README.md`
+- examples
+- tests
+- assets
 
-- `project.json`
-  - 继续记录 project 的总体设计信息
-- `design/templates/...`
-  - 记录项目拥有的模板资产
-- `nodes/<node-id>/agent.json`
-  - 记录节点物化后的 agent 状态
-- `nodes/<node-id>/template-binding.json`
-  - 记录模板来源、修订、漂移状态
+这样模板就不只是一个“提示词/规范对象”，而可以成长为一组可复用的标准化能力资产。
 
-也就是说，模板可以先作为“managed storage 内部设计资产”存在，而不必在第一阶段就变成 `MAProject` 的核心字段。
+二次开发也必须继续遵守一个前提：
 
-## 二、`.maoproj` 兼容策略
+- 模板资产始终不进入工作流
 
-这里建议分两级推进。
+## 校验体系调整
 
-### Level 1：不改共享模型
+重设计后，校验的对象应是模板资产本身，而不是项目内的模板副本。
 
-先保持 `.maoproj` 结构不变：
+校验项建议包括：
 
-- 节点上的 agent 仍然带有完整物化后的 `identity`、`description`、`capabilities`、`soulMD`
-- 项目模板库仅存在于 managed project root 中
-- 即使导出再导入 `.maoproj`，模板血缘也可以暂时不是一等兼容字段
+- SOUL 必填章节
+- 必需标准文件是否存在
+- 必需路径是否合法
+- 配套文档是否缺失
+- 管理信息泄漏词
+- 列表项数量提醒
+- ID / revision 合法性
+- lineage 一致性
+- 可选扩展材料完整性
 
-这是最稳妥的第一阶段。
-
-### Level 2：可选地做加法扩展
-
-后续如果确实需要跨机器携带项目模板资产，再给共享模型增加可选字段，例如：
-
-- `projectTemplateData`
-- `nodeTemplateBindings`
-
-但这些字段必须保持 optional，保证旧 `.maoproj` 仍能正常读取。
-
-建议顺序：
-
-1. 先做 Level 1
-2. 只有当“项目模板资产也必须进入 `.maoproj`”成为明确需求时，再做 Level 2
-
-## 用户模板库的新定位
-
-重设计后，用户模板库不再是所有模板内容的唯一真相源。
-
-它更适合作为：
-
-- 用户个人 preset 库
-- 项目模板的来源之一
-- 模板选择器偏好的存放地
-
-而项目不应该依赖某个 user template 在未来是否还保持不变。
+校验不应再默认模板和项目耦合。
 
 ## 导入导出流程调整
 
-## 一、从 `SOUL.md` 导入模板
+## 一、导入 `SOUL.md`
 
-当前“导入 SOUL 生成模板”的能力应拆成两个目标位置：
+导入目标应改成：
 
-- 导入到用户模板库
-- 导入到当前项目模板库
+- 用户模板库
 
-推荐默认：
+而不是：
 
-- 如果用户在项目内的模板管理器里操作，默认导入到当前项目
-- 如果是在全局模板库里操作，默认导入到用户库
+- 当前项目
 
-## 二、导入 OpenClaw agent
+项目后续当然仍然可以使用该模板去创建 agent，但这个模板本身属于模板库，而不是项目。
 
-导入 OpenClaw agent 时建议这样处理：
+## 二、导入 OpenClaw 产物
 
-1. 保留现有物化导入行为。
-2. 解析导入的 `SOUL.md`。
-3. 尝试做模板推荐。
-4. 如果用户接受推荐结果：
-   - 把对应模板修订快照进项目模板库
-   - 写入 `template-binding.json`
-5. 如果没有合适模板：
-   - 提供“将该 SOUL 保存为项目模板”的入口
+当导入一个 OpenClaw agent 后，如果其 `SOUL.md` 有价值，可以让用户选择：
 
-这和当前 OpenClaw import 已经把文件镜像进项目 managed copy 的方向是完全一致的。
+- 只把它物化成项目里的 agent
+- 或同时保存为用户模板库中的新模板资产
 
-## 三、模板 JSON 导入导出
+如果保存为模板，系统应把它规范化成完整标准模板文件集，而不是只保存一个孤立的 `SOUL.md`。
 
-JSON 导出也应按 scope 划分：
+## 三、模板包导出
 
-- user template export
-  - 导出用户 preset
-- project template export
-  - 导出当前项目下的模板资产
+导出应从用户模板资产生成一个可移植 package。
 
-项目模板导出应来自 `design/templates/`，而不是全局用户模板库。
+这个 package 适用于：
 
-## 校验体系重构
-
-模板校验也应该分层。
-
-## 一、模板文档校验
-
-校验模板自身是否合法：
-
-- SOUL 必填章节是否缺失
-- 是否含有管理信息泄漏词
-- 列表长度是否超标
-- lineage 是否非法
-- ID / revision 是否冲突
-
-## 二、模板绑定校验
-
-校验项目节点与模板之间的关系是否合法：
-
-- 绑定的项目模板是否存在
-- 绑定修订是否存在
-- 节点是否已经漂移
-- source lineage 是否断裂
-
-## 三、物化结果校验
-
-校验执行侧文件是否和当前节点状态一致：
-
-- `openclaw/workspace/SOUL.md` 是否和 node-owned agent 的物化结果一致
-- 渲染后的 SOUL hash 是否匹配 binding 元数据
+- 模板流通
+- 备份
+- 审阅
+- 二次开发
+- 将来接入模板仓库
 
 ## 服务拆分建议
 
-当前 `AgentTemplateLibraryStore` 责任过重，建议拆分。
+当前 `AgentTemplateLibraryStore` 承担的责任过多，建议拆分为下面几类服务。
 
 ## 一、`SystemTemplateCatalog`
 
 职责：
 
-- 只暴露内置模板
-- 不做持久化
+- 暴露只读 built-in templates
+- 不做可变持久化
 
 ## 二、`UserTemplateLibraryStore`
 
 职责：
 
-- 读写用户模板
-- 读写模板选择偏好
-- 管理 favorites / recents / 自定义功能描述
+- 读写用户模板资产
+- 读写用户偏好
+- 管理 favorites / recents / picker order
+- 管理模板包导入导出
 
-## 三、`ProjectTemplateStore`
+## 三、`TemplateAssetService`
 
 职责：
 
-- 读写 `design/templates/`
-- 管理项目模板 revision
-- 在模板应用到节点时生成项目快照
-- 提供节点模板血缘查询
+- 从零创建模板
+- fork 模板
+- 将 agent 保存为模板
+- 解析与生成 `SOUL.md`
+- 生成完整标准文件集
+- 维护 revision 和 lineage
+- 执行模板校验
 
 ## 四、`TemplateMaterializationService`
 
 职责：
 
-- 从模板文档渲染 `SOUL.md`
-- 将模板应用到 node-owned agent
-- 计算 hash 和 drift 状态
+- 将模板应用到 agent 草稿
+- 渲染物化后的 `SOUL.md`
+- 生成编辑器/运行时表面所需的标准配套文档
+- 返回纯净的 agent 状态
+- 不向项目注入模板元数据
 
 ## 五、`TemplateMigrationService`
 
 职责：
 
-- 迁移旧版全局模板快照
-- 拆分模板内容与偏好数据
-- 将 built-in override 转换为 user-owned fork
+- 迁移旧版大 JSON 快照
+- 拆分模板正文与偏好状态
+- 将旧 built-in override 转为用户 fork 模板
 
-## `ProjectFileSystem` 需要新增的路径能力
+## 文件系统能力补充建议
 
-建议在 `ProjectFileSystem` 中补充与模板相关的路径 helper：
+由于模板现在不应属于项目，所以路径能力不应继续塞进 `ProjectFileSystem`。
 
-```text
-designTemplatesRootDirectory(for projectID:)
-projectTemplateLibraryURL(for projectID:)
-projectTemplateRootDirectory(for templateID:, projectID:)
-projectTemplateDocumentURL(for templateID:, projectID:)
-projectTemplateSoulURL(for templateID:, projectID:)
-nodeTemplateBindingURL(for nodeID:, workflowID:, projectID:)
-```
+更合理的做法是新增一个专门的 `TemplateFileSystem`。
 
-建议的权威路径如下：
+建议 helper 如下：
 
 ```text
-Projects/<project-id>/design/templates/library.json
-Projects/<project-id>/design/templates/templates/<template-id>/template.json
-Projects/<project-id>/design/templates/templates/<template-id>/SOUL.md
-Projects/<project-id>/design/workflows/<workflow-id>/nodes/<node-id>/template-binding.json
+templateLibraryRootDirectory()
+templateManifestURL()
+templatePreferencesURL()
+templateIndexesRootDirectory()
+templateRootDirectory(for templateID:)
+templateDocumentURL(for templateID:)
+templateSoulURL(for templateID:)
+templateAgentsURL(for templateID:)
+templateIdentityURL(for templateID:)
+templateUserURL(for templateID:)
+templateToolsURL(for templateID:)
+templateBootstrapURL(for templateID:)
+templateHeartbeatURL(for templateID:)
+templateMemoryURL(for templateID:)
+templateLineageURL(for templateID:)
+templateRevisionDirectory(for templateID:)
 ```
+
+这能让模板资产遵从本软件文件系统设计，同时又不污染项目存储。
 
 ## 迁移计划
 
 ## Phase 0：兼容读取旧库
 
-继续兼容读取旧文件：
+继续兼容读取旧版文件：
 
 - `Application Support/Multi-Agent-Flow/TemplateLibrary/agent-template-library.json`
 
-第一次启动迁移时，将其拆分迁移到：
+## Phase 1：存储拆分
 
-- `Libraries/Templates/preferences.json`
-- `Libraries/Templates/library.json`
-- `Libraries/Templates/templates/<template-id>/...`
+将旧数据迁移到新的模板库结构：
 
-## Phase 1：先做用户侧 service 拆分
+```text
+Application Support/Multi-Agent-Flow/Libraries/Templates/
+  manifest.json
+  preferences.json
+  templates/<template-id>/...
+```
 
-将当前 `AgentTemplateLibraryStore` 拆成：
+迁移规则：
+
+- built-in override -> user-owned fork asset
+- custom template -> user-owned asset
+- favorites / recents / order -> `preferences.json`
+- 零散旧模板统一规范化为标准文件集
+
+## Phase 2：替换服务层
+
+用下面这些新服务替换 `AgentTemplateLibraryStore`：
 
 - `SystemTemplateCatalog`
 - `UserTemplateLibraryStore`
+- `TemplateAssetService`
+- `TemplateMaterializationService`
 
-此阶段先不引入项目模板存储。
+## Phase 3：模板包导入导出
 
-## Phase 2：引入项目模板存储
+引入标准化模板 package，支持资产级 import/export。
 
-新增：
+## Phase 4：支持二次开发材料
 
-- `design/templates/`
-- `template-binding.json`
-- apply template 时自动 snapshot into project
+允许模板目录中携带：
 
-## Phase 3：做漂移感知 UI
+- `extensions/`
+- `examples/`
+- `tests/`
 
-在编辑器中显示节点与模板关系：
-
-- 来自 system / user / project 的哪个模板
-- 当前是 clean 还是 modified
-- 支持 reapply
-- 支持 fork 为项目模板
-- 支持保存当前节点为模板
-
-## Phase 4：按需扩展 `.maoproj`
-
-只有在“项目模板资产也必须随 `.maoproj` 一起便携”成为真实需求时，再考虑做共享模型加法扩展。
-
-## UI 层面的改造建议
+## UI 影响
 
 ## 一、模板选择器
 
-模板选择器应该显式展示模板来源作用域：
+选择器中应展示：
 
-- System
-- User
-- Project
+- built-in templates
+- user templates
+- favorites
+- recents
+- recommendations
 
-推荐分组：
-
-- 推荐
-- 最近
-- 收藏
-- 当前项目模板
-- 用户 preset
-- 内置模板
+但不应暗示“模板属于当前项目”。
 
 ## 二、模板管理器
 
-建议把当前模板管理器拆成两个入口：
+模板管理器应转型为“用户模板库管理器”。
 
-- User Template Library
-- Project Template Library
+主操作：
 
-支持操作：
-
-- fork 内置模板到 user
-- fork 内置模板到 project
-- 导入 SOUL 到 user / project
-- 把当前节点提升为项目模板
-- 导出项目模板包
+- 从零创建
+- 从内置模板或已有模板 fork
+- 导入 `SOUL.md`
+- 导入 package
+- 将 agent 保存为模板
+- 导出 package
+- 校验模板资产
 
 ## 三、Agent 检视区
 
-在 SOUL 编辑区域旁边显示模板血缘信息：
+Agent 检视区仍然可以支持：
 
-- 当前来自哪个模板
-- 哪个 revision
-- 当前 drift 状态
+- 选择模板
+- 应用模板
+- 手动重新应用模板
 
-并提供动作：
+但这些动作不应在项目持久化层中留下模板绑定信息。
 
-- 重新应用模板
-- 断开模板绑定
-- 将当前节点另存为模板
+一旦应用完成，检视区里显示的就只是普通 agent，而不再是“模板实例”。
 
-## 本仓库建议采用的最终方案
+## 对本仓库的推荐落地决策
 
-结合当前代码和文件系统方向，建议采用以下具体决策：
+结合当前仓库方向，建议采用以下具体决策：
 
-1. 内置模板改为只读，不再允许同 ID override。
-2. 用户偏好从模板正文快照中拆出。
-3. 项目模板统一落在 `design/templates/`。
-4. 模板应用到节点时，先快照到项目，再物化到 node-owned agent。
-5. 节点模板来源记录在 `template-binding.json`。
-6. 节点在模板应用后仍然允许独立编辑。
-7. 第一阶段不修改 `.maoproj` 共享模型。
+1. 从方案中移除 project-owned template storage。
+2. 项目中不保存任何模板元数据。
+3. 模板统一视为系统/用户侧的标准化资产。
+4. 新增独立的 `TemplateFileSystem`，而不是扩展 `ProjectFileSystem`。
+5. 内置模板只读，只允许 fork。
+6. 每个 agent 模板资产都必须带有完整标准文件集，而不只是 `template.json + SOUL.md`。
+7. 模板应用必须是“复制后立即断联”的单向物化动作。
+8. 模板绝不参与工作流持久化或运行时参与。
+9. 第一阶段不修改 `.maoproj`。
 
-## 这个方案的收益
+## 方案收益
 
-采用该方案后：
+采用此方案后：
 
-- 模板系统和 managed project filesystem 的方向完全对齐
-- 项目不再依赖一个可变的全局模板库才能理解设计来源
-- 节点可以明确知道自己来自哪个模板修订
-- 内置、用户、项目三类模板不会再混在一起
-- OpenClaw 导入和 SOUL 导入都能自然沉淀为项目资产
-- 也更利于未来 Electron 迁移
+- 模板与项目彻底解耦
+- 模板成为可流通、可扩展的标准化资产
+- 文件系统模型更统一、更清晰
+- 项目仍然专注于物化后的设计态和运行态
+- 模板流通与二次开发成为可能
+- 编辑器复制模板即可直接得到一个标准可用的 agent
 
-## 主要代价与取舍
+## 主要取舍
 
-这套方案的主要代价是“会有重复”。
+这套方案最大的代价，是项目侧模板血缘信息会减少。
 
-同一个模板可能同时存在于：
+因为项目不保存模板信息，所以：
 
-- system scope
-- user scope
-- project scope
+- 重新打开项目时，系统无法仅靠项目文件精确知道某个节点最初来自哪个模板，除非再从 agent 内容反推
 
-但这种重复是刻意保留的，换来的好处是：
-
-- 可复原
-- 可追踪
-- 项目隔离
-- 不会出现跨项目隐式共享带来的污染
-
-对当前这个仓库来说，这个取舍是值得的，因为整个文件系统重构本来就在朝“显式 managed copy 优于隐式外部引用”这个方向演进。
+这是“严格解耦”带来的必然结果。在新的原则下，模板资产的标准化、完整性、可流通性和与工作流的绝对隔离，优先级高于项目内模板血缘记录。

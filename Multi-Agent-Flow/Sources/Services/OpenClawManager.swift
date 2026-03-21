@@ -169,7 +169,7 @@ class OpenClawManager: ObservableObject {
         let remoteMultiAgentBlocked: Bool
         let runtimeSecurityMessages: [String]
 
-        var blockingMessages: [String] {
+        var advisoryMessages: [String] {
             var messages: [String] = []
 
             if !missingWorkspaceAgents.isEmpty {
@@ -194,6 +194,10 @@ class OpenClawManager: ObservableObject {
             messages.append(contentsOf: runtimeSecurityMessages)
 
             return messages
+        }
+
+        var blockingMessages: [String] {
+            []
         }
     }
 

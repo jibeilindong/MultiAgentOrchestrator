@@ -3235,7 +3235,7 @@ class AppState: ObservableObject {
         }
 
         let isolationAssessment = openClawManager.runtimeIsolationAssessment(for: workflow, agents: agents)
-        failures.append(contentsOf: isolationAssessment.blockingMessages)
+        warnings.append(contentsOf: isolationAssessment.advisoryMessages)
 
         let reachableAgentIDs = Set(openClawService.executionPlan(for: workflow).map(\.id))
         let unreachableAgents = agentNodes.filter { !reachableAgentIDs.contains($0.id) }

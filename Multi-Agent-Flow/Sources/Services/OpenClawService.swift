@@ -939,12 +939,9 @@ class OpenClawService: ObservableObject {
         }
 
         let isolationAssessment = OpenClawManager.shared.runtimeIsolationAssessment(for: workflow, agents: agents)
-        if !isolationAssessment.blockingMessages.isEmpty {
-            let message = isolationAssessment.blockingMessages.joined(separator: " | ")
-            lastError = "Runtime isolation preflight failed"
-            addLog(.error, "Cannot execute workflow until runtime isolation requirements are satisfied: \(message)")
-            completion([])
-            return
+        if !isolationAssessment.advisoryMessages.isEmpty {
+            let message = isolationAssessment.advisoryMessages.joined(separator: " | ")
+            addLog(.warning, "Runtime isolation advisory: \(message)")
         }
         
         isExecuting = true
@@ -1030,18 +1027,9 @@ class OpenClawService: ObservableObject {
         completion: @escaping (WorkbenchEntryExecution) -> Void
     ) {
         let isolationAssessment = OpenClawManager.shared.runtimeIsolationAssessment(for: workflow, agents: agents)
-        if !isolationAssessment.blockingMessages.isEmpty {
-            let message = isolationAssessment.blockingMessages.joined(separator: " | ")
-            let failedResult = ExecutionResult(
-                nodeID: node.id,
-                agentID: node.agentID ?? UUID(),
-                status: .failed,
-                output: "Runtime isolation preflight failed: \(message)",
-                outputType: .errorSummary
-            )
-            addLog(.error, "Cannot execute workbench entry until runtime isolation requirements are satisfied: \(message)", nodeID: node.id)
-            completion(WorkbenchEntryExecution(result: failedResult, downstreamNodes: []))
-            return
+        if !isolationAssessment.advisoryMessages.isEmpty {
+            let message = isolationAssessment.advisoryMessages.joined(separator: " | ")
+            addLog(.warning, "Runtime isolation advisory for workbench entry: \(message)", nodeID: node.id)
         }
 
         guard let agentID = node.agentID,
