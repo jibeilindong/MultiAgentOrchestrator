@@ -3,6 +3,7 @@ import type {
   OpenClawProbeLayersSnapshot,
   ProjectOpenClawSnapshot
 } from "@multi-agent-flow/domain";
+import { openClawRequiresExplicitLocalBinaryPath } from "@multi-agent-flow/domain";
 
 export interface OpenClawRuntimeReadinessAssessment {
   label: "Ready" | "Degraded" | "Blocked" | "Idle";
@@ -214,7 +215,7 @@ function buildRecoveryActions(
     });
   }
 
-  if (openClaw.config.deploymentKind === "local" && !openClaw.config.localBinaryPath.trim()) {
+  if (openClawRequiresExplicitLocalBinaryPath(openClaw.config) && !openClaw.config.localBinaryPath.trim()) {
     actions.push({
       id: "review-local-config",
       title: "Review local runtime path",

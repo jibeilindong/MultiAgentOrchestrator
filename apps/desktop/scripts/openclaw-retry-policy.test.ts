@@ -30,6 +30,7 @@ function createOpenClawSnapshot(overrides: Partial<ProjectOpenClawSnapshot> = {}
   return {
     config: {
       deploymentKind: "local",
+      runtimeOwnership: "externalLocal",
       host: "127.0.0.1",
       port: 18789,
       useSSL: false,

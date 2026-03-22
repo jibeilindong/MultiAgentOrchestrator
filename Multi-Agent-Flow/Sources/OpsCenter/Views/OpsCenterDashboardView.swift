@@ -10,10 +10,14 @@ struct OpsCenterDashboardView: View {
 
     private let projectionRefreshTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
-    @State private var selectedPage: OpsCenterConsolePage = .threads
+    @State private var selectedPage: OpsCenterConsolePage = .warRoom
     @State private var selectedWorkflowID: UUID?
     @State private var selectedInvestigation: OpsCenterInvestigationTarget?
     @State private var projections: OpsCenterProjectionBundle?
+    @State private var showLogConsole = true
+    @State private var logSearchText = ""
+    @State private var selectedLogScope: OpsCenterLogScope = .all
+    @State private var selectedLogLevelFilter: OpsCenterLogLevelFilter = .all
 
     init(
         displayMode: OpsCenterDisplayMode = .fullScreen,
@@ -34,6 +38,51 @@ struct OpsCenterDashboardView: View {
         return workflows.first
     }
 
+    private var projectNodeTitleByID: [UUID: String] {
+        Dictionary(
+            uniqueKeysWithValues: (appState.currentProject?.workflows ?? [])
+                .flatMap(\.nodes)
+                .map { ($0.id, $0.title) }
+        )
+    }
+
+    private var projectAgentNameByID: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: (appState.currentProject?.agents ?? []).map { ($0.id, $0.name) })
+    }
+
+    private var selectedWorkflowNodeIDs: Set<UUID> {
+        Set(selectedWorkflow?.nodes.map(\.id) ?? [])
+    }
+
+    private var selectedWorkflowAgentIDs: Set<UUID> {
+        Set(selectedWorkflow?.nodes.compactMap(\.agentID) ?? [])
+    }
+
+    private var filteredOpsLogs: [ExecutionLogEntry] {
+        appState.openClawService.executionLogs
+            .filter(matchesLogScope)
+            .filter(matchesLogLevelFilter)
+            .filter(matchesLogSearch)
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp < rhs.timestamp
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+    }
+
+    private var visibleOpsLogs: [ExecutionLogEntry] {
+        Array(filteredOpsLogs.suffix(displayMode == .embedded ? 120 : 180))
+    }
+
+    private var filteredOpsWarningCount: Int {
+        filteredOpsLogs.filter { $0.level == .warning }.count
+    }
+
+    private var filteredOpsErrorCount: Int {
+        filteredOpsLogs.filter { $0.level == .error }.count
+    }
+
     var body: some View {
         Group {
             if appState.currentProject == nil {
@@ -47,6 +96,9 @@ struct OpsCenterDashboardView: View {
                     header
                     Divider()
                     pageContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    opsLogConsole
                 }
             }
         }
@@ -132,6 +184,10 @@ struct OpsCenterDashboardView: View {
     @ViewBuilder
     private var pageContent: some View {
         switch selectedPage {
+        case .warRoom:
+            OpsCenterWarRoomDashboardView(
+                onFocusLogs: focusLogConsole
+            )
         case .threads:
             OpsCenterThreadsDashboardView(
                 workflow: selectedWorkflow,
@@ -184,6 +240,197 @@ struct OpsCenterDashboardView: View {
                 onSelectArchiveProjection: openArchiveProjectionInvestigation
             )
         }
+    }
+
+    private var opsLogConsole: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: showLogConsole ? 10 : 0) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text(LocalizedString.executionLogs)
+                        .font(.headline)
+
+                    opsStatusPill(title: "\(visibleOpsLogs.count)", color: .blue)
+
+                    if selectedLogScope == .workflow, let selectedWorkflow {
+                        opsStatusPill(title: selectedWorkflow.name, color: .teal)
+                    }
+
+                    Spacer()
+
+                    if showLogConsole {
+                        opsStatusPill(title: "WARN \(filteredOpsWarningCount)", color: .orange)
+                        opsStatusPill(title: "ERROR \(filteredOpsErrorCount)", color: .red)
+                    }
+
+                    Button(LocalizedString.text("clear_logs")) {
+                        appState.openClawService.clearLogs()
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button(showLogConsole ? LocalizedString.text("hide_logs") : LocalizedString.text("show_logs")) {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            showLogConsole.toggle()
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                if showLogConsole {
+                    TextField(LocalizedString.search, text: $logSearchText)
+                        .textFieldStyle(.roundedBorder)
+
+                    if displayMode == .embedded {
+                        Picker(LocalizedString.text("investigation_scope_title"), selection: $selectedLogScope) {
+                            ForEach(OpsCenterLogScope.allCases) { scope in
+                                Text(scope.title).tag(scope)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        Picker(LocalizedString.text("ops_filter_label"), selection: $selectedLogLevelFilter) {
+                            ForEach(OpsCenterLogLevelFilter.allCases) { filter in
+                                Text(filter.title).tag(filter)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    } else {
+                        HStack(alignment: .center, spacing: 12) {
+                            Picker(LocalizedString.text("investigation_scope_title"), selection: $selectedLogScope) {
+                                ForEach(OpsCenterLogScope.allCases) { scope in
+                                    Text(scope.title).tag(scope)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 200)
+
+                            Picker(LocalizedString.text("ops_filter_label"), selection: $selectedLogLevelFilter) {
+                                ForEach(OpsCenterLogLevelFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 250)
+
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .padding(displayMode == .embedded ? 12 : 14)
+            .background(Color.white.opacity(displayMode == .embedded ? 0.92 : 0.86))
+
+            if showLogConsole {
+                Divider()
+
+                if visibleOpsLogs.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        opsInlineEmptyState(LocalizedString.text("no_logs"))
+                    }
+                    .padding(displayMode == .embedded ? 12 : 14)
+                    .background(Color(.windowBackgroundColor))
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(visibleOpsLogs) { entry in
+                                    OpsCenterExecutionLogRow(
+                                        entry: entry,
+                                        nodeTitle: entry.nodeID.flatMap { projectNodeTitleByID[$0] },
+                                        agentName: entry.agentID.flatMap { projectAgentNameByID[$0] },
+                                        onSelectNode: openNodeInvestigation,
+                                        onSelectSession: openSessionInvestigation
+                                    )
+                                    .id(entry.id)
+                                }
+                            }
+                            .padding(displayMode == .embedded ? 12 : 14)
+                        }
+                        .frame(height: displayMode == .embedded ? 180 : 220)
+                        .background(Color(.windowBackgroundColor))
+                        .onAppear {
+                            if let lastLog = visibleOpsLogs.last {
+                                proxy.scrollTo(lastLog.id, anchor: .bottom)
+                            }
+                        }
+                        .onChange(of: visibleOpsLogs.last?.id) { _, newValue in
+                            guard let newValue else { return }
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                proxy.scrollTo(newValue, anchor: .bottom)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func matchesLogScope(_ entry: ExecutionLogEntry) -> Bool {
+        switch selectedLogScope {
+        case .all:
+            return true
+        case .workflow:
+            guard let selectedWorkflow else { return true }
+            if let nodeID = entry.nodeID, selectedWorkflowNodeIDs.contains(nodeID) {
+                return true
+            }
+            if let agentID = entry.agentID, selectedWorkflowAgentIDs.contains(agentID) {
+                return true
+            }
+
+            let workflowTokens = [
+                selectedWorkflow.id.uuidString.lowercased(),
+                selectedWorkflow.name.lowercased()
+            ]
+            let message = entry.message.lowercased()
+            return workflowTokens.contains { token in
+                !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && message.contains(token)
+            }
+        }
+    }
+
+    private func matchesLogLevelFilter(_ entry: ExecutionLogEntry) -> Bool {
+        switch selectedLogLevelFilter {
+        case .all:
+            return true
+        case .warnings:
+            return entry.level == .warning
+        case .errors:
+            return entry.level == .error
+        }
+    }
+
+    private func matchesLogSearch(_ entry: ExecutionLogEntry) -> Bool {
+        let query = logSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+
+        let haystack = [
+            entry.message.lowercased(),
+            entry.level.rawValue.lowercased(),
+            opsNormalizedLogSessionID(entry.sessionID) ?? "",
+            entry.nodeID?.uuidString.lowercased() ?? "",
+            entry.agentID?.uuidString.lowercased() ?? "",
+            entry.nodeID.flatMap { projectNodeTitleByID[$0]?.lowercased() } ?? "",
+            entry.agentID.flatMap { projectAgentNameByID[$0]?.lowercased() } ?? ""
+        ]
+        .joined(separator: " ")
+
+        return haystack.contains(query)
+    }
+
+    private func focusLogConsole(
+        query: String,
+        level: OpsCenterLogLevelFilter = .all,
+        scope: OpsCenterLogScope = .all
+    ) {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return }
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showLogConsole = true
+        }
+        logSearchText = trimmedQuery
+        selectedLogLevelFilter = level
+        selectedLogScope = scope
     }
 
     private var workflowSelectionBinding: Binding<UUID?> {
@@ -5084,11 +5331,35 @@ private struct OpsCenterHistoryDashboardView: View {
 }
 
 private struct OpsCenterInvestigationPanel: View {
+    @EnvironmentObject var appState: AppState
     let target: OpsCenterInvestigationTarget
     let onSelectSession: (String) -> Void
     let onSelectNode: (UUID) -> Void
     let onSelectRoute: (UUID) -> Void
     let onSelectThread: (String) -> Void
+
+    private var nodeTitleByID: [UUID: String] {
+        Dictionary(
+            uniqueKeysWithValues: (appState.currentProject?.workflows ?? [])
+                .flatMap(\.nodes)
+                .map { ($0.id, $0.title) }
+        )
+    }
+
+    private var agentNameByID: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: (appState.currentProject?.agents ?? []).map { ($0.id, $0.name) })
+    }
+
+    private var agentIDByNodeID: [UUID: UUID] {
+        Dictionary(
+            uniqueKeysWithValues: (appState.currentProject?.workflows ?? [])
+                .flatMap(\.nodes)
+                .compactMap { node in
+                    guard let agentID = node.agentID else { return nil }
+                    return (node.id, agentID)
+                }
+        )
+    }
 
     var body: some View {
         ScrollView {
@@ -5122,6 +5393,109 @@ private struct OpsCenterInvestigationPanel: View {
         }
         .frame(minWidth: 920, minHeight: 760)
         .background(Color(.windowBackgroundColor))
+    }
+
+    private func relatedLogs(
+        sessionIDs: Set<String> = [],
+        nodeIDs: Set<UUID> = [],
+        agentIDs: Set<UUID> = []
+    ) -> [ExecutionLogEntry] {
+        let normalizedSessionIDs = Set(sessionIDs.compactMap(opsNormalizedLogSessionID).map { $0.lowercased() })
+        return appState.openClawService.executionLogs
+            .filter { entry in
+                let matchesSession = {
+                    guard !normalizedSessionIDs.isEmpty else { return false }
+                    if let entrySessionID = opsNormalizedLogSessionID(entry.sessionID)?.lowercased(),
+                       normalizedSessionIDs.contains(entrySessionID) {
+                        return true
+                    }
+                    let message = entry.message.lowercased()
+                    return normalizedSessionIDs.contains { message.contains($0) }
+                }()
+
+                let matchesNode = entry.nodeID.map(nodeIDs.contains) ?? false
+                let matchesAgent = entry.agentID.map(agentIDs.contains) ?? false
+                return matchesSession || matchesNode || matchesAgent
+            }
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+    }
+
+    private func relatedLogs(for investigation: OpsCenterSessionInvestigation) -> [ExecutionLogEntry] {
+        let nodeIDs = Set(investigation.relatedNodes.map(\.id))
+        let agentIDs = Set(nodeIDs.compactMap { agentIDByNodeID[$0] })
+        return Array(
+            relatedLogs(
+                sessionIDs: [investigation.session.sessionID],
+                nodeIDs: nodeIDs,
+                agentIDs: agentIDs
+            )
+            .prefix(12)
+        )
+    }
+
+    private func relatedLogs(for investigation: OpsCenterThreadInvestigation) -> [ExecutionLogEntry] {
+        let nodeIDs = Set(investigation.relatedNodes.map(\.id))
+        let agentIDs = Set(nodeIDs.compactMap { agentIDByNodeID[$0] })
+        return Array(
+            relatedLogs(
+                sessionIDs: [investigation.sessionID],
+                nodeIDs: nodeIDs,
+                agentIDs: agentIDs
+            )
+            .prefix(12)
+        )
+    }
+
+    private func relatedLogs(for investigation: OpsCenterNodeInvestigation) -> [ExecutionLogEntry] {
+        let nodeIDs: Set<UUID> = [investigation.node.id]
+        let agentIDs = Set(nodeIDs.compactMap { agentIDByNodeID[$0] })
+        let sessionIDs = Set(investigation.relatedSessions.map(\.sessionID))
+        return Array(
+            relatedLogs(
+                sessionIDs: sessionIDs,
+                nodeIDs: nodeIDs,
+                agentIDs: agentIDs
+            )
+            .prefix(12)
+        )
+    }
+
+    private func relatedLogs(for investigation: OpsCenterRouteInvestigation) -> [ExecutionLogEntry] {
+        let nodeIDs = Set([investigation.upstreamNode?.id, investigation.downstreamNode?.id].compactMap { $0 })
+        let agentIDs = Set(nodeIDs.compactMap { agentIDByNodeID[$0] })
+        let sessionIDs = Set(investigation.relatedSessions.map(\.sessionID))
+        return Array(
+            relatedLogs(
+                sessionIDs: sessionIDs,
+                nodeIDs: nodeIDs,
+                agentIDs: agentIDs
+            )
+            .prefix(12)
+        )
+    }
+
+    @ViewBuilder
+    private func investigationLogsSection(_ logs: [ExecutionLogEntry]) -> some View {
+        opsInvestigationSection(LocalizedString.executionLogs) {
+            if logs.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("no_logs"))
+            } else {
+                ForEach(logs) { entry in
+                    OpsCenterExecutionLogRow(
+                        entry: entry,
+                        nodeTitle: entry.nodeID.flatMap { nodeTitleByID[$0] },
+                        agentName: entry.agentID.flatMap { agentNameByID[$0] },
+                        onSelectNode: onSelectNode,
+                        onSelectSession: onSelectSession
+                    )
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -5209,6 +5583,8 @@ private struct OpsCenterInvestigationPanel: View {
                 }
             }
         }
+
+        investigationLogsSection(relatedLogs(for: investigation))
 
         opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_session_messages_section_detail")) {
             if investigation.messages.isEmpty {
@@ -5429,6 +5805,8 @@ private struct OpsCenterInvestigationPanel: View {
                 }
             }
         }
+
+        investigationLogsSection(relatedLogs(for: investigation))
     }
 
     @ViewBuilder
@@ -5895,6 +6273,8 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
+        investigationLogsSection(relatedLogs(for: investigation))
+
         opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_node_messages_section_detail")) {
             if investigation.messages.isEmpty {
                 opsInlineEmptyState(LocalizedString.text("investigation_node_messages_empty"))
@@ -6077,6 +6457,8 @@ private struct OpsCenterInvestigationPanel: View {
                 }
             }
         }
+
+        investigationLogsSection(relatedLogs(for: investigation))
 
         opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_route_messages_section_detail")) {
             if investigation.messages.isEmpty {
@@ -6550,6 +6932,143 @@ private struct OpsCenterTaskDigestCard: View {
     }
 }
 
+private enum OpsCenterLogScope: String, CaseIterable, Identifiable {
+    case all
+    case workflow
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return LocalizedString.text("ops_all")
+        case .workflow:
+            return LocalizedString.text("current")
+        }
+    }
+}
+
+private enum OpsCenterLogLevelFilter: String, CaseIterable, Identifiable {
+    case all
+    case warnings
+    case errors
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return LocalizedString.text("ops_all")
+        case .warnings:
+            return LocalizedString.text("warnings_label")
+        case .errors:
+            return LocalizedString.text("errors_label")
+        }
+    }
+}
+
+private struct OpsCenterExecutionLogRow: View {
+    let entry: ExecutionLogEntry
+    let nodeTitle: String?
+    let agentName: String?
+    var onSelectNode: ((UUID) -> Void)? = nil
+    var onSelectSession: ((String) -> Void)? = nil
+
+    private var normalizedSessionID: String? {
+        opsNormalizedLogSessionID(entry.sessionID)
+    }
+
+    private var canNavigate: Bool {
+        entry.nodeID != nil || normalizedSessionID != nil
+    }
+
+    var body: some View {
+        Group {
+            if canNavigate {
+                Button(action: handleOpen) {
+                    rowBody
+                }
+                .buttonStyle(.plain)
+            } else {
+                rowBody
+            }
+        }
+    }
+
+    private var rowBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(entry.timestamp.formatted(date: .omitted, time: .standard))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .frame(width: 74, alignment: .leading)
+
+                Text(entry.level.rawValue)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(opsLogLevelColor(entry.level))
+                    .frame(width: 54, alignment: .leading)
+
+                if let routingBadge = entry.routingBadge {
+                    Text(routingBadge)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(opsRoutingLogColor(entry).opacity(0.14))
+                        .foregroundColor(opsRoutingLogColor(entry))
+                        .clipShape(Capsule())
+                }
+
+                Text(entry.message)
+                    .font(.caption)
+                    .foregroundColor(entry.isRoutingEvent ? opsRoutingLogColor(entry) : .primary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(3)
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                if let sessionID = normalizedSessionID {
+                    Text(sessionID)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                if let nodeTitle, !nodeTitle.isEmpty {
+                    Text(nodeTitle)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                if let agentName, !agentName.isEmpty {
+                    Text(agentName)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+        }
+        .padding(10)
+        .background(entry.isRoutingEvent ? opsRoutingLogColor(entry).opacity(0.06) : Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func handleOpen() {
+        if let nodeID = entry.nodeID {
+            onSelectNode?(nodeID)
+            return
+        }
+
+        if let sessionID = normalizedSessionID {
+            onSelectSession?(sessionID)
+        }
+    }
+}
+
 private enum OpsCenterMapLayer: String, CaseIterable, Identifiable {
     case state
     case latency
@@ -6669,6 +7188,40 @@ private func opsInlineEmptyState(_ detail: String) -> some View {
         .padding(10)
         .background(Color(.controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+}
+
+private func opsNormalizedLogSessionID(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else { return nil }
+    return trimmed
+}
+
+private func opsLogLevelColor(_ level: ExecutionLogEntry.LogLevel) -> Color {
+    switch level {
+    case .info:
+        return .blue
+    case .warning:
+        return .orange
+    case .error:
+        return .red
+    case .success:
+        return .green
+    }
+}
+
+private func opsRoutingLogColor(_ entry: ExecutionLogEntry) -> Color {
+    switch entry.routingBadge {
+    case "STOP":
+        return .orange
+    case "WARN", "MISS":
+        return .red
+    case "QUEUE":
+        return .blue
+    case "ROUTE":
+        return .purple
+    default:
+        return opsLogLevelColor(entry.level)
+    }
 }
 
 private func opsDispatchStatusTitle(_ status: RuntimeDispatchStatus) -> String {

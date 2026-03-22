@@ -34,6 +34,7 @@ function createDefaultWorkflow(now: number): Workflow {
 function createDefaultOpenClawConfig(): OpenClawConfig {
   return {
     deploymentKind: "local",
+    runtimeOwnership: "appManaged",
     host: "127.0.0.1",
     port: 18789,
     useSSL: false,

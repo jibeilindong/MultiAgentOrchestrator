@@ -29,6 +29,7 @@ function createOpenClawSnapshot(overrides: Partial<ProjectOpenClawSnapshot> = {}
   return {
     config: {
       deploymentKind: "local",
+      runtimeOwnership: "externalLocal",
       host: "127.0.0.1",
       port: 18789,
       useSSL: false,
@@ -91,6 +92,7 @@ test("retry guidance stops on manual follow-up requirements", () => {
     createOpenClawSnapshot({
       config: {
         deploymentKind: "remoteServer",
+        runtimeOwnership: "appManaged",
         host: "remote.example.com",
         port: 443,
         useSSL: true,

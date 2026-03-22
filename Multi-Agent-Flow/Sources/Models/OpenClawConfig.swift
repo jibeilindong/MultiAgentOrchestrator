@@ -41,6 +41,22 @@ enum OpenClawDeploymentKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum OpenClawRuntimeOwnership: String, Codable, CaseIterable, Identifiable {
+    case appManaged
+    case externalLocal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appManaged:
+            return "App Managed"
+        case .externalLocal:
+            return "External Binary"
+        }
+    }
+}
+
 struct OpenClawContainerConfig: Codable, Hashable {
     var engine: String
     var containerName: String
@@ -59,6 +75,7 @@ struct OpenClawContainerConfig: Codable, Hashable {
 
 struct OpenClawConfig: Codable {
     var deploymentKind: OpenClawDeploymentKind
+    var runtimeOwnership: OpenClawRuntimeOwnership
     var host: String
     var port: Int
     var useSSL: Bool
@@ -73,6 +90,7 @@ struct OpenClawConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case deploymentKind
+        case runtimeOwnership
         case host
         case port
         case useSSL
@@ -89,6 +107,7 @@ struct OpenClawConfig: Codable {
     static var `default`: OpenClawConfig {
         OpenClawConfig(
             deploymentKind: .local,
+            runtimeOwnership: .appManaged,
             host: "127.0.0.1",
             port: 18789,
             useSSL: false,
@@ -96,7 +115,7 @@ struct OpenClawConfig: Codable {
             defaultAgent: "default",
             timeout: 30,
             autoConnect: true,
-            localBinaryPath: "/Users/chenrongze/.local/bin/openclaw",
+            localBinaryPath: "",
             container: OpenClawContainerConfig(),
             cliQuietMode: true,
             cliLogLevel: .warning
@@ -111,7 +130,13 @@ struct OpenClawConfig: Codable {
     var deploymentSummary: String {
         switch deploymentKind {
         case .local:
-            return "Local CLI: \(localBinaryPath)"
+            switch runtimeOwnership {
+            case .appManaged:
+                return "App Managed Local Runtime"
+            case .externalLocal:
+                let resolvedPath = localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                return "External Local CLI: \(resolvedPath.isEmpty ? "(auto-detect)" : resolvedPath)"
+            }
         case .remoteServer:
             return baseURL
         case .container:
@@ -122,6 +147,7 @@ struct OpenClawConfig: Codable {
 
     init(
         deploymentKind: OpenClawDeploymentKind,
+        runtimeOwnership: OpenClawRuntimeOwnership,
         host: String,
         port: Int,
         useSSL: Bool,
@@ -135,6 +161,7 @@ struct OpenClawConfig: Codable {
         cliLogLevel: OpenClawCLILogLevel
     ) {
         self.deploymentKind = deploymentKind
+        self.runtimeOwnership = runtimeOwnership
         self.host = host
         self.port = port
         self.useSSL = useSSL
@@ -151,6 +178,16 @@ struct OpenClawConfig: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         deploymentKind = try container.decodeIfPresent(OpenClawDeploymentKind.self, forKey: .deploymentKind) ?? .local
+        let decodedLocalBinaryPath = try container.decodeIfPresent(String.self, forKey: .localBinaryPath) ?? ""
+        if let decodedRuntimeOwnership = try container.decodeIfPresent(OpenClawRuntimeOwnership.self, forKey: .runtimeOwnership) {
+            runtimeOwnership = decodedRuntimeOwnership
+        } else if deploymentKind == .local {
+            runtimeOwnership = decodedLocalBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .appManaged
+                : .externalLocal
+        } else {
+            runtimeOwnership = .appManaged
+        }
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
         port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 18789
         useSSL = try container.decodeIfPresent(Bool.self, forKey: .useSSL) ?? false
@@ -158,10 +195,20 @@ struct OpenClawConfig: Codable {
         defaultAgent = try container.decodeIfPresent(String.self, forKey: .defaultAgent) ?? "default"
         timeout = try container.decodeIfPresent(Int.self, forKey: .timeout) ?? 30
         autoConnect = try container.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
-        localBinaryPath = try container.decodeIfPresent(String.self, forKey: .localBinaryPath) ?? "/Users/chenrongze/.local/bin/openclaw"
+        localBinaryPath = decodedLocalBinaryPath
         self.container = try container.decodeIfPresent(OpenClawContainerConfig.self, forKey: .container) ?? OpenClawContainerConfig()
         cliQuietMode = try container.decodeIfPresent(Bool.self, forKey: .cliQuietMode) ?? true
         cliLogLevel = try container.decodeIfPresent(OpenClawCLILogLevel.self, forKey: .cliLogLevel) ?? .warning
+    }
+}
+
+extension OpenClawConfig {
+    var requiresExplicitLocalBinaryPath: Bool {
+        deploymentKind == .local && runtimeOwnership == .externalLocal
+    }
+
+    var usesManagedLocalRuntime: Bool {
+        deploymentKind == .local && runtimeOwnership == .appManaged
     }
 }
 

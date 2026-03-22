@@ -614,6 +614,35 @@ class OpenClawManager: ObservableObject {
         let sourceDescription: String?
     }
 
+    private struct LocalRuntimeBindingsBatchPlanItem {
+        let identifier: String
+        let currentBindings: [ManagedAgentBindingRecord]
+        let desiredBindings: [AgentRuntimeChannelBinding]
+        let sourceDescription: String?
+    }
+
+    private enum LocalRuntimeBindingsApplicationState {
+        case pending
+        case applied(message: String?)
+        case failed(message: String)
+    }
+
+    private struct LocalRuntimeBindingsBatchExecutionResult {
+        var statesByIdentifier: [String: LocalRuntimeBindingsApplicationState] = [:]
+    }
+
+    private struct LocalRuntimePreparedActivation {
+        let stateIndex: Int
+        let runtimeRecord: ManagedAgentRecord
+        let activationPlan: LocalRuntimeActivationPlan
+        let currentBindings: [ManagedAgentBindingRecord]
+    }
+
+    private struct LocalRuntimeActivationBatchProcessingResult {
+        var batchStates: [LocalRuntimeBatchRegistrationState]
+        var warnings: [String] = []
+    }
+
     private struct LocalRuntimeConfigBatchVerification {
         let identifier: String
         let expectedWorkspacePath: String?
@@ -889,14 +918,6 @@ class OpenClawManager: ObservableObject {
         discoverySnapshotContext?.snapshotURL
     }
 
-    private static let possiblePaths = [
-        "/Users/chenrongze/.local/bin/openclaw",
-        "/Users/chenrongze/.openclaw",
-        "/usr/local/bin/openclaw",
-        "/opt/homebrew/bin/openclaw",
-        "/usr/bin/openclaw"
-    ]
-    
     init(notificationCenter: NotificationCenter = .default) {
         self.notificationCenter = notificationCenter
         // 创建备份目录
@@ -2958,72 +2979,16 @@ class OpenClawManager: ObservableObject {
             }
         }
 
-        let finalBindingRecords: [ManagedAgentBindingRecord]
-        do {
-            let bindingsResult = try runOpenClawCommand(using: config, arguments: ["agents", "bindings", "--json"])
-            if bindingsResult.terminationStatus == 0 {
-                finalBindingRecords = parseManagedAgentBindings(from: bindingsResult.standardOutput)
-            } else {
-                finalBindingRecords = bindingRecords
-            }
-        } catch {
-            finalBindingRecords = bindingRecords
-        }
-
-        for index in batchStates.indices {
-            var state = batchStates[index]
-            let hasFailedPreparationStage = state.stageReports.contains {
-                $0.status == .failed && $0.stage != .activation && $0.stage != .cliRegistrationFallback
-            }
-            let runtimeRecord = verifiedRuntimeRecords.first(where: {
-                normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(state.identifier)
-                    || normalizeAgentKey($0.name) == normalizeAgentKey(state.identifier)
-            })
-
-            if state.initialRuntimeRecord == nil,
-               !state.stageReports.contains(where: { $0.stage == .runtimeRecognition && $0.status == .succeeded }) {
-                let detail: String
-                let status: LocalRuntimeRegistrationStageStatus
-                if let runtimeRecord {
-                    detail = "canonical 配置已被本地 runtime 识别为 agent \(runtimeRecord.targetIdentifier)。"
-                    status = .succeeded
-                } else {
-                    detail = "批量提交完成后，当前 runtime 仍未识别 agent \(state.identifier)。"
-                    status = .skipped
-                }
-                state.stageReports.append(
-                    LocalRuntimeRegistrationStageReport(
-                        stage: .runtimeRecognition,
-                        status: status,
-                        changed: false,
-                        detail: detail
-                    )
-                )
-            }
-
-            if !hasFailedPreparationStage, let runtimeRecord {
-                let activation = applyLocalRuntimeActivationPlan(
-                    for: state.agent,
-                    in: project,
-                    workflowID: workflowID,
-                    runtimeRecord: runtimeRecord,
-                    runtimeRecords: verifiedRuntimeRecords,
-                    bindingRecords: finalBindingRecords,
-                    allowSeedFromOtherAgents: state.allowSeedFromOtherAgents,
-                    using: config
-                )
-                state.stageReports.append(
-                    LocalRuntimeRegistrationStageReport(
-                        stage: .activation,
-                        status: activation.success ? .succeeded : .failed,
-                        changed: !activation.message.isEmpty,
-                        detail: activation.message
-                    )
-                )
-            }
-
-            batchStates[index] = state
-        }
+        let activationBatchResult = applyLocalRuntimeActivationBatch(
+            batchStates,
+            in: project,
+            workflowID: workflowID,
+            runtimeRecords: verifiedRuntimeRecords,
+            initialBindingRecords: bindingRecords,
+            using: config
+        )
+        batchStates = activationBatchResult.batchStates
+        result.warnings.append(contentsOf: activationBatchResult.warnings)
 
         result.agentReports = immediateReports + batchStates.map { state in
             LocalRuntimeAgentRegistrationReport(
@@ -5127,6 +5092,10 @@ class OpenClawManager: ObservableObject {
                 runtimeRecord: matchedRecord,
                 runtimeRecords: runtimeRecords,
                 bindingRecords: bindingRecords,
+                currentBindings: currentManagedAgentBindings(
+                    forAgentIdentifier: matchedRecord.targetIdentifier,
+                    from: bindingRecords
+                ),
                 allowSeedFromOtherAgents: false,
                 using: resolvedConfig
             )
@@ -5228,6 +5197,10 @@ class OpenClawManager: ObservableObject {
                 runtimeRecord: refreshedRuntimeRecord,
                 runtimeRecords: refreshedRuntimeRecords,
                 bindingRecords: refreshedBindingRecords,
+                currentBindings: currentManagedAgentBindings(
+                    forAgentIdentifier: refreshedRuntimeRecord.targetIdentifier,
+                    from: refreshedBindingRecords
+                ),
                 allowSeedFromOtherAgents: true,
                 using: resolvedConfig
             )
@@ -5308,6 +5281,10 @@ class OpenClawManager: ObservableObject {
                     runtimeRecord: $0,
                     runtimeRecords: refreshedRuntimeRecords,
                     bindingRecords: refreshedBindingRecords,
+                    currentBindings: currentManagedAgentBindings(
+                        forAgentIdentifier: $0.targetIdentifier,
+                        from: refreshedBindingRecords
+                    ),
                     allowSeedFromOtherAgents: true,
                     using: resolvedConfig
                 )
@@ -5712,6 +5689,262 @@ class OpenClawManager: ObservableObject {
             .filter { normalizeAgentKey($0.agentIdentifier) == normalizeAgentKey(agentIdentifier) }
     }
 
+    private func currentManagedAgentBindings(
+        forAgentIdentifier agentIdentifier: String,
+        from bindingRecords: [ManagedAgentBindingRecord]
+    ) -> [ManagedAgentBindingRecord] {
+        let normalizedIdentifier = normalizeAgentKey(agentIdentifier)
+        return bindingRecords.filter {
+            normalizeAgentKey($0.agentIdentifier) == normalizedIdentifier
+        }
+    }
+
+    private func localRuntimeBindingsUpdateMessage(
+        forAgentIdentifier agentIdentifier: String,
+        desiredBindings: [AgentRuntimeChannelBinding],
+        sourceDescription: String?
+    ) -> String {
+        if desiredBindings.isEmpty {
+            return "已清空 \(agentIdentifier) 的 channel bindings。"
+        }
+        if let sourceDescription, !sourceDescription.isEmpty {
+            return "已为 \(agentIdentifier) 自动沿用\(sourceDescription) 的 channel bindings。"
+        }
+        return "已为 \(agentIdentifier) 写入 channel bindings。"
+    }
+
+    private func executeLocalRuntimeBindingsBatchPlan(
+        _ planItems: [LocalRuntimeBindingsBatchPlanItem],
+        using config: OpenClawConfig
+    ) -> LocalRuntimeBindingsBatchExecutionResult {
+        var result = LocalRuntimeBindingsBatchExecutionResult()
+
+        for planItem in planItems.sorted(by: {
+            $0.identifier.localizedCaseInsensitiveCompare($1.identifier) == .orderedAscending
+        }) {
+            let normalizedIdentifier = normalizeAgentKey(planItem.identifier)
+            let currentSet = Set(planItem.currentBindings.map(\.binding))
+            let desiredBindings = uniqueBindings(planItem.desiredBindings)
+            let desiredSet = Set(desiredBindings)
+
+            if currentSet == desiredSet {
+                result.statesByIdentifier[normalizedIdentifier] = .applied(message: nil)
+                continue
+            }
+
+            do {
+                try applyManagedAgentBindings(
+                    forAgentIdentifier: planItem.identifier,
+                    currentBindings: planItem.currentBindings,
+                    desiredBindings: desiredBindings,
+                    using: config
+                )
+                result.statesByIdentifier[normalizedIdentifier] = .applied(
+                    message: localRuntimeBindingsUpdateMessage(
+                        forAgentIdentifier: planItem.identifier,
+                        desiredBindings: desiredBindings,
+                        sourceDescription: planItem.sourceDescription
+                    )
+                )
+            } catch {
+                result.statesByIdentifier[normalizedIdentifier] = .failed(
+                    message: "为本地 workflow agent \(planItem.identifier) 自动补齐 channel 配置失败：\(error.localizedDescription)"
+                )
+            }
+        }
+
+        return result
+    }
+
+    private func applyLocalRuntimeActivationBatch(
+        _ batchStates: [LocalRuntimeBatchRegistrationState],
+        in project: MAProject,
+        workflowID: UUID? = nil,
+        runtimeRecords: [ManagedAgentRecord],
+        initialBindingRecords: [ManagedAgentBindingRecord],
+        using config: OpenClawConfig
+    ) -> LocalRuntimeActivationBatchProcessingResult {
+        let finalBindingRecords: [ManagedAgentBindingRecord]
+        do {
+            let bindingsResult = try runOpenClawCommand(using: config, arguments: ["agents", "bindings", "--json"])
+            if bindingsResult.terminationStatus == 0 {
+                finalBindingRecords = parseManagedAgentBindings(from: bindingsResult.standardOutput)
+            } else {
+                finalBindingRecords = initialBindingRecords
+            }
+        } catch {
+            finalBindingRecords = initialBindingRecords
+        }
+
+        let finalBindingRecordsByIdentifier = Dictionary(
+            grouping: finalBindingRecords,
+            by: { normalizeAgentKey($0.agentIdentifier) }
+        )
+        let activationModelBatchContextResult = loadLocalRuntimeConfigBatchContext(using: config)
+        var activationModelBatchContext = activationModelBatchContextResult.context
+        var activationModelBatchAppliedIdentifiers = Set<String>()
+        var activationModelBatchMessagesByIdentifier: [String: String] = [:]
+        var bindingsBatchPlanItems: [LocalRuntimeBindingsBatchPlanItem] = []
+        var preparedActivations: [LocalRuntimePreparedActivation] = []
+        var updatedBatchStates = batchStates
+        var warnings: [String] = []
+
+        for index in updatedBatchStates.indices {
+            var state = updatedBatchStates[index]
+            let hasFailedPreparationStage = state.stageReports.contains {
+                $0.status == .failed && $0.stage != .activation && $0.stage != .cliRegistrationFallback
+            }
+            let runtimeRecord = runtimeRecords.first(where: {
+                normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(state.identifier)
+                    || normalizeAgentKey($0.name) == normalizeAgentKey(state.identifier)
+            })
+
+            if state.initialRuntimeRecord == nil,
+               !state.stageReports.contains(where: { $0.stage == .runtimeRecognition && $0.status == .succeeded }) {
+                let detail: String
+                let status: LocalRuntimeRegistrationStageStatus
+                if let runtimeRecord {
+                    detail = "canonical 配置已被本地 runtime 识别为 agent \(runtimeRecord.targetIdentifier)。"
+                    status = .succeeded
+                } else {
+                    detail = "批量提交完成后，当前 runtime 仍未识别 agent \(state.identifier)。"
+                    status = .skipped
+                }
+                state.stageReports.append(
+                    LocalRuntimeRegistrationStageReport(
+                        stage: .runtimeRecognition,
+                        status: status,
+                        changed: false,
+                        detail: detail
+                    )
+                )
+            }
+
+            if !hasFailedPreparationStage, let runtimeRecord {
+                let currentBindings = finalBindingRecordsByIdentifier[normalizeAgentKey(runtimeRecord.targetIdentifier)] ?? []
+                let activationPlan = localRuntimeActivationPlan(
+                    for: state.agent,
+                    in: project,
+                    workflowID: workflowID,
+                    runtimeRecords: runtimeRecords,
+                    bindingRecords: finalBindingRecords,
+                    allowSeedFromOtherAgents: state.allowSeedFromOtherAgents,
+                    using: config
+                )
+
+                preparedActivations.append(
+                    LocalRuntimePreparedActivation(
+                        stateIndex: index,
+                        runtimeRecord: runtimeRecord,
+                        activationPlan: activationPlan,
+                        currentBindings: currentBindings
+                    )
+                )
+
+                if let desiredBindings = activationPlan.desiredBindings {
+                    bindingsBatchPlanItems.append(
+                        LocalRuntimeBindingsBatchPlanItem(
+                            identifier: runtimeRecord.targetIdentifier,
+                            currentBindings: currentBindings,
+                            desiredBindings: desiredBindings,
+                            sourceDescription: activationPlan.sourceDescription
+                        )
+                    )
+                }
+
+                let normalizedRuntimeIdentifier = normalizeAgentKey(runtimeRecord.targetIdentifier)
+                if let desiredModel = activationPlan.modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !desiredModel.isEmpty,
+                   var batchContext = activationModelBatchContext {
+                    let runtimeAgentDirectory = firstNonEmptyPath(runtimeRecord.agentDirPath)
+                        .map { URL(fileURLWithPath: $0, isDirectory: true) }
+                    let qualifiedModelIdentifier = qualifiedLocalRuntimeModelIdentifier(
+                        desiredModel,
+                        preferredAgentDirectory: runtimeAgentDirectory
+                    )
+                    let currentModelIdentifier = runtimeRecord.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if qualifiedModelIdentifier != currentModelIdentifier {
+                        let mutation = applyLocalRuntimeConfigBatchMutation(
+                            &batchContext,
+                            configIndex: runtimeRecord.configIndex,
+                            identifier: runtimeRecord.targetIdentifier,
+                            name: runtimeRecord.name,
+                            workspacePath: firstNonEmptyPath(runtimeRecord.workspacePath, state.runtimeWorkspaceURL.path),
+                            agentDirPath: firstNonEmptyPath(runtimeRecord.agentDirPath, state.runtimeAgentDirectory.path),
+                            modelIdentifier: qualifiedModelIdentifier
+                        )
+
+                        if mutation.success {
+                            activationModelBatchContext = batchContext
+                            if mutation.changed {
+                                activationModelBatchAppliedIdentifiers.insert(normalizedRuntimeIdentifier)
+                                activationModelBatchMessagesByIdentifier[normalizedRuntimeIdentifier] = "已为 \(runtimeRecord.targetIdentifier) 写入 model。"
+                            }
+                        }
+                    }
+                }
+            }
+
+            updatedBatchStates[index] = state
+        }
+
+        var activationModelBatchCommitSucceeded = activationModelBatchAppliedIdentifiers.isEmpty
+        if var batchContext = activationModelBatchContext, batchContext.hasPendingChanges {
+            let commitResult = commitLocalRuntimeConfigBatch(&batchContext)
+            activationModelBatchContext = batchContext
+            if commitResult.success {
+                activationModelBatchCommitSucceeded = true
+            } else {
+                warnings.append("批量写回本地 runtime agent model 失败，已回退到逐 agent 更新：\(commitResult.message)")
+            }
+        }
+
+        let bindingsBatchExecutionResult = executeLocalRuntimeBindingsBatchPlan(
+            bindingsBatchPlanItems,
+            using: config
+        )
+
+        for preparedActivation in preparedActivations {
+            var state = updatedBatchStates[preparedActivation.stateIndex]
+            let normalizedRuntimeIdentifier = normalizeAgentKey(preparedActivation.runtimeRecord.targetIdentifier)
+            let modelAlreadyApplied = activationModelBatchCommitSucceeded
+                && activationModelBatchAppliedIdentifiers.contains(normalizedRuntimeIdentifier)
+            let bindingsApplicationState = bindingsBatchExecutionResult.statesByIdentifier[normalizedRuntimeIdentifier] ?? .pending
+            let activation = applyLocalRuntimeActivationPlan(
+                for: state.agent,
+                in: project,
+                workflowID: workflowID,
+                runtimeRecord: preparedActivation.runtimeRecord,
+                runtimeRecords: runtimeRecords,
+                bindingRecords: finalBindingRecords,
+                currentBindings: preparedActivation.currentBindings,
+                precomputedPlan: preparedActivation.activationPlan,
+                modelAlreadyApplied: modelAlreadyApplied,
+                preAppliedModelMessage: modelAlreadyApplied
+                    ? activationModelBatchMessagesByIdentifier[normalizedRuntimeIdentifier]
+                    : nil,
+                bindingsApplicationState: bindingsApplicationState,
+                allowSeedFromOtherAgents: state.allowSeedFromOtherAgents,
+                using: config
+            )
+            state.stageReports.append(
+                LocalRuntimeRegistrationStageReport(
+                    stage: .activation,
+                    status: activation.success ? .succeeded : .failed,
+                    changed: !activation.message.isEmpty,
+                    detail: activation.message
+                )
+            )
+            updatedBatchStates[preparedActivation.stateIndex] = state
+        }
+
+        return LocalRuntimeActivationBatchProcessingResult(
+            batchStates: updatedBatchStates,
+            warnings: warnings
+        )
+    }
+
     private func applyManagedAgentBindings(
         forAgentIdentifier agentIdentifier: String,
         currentBindings: [ManagedAgentBindingRecord],
@@ -5894,10 +6127,15 @@ class OpenClawManager: ObservableObject {
         runtimeRecord: ManagedAgentRecord,
         runtimeRecords: [ManagedAgentRecord],
         bindingRecords: [ManagedAgentBindingRecord],
+        currentBindings: [ManagedAgentBindingRecord]? = nil,
+        precomputedPlan: LocalRuntimeActivationPlan? = nil,
+        modelAlreadyApplied: Bool = false,
+        preAppliedModelMessage: String? = nil,
+        bindingsApplicationState: LocalRuntimeBindingsApplicationState = .pending,
         allowSeedFromOtherAgents: Bool,
         using config: OpenClawConfig
     ) -> (success: Bool, message: String) {
-        let activationPlan = localRuntimeActivationPlan(
+        let activationPlan = precomputedPlan ?? localRuntimeActivationPlan(
             for: agent,
             in: project,
             workflowID: workflowID,
@@ -5918,33 +6156,56 @@ class OpenClawManager: ObservableObject {
                     desiredModel,
                     preferredAgentDirectory: runtimeAgentDirectory
                 )
-                if qualifiedModelIdentifier != runtimeRecord.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) {
+                if modelAlreadyApplied {
+                    if let preAppliedModelMessage,
+                       !preAppliedModelMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        messages.append(preAppliedModelMessage)
+                    }
+                } else if qualifiedModelIdentifier != runtimeRecord.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) {
                     try writeManagedAgentModel(qualifiedModelIdentifier, for: runtimeRecord, using: config)
                     messages.append("已为 \(runtimeRecord.targetIdentifier) 写入 model。")
                 }
             }
 
             if let desiredBindings = activationPlan.desiredBindings {
-                let currentBindings = try loadManagedAgentBindings(
-                    forAgentIdentifier: runtimeRecord.targetIdentifier,
-                    using: config
-                )
-                let currentSet = Set(currentBindings.map(\.binding))
-                let desiredSet = Set(uniqueBindings(desiredBindings))
-                if currentSet != desiredSet {
-                    try applyManagedAgentBindings(
-                        forAgentIdentifier: runtimeRecord.targetIdentifier,
-                        currentBindings: currentBindings,
-                        desiredBindings: desiredBindings,
-                        using: config
-                    )
-                    if desiredBindings.isEmpty {
-                        messages.append("已清空 \(runtimeRecord.targetIdentifier) 的 channel bindings。")
-                    } else if let sourceDescription = activationPlan.sourceDescription, !sourceDescription.isEmpty {
-                        messages.append("已为 \(runtimeRecord.targetIdentifier) 自动沿用\(sourceDescription) 的 channel bindings。")
+                switch bindingsApplicationState {
+                case .pending:
+                    let resolvedCurrentBindings: [ManagedAgentBindingRecord]
+                    if let currentBindings {
+                        resolvedCurrentBindings = currentBindings
                     } else {
-                        messages.append("已为 \(runtimeRecord.targetIdentifier) 写入 channel bindings。")
+                        resolvedCurrentBindings = try loadManagedAgentBindings(
+                            forAgentIdentifier: runtimeRecord.targetIdentifier,
+                            using: config
+                        )
                     }
+                    let currentSet = Set(resolvedCurrentBindings.map(\.binding))
+                    let desiredSet = Set(uniqueBindings(desiredBindings))
+                    if currentSet != desiredSet {
+                        try applyManagedAgentBindings(
+                            forAgentIdentifier: runtimeRecord.targetIdentifier,
+                            currentBindings: resolvedCurrentBindings,
+                            desiredBindings: desiredBindings,
+                            using: config
+                        )
+                        messages.append(
+                            localRuntimeBindingsUpdateMessage(
+                                forAgentIdentifier: runtimeRecord.targetIdentifier,
+                                desiredBindings: desiredBindings,
+                                sourceDescription: activationPlan.sourceDescription
+                            )
+                        )
+                    }
+                case .applied(let message):
+                    if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        messages.append(message)
+                    }
+                case .failed(let message):
+                    let combinedMessage = (messages + [message])
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+                    return (false, combinedMessage.isEmpty ? message : combinedMessage)
                 }
             }
 
@@ -7709,6 +7970,7 @@ class OpenClawManager: ObservableObject {
 
             return OpenClawConfig(
                 deploymentKind: .remoteServer,
+                runtimeOwnership: baseConfig.runtimeOwnership,
                 host: resolvedHost,
                 port: resolvedPort,
                 useSSL: useSSLFallback,
@@ -7757,6 +8019,7 @@ class OpenClawManager: ObservableObject {
 
         return OpenClawConfig(
             deploymentKind: .remoteServer,
+            runtimeOwnership: baseConfig.runtimeOwnership,
             host: resolvedHost,
             port: port,
             useSSL: useSSLFallback,
@@ -7785,6 +8048,7 @@ class OpenClawManager: ObservableObject {
         else {
             return OpenClawConfig(
                 deploymentKind: .remoteServer,
+                runtimeOwnership: baseConfig.runtimeOwnership,
                 host: hostFallback,
                 port: baseConfig.port,
                 useSSL: baseConfig.useSSL,
@@ -9135,11 +9399,73 @@ class OpenClawManager: ObservableObject {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
-    private func resolveOpenClawPath(for config: OpenClawConfig) -> String {
-        if FileManager.default.fileExists(atPath: config.localBinaryPath) {
-            return config.localBinaryPath
+    private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
+        var seen = Set<String>()
+        return candidates.compactMap { candidate in
+            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
         }
-        return Self.possiblePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? config.localBinaryPath
+    }
+
+    private static func defaultManagedLocalRuntimeRootURL() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+            .appendingPathComponent("openclaw", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+    }
+
+    static func localBinaryPathCandidates(
+        for config: OpenClawConfig,
+        bundleResourceURL: URL? = Bundle.main.resourceURL,
+        managedRuntimeRootURL: URL? = nil,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String] {
+        let configured = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard config.deploymentKind == .local else {
+            return configured.isEmpty ? [] : [configured]
+        }
+
+        if config.requiresExplicitLocalBinaryPath {
+            return configured.isEmpty ? [] : [configured]
+        }
+
+        let managedRoot = managedRuntimeRootURL ?? defaultManagedLocalRuntimeRootURL()
+        let bundleCandidates = [bundleResourceURL].compactMap { $0 }.flatMap { resourceURL in
+            [
+                resourceURL.appendingPathComponent("OpenClaw/bin/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("openclaw/bin/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("OpenClaw/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("openclaw/openclaw", isDirectory: false).path
+            ]
+        }
+        let managedCandidates = [managedRoot].compactMap { $0 }.flatMap { rootURL in
+            [
+                rootURL.appendingPathComponent("bin/openclaw", isDirectory: false).path,
+                rootURL.appendingPathComponent("openclaw", isDirectory: false).path
+            ]
+        }
+        let systemCandidates = [
+            homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
+            "/usr/local/bin/openclaw",
+            "/opt/homebrew/bin/openclaw",
+            "/usr/bin/openclaw"
+        ]
+
+        return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates + systemCandidates)
+    }
+
+    func resolvedLocalBinaryPath(for config: OpenClawConfig) -> String {
+        let candidates = Self.localBinaryPathCandidates(for: config)
+        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
+            ?? candidates.first
+            ?? config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func resolveOpenClawPath(for config: OpenClawConfig) -> String {
+        resolvedLocalBinaryPath(for: config)
     }
 
     private static func parseAgentNames(from output: String) -> [String] {

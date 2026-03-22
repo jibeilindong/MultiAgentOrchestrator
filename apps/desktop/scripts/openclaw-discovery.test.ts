@@ -8,6 +8,7 @@ import {
 
 const baseConfig: OpenClawConfig = {
   deploymentKind: "local",
+  runtimeOwnership: "appManaged",
   host: "127.0.0.1",
   port: 18789,
   useSSL: false,

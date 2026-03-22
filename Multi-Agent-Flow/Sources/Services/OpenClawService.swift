@@ -419,6 +419,8 @@ struct ExecutionLogEntry: Identifiable, Codable {
     let level: LogLevel
     let message: String
     let nodeID: UUID?
+    let sessionID: String?
+    let agentID: UUID?
     
     enum LogLevel: String, Codable {
         case info = "INFO"
@@ -427,12 +429,21 @@ struct ExecutionLogEntry: Identifiable, Codable {
         case success = "SUCCESS"
     }
     
-    init(level: LogLevel, message: String, nodeID: UUID? = nil) {
+    init(
+        level: LogLevel,
+        message: String,
+        nodeID: UUID? = nil,
+        sessionID: String? = nil,
+        agentID: UUID? = nil
+    ) {
         self.id = UUID()
         self.timestamp = Date()
         self.level = level
         self.message = message
         self.nodeID = nodeID
+        let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sessionID = (normalizedSessionID?.isEmpty == false) ? normalizedSessionID : nil
+        self.agentID = agentID
     }
 
     var routingBadge: String? {
@@ -697,8 +708,20 @@ class OpenClawService: ObservableObject {
     
     // MARK: - 日志方法
     
-    func addLog(_ level: ExecutionLogEntry.LogLevel, _ message: String, nodeID: UUID? = nil) {
-        let entry = ExecutionLogEntry(level: level, message: message, nodeID: nodeID)
+    func addLog(
+        _ level: ExecutionLogEntry.LogLevel,
+        _ message: String,
+        nodeID: UUID? = nil,
+        sessionID: String? = nil,
+        agentID: UUID? = nil
+    ) {
+        let entry = ExecutionLogEntry(
+            level: level,
+            message: message,
+            nodeID: nodeID,
+            sessionID: sessionID,
+            agentID: agentID
+        )
         DispatchQueue.main.async {
             self.executionLogs.append(entry)
             // 保留最近1000条日志
@@ -1109,7 +1132,9 @@ class OpenClawService: ObservableObject {
                 availableTargets: downstreamTargets,
                 node: node,
                 outputType: result.outputType,
-                fallbackPolicy: workflow.fallbackRoutingPolicy
+                fallbackPolicy: workflow.fallbackRoutingPolicy,
+                sessionID: result.sessionID,
+                agentID: agent.id
             )
             completion(
                 WorkbenchEntryExecution(
@@ -1289,7 +1314,24 @@ class OpenClawService: ObservableObject {
             remainingNodes.append(node)
             totalSteps += 1
             executionState?.totalSteps = totalSteps
-            addLog(.info, "Queued downstream node \(nodeLabel): \(reason)", nodeID: node.id)
+            let queuedSessionID: String?
+            if let agentID = node.agentID {
+                queuedSessionID = workflowNodeSessionID(
+                    projectRuntimeSessionID: projectRuntimeSessionID,
+                    workflowID: workflow.id,
+                    nodeID: node.id,
+                    agentID: agentID
+                )
+            } else {
+                queuedSessionID = nil
+            }
+            addLog(
+                .info,
+                "Queued downstream node \(nodeLabel): \(reason)",
+                nodeID: node.id,
+                sessionID: queuedSessionID,
+                agentID: node.agentID
+            )
         }
 
         func executeNext() {
@@ -1314,8 +1356,6 @@ class OpenClawService: ObservableObject {
             executionState?.totalSteps = totalSteps
             saveExecutionState()
 
-            addLog(.info, "Executing node \(currentStep)/\(totalSteps)", nodeID: node.id)
-            
             guard let agentID = node.agentID,
                   let agent = agentByID[agentID] else {
                 let result = ExecutionResult(
@@ -1336,6 +1376,13 @@ class OpenClawService: ObservableObject {
                 projectRuntimeSessionID: projectRuntimeSessionID,
                 workflowID: workflow.id,
                 nodeID: node.id,
+                agentID: agent.id
+            )
+            addLog(
+                .info,
+                "Executing node \(currentStep)/\(totalSteps)",
+                nodeID: node.id,
+                sessionID: nodeSessionID,
                 agentID: agent.id
             )
             let guardrails = self.runtimeDispatchGuardrails(
@@ -1379,14 +1426,22 @@ class OpenClawService: ObservableObject {
                 // 更新执行状态
                 if result.status == .completed {
                     self.executionState?.completedNodes.append(node.id)
-                    self.addLog(.success, "Node completed: \(agent.name)", nodeID: node.id)
+                    self.addLog(
+                        .success,
+                        "Node completed: \(agent.name)",
+                        nodeID: node.id,
+                        sessionID: result.sessionID ?? nodeSessionID,
+                        agentID: agent.id
+                    )
 
                     let selectedTargets = self.resolveRoutingTargets(
                         from: routingDecision,
                         availableTargets: guardrails.directTargets,
                         node: node,
                         outputType: result.outputType,
-                        fallbackPolicy: workflow.fallbackRoutingPolicy
+                        fallbackPolicy: workflow.fallbackRoutingPolicy,
+                        sessionID: result.sessionID ?? nodeSessionID,
+                        agentID: agent.id
                     )
                     for target in selectedTargets {
                         enqueue(target.node, because: routingDecision?.reason ?? "routed by \(agent.name)")
@@ -1394,7 +1449,13 @@ class OpenClawService: ObservableObject {
                 } else {
                     self.executionState?.failedNodes.append(node.id)
                     let failureSummary = result.summaryText.compactSingleLinePreview(limit: 160)
-                    self.addLog(.error, "Node failed: \(agent.name) - \(failureSummary)", nodeID: node.id)
+                    self.addLog(
+                        .error,
+                        "Node failed: \(agent.name) - \(failureSummary)",
+                        nodeID: node.id,
+                        sessionID: result.sessionID ?? nodeSessionID,
+                        agentID: agent.id
+                    )
                 }
 
                 self.saveExecutionState()
@@ -1579,7 +1640,9 @@ class OpenClawService: ObservableObject {
                 self.addLog(
                     .warning,
                     "Node timed out: \(agent.name). Retrying attempt \(nextAttempt)/\(max(retryPolicy.maxRetries, 1)).",
-                    nodeID: node.id
+                    nodeID: node.id,
+                    sessionID: sessionID,
+                    agentID: agent.id
                 )
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                     guard let self else { return }
@@ -1614,7 +1677,9 @@ class OpenClawService: ObservableObject {
                 approvalTargets: effectiveGuardrails.approvalRequiredTargets,
                 node: node,
                 outputType: parsedOutput.type,
-                fallbackPolicy: effectiveGuardrails.fallbackRoutingPolicy
+                fallbackPolicy: effectiveGuardrails.fallbackRoutingPolicy,
+                sessionID: parsedOutput.sessionID ?? normalizedSessionID,
+                agentID: agent.id
             )
             let status: ExecutionStatus = success ? .completed : .failed
             let completedAt = Date()
@@ -2210,7 +2275,9 @@ class OpenClawService: ObservableObject {
         approvalTargets: [RoutingTargetDescriptor],
         node: WorkflowNode,
         outputType: ExecutionOutputType,
-        fallbackPolicy: WorkflowFallbackRoutingPolicy
+        fallbackPolicy: WorkflowFallbackRoutingPolicy,
+        sessionID: String? = nil,
+        agentID: UUID? = nil
     ) -> RoutingDecisionRepair {
         let validation = validateRoutingDecision(
             decision,
@@ -2239,7 +2306,9 @@ class OpenClawService: ObservableObject {
             addLog(
                 .info,
                 "Protocol repair selected the only safe downstream target \(fallbackTarget.agent.name) after the agent omitted a routing directive.",
-                nodeID: node.id
+                nodeID: node.id,
+                sessionID: sessionID,
+                agentID: agentID
             )
         } else if let decision,
                   decision.action == .selected,
@@ -2258,7 +2327,9 @@ class OpenClawService: ObservableObject {
             addLog(
                 .info,
                 "Protocol repair replaced invalid routing targets with the only safe downstream target \(fallbackTarget.agent.name).",
-                nodeID: node.id
+                nodeID: node.id,
+                sessionID: sessionID,
+                agentID: agentID
             )
         } else if decision == nil,
                   outputType != .runtimeLog,
@@ -2270,7 +2341,9 @@ class OpenClawService: ObservableObject {
             addLog(
                 .info,
                 "Protocol repair kept the current node result and blocked downstream continuation because only approval-gated targets were available.",
-                nodeID: node.id
+                nodeID: node.id,
+                sessionID: sessionID,
+                agentID: agentID
             )
         }
 
@@ -2377,7 +2450,9 @@ class OpenClawService: ObservableObject {
         availableTargets: [RoutingTargetDescriptor],
         node: WorkflowNode,
         outputType: ExecutionOutputType,
-        fallbackPolicy: WorkflowFallbackRoutingPolicy
+        fallbackPolicy: WorkflowFallbackRoutingPolicy,
+        sessionID: String? = nil,
+        agentID: UUID? = nil
     ) -> [RoutingTargetDescriptor] {
         guard !availableTargets.isEmpty else { return [] }
 
@@ -2385,19 +2460,19 @@ class OpenClawService: ObservableObject {
             if outputType != .runtimeLog {
                 switch fallbackPolicy {
                 case .stop:
-                    addLog(.info, "No routing decision emitted; stopping at current node by default.", nodeID: node.id)
+                    addLog(.info, "No routing decision emitted; stopping at current node by default.", nodeID: node.id, sessionID: sessionID, agentID: agentID)
                     return []
                 case .firstAvailable:
                     if availableTargets.count == 1 {
                         let target = availableTargets[0]
-                        addLog(.info, "No routing decision emitted; fallback policy routed to single downstream agent \(target.agent.name).", nodeID: node.id)
+                        addLog(.info, "No routing decision emitted; fallback policy routed to single downstream agent \(target.agent.name).", nodeID: node.id, sessionID: sessionID, agentID: agentID)
                         return [target]
                     }
-                    addLog(.info, "No routing decision emitted; fallback policy requires exactly one downstream agent, so execution stopped.", nodeID: node.id)
+                    addLog(.info, "No routing decision emitted; fallback policy requires exactly one downstream agent, so execution stopped.", nodeID: node.id, sessionID: sessionID, agentID: agentID)
                     return []
                 case .allAvailable:
                     let names = availableTargets.map(\.agent.name).joined(separator: ", ")
-                    addLog(.info, "No routing decision emitted; fallback policy routed to all downstream agents: \(names)", nodeID: node.id)
+                    addLog(.info, "No routing decision emitted; fallback policy routed to all downstream agents: \(names)", nodeID: node.id, sessionID: sessionID, agentID: agentID)
                     return availableTargets
                 }
             }
@@ -2406,14 +2481,14 @@ class OpenClawService: ObservableObject {
 
         switch decision.action {
         case .stop:
-            addLog(.info, "Routing decision: stop.", nodeID: node.id)
+            addLog(.info, "Routing decision: stop.", nodeID: node.id, sessionID: sessionID, agentID: agentID)
             return []
         case .all:
-            addLog(.info, "Routing decision: fan out to all downstream agents.", nodeID: node.id)
+            addLog(.info, "Routing decision: fan out to all downstream agents.", nodeID: node.id, sessionID: sessionID, agentID: agentID)
             return availableTargets
         case .selected:
             if decision.targets.isEmpty {
-                addLog(.warning, "Routing decision requested selected targets, but no targets were provided.", nodeID: node.id)
+                addLog(.warning, "Routing decision requested selected targets, but no targets were provided.", nodeID: node.id, sessionID: sessionID, agentID: agentID)
                 return []
             }
 
@@ -2427,14 +2502,14 @@ class OpenClawService: ObservableObject {
                 }
             }
             if !unresolved.isEmpty {
-                addLog(.warning, "Ignored unknown downstream targets: \(unresolved.joined(separator: ", "))", nodeID: node.id)
+                addLog(.warning, "Ignored unknown downstream targets: \(unresolved.joined(separator: ", "))", nodeID: node.id, sessionID: sessionID, agentID: agentID)
             }
 
             if resolved.isEmpty {
-                addLog(.warning, "Routing decision did not match any reachable downstream agent.", nodeID: node.id)
+                addLog(.warning, "Routing decision did not match any reachable downstream agent.", nodeID: node.id, sessionID: sessionID, agentID: agentID)
             } else {
                 let names = resolved.map { $0.agent.name }.joined(separator: ", ")
-                addLog(.info, "Routing decision: \(names)", nodeID: node.id)
+                addLog(.info, "Routing decision: \(names)", nodeID: node.id, sessionID: sessionID, agentID: agentID)
             }
             return resolved
         }
@@ -2620,7 +2695,9 @@ class OpenClawService: ObservableObject {
                     let flagText = enabledFlags.isEmpty ? "(none)" : enabledFlags.joined(separator: " ")
                     self.addLog(
                         .info,
-                        "OpenClaw CLI 输出能力: quiet=\(capabilities.supportsQuiet), log-level=\(capabilities.supportsLogLevel), json-only=\(capabilities.supportsJSONOnly); 当前启用参数: \(flagText)."
+                        "OpenClaw CLI 输出能力: quiet=\(capabilities.supportsQuiet), log-level=\(capabilities.supportsLogLevel), json-only=\(capabilities.supportsJSONOnly); 当前启用参数: \(flagText).",
+                        sessionID: sessionID,
+                        agentID: runtimeAgent?.id
                     )
                 }
 
@@ -2634,12 +2711,17 @@ class OpenClawService: ObservableObject {
                 if shouldUseLocal {
                     let authFallback = manager.ensureLocalDefaultAgentAuthFallback(using: connectionConfig)
                     if !authFallback.success {
-                        self.addLog(.warning, authFallback.message)
+                        self.addLog(.warning, authFallback.message, sessionID: effectiveSessionID, agentID: runtimeAgent?.id)
                     } else if !authFallback.message.isEmpty {
-                        self.addLog(.info, authFallback.message)
+                        self.addLog(.info, authFallback.message, sessionID: effectiveSessionID, agentID: runtimeAgent?.id)
                     }
                     args.append("--local")
-                    self.addLog(.info, "CLI fallback is using local mode for agent \(resolvedAgent.identifier).")
+                    self.addLog(
+                        .info,
+                        "CLI fallback is using local mode for agent \(resolvedAgent.identifier).",
+                        sessionID: effectiveSessionID,
+                        agentID: runtimeAgent?.id
+                    )
                 }
 
                 args.append(contentsOf: ["--timeout", String(max(1, serviceConfig.timeout))])
@@ -2681,12 +2763,17 @@ class OpenClawService: ObservableObject {
                         runtimeMessage = nil
                     }
                     if let runtimeMessage {
-                        self.addLog(.info, runtimeMessage)
+                        self.addLog(.info, runtimeMessage, sessionID: effectiveSessionID, agentID: runtimeAgent?.id)
                     }
 
                     if !stderrTrimmed.isEmpty {
                         let level: ExecutionLogEntry.LogLevel = result.terminationStatus == 0 ? .warning : .error
-                        self.addLog(level, "OpenClaw stderr (\(resolvedAgent.identifier)): \(self.truncatedLog(stderrTrimmed))")
+                        self.addLog(
+                            level,
+                            "OpenClaw stderr (\(resolvedAgent.identifier)): \(self.truncatedLog(stderrTrimmed))",
+                            sessionID: effectiveSessionID,
+                            agentID: runtimeAgent?.id
+                        )
                     }
 
                     DispatchQueue.main.async {
@@ -2760,7 +2847,9 @@ class OpenClawService: ObservableObject {
 
                 self.addLog(
                     .info,
-                    "Gateway agent path enabled for \(gatewayModeDescription): agent=\(resolvedAgent.identifier), sessionKey=\(gatewaySessionKey)"
+                    "Gateway agent path enabled for \(gatewayModeDescription): agent=\(resolvedAgent.identifier), sessionKey=\(gatewaySessionKey)",
+                    sessionID: sessionID ?? gatewaySessionKey,
+                    agentID: runtimeAgent?.id
                 )
 
                 _Concurrency.Task {
@@ -2789,7 +2878,9 @@ class OpenClawService: ObservableObject {
                             await MainActor.run {
                                 self.addLog(
                                     .info,
-                                    "Gateway chat session path enabled for session \(gatewaySessionKey)."
+                                    "Gateway chat session path enabled for session \(gatewaySessionKey).",
+                                    sessionID: gatewaySessionKey,
+                                    agentID: runtimeAgent?.id
                                 )
                             }
                             do {
@@ -2881,7 +2972,9 @@ class OpenClawService: ObservableObject {
                             await MainActor.run {
                                 self.addLog(
                                     .warning,
-                                    "Gateway transport failed in local mode, falling back to CLI: \(error.localizedDescription)"
+                                    "Gateway transport failed in local mode, falling back to CLI: \(error.localizedDescription)",
+                                    sessionID: sessionID,
+                                    agentID: runtimeAgent?.id
                                 )
                             }
                             DispatchQueue.global(qos: .userInitiated).async {
@@ -2982,7 +3075,7 @@ class OpenClawService: ObservableObject {
     private func capabilityCacheKey(for config: OpenClawConfig) -> String {
         switch config.deploymentKind {
         case .local:
-            return "local|\(config.localBinaryPath)"
+            return "local|\(config.runtimeOwnership.rawValue)|\(config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines))"
         case .container:
             return "container|\(config.container.engine)|\(config.container.containerName)"
         case .remoteServer:

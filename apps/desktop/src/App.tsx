@@ -55,6 +55,7 @@ import type {
   Message,
   OpenClawCLILogLevel,
   OpenClawDeploymentKind,
+  OpenClawRuntimeOwnership,
   TaskPriority,
   TaskStatus,
   Workflow,
@@ -67,6 +68,8 @@ import type {
 import {
   OPENCLAW_CLI_LOG_LEVELS,
   OPENCLAW_DEPLOYMENT_KINDS,
+  OPENCLAW_RUNTIME_OWNERSHIPS,
+  openClawRequiresExplicitLocalBinaryPath,
   TASK_PRIORITIES,
   TASK_STATUSES
 } from "@multi-agent-flow/domain";
@@ -661,8 +664,8 @@ function computeOpenClawReadiness(project: MAProject) {
 
   switch (config.deploymentKind) {
     case "local":
-      checks.push(config.localBinaryPath.trim().length > 0);
-      if (config.localBinaryPath.trim().length === 0) {
+      checks.push(!openClawRequiresExplicitLocalBinaryPath(config) || config.localBinaryPath.trim().length > 0);
+      if (openClawRequiresExplicitLocalBinaryPath(config) && config.localBinaryPath.trim().length === 0) {
         issues.push("Choose a local OpenClaw binary path.");
       }
       break;
@@ -4489,6 +4492,26 @@ export function App() {
                       ))}
                     </select>
                   </label>
+                  {project.openClaw.config.deploymentKind === "local" ? (
+                    <label className="field compactField">
+                      <span>Local runtime ownership</span>
+                      <select
+                        value={project.openClaw.config.runtimeOwnership}
+                        onChange={(event) =>
+                          handleOpenClawConfigChange(
+                            { runtimeOwnership: event.target.value as OpenClawRuntimeOwnership },
+                            "Updated OpenClaw local runtime ownership."
+                          )
+                        }
+                      >
+                        {OPENCLAW_RUNTIME_OWNERSHIPS.map((runtimeOwnership) => (
+                          <option key={runtimeOwnership} value={runtimeOwnership}>
+                            {runtimeOwnership}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <label className="field compactField">
                     <span>Host</span>
                     <input
@@ -4566,19 +4589,21 @@ export function App() {
                       placeholder="Optional for remote deployment"
                     />
                   </label>
-                  <label className="field">
-                    <span>Local binary path</span>
-                    <input
-                      value={project.openClaw.config.localBinaryPath}
-                      onChange={(event) =>
-                        handleOpenClawConfigChange(
-                          { localBinaryPath: event.target.value },
-                          "Updated OpenClaw binary path."
-                        )
-                      }
-                      placeholder="/usr/local/bin/openclaw"
-                    />
-                  </label>
+                  {openClawRequiresExplicitLocalBinaryPath(project.openClaw.config) ? (
+                    <label className="field">
+                      <span>Local binary path</span>
+                      <input
+                        value={project.openClaw.config.localBinaryPath}
+                        onChange={(event) =>
+                          handleOpenClawConfigChange(
+                            { localBinaryPath: event.target.value },
+                            "Updated OpenClaw binary path."
+                          )
+                        }
+                        placeholder="/usr/local/bin/openclaw"
+                      />
+                    </label>
+                  ) : null}
                   <label className="checkboxField">
                     <input
                       type="checkbox"

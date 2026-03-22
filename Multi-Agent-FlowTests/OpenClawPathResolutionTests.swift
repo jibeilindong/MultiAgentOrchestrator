@@ -2,6 +2,46 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class OpenClawPathResolutionTests: XCTestCase {
+    func testLocalBinaryPathCandidatesPreferManagedRuntimeRootsWhenAppManaged() {
+        var config = OpenClawConfig.default
+        config.runtimeOwnership = OpenClawRuntimeOwnership.appManaged
+        config.localBinaryPath = "/legacy/external/openclaw"
+
+        let bundleResourceURL = URL(fileURLWithPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources", isDirectory: true)
+        let managedRuntimeRootURL = URL(
+            fileURLWithPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime",
+            isDirectory: true
+        )
+        let homeDirectory = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+
+        let candidates = OpenClawManager.localBinaryPathCandidates(
+            for: config,
+            bundleResourceURL: bundleResourceURL,
+            managedRuntimeRootURL: managedRuntimeRootURL,
+            homeDirectory: homeDirectory
+        )
+
+        XCTAssertEqual(Array(candidates.prefix(6)), [
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw/bin/openclaw",
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw/openclaw",
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/openclaw",
+            "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/bin/openclaw",
+            "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/openclaw"
+        ])
+        XCTAssertFalse(candidates.contains("/legacy/external/openclaw"))
+    }
+
+    func testLocalBinaryPathCandidatesStayExplicitWhenRuntimeIsExternallyManaged() {
+        var config = OpenClawConfig.default
+        config.runtimeOwnership = OpenClawRuntimeOwnership.externalLocal
+        config.localBinaryPath = "/custom/openclaw/bin/openclaw"
+
+        let candidates = OpenClawManager.localBinaryPathCandidates(for: config)
+
+        XCTAssertEqual(candidates, ["/custom/openclaw/bin/openclaw"])
+    }
+
     func testResolvedWorkspacePathPrefersProjectManagedWorkspaceAdjacentToPrivateRoot() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenClawPathResolutionTests-\(UUID().uuidString)", isDirectory: true)

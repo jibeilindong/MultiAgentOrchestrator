@@ -4,6 +4,7 @@ import type {
   OpenClawAgentProtocolMemory,
   OpenClawCLILogLevel,
   OpenClawDeploymentKind,
+  OpenClawRuntimeOwnership,
   Task,
   TaskPriority,
   TaskStatus,
@@ -377,6 +378,7 @@ export function updateOpenClawConfig(
   project: MAProject,
   patch: {
     deploymentKind?: OpenClawDeploymentKind;
+    runtimeOwnership?: OpenClawRuntimeOwnership;
     host?: string;
     port?: number;
     useSSL?: boolean;
@@ -397,6 +399,7 @@ export function updateOpenClawConfig(
   const nextConfig = {
     ...project.openClaw.config,
     deploymentKind: patch.deploymentKind ?? project.openClaw.config.deploymentKind,
+    runtimeOwnership: patch.runtimeOwnership ?? project.openClaw.config.runtimeOwnership,
     host: patch.host === undefined ? project.openClaw.config.host : patch.host.trim(),
     port:
       patch.port === undefined || Number.isNaN(patch.port)

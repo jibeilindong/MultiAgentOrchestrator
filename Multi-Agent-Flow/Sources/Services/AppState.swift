@@ -4892,7 +4892,12 @@ class AppState: ObservableObject {
             self.messageManager.appendMessage(userMessage)
 
             self.taskManager.moveTask(task.id, to: .inProgress)
-            self.openClawService.addLog(.info, "Workbench published task '\(task.title)' to workflow \(workflow.name)")
+            self.openClawService.addLog(
+                .info,
+                "Workbench published task '\(task.title)' to workflow \(workflow.name)",
+                sessionID: workbenchSessionID,
+                agentID: leadAgent.id
+            )
 
             if var mutableProject = self.currentProject {
                 mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
@@ -4998,7 +5003,12 @@ class AppState: ObservableObject {
                     key: key,
                     value: latency
                 )
-                self.openClawService.addLog(.info, "Workbench latency: \(label)=\(latency)ms")
+                self.openClawService.addLog(
+                    .info,
+                    "Workbench latency: \(label)=\(latency)ms",
+                    sessionID: workbenchSessionID,
+                    agentID: leadAgent.id
+                )
             }
 
             func completeWorkbenchExecution(results: [ExecutionResult]) {
@@ -5086,8 +5096,18 @@ class AppState: ObservableObject {
             self.openClawService.currentStep = 0
             self.openClawService.totalSteps = max(entryAgentNodes.count, 1)
             self.openClawService.lastError = nil
-            self.openClawService.addLog(.info, "Workbench is generating the first reply from entry agent \(leadAgent.name).")
-            self.openClawService.addLog(.info, "Workbench entry thinking level selected: \(workbenchThinkingLevel.rawValue).")
+            self.openClawService.addLog(
+                .info,
+                "Workbench is generating the first reply from entry agent \(leadAgent.name).",
+                sessionID: workbenchSessionID,
+                agentID: leadAgent.id
+            )
+            self.openClawService.addLog(
+                .info,
+                "Workbench entry thinking level selected: \(workbenchThinkingLevel.rawValue).",
+                sessionID: workbenchSessionID,
+                agentID: leadAgent.id
+            )
 
             self.openClawService.executeWorkbenchEntryNode(
                 node: leadNode,
@@ -5188,7 +5208,12 @@ class AppState: ObservableObject {
                 let backgroundNodes = orderedUniqueNodes(otherEntryNodes + entryExecution.downstreamNodes)
                 if backgroundNodes.isEmpty {
                     self.openClawService.executionResults = [entryResult]
-                    self.openClawService.addLog(.info, "Workbench reply completed with no additional workflow nodes queued.")
+                    self.openClawService.addLog(
+                        .info,
+                        "Workbench reply completed with no additional workflow nodes queued.",
+                        sessionID: workbenchSessionID,
+                        agentID: leadAgent.id
+                    )
                     completeWorkbenchExecution(results: [entryResult])
                     return
                 }
@@ -5196,7 +5221,9 @@ class AppState: ObservableObject {
                 let backgroundEntryNodeIDs = Set(otherEntryNodes.map(\.id))
                 self.openClawService.addLog(
                     .info,
-                    "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s)."
+                    "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s).",
+                    sessionID: workbenchSessionID,
+                    agentID: leadAgent.id
                 )
 
                 self.openClawService.executeWorkflow(
@@ -5286,7 +5313,8 @@ class AppState: ObservableObject {
                 await MainActor.run {
                     appState.openClawService.addLog(
                         .warning,
-                        "Workbench history refresh failed for session \(sessionContext.gatewaySessionKey): \(error.localizedDescription)"
+                        "Workbench history refresh failed for session \(sessionContext.gatewaySessionKey): \(error.localizedDescription)",
+                        sessionID: sessionContext.sessionID
                     )
                 }
             }

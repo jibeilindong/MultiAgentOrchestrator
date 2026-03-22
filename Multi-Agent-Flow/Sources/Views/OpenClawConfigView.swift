@@ -43,6 +43,17 @@ struct OpenClawConfigView: View {
                         .pickerStyle(.segmented)
 
                         if config.deploymentKind == .local {
+                            labeledField("Local runtime ownership") {
+                                Picker("Local runtime ownership", selection: $config.runtimeOwnership) {
+                                    ForEach(OpenClawRuntimeOwnership.allCases) { ownership in
+                                        Text(ownership.title).tag(ownership)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+                        }
+
+                        if config.requiresExplicitLocalBinaryPath {
                             labeledField(LocalizedString.text("openclaw_binary")) {
                                 TextField(LocalizedString.text("openclaw_binary"), text: $config.localBinaryPath)
                                     .textFieldStyle(.roundedBorder)
@@ -217,7 +228,8 @@ struct OpenClawConfigView: View {
     private var canTestConnection: Bool {
         switch config.deploymentKind {
         case .local:
-            return !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return !config.requiresExplicitLocalBinaryPath
+                || !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .remoteServer:
             return !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .container:
@@ -534,6 +546,7 @@ struct OpenClawConfigView: View {
     private func configFingerprint(_ config: OpenClawConfig) -> String {
         [
             config.deploymentKind.rawValue,
+            config.runtimeOwnership.rawValue,
             config.host,
             "\(config.port)",
             config.useSSL ? "ssl" : "plain",

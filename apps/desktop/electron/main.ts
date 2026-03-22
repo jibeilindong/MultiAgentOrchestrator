@@ -21,6 +21,7 @@ import {
   buildContainerOpenClawRootDiscoveryScript,
   buildOpenClawRootFallbackCandidates
 } from "./openclaw-discovery";
+import { resolveLocalOpenClawBinaryPath } from "./openclaw-local-runtime";
 import {
   buildOpenClawGovernanceAuditReport,
   assessOpenClawSandboxSecurityFromText,
@@ -66,21 +67,6 @@ const DESKTOP_GATEWAY_CLIENT_MODE = "backend";
 const DESKTOP_GATEWAY_ROLE = "operator";
 const DESKTOP_GATEWAY_SCOPES = ["operator.admin"] as const;
 const DESKTOP_GATEWAY_DEVICE_FAMILY = "desktop";
-const OPENCLAW_LOCAL_PATH_CANDIDATES =
-  process.platform === "win32"
-    ? [
-        path.join(os.homedir(), ".local", "bin", "openclaw.exe"),
-        path.join(os.homedir(), "AppData", "Local", "Programs", "OpenClaw", "openclaw.exe"),
-        "openclaw.exe"
-      ]
-    : [
-        path.join(os.homedir(), ".local", "bin", "openclaw"),
-        "/usr/local/bin/openclaw",
-        "/opt/homebrew/bin/openclaw",
-        "/usr/bin/openclaw",
-        "openclaw"
-      ];
-
 interface ProjectFileHandle {
   project: MAProject;
   filePath: string | null;
@@ -785,6 +771,12 @@ function normalizeOpenClawConfig(config: OpenClawConfig): OpenClawConfig {
     config.deploymentKind === "container" || config.deploymentKind === "remoteServer" || config.deploymentKind === "local"
       ? config.deploymentKind
       : "local";
+  const runtimeOwnership =
+    config.runtimeOwnership === "appManaged" || config.runtimeOwnership === "externalLocal"
+      ? config.runtimeOwnership
+      : deploymentKind === "local" && trimmedString(config.localBinaryPath)
+        ? "externalLocal"
+        : "appManaged";
   const cliLogLevel =
     config.cliLogLevel === "error" ||
     config.cliLogLevel === "warning" ||
@@ -795,6 +787,7 @@ function normalizeOpenClawConfig(config: OpenClawConfig): OpenClawConfig {
 
   return {
     deploymentKind,
+    runtimeOwnership,
     host: trimmedString(config.host) || "127.0.0.1",
     port: normalizedPositiveInteger(config.port, 18789),
     useSSL: Boolean(config.useSSL),
@@ -1131,12 +1124,13 @@ async function inspectOpenClawAgents(config: OpenClawConfig, fallbackAgentNames:
 }
 
 function resolveLocalBinaryPath(config: OpenClawConfig): string {
-  const configured = config.localBinaryPath.trim();
-  if (configured) {
-    return configured;
-  }
-
-  return OPENCLAW_LOCAL_PATH_CANDIDATES[0] ?? "openclaw";
+  return resolveLocalOpenClawBinaryPath(config, {
+    platform: process.platform,
+    homeDirectory: os.homedir(),
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    userDataPath: app.getPath("userData")
+  });
 }
 
 async function runCommand(command: string, args: string[], options?: { timeoutMs?: number }) {

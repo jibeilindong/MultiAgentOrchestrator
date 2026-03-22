@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 
 enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
+    case warRoom
     case threads
     case signals
     case liveRun
@@ -13,6 +14,8 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .warRoom:
+            return LocalizedString.text("ops_page_war_room")
         case .threads:
             return LocalizedString.text("ops_page_threads")
         case .signals:
@@ -30,6 +33,8 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
+        case .warRoom:
+            return LocalizedString.text("ops_page_war_room_subtitle")
         case .threads:
             return LocalizedString.text("ops_page_threads_subtitle")
         case .signals:
@@ -47,6 +52,8 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .warRoom:
+            return "shield.lefthalf.filled.badge.checkmark"
         case .threads:
             return "text.line.first.and.arrowtriangle.forward"
         case .signals:

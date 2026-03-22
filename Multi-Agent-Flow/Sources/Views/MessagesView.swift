@@ -283,7 +283,8 @@ struct WorkbenchConversationView: View {
         let config = appState.openClawManager.config
         switch config.deploymentKind {
         case .local:
-            return !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return !config.requiresExplicitLocalBinaryPath
+                || !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .remoteServer:
             return !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .container:
