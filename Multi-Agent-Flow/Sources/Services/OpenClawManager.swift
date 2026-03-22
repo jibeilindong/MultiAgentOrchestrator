@@ -455,6 +455,13 @@ class OpenClawManager: ObservableObject {
         var cleanedEntryNames: [String] = []
     }
 
+    private struct PreparedMirrorAgentStage {
+        let agentName: String
+        let temporaryRootURL: URL
+        let stagedAgentRootURL: URL
+        let relativeAgentRootPath: String
+    }
+
     private enum ManagedWorkspaceStageOutcome {
         case noManagedWorkspace
         case unchanged
@@ -6681,73 +6688,58 @@ class OpenClawManager: ObservableObject {
         defer { try? fileManager.removeItem(at: stagingMirrorURL) }
 
         var result = MirrorStageResult()
-        var stagedAgentRootRelativePaths = Set<String>()
+        let workflowAgents = workflowBoundProjectAgents(in: project, workflowID: workflowID)
+        let preparationLock = NSLock()
+        var preparedStages: [PreparedMirrorAgentStage] = []
+        var unresolvedAgentNames: [String] = []
 
-        for agent in workflowBoundProjectAgents(in: project, workflowID: workflowID) {
-            guard let soulURL = resolveProjectMirrorSoulURL(
-                for: agent,
+        DispatchQueue.concurrentPerform(iterations: workflowAgents.count) { index in
+            let agent = workflowAgents[index]
+            let preparedStage = prepareMirrorStageForAgent(
+                agent,
                 in: project,
-                mirrorURL: stagingMirrorURL,
+                workflowID: workflowID,
+                stagePolicy: stagePolicies[agent.id] ?? .projectContent,
                 backupURL: backupURL
-            ) else {
-                result.unresolvedAgentNames.append(agent.name)
-                continue
+            )
+
+            preparationLock.lock()
+            defer { preparationLock.unlock() }
+
+            if let stage = preparedStage.stage {
+                preparedStages.append(stage)
+            } else if let agentName = preparedStage.unresolvedAgentName {
+                unresolvedAgentNames.append(agentName)
             }
+        }
 
-            do {
-                var stagedFromManagedWorkspace = false
-                switch try stageManagedWorkspaceDocuments(
-                    for: agent,
-                    in: project,
-                    workflowID: workflowID,
-                    mirrorSoulURL: soulURL
-                ) {
-                case .changed:
-                    stagedFromManagedWorkspace = true
-                case .unchanged:
-                    stagedFromManagedWorkspace = true
-                case .noManagedWorkspace:
-                    break
-                }
-
-                if let relativeAgentRootPath = relativePath(of: soulURL.deletingLastPathComponent(), from: stagingMirrorURL) {
-                    stagedAgentRootRelativePaths.insert(relativeAgentRootPath)
-                }
-
-                if stagedFromManagedWorkspace {
-                    continue
-                }
-            } catch {
-                result.unresolvedAgentNames.append(agent.name)
-                continue
+        preparedStages.sort {
+            $0.relativeAgentRootPath.localizedCaseInsensitiveCompare($1.relativeAgentRootPath) == .orderedAscending
+        }
+        result.unresolvedAgentNames = unresolvedAgentNames.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        defer {
+            for preparedStage in preparedStages {
+                try? fileManager.removeItem(at: preparedStage.temporaryRootURL)
             }
+        }
 
-            let contentToStage: String
-            switch stagePolicies[agent.id] ?? .projectContent {
-            case .projectContent:
-                contentToStage = agent.soulMD
-            case .backupContent:
-                guard let backupContent = backupSoulContent(
-                    for: agent,
-                    in: project,
-                    mirrorSoulURL: soulURL,
-                    mirrorURL: stagingMirrorURL,
-                    backupURL: backupURL
-                ) else {
-                    result.unresolvedAgentNames.append(agent.name)
-                    continue
-                }
-                contentToStage = backupContent
-            }
-
-            do {
-                _ = try writeTextIfNeeded(contentToStage, to: soulURL)
-                if let relativeAgentRootPath = relativePath(of: soulURL.deletingLastPathComponent(), from: stagingMirrorURL) {
-                    stagedAgentRootRelativePaths.insert(relativeAgentRootPath)
-                }
-            } catch {
-                result.unresolvedAgentNames.append(agent.name)
-            }
+        var stagedAgentRootRelativePaths = Set<String>()
+        for preparedStage in preparedStages {
+            let destinationAgentRootURL = stagingMirrorURL.appendingPathComponent(
+                preparedStage.relativeAgentRootPath,
+                isDirectory: true
+            )
+            try? fileManager.createDirectory(
+                at: destinationAgentRootURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            _ = try? replaceDirectoryContents(
+                of: destinationAgentRootURL,
+                withContentsOf: preparedStage.stagedAgentRootURL
+            )
+            stagedAgentRootRelativePaths.insert(preparedStage.relativeAgentRootPath)
         }
 
         let cleanedEntryNames = visibleDirectoryEntryNames(in: mirrorURL)
@@ -6772,6 +6764,90 @@ class OpenClawManager: ObservableObject {
         _ = try? replaceDirectoryContents(of: mirrorURL, withContentsOf: stagingMirrorURL)
 
         return result
+    }
+
+    private func prepareMirrorStageForAgent(
+        _ agent: Agent,
+        in project: MAProject,
+        workflowID: UUID? = nil,
+        stagePolicy: SoulMirrorStagePolicy,
+        backupURL: URL?
+    ) -> (stage: PreparedMirrorAgentStage?, unresolvedAgentName: String?) {
+        let fileManager = FileManager.default
+        let temporaryRootURL = fileManager.temporaryDirectory
+            .appendingPathComponent("openclaw-agent-stage-\(project.id.uuidString)-\(agent.id.uuidString)-\(UUID().uuidString)", isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: temporaryRootURL, withIntermediateDirectories: true)
+
+            guard let soulURL = resolveProjectMirrorSoulURL(
+                for: agent,
+                in: project,
+                mirrorURL: temporaryRootURL,
+                backupURL: backupURL
+            ) else {
+                try? fileManager.removeItem(at: temporaryRootURL)
+                return (nil, agent.name)
+            }
+
+            var stagedFromManagedWorkspace = false
+            switch try stageManagedWorkspaceDocuments(
+                for: agent,
+                in: project,
+                workflowID: workflowID,
+                mirrorSoulURL: soulURL
+            ) {
+            case .changed:
+                stagedFromManagedWorkspace = true
+            case .unchanged:
+                stagedFromManagedWorkspace = true
+            case .noManagedWorkspace:
+                break
+            }
+
+            if !stagedFromManagedWorkspace {
+                let contentToStage: String
+                switch stagePolicy {
+                case .projectContent:
+                    contentToStage = agent.soulMD
+                case .backupContent:
+                    guard let backupContent = backupSoulContent(
+                        for: agent,
+                        in: project,
+                        mirrorSoulURL: soulURL,
+                        mirrorURL: temporaryRootURL,
+                        backupURL: backupURL
+                    ) else {
+                        try? fileManager.removeItem(at: temporaryRootURL)
+                        return (nil, agent.name)
+                    }
+                    contentToStage = backupContent
+                }
+
+                _ = try writeTextIfNeeded(contentToStage, to: soulURL)
+            }
+
+            guard let relativeAgentRootPath = relativePath(
+                of: soulURL.deletingLastPathComponent(),
+                from: temporaryRootURL
+            ) else {
+                try? fileManager.removeItem(at: temporaryRootURL)
+                return (nil, agent.name)
+            }
+
+            return (
+                PreparedMirrorAgentStage(
+                    agentName: agent.name,
+                    temporaryRootURL: temporaryRootURL,
+                    stagedAgentRootURL: soulURL.deletingLastPathComponent(),
+                    relativeAgentRootPath: relativeAgentRootPath
+                ),
+                nil
+            )
+        } catch {
+            try? fileManager.removeItem(at: temporaryRootURL)
+            return (nil, agent.name)
+        }
     }
 
     private func stageManagedWorkspaceDocuments(
