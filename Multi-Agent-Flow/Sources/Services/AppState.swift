@@ -724,6 +724,46 @@ class AppState: ObservableObject {
         latestOpenClawRuntimeSyncReceipt?.primaryIssueMessage
     }
 
+    var openClawLatestRuntimeSyncBlockedReason: String? {
+        latestOpenClawRuntimeSyncReceipt?.blockedReasonMessage
+    }
+
+    var openClawLatestRuntimeSyncIssueLines: [String] {
+        guard let receipt = latestOpenClawRuntimeSyncReceipt else { return [] }
+        return receipt.issueStepsExcludingBlockedReason.compactMap { step in
+            let message = step.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = localizedRuntimeSyncStepTitle(step.step)
+            let status = localizedRuntimeSyncStepStatus(step.status)
+            if message.isEmpty {
+                return "\(title) · \(status)"
+            }
+            return "\(title) · \(status): \(message)"
+        }
+    }
+
+    var openClawLatestRuntimeSyncWarnings: [String] {
+        latestOpenClawRuntimeSyncReceipt?.normalizedWarnings ?? []
+    }
+
+    var hasOpenClawLatestRuntimeSyncDiagnostics: Bool {
+        openClawLatestRuntimeSyncBlockedReason != nil
+            || !openClawLatestRuntimeSyncIssueLines.isEmpty
+            || !openClawLatestRuntimeSyncWarnings.isEmpty
+    }
+
+    var openClawLatestRuntimeSyncCompactDiagnostic: String? {
+        if let blockedReason = openClawLatestRuntimeSyncBlockedReason {
+            return blockedReason
+        }
+        if let firstIssue = openClawLatestRuntimeSyncIssueLines.first {
+            return firstIssue
+        }
+        if let firstWarning = openClawLatestRuntimeSyncWarnings.first {
+            return firstWarning
+        }
+        return openClawLatestRuntimeSyncDetail
+    }
+
     var isCurrentProjectAttachedToOpenClaw: Bool {
         guard let projectID = currentProject?.id else { return false }
         return openClawManager.hasAttachedProjectSession && openClawManager.attachedProjectID == projectID
@@ -817,6 +857,30 @@ class AppState: ObservableObject {
     static func pendingOpenClawRuntimeSyncRevisionDelta(_ runtimeState: RuntimeState?) -> Int {
         guard let runtimeState else { return 0 }
         return max(0, runtimeState.appliedToMirrorConfigurationRevision - runtimeState.syncedToRuntimeConfigurationRevision)
+    }
+
+    private func localizedRuntimeSyncStepTitle(_ step: OpenClawRuntimeSyncStep) -> String {
+        switch step {
+        case .stageProjectMirror:
+            return LocalizedString.text("openclaw_runtime_sync_step_stage_project_mirror")
+        case .writeRuntimeSession:
+            return LocalizedString.text("openclaw_runtime_sync_step_write_runtime_session")
+        case .syncCommunicationAllowList:
+            return LocalizedString.text("openclaw_runtime_sync_step_sync_communication_allow_list")
+        }
+    }
+
+    private func localizedRuntimeSyncStepStatus(_ status: OpenClawRuntimeSyncStepStatus) -> String {
+        switch status {
+        case .succeeded:
+            return LocalizedString.text("openclaw_runtime_sync_step_status_succeeded")
+        case .partial:
+            return LocalizedString.text("openclaw_runtime_sync_step_status_partial")
+        case .failed:
+            return LocalizedString.text("openclaw_runtime_sync_step_status_failed")
+        case .skipped:
+            return LocalizedString.text("openclaw_runtime_sync_step_status_skipped")
+        }
     }
     
     init() {

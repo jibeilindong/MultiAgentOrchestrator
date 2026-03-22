@@ -44,7 +44,7 @@ struct CanvasContentView: View {
     @State private var rightMouseLassoStart: CGPoint?
     @State private var boundaryDragSnapshots: [UUID: BoundaryDragSnapshot] = [:]
     @State private var draggingBoundaryID: UUID?
-    @State private var legendFrame: CGRect = .null
+    @State private var interactiveOverlayFrames: [CGRect] = []
     @State private var transientNodePositions: [UUID: CGPoint] = [:]
     @State private var transientBoundaryRects: [UUID: CGRect] = [:]
     @State private var nodeFrameCache = WorkflowCanvasNodeFrameCache()
@@ -88,9 +88,8 @@ struct CanvasContentView: View {
         return CGRect(x: 8, y: 8, width: width, height: height)
     }
 
-    private var legendInteractionFrame: CGRect {
+    private var legendFallbackInteractionFrame: CGRect {
         let candidates = [
-            legendFrame.isNull ? CGRect.null : legendFrame.insetBy(dx: -16, dy: -16),
             fallbackLegendFrame,
             visibleLegendGroupCount > 0
                 ? CGRect(
@@ -122,20 +121,19 @@ struct CanvasContentView: View {
         return fallbackFrame.insetBy(dx: -16, dy: -16)
     }
 
-    private func overlayInteractionFrame(in geometry: GeometryProxy) -> CGRect {
+    private func overlayInteractionFrames(in geometry: GeometryProxy) -> [CGRect] {
         let candidates = [
-            legendInteractionFrame,
+            legendFallbackInteractionFrame,
             zoomControlsInteractionFrame(in: geometry)
         ].filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
 
-        return candidates.reduce(CGRect.null) { partial, rect in
-            partial.isNull ? rect : partial.union(rect)
-        }
+        return (interactiveOverlayFrames + candidates)
+            .filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
     }
 
     var body: some View {
         GeometryReader { geometry in
-            let overlayInteractionFrame = overlayInteractionFrame(in: geometry)
+            let overlayInteractionFrames = overlayInteractionFrames(in: geometry)
             let canvasConnectionCounts = currentConnectionCounts
             let canvasNodeFramesByID = nodeFrameCache.resolve(
                 workflow: currentWorkflow,
@@ -317,17 +315,9 @@ struct CanvasContentView: View {
                 }
                 .padding(.top, 14)
                 .padding(.leading, 14)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(
-                                key: CanvasOverlayFramePreferenceKey.self,
-                                value: proxy.frame(in: .named(CanvasInteractionCoordinateSpace.name))
-                            )
-                    }
-                )
+                .canvasInteractiveRegion(in: CanvasInteractionCoordinateSpace.name)
             }
-            .onPreferenceChange(CanvasOverlayFramePreferenceKey.self) { legendFrame = $0 }
+            .onPreferenceChange(CanvasInteractiveOverlayFramePreferenceKey.self) { interactiveOverlayFrames = $0 }
             .overlay(alignment: .topTrailing) {
                 CanvasZoomControls(
                     scale: scale,
@@ -337,12 +327,13 @@ struct CanvasContentView: View {
                 )
                 .padding(.top, 16)
                 .padding(.trailing, 16)
+                .canvasInteractiveRegion(in: CanvasInteractionCoordinateSpace.name)
             }
             .background(
                 BlankCanvasDragMonitor(
                     isEnabled: { !(isLassoMode || isTransientLassoMode) },
                     shouldIgnoreLocation: { location in
-                        overlayInteractionFrame.contains(location)
+                        overlayInteractionFrames.contains(where: { $0.contains(location) })
                     },
                     onEdgeHit: { location in
                         guard let edge = edge(at: location, in: visibleEdgeLayouts) else { return false }
@@ -391,7 +382,7 @@ struct CanvasContentView: View {
             .background(
                 RightMouseDragMonitor(
                     shouldIgnoreLocation: { location in
-                        overlayInteractionFrame.contains(location)
+                        overlayInteractionFrames.contains(where: { $0.contains(location) })
                     },
                     onStart: { start in
                         isTransientLassoMode = true
@@ -1662,6 +1653,7 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
                 guard let self, let view = self.view, view.window != nil else { return event }
                 guard self.isEnabled() else { return event }
+                guard !self.isHandledByAnotherView(at: event.locationInWindow) else { return event }
 
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
@@ -1719,6 +1711,25 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
                     return event
                 }
             }
+        }
+
+        private func isHandledByAnotherView(at windowLocation: CGPoint) -> Bool {
+            guard let view,
+                  let window = view.window,
+                  let contentView = window.contentView else {
+                return false
+            }
+
+            let point = contentView.convert(windowLocation, from: nil)
+            guard let hitView = contentView.hitTest(point) else {
+                return false
+            }
+
+            if hitView == view || hitView.isDescendant(of: view) {
+                return false
+            }
+
+            return true
         }
 
         private func hitInteractiveControl(at windowLocation: CGPoint) -> Bool {
@@ -1840,6 +1851,7 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .rightMouseDragged, .rightMouseUp]) { [weak self] event in
                 guard let self, let view = self.view, view.window != nil else { return event }
+                guard !self.isHandledByAnotherView(at: event.locationInWindow) else { return event }
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
                 let alternateLocation = CGPoint(x: converted.x, y: converted.y)
@@ -1866,6 +1878,25 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
                     return event
                 }
             }
+        }
+
+        private func isHandledByAnotherView(at windowLocation: CGPoint) -> Bool {
+            guard let view,
+                  let window = view.window,
+                  let contentView = window.contentView else {
+                return false
+            }
+
+            let point = contentView.convert(windowLocation, from: nil)
+            guard let hitView = contentView.hitTest(point) else {
+                return false
+            }
+
+            if hitView == view || hitView.isDescendant(of: view) {
+                return false
+            }
+
+            return true
         }
 
         func detach() {
@@ -1966,10 +1997,41 @@ enum CanvasInteractionCoordinateSpace {
     static let name = "CanvasContentViewCoordinateSpace"
 }
 
-private struct CanvasOverlayFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .null
+private struct CanvasInteractiveOverlayFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [CGRect] = []
 
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+private struct CanvasInteractiveRegionModifier: ViewModifier {
+    let coordinateSpaceName: String
+    let hitSlop: CGFloat
+
+    func body(content: Content) -> some View {
+        content.background(
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .named(coordinateSpaceName))
+                Color.clear.preference(
+                    key: CanvasInteractiveOverlayFramePreferenceKey.self,
+                    value: [frame.insetBy(dx: -hitSlop, dy: -hitSlop)]
+                )
+            }
+        )
+    }
+}
+
+private extension View {
+    func canvasInteractiveRegion(
+        in coordinateSpaceName: String,
+        hitSlop: CGFloat = 16
+    ) -> some View {
+        modifier(
+            CanvasInteractiveRegionModifier(
+                coordinateSpaceName: coordinateSpaceName,
+                hitSlop: hitSlop
+            )
+        )
     }
 }

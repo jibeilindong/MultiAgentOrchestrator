@@ -14,34 +14,34 @@ enum OpsCenterConsolePage: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .threads:
-            return "Threads"
+            return LocalizedString.text("ops_page_threads")
         case .signals:
-            return "Signals"
+            return LocalizedString.text("ops_page_signals")
         case .liveRun:
-            return "Live Run"
+            return LocalizedString.text("ops_page_live_run")
         case .sessions:
-            return "Sessions"
+            return LocalizedString.text("ops_page_sessions")
         case .workflowMap:
-            return "Workflow Map"
+            return LocalizedString.text("ops_page_workflow_map")
         case .history:
-            return "History"
+            return LocalizedString.text("ops_page_history")
         }
     }
 
     var subtitle: String {
         switch self {
         case .threads:
-            return "Thread-first frontline, hotspots, and operator drill-down"
+            return LocalizedString.text("ops_page_threads_subtitle")
         case .signals:
-            return "Cron, tool, and projection observability front line"
+            return LocalizedString.text("ops_page_signals_subtitle")
         case .liveRun:
-            return "Immediate runtime posture and bottlenecks"
+            return LocalizedString.text("ops_page_live_run_subtitle")
         case .sessions:
-            return "Session-first execution investigation"
+            return LocalizedString.text("ops_page_sessions_subtitle")
         case .workflowMap:
-            return "Runtime state projected onto workflow structure"
+            return LocalizedString.text("ops_page_workflow_map_subtitle")
         case .history:
-            return "Trend and anomaly support layer"
+            return LocalizedString.text("ops_page_history_subtitle")
         }
     }
 
@@ -79,17 +79,17 @@ enum OpsCenterRuntimeStatus: String {
     var title: String {
         switch self {
         case .idle:
-            return "Idle"
+            return LocalizedString.text("idle_state")
         case .queued:
-            return "Queued"
+            return LocalizedString.text("queued_status")
         case .inflight:
-            return "Running"
+            return LocalizedString.text("running_status")
         case .waitingApproval:
-            return "Approval"
+            return LocalizedString.text("approval")
         case .completed:
-            return "Completed"
+            return LocalizedString.completed
         case .failed:
-            return "Failed"
+            return LocalizedString.text("failed_label")
         }
     }
 
@@ -380,19 +380,19 @@ enum OpsCenterInvestigationTarget: Identifiable {
     var subtitle: String {
         switch self {
         case .session:
-            return "Session Investigation"
+            return LocalizedString.text("session_investigation")
         case let .node(investigation):
-            return "\(investigation.workflowName) • Node Investigation"
+            return "\(investigation.workflowName) • \(LocalizedString.text("node_investigation"))"
         case let .route(investigation):
-            return "\(investigation.workflowName) • Route Investigation"
+            return "\(investigation.workflowName) • \(LocalizedString.text("route_investigation"))"
         case let .thread(investigation):
-            return "\(investigation.workflowName) • Thread Investigation"
+            return "\(investigation.workflowName) • \(LocalizedString.text("thread_investigation"))"
         case .cron:
-            return "Cron Investigation"
+            return LocalizedString.text("cron_investigation")
         case .tool:
-            return "Tool Investigation"
+            return LocalizedString.text("tool_investigation")
         case let .archiveProjection(investigation):
-            return "\(investigation.projectName) • Archive Projection Investigation"
+            return "\(investigation.projectName) • \(LocalizedString.text("archive_projection_investigation"))"
         }
     }
 }

@@ -333,6 +333,39 @@ struct OpenClawConfigView: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            runtimeSyncDiagnosticsSection
+        }
+    }
+
+    @ViewBuilder
+    private var runtimeSyncDiagnosticsSection: some View {
+        if appState.hasOpenClawLatestRuntimeSyncDiagnostics {
+            VStack(alignment: .leading, spacing: 8) {
+                if let blockedReason = appState.openClawLatestRuntimeSyncBlockedReason {
+                    runtimeSyncDiagnosticGroup(
+                        title: LocalizedString.text("openclaw_runtime_sync_blocked_reason_label"),
+                        items: [blockedReason],
+                        color: latestRuntimeSyncColor
+                    )
+                }
+
+                if !appState.openClawLatestRuntimeSyncIssueLines.isEmpty {
+                    runtimeSyncDiagnosticGroup(
+                        title: LocalizedString.text("openclaw_runtime_sync_step_issues_label"),
+                        items: appState.openClawLatestRuntimeSyncIssueLines,
+                        color: appState.latestOpenClawRuntimeSyncReceipt?.status == .failed ? .red : .orange
+                    )
+                }
+
+                if !appState.openClawLatestRuntimeSyncWarnings.isEmpty {
+                    runtimeSyncDiagnosticGroup(
+                        title: LocalizedString.text("openclaw_runtime_sync_warnings_label"),
+                        items: appState.openClawLatestRuntimeSyncWarnings,
+                        color: .orange
+                    )
+                }
+            }
         }
     }
 
@@ -373,6 +406,31 @@ struct OpenClawConfigView: View {
         .background(color.opacity(0.12))
         .foregroundColor(color)
         .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func runtimeSyncDiagnosticGroup(title: String, items: [String], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(color)
+
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .top, spacing: 6) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 5)
+                    Text(item)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(10)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var statusTitle: String {

@@ -3,6 +3,7 @@ import Combine
 
 struct OpsCenterDashboardView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var localizationManager = LocalizationManager.shared
 
     let displayMode: OpsCenterDisplayMode
     let preferredWorkflowID: UUID?
@@ -37,9 +38,9 @@ struct OpsCenterDashboardView: View {
         Group {
             if appState.currentProject == nil {
                 ContentUnavailableView(
-                    "Open a project to inspect workflow runtime",
+                    LocalizedString.text("ops_center_empty_title"),
                     systemImage: "gauge.with.dots.needle.33percent",
-                    description: Text("Ops Center now focuses on thread-first runtime investigation, live execution, workflow structure, and history.")
+                    description: Text(LocalizedString.text("ops_center_empty_description"))
                 )
             } else {
                 VStack(spacing: 0) {
@@ -74,13 +75,14 @@ struct OpsCenterDashboardView: View {
         .onReceive(projectionRefreshTimer) { _ in
             refreshProjectionsIfNeeded()
         }
+        .environment(\.locale, Locale(identifier: localizationManager.currentLanguage.rawValue))
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Ops Center")
+                    Text(LocalizedString.text("ops_center"))
                         .font(displayMode == .embedded ? .title3.weight(.semibold) : .title2.weight(.semibold))
                     Text(selectedPage.subtitle)
                         .font(.caption)
@@ -90,7 +92,7 @@ struct OpsCenterDashboardView: View {
                 Spacer()
 
                 if !workflows.isEmpty {
-                    Picker("Workflow", selection: workflowSelectionBinding) {
+                    Picker(LocalizedString.text("workflow_label"), selection: workflowSelectionBinding) {
                         ForEach(workflows) { workflow in
                             Text(workflow.name).tag(workflow.id as UUID?)
                         }
@@ -99,19 +101,24 @@ struct OpsCenterDashboardView: View {
                 }
 
                 opsStatusPill(
-                    title: appState.openClawManager.isConnected ? "OpenClaw Connected" : "OpenClaw Offline",
+                    title: appState.openClawManager.isConnected
+                        ? LocalizedString.text("openclaw_connected")
+                        : LocalizedString.text("openclaw_disconnected"),
                     color: appState.openClawManager.isConnected ? .green : .red
                 )
 
                 if let freshestProjectionAt = projections?.freshestGeneratedAt {
                     opsStatusPill(
-                        title: "Projection \(freshestProjectionAt.formatted(date: .omitted, time: .shortened))",
+                        title: LocalizedString.format(
+                            "ops_projection_updated_at",
+                            freshestProjectionAt.formatted(date: .omitted, time: .shortened)
+                        ),
                         color: .blue
                     )
                 }
             }
 
-            Picker("Ops Center Page", selection: $selectedPage) {
+            Picker(LocalizedString.text("ops_center_page"), selection: $selectedPage) {
                 ForEach(OpsCenterConsolePage.allCases) { page in
                     Text(page.title).tag(page)
                 }
@@ -319,7 +326,7 @@ struct OpsCenterDashboardView: View {
 
             selectedInvestigation = .node(
                 OpsCenterNodeInvestigation(
-                    workflowName: selectedWorkflow?.name ?? "Workflow",
+                    workflowName: selectedWorkflow?.name ?? LocalizedString.text("workflow_label"),
                     node: projectionNode,
                     relatedSessions: relatedSessions,
                     incomingEdges: [],
@@ -1119,7 +1126,10 @@ private struct OpsCenterSignalsDashboardView: View {
 
     private var projectionSummaryText: String? {
         guard let freshestProjectionAt = projections?.freshestGeneratedAt else { return nil }
-        return "Persisted analytics projection refreshed at \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened))."
+        return LocalizedString.format(
+            "history_projection_refreshed_at",
+            freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)
+        )
     }
 
     private var cronFrontline: [OpsCenterSignalFrontlineDigest] {
@@ -1144,13 +1154,13 @@ private struct OpsCenterSignalsDashboardView: View {
                 id: "cron-\(cronName)",
                 kind: .cron,
                 title: cronName,
-                subtitleText: "Cron",
+                subtitleText: LocalizedString.text("cron_category"),
                 detailText: latestRun.summaryText,
-                metricText: "\(runs.count) runs • \(failureCount) failures",
+                metricText: LocalizedString.format("cron_runs_failures_summary", runs.count, failureCount),
                 timestamp: latestRun.runAt,
                 status: status,
                 priorityScore: priorityScore,
-                actionTitle: "Open Cron",
+                actionTitle: LocalizedString.text("open_cron"),
                 action: { onSelectCron(cronName) },
                 linkedSessionID: linkedSessionID,
                 linkedThreadID: linkedThreadID,
@@ -1183,13 +1193,13 @@ private struct OpsCenterSignalsDashboardView: View {
                 id: "tool-\(tool.toolIdentifier)",
                 kind: .tool,
                 title: tool.toolIdentifier,
-                subtitleText: "Tool",
+                subtitleText: LocalizedString.text("tool_category"),
                 detailText: tool.latestDetailText,
-                metricText: "Failures \(tool.failureCount) • Timeouts \(tool.timeoutCount)",
+                metricText: LocalizedString.format("failures_timeouts_summary", tool.failureCount, tool.timeoutCount),
                 timestamp: tool.latestAt,
                 status: tool.status,
                 priorityScore: (tool.failureCount * 6) + (tool.timeoutCount * 3),
-                actionTitle: "Open Tool",
+                actionTitle: LocalizedString.text("open_tool"),
                 action: { onSelectTool(tool.toolIdentifier) },
                 linkedSessionID: linkedSessionID,
                 linkedThreadID: linkedThreadID,
@@ -1204,13 +1214,13 @@ private struct OpsCenterSignalsDashboardView: View {
                 id: "projection-\(document.id)",
                 kind: .projection,
                 title: document.title,
-                subtitleText: "Projection",
+                subtitleText: LocalizedString.text("ops_projections"),
                 detailText: document.detailText,
                 metricText: document.valueText,
                 timestamp: document.generatedAt,
                 status: document.status,
                 priorityScore: opsProjectionDigestPriorityScore(document),
-                actionTitle: "Open Projection",
+                actionTitle: LocalizedString.text("open_projection"),
                 action: onSelectArchiveProjection,
                 linkedSessionID: nil,
                 linkedThreadID: nil,
@@ -1233,18 +1243,18 @@ private struct OpsCenterSignalsDashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                sectionTitle("Signals Frontline")
-                Text("Signals promotes cron reliability, tool hotspots, and archive projection health into direct operator-facing objects. Use this page when the system is running but you need to know which support layer is deforming first.")
+                sectionTitle(LocalizedString.text("signals_frontline_title"))
+                Text(LocalizedString.text("signals_frontline_desc"))
                     .font(.caption)
                     .foregroundColor(.secondary)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
-                    opsMetricCard(title: "Observed Crons", value: "\(observedCronCount)", detail: effectiveCronSummary.map { "\($0.successfulRuns) ok / \($0.failedRuns) failed in retained cron history" } ?? "No retained cron reliability window is currently available", color: (effectiveCronSummary?.failedRuns ?? 0) > 0 ? .orange : .green)
-                    opsMetricCard(title: "Lead Cron", value: recentCronRuns.first?.cronName ?? "None", detail: recentCronRuns.first?.summaryText ?? "No recent cron execution is currently retained", color: recentCronRuns.isEmpty ? .secondary : opsHistoryStatusColor(recentCronRuns.first?.statusText ?? ""))
-                    opsMetricCard(title: "Observed Tools", value: "\(observedToolCount)", detail: toolHotspots.first.map { "\($0.toolIdentifier) has \($0.failureCount) recent anomaly signals" } ?? "No tool hotspot is currently retained", color: toolHotspots.isEmpty ? .green : .orange)
-                    opsMetricCard(title: "Lead Tool", value: toolHotspots.first?.toolIdentifier ?? "None", detail: toolHotspots.first?.latestDetailText ?? "No recent tool anomaly is currently retained", color: toolHotspots.first.map { opsHistoryHealthColor($0.status) } ?? .secondary)
-                    opsMetricCard(title: "Projection Docs", value: "\(loadedProjectionDigests.count)", detail: archiveProjectionInvestigation?.freshestGeneratedAt.map { "Freshest projection \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "No archive projection bundle loaded", color: loadedProjectionDigests.isEmpty ? .orange : .blue)
-                    opsMetricCard(title: "Projection Scope", value: archiveProjectionInvestigation?.scopeTitle ?? "Unavailable", detail: archiveProjectionInvestigation?.liveRunSummary ?? archiveProjectionInvestigation?.workflowHealthSummary ?? "Projection scope summary is not yet available", color: archiveProjectionInvestigation == nil ? .secondary : .blue)
+                    opsMetricCard(title: LocalizedString.text("signals_observed_crons"), value: "\(observedCronCount)", detail: effectiveCronSummary.map { LocalizedString.format("signals_retained_cron_window_detail", $0.successfulRuns, $0.failedRuns) } ?? LocalizedString.text("signals_no_retained_cron_window"), color: (effectiveCronSummary?.failedRuns ?? 0) > 0 ? .orange : .green)
+                    opsMetricCard(title: LocalizedString.text("signals_lead_cron"), value: recentCronRuns.first?.cronName ?? LocalizedString.text("ops_none"), detail: recentCronRuns.first?.summaryText ?? LocalizedString.text("signals_no_recent_cron_execution"), color: recentCronRuns.isEmpty ? .secondary : opsHistoryStatusColor(recentCronRuns.first?.statusText ?? ""))
+                    opsMetricCard(title: LocalizedString.text("signals_observed_tools"), value: "\(observedToolCount)", detail: toolHotspots.first.map { LocalizedString.format("signals_tool_recent_anomaly_detail", $0.toolIdentifier, $0.failureCount) } ?? LocalizedString.text("signals_no_recent_tool_anomaly"), color: toolHotspots.isEmpty ? .green : .orange)
+                    opsMetricCard(title: LocalizedString.text("signals_lead_tool"), value: toolHotspots.first?.toolIdentifier ?? LocalizedString.text("ops_none"), detail: toolHotspots.first?.latestDetailText ?? LocalizedString.text("signals_no_recent_tool_anomaly"), color: toolHotspots.first.map { opsHistoryHealthColor($0.status) } ?? .secondary)
+                    opsMetricCard(title: LocalizedString.text("signals_projection_docs"), value: "\(loadedProjectionDigests.count)", detail: archiveProjectionInvestigation?.freshestGeneratedAt.map { LocalizedString.format("signals_freshest_projection", $0.formatted(date: .abbreviated, time: .shortened)) } ?? LocalizedString.text("signals_no_archive_projection_bundle"), color: loadedProjectionDigests.isEmpty ? .orange : .blue)
+                    opsMetricCard(title: LocalizedString.text("signals_projection_scope"), value: archiveProjectionInvestigation?.scopeTitle ?? LocalizedString.text("ops_unavailable"), detail: archiveProjectionInvestigation?.liveRunSummary ?? archiveProjectionInvestigation?.workflowHealthSummary ?? LocalizedString.text("signals_projection_scope_summary_unavailable"), color: archiveProjectionInvestigation == nil ? .secondary : .blue)
                 }
 
                 if let projectionSummaryText {
@@ -1255,10 +1265,10 @@ private struct OpsCenterSignalsDashboardView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
-                        TextField("Search cron, tool, projection, or anomaly context", text: $searchText)
+                        TextField(LocalizedString.text("signals_search_placeholder"), text: $searchText)
                             .textFieldStyle(.roundedBorder)
 
-                        Picker("Filter", selection: $selectedFilter) {
+                        Picker(LocalizedString.text("ops_filter_label"), selection: $selectedFilter) {
                             ForEach(OpsCenterSignalListFilter.allCases) { filter in
                                 Text(filter.title).tag(filter)
                             }
@@ -1268,7 +1278,7 @@ private struct OpsCenterSignalsDashboardView: View {
                     }
 
                     HStack(alignment: .center, spacing: 12) {
-                        Picker("Sort", selection: $selectedSort) {
+                        Picker(LocalizedString.text("ops_sort_label"), selection: $selectedSort) {
                             ForEach(OpsCenterSignalSort.allCases) { sort in
                                 Text(sort.title).tag(sort)
                             }
@@ -1278,15 +1288,15 @@ private struct OpsCenterSignalsDashboardView: View {
 
                         Spacer()
 
-                        Text("\(signalFrontline.count) frontline objects visible.")
+                        Text(LocalizedString.format("signals_frontline_visible_count", signalFrontline.count))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
 
-                sectionTitle("Signal Queue")
+                sectionTitle(LocalizedString.text("signal_queue_title"))
                 if signalFrontline.isEmpty {
-                    opsInlineEmptyState("No cron, tool, or projection object matches the current search and filter scope.")
+                    opsInlineEmptyState(LocalizedString.text("signal_queue_empty"))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(Array(signalFrontline.prefix(10))) { item in
@@ -1298,7 +1308,7 @@ private struct OpsCenterSignalsDashboardView: View {
                 if let leadSignal {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Lead Signal")
+                            Text(LocalizedString.text("lead_signal_title"))
                                 .font(.caption.weight(.semibold))
                                 .foregroundColor(.secondary)
                             Text("\(leadSignal.kind.title): \(leadSignal.title)")
@@ -1319,27 +1329,27 @@ private struct OpsCenterSignalsDashboardView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
 
-                sectionTitle("Cron Frontline")
+                sectionTitle(LocalizedString.text("cron_frontline_title"))
                 if recentCronRuns.isEmpty && effectiveCronSummary == nil {
-                    opsInlineEmptyState("No cron reliability data is currently available in retained analytics.")
+                    opsInlineEmptyState(LocalizedString.text("cron_frontline_empty"))
                 } else {
                     if let cronSummary = effectiveCronSummary {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Success Rate \(Int(cronSummary.successRate.rounded()))%")
+                                Text(LocalizedString.format("cron_success_rate_summary", Int(cronSummary.successRate.rounded())))
                                     .font(.subheadline.weight(.semibold))
-                                Text("\(cronSummary.successfulRuns) ok • \(cronSummary.failedRuns) failed")
+                                Text(LocalizedString.format("cron_ok_failed_summary", cronSummary.successfulRuns, cronSummary.failedRuns))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 if let latestRunAt = cronSummary.latestRunAt {
-                                    Text("Latest run \(latestRunAt.formatted(date: .abbreviated, time: .shortened))")
+                                    Text(LocalizedString.format("latest_run_at", latestRunAt.formatted(date: .abbreviated, time: .shortened)))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
                             }
                             Spacer()
                             if let leadCronName = recentCronRuns.first?.cronName {
-                                signalActionButton(title: "Open Cron") {
+                                signalActionButton(title: LocalizedString.text("open_cron")) {
                                     onSelectCron(leadCronName)
                                 }
                             }
@@ -1371,7 +1381,7 @@ private struct OpsCenterSignalsDashboardView: View {
                                 Spacer()
 
                                 VStack(alignment: .trailing, spacing: 6) {
-                                    signalActionButton(title: "Open Cron") {
+                                    signalActionButton(title: LocalizedString.text("open_cron")) {
                                         onSelectCron(run.cronName)
                                     }
                                     if let duration = run.duration {
@@ -1391,14 +1401,14 @@ private struct OpsCenterSignalsDashboardView: View {
                     }
                 }
 
-                sectionTitle("Tool Frontline")
+                sectionTitle(LocalizedString.text("tool_frontline_title"))
                 if toolHotspots.isEmpty {
-                    opsInlineEmptyState("No tool-specific hotspot is currently retained in anomaly history.")
+                    opsInlineEmptyState(LocalizedString.text("tool_frontline_empty"))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(Array(toolHotspots.prefix(6))) { tool in
                             HStack(alignment: .top, spacing: 12) {
-                                opsStatusPill(title: tool.failureCount > 1 ? "Tool Hotspot" : "Tool Watch", color: opsHistoryHealthColor(tool.status))
+                                opsStatusPill(title: tool.failureCount > 1 ? LocalizedString.text("tool_hotspot_badge") : LocalizedString.text("tool_watch_badge"), color: opsHistoryHealthColor(tool.status))
                                     .frame(width: 96, alignment: .leading)
 
                                 VStack(alignment: .leading, spacing: 4) {
@@ -1408,7 +1418,7 @@ private struct OpsCenterSignalsDashboardView: View {
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                         .lineLimit(3)
-                                    Text("Failures \(tool.failureCount) • Timeouts \(tool.timeoutCount)")
+                                    Text(LocalizedString.format("failures_timeouts_summary", tool.failureCount, tool.timeoutCount))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -1416,7 +1426,7 @@ private struct OpsCenterSignalsDashboardView: View {
                                 Spacer()
 
                                 VStack(alignment: .trailing, spacing: 6) {
-                                    signalActionButton(title: "Open Tool") {
+                                    signalActionButton(title: LocalizedString.text("open_tool")) {
                                         onSelectTool(tool.toolIdentifier)
                                     }
                                     Text(tool.latestAt.formatted(date: .abbreviated, time: .shortened))
@@ -1431,24 +1441,24 @@ private struct OpsCenterSignalsDashboardView: View {
                     }
                 }
 
-                sectionTitle("Projection Frontline")
+                sectionTitle(LocalizedString.text("projection_frontline_title"))
                 if let archiveProjectionInvestigation {
                     VStack(spacing: 8) {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(archiveProjectionInvestigation.scopeTitle)
                                     .font(.subheadline.weight(.semibold))
-                                Text("Sessions \(archiveProjectionInvestigation.sessionCount) • Nodes \(archiveProjectionInvestigation.nodeCount) • Traces \(archiveProjectionInvestigation.traceCount) • Anomalies \(archiveProjectionInvestigation.anomalyCount)")
+                                Text(LocalizedString.format("projection_scope_counts", archiveProjectionInvestigation.sessionCount, archiveProjectionInvestigation.nodeCount, archiveProjectionInvestigation.traceCount, archiveProjectionInvestigation.anomalyCount))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text(archiveProjectionInvestigation.liveRunSummary ?? archiveProjectionInvestigation.workflowHealthSummary ?? "Projection bundle is loaded but no scope-specific summary is available yet.")
+                                Text(archiveProjectionInvestigation.liveRunSummary ?? archiveProjectionInvestigation.workflowHealthSummary ?? LocalizedString.text("projection_scope_summary_missing"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .lineLimit(3)
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 6) {
-                                signalActionButton(title: "Open Projection") {
+                                signalActionButton(title: LocalizedString.text("open_projection")) {
                                     onSelectArchiveProjection()
                                 }
                                 if let freshestGeneratedAt = archiveProjectionInvestigation.freshestGeneratedAt {
@@ -1490,7 +1500,7 @@ private struct OpsCenterSignalsDashboardView: View {
                         }
                     }
                 } else {
-                    opsInlineEmptyState("No persisted archive projection bundle is currently loaded.")
+                    opsInlineEmptyState(LocalizedString.text("projection_bundle_missing"))
                 }
             }
             .padding()
@@ -1607,17 +1617,17 @@ private struct OpsCenterSignalsDashboardView: View {
         if item.linkedSessionID != nil || item.linkedThreadID != nil || item.linkedNodeID != nil {
             HStack(spacing: 6) {
                 if let sessionID = item.linkedSessionID {
-                    signalActionButton(title: "Session") {
+                    signalActionButton(title: LocalizedString.text("ops_session_short")) {
                         onSelectSession(sessionID)
                     }
                 }
                 if let threadID = item.linkedThreadID {
-                    signalActionButton(title: "Thread") {
+                    signalActionButton(title: LocalizedString.text("ops_thread_short")) {
                         onSelectThread(threadID)
                     }
                 }
                 if let nodeID = item.linkedNodeID {
-                    signalActionButton(title: "Node") {
+                    signalActionButton(title: LocalizedString.text("ops_node_short")) {
                         onSelectNode(nodeID)
                     }
                 }
@@ -1766,7 +1776,10 @@ private struct OpsCenterThreadsDashboardView: View {
               let freshestProjectionAt = projections?.freshestGeneratedAt else {
             return nil
         }
-        return "Using persisted session and thread projections from \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)) while live workbench evidence is still sparse."
+        return LocalizedString.format(
+            "threads_projection_context",
+            freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)
+        )
     }
 
     private var filteredThreads: [OpsCenterThreadSummary] {
@@ -1798,29 +1811,29 @@ private struct OpsCenterThreadsDashboardView: View {
             VStack(alignment: .leading, spacing: 18) {
                 if threadSummaries.isEmpty {
                     opsEmptyState(
-                        title: "No workbench threads captured yet",
-                        detail: "Threads will appear after workbench-linked messages, tasks, or persisted projections land in the current workflow scope."
+                        title: LocalizedString.text("threads_empty_title"),
+                        detail: LocalizedString.text("threads_empty_desc")
                     )
                 } else {
-                    sectionTitle("Thread Frontline")
-                    Text("Threads are now the operator-facing front door. Approval stalls, blocked work, and runtime-linked pressure surface here before node or session deep dives.")
+                    sectionTitle(LocalizedString.text("thread_frontline_title"))
+                    Text(LocalizedString.text("thread_frontline_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
-                        opsMetricCard(title: "Visible Threads", value: "\(threadSummaries.count)", detail: "Merged from live workbench evidence and scoped projections", color: .blue)
-                        opsMetricCard(title: "Hotspot Queue", value: "\(hotspotThreads.count)", detail: hotspotThreads.first.map(opsThreadHotspotReason) ?? "No thread currently requires immediate operator intervention", color: hotspotThreads.isEmpty ? .green : .orange)
-                        opsMetricCard(title: "Approval Pressure", value: "\(approvalThreads.reduce(0) { $0 + $1.pendingApprovalCount })", detail: "\(approvalThreads.count) threads are waiting on approval to continue", color: approvalThreads.isEmpty ? .green : .yellow)
-                        opsMetricCard(title: "Blocked Threads", value: "\(blockedThreads.count)", detail: "Workbench tasks are blocked inside these threads", color: blockedThreads.isEmpty ? .green : .red)
-                        opsMetricCard(title: "Runtime-linked", value: "\(runtimeLinkedThreads.count)", detail: "Threads still coupled to queued, inflight, failed, or primary runtime sessions", color: runtimeLinkedThreads.isEmpty ? .green : .orange)
-                        opsMetricCard(title: "Hotspot Lanes", value: "\(hotspotLanes.count)", detail: leadHotspotLane.map { "\($0.title) is the densest thread lane right now" } ?? "No thread lane currently concentrates pressure", color: hotspotLanes.isEmpty ? .green : .orange)
-                        opsMetricCard(title: "Pressure Modes", value: "\(pressureModes.count)", detail: leadPressureMode.map { "\($0.mode.title) is leading the intervention stack" } ?? "No pressure mode currently dominates the visible queue", color: leadPressureMode?.mode.color ?? .green)
-                        opsMetricCard(title: "Session Families", value: "\(sessionHotspots.count)", detail: leadSessionHotspot.map { "\($0.title) is the hottest runtime-coupled session family" } ?? "No runtime-coupled session family is currently visible", color: leadSessionHotspot == nil ? .green : .orange)
-                        opsMetricCard(title: "Timeline Slices", value: "\(pressureTimeline.count)", detail: leadTimelineSlice.map { "\($0.title) is the freshest visible pressure slice" } ?? "No recent pressure slice is available in the visible thread scope", color: leadTimelineSlice == nil ? .green : .blue)
-                        opsMetricCard(title: "Lead Thread", value: leadHotspotThread.map { String($0.threadID.prefix(12)) } ?? "None", detail: leadHotspotThread.map(opsThreadHotspotReason) ?? "No lead hotspot is active in the current scope", color: leadHotspotThread == nil ? .green : .red)
-                        opsMetricCard(title: "Lead Lane", value: leadHotspotLane?.title ?? "None", detail: leadHotspotLane.map { "\($0.hotspotThreadCount) hotspot • \($0.approvalPressure) approvals • \($0.blockedThreadCount) blocked" } ?? "No concentrated lane is active in the current scope", color: leadHotspotLane == nil ? .green : .red)
-                        opsMetricCard(title: "Lead Mode", value: leadPressureMode?.mode.shortTitle ?? "None", detail: leadPressureMode.map { "\($0.threadCount) threads • \($0.runtimeBacklogCount) runtime backlog • \($0.runtimeFailureCount) failures" } ?? "No pressure mode currently requires operator triage", color: leadPressureMode?.mode.color ?? .green)
-                        opsMetricCard(title: "Lead Session", value: leadSessionHotspot?.title ?? "None", detail: leadSessionHotspot.map { "\($0.threadCount) threads • Q \($0.queuedDispatchCount) • R \($0.inflightDispatchCount) • F \($0.failedDispatchCount)" } ?? "No session family currently dominates the visible queue", color: leadSessionHotspot == nil ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("visible_threads"), value: "\(threadSummaries.count)", detail: LocalizedString.text("visible_threads_detail"), color: .blue)
+                        opsMetricCard(title: LocalizedString.text("hotspot_queue"), value: "\(hotspotThreads.count)", detail: hotspotThreads.first.map(opsThreadHotspotReason) ?? LocalizedString.text("no_thread_intervention_needed"), color: hotspotThreads.isEmpty ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("approval_pressure_label"), value: "\(approvalThreads.reduce(0) { $0 + $1.pendingApprovalCount })", detail: LocalizedString.format("approval_pressure_threads_detail", approvalThreads.count), color: approvalThreads.isEmpty ? .green : .yellow)
+                        opsMetricCard(title: LocalizedString.text("blocked_tasks"), value: "\(blockedThreads.count)", detail: LocalizedString.text("blocked_threads_detail"), color: blockedThreads.isEmpty ? .green : .red)
+                        opsMetricCard(title: LocalizedString.text("runtime_linked_threads"), value: "\(runtimeLinkedThreads.count)", detail: LocalizedString.text("runtime_linked_threads_detail"), color: runtimeLinkedThreads.isEmpty ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("hotspot_lanes_title"), value: "\(hotspotLanes.count)", detail: leadHotspotLane.map { LocalizedString.format("lead_lane_summary", $0.title) } ?? LocalizedString.text("no_thread_lane_pressure"), color: hotspotLanes.isEmpty ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("pressure_modes_title"), value: "\(pressureModes.count)", detail: leadPressureMode.map { LocalizedString.format("lead_mode_summary", $0.mode.title) } ?? LocalizedString.text("no_pressure_mode_dominates"), color: leadPressureMode?.mode.color ?? .green)
+                        opsMetricCard(title: LocalizedString.text("session_families_title"), value: "\(sessionHotspots.count)", detail: leadSessionHotspot.map { LocalizedString.format("lead_session_family_summary", $0.title) } ?? LocalizedString.text("no_runtime_session_family_visible"), color: leadSessionHotspot == nil ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("timeline_slices_title"), value: "\(pressureTimeline.count)", detail: leadTimelineSlice.map { LocalizedString.format("lead_timeline_slice_summary", $0.title) } ?? LocalizedString.text("no_recent_pressure_slice"), color: leadTimelineSlice == nil ? .green : .blue)
+                        opsMetricCard(title: LocalizedString.text("lead_thread_title"), value: leadHotspotThread.map { String($0.threadID.prefix(12)) } ?? LocalizedString.text("ops_none"), detail: leadHotspotThread.map(opsThreadHotspotReason) ?? LocalizedString.text("no_lead_hotspot_active"), color: leadHotspotThread == nil ? .green : .red)
+                        opsMetricCard(title: LocalizedString.text("lead_lane_title"), value: leadHotspotLane?.title ?? LocalizedString.text("ops_none"), detail: leadHotspotLane.map { LocalizedString.format("lead_lane_pressure_summary", $0.hotspotThreadCount, $0.approvalPressure, $0.blockedThreadCount) } ?? LocalizedString.text("no_concentrated_lane_active"), color: leadHotspotLane == nil ? .green : .red)
+                        opsMetricCard(title: LocalizedString.text("lead_mode_title"), value: leadPressureMode?.mode.shortTitle ?? LocalizedString.text("ops_none"), detail: leadPressureMode.map { LocalizedString.format("lead_mode_pressure_summary", $0.threadCount, $0.runtimeBacklogCount, $0.runtimeFailureCount) } ?? LocalizedString.text("no_pressure_mode_needs_triage"), color: leadPressureMode?.mode.color ?? .green)
+                        opsMetricCard(title: LocalizedString.text("lead_session_title"), value: leadSessionHotspot?.title ?? LocalizedString.text("ops_none"), detail: leadSessionHotspot.map { LocalizedString.format("lead_session_runtime_summary", $0.threadCount, $0.queuedDispatchCount, $0.inflightDispatchCount, $0.failedDispatchCount) } ?? LocalizedString.text("no_session_family_dominates"), color: leadSessionHotspot == nil ? .green : .orange)
                     }
 
                     if let projectionContextText {
@@ -1831,10 +1844,10 @@ private struct OpsCenterThreadsDashboardView: View {
 
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .center, spacing: 12) {
-                            TextField("Search thread ID, workflow, agent, participant, or hotspot context", text: $searchText)
+                            TextField(LocalizedString.text("thread_search_placeholder"), text: $searchText)
                                 .textFieldStyle(.roundedBorder)
 
-                            Picker("Filter", selection: $selectedFilter) {
+                            Picker(LocalizedString.text("ops_filter_label"), selection: $selectedFilter) {
                                 ForEach(OpsCenterThreadListFilter.allCases) { filter in
                                     Text(filter.title).tag(filter)
                                 }
@@ -1844,7 +1857,7 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
 
                         HStack(alignment: .center, spacing: 12) {
-                            Picker("Focus", selection: $selectedFocus) {
+                            Picker(LocalizedString.text("ops_focus_label"), selection: $selectedFocus) {
                                 ForEach(OpsCenterThreadFocus.allCases) { focus in
                                     Text(focus.title).tag(focus)
                                 }
@@ -1852,7 +1865,7 @@ private struct OpsCenterThreadsDashboardView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 420)
 
-                            Picker("Sort", selection: $selectedSort) {
+                            Picker(LocalizedString.text("ops_sort_label"), selection: $selectedSort) {
                                 ForEach(OpsCenterThreadSort.allCases) { sort in
                                     Text(sort.title).tag(sort)
                                 }
@@ -1862,15 +1875,15 @@ private struct OpsCenterThreadsDashboardView: View {
 
                             Spacer()
 
-                            Text("\(displayedThreads.count) of \(threadSummaries.count) threads visible in current scope.")
+                            Text(LocalizedString.format("threads_visible_in_scope", displayedThreads.count, threadSummaries.count))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
-                    sectionTitle("Operator Pivots")
+                    sectionTitle(LocalizedString.text("operator_pivots_title"))
                     if leadHotspotThread == nil && leadApprovalThread == nil && leadBlockedThread == nil && leadRuntimeThread == nil {
-                        opsInlineEmptyState("No actionable lead thread is currently visible in the selected scope.")
+                        opsInlineEmptyState(LocalizedString.text("no_actionable_lead_thread"))
                     } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
                             if let thread = leadHotspotThread {
@@ -1878,8 +1891,8 @@ private struct OpsCenterThreadsDashboardView: View {
                                     onSelectThread(thread.threadID)
                                 } label: {
                                     threadPivotCard(
-                                        title: "Lead Hotspot",
-                                        badgeTitle: "Hotspot",
+                                        title: LocalizedString.text("lead_hotspot_card_title"),
+                                        badgeTitle: LocalizedString.text("hotspot_badge"),
                                         color: .red,
                                         thread: thread,
                                         detailText: opsThreadHotspotReason(thread)
@@ -1893,11 +1906,11 @@ private struct OpsCenterThreadsDashboardView: View {
                                     onSelectThread(thread.threadID)
                                 } label: {
                                     threadPivotCard(
-                                        title: "Lead Approval",
-                                        badgeTitle: "Approval",
+                                        title: LocalizedString.text("lead_approval_card_title"),
+                                        badgeTitle: LocalizedString.text("approval"),
                                         color: .yellow,
                                         thread: thread,
-                                        detailText: "\(thread.pendingApprovalCount) approvals are still waiting in this thread."
+                                        detailText: LocalizedString.format("approvals_waiting_in_thread", thread.pendingApprovalCount)
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -1908,11 +1921,11 @@ private struct OpsCenterThreadsDashboardView: View {
                                     onSelectThread(thread.threadID)
                                 } label: {
                                     threadPivotCard(
-                                        title: "Lead Blocked",
-                                        badgeTitle: "Blocked",
+                                        title: LocalizedString.text("lead_blocked_card_title"),
+                                        badgeTitle: LocalizedString.blocked,
                                         color: .orange,
                                         thread: thread,
-                                        detailText: "\(thread.blockedTaskCount) blocked tasks are retained in this thread."
+                                        detailText: LocalizedString.format("blocked_tasks_in_thread", thread.blockedTaskCount)
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -1923,13 +1936,13 @@ private struct OpsCenterThreadsDashboardView: View {
                                     onSelectThread(thread.threadID)
                                 } label: {
                                     threadPivotCard(
-                                        title: "Lead Runtime",
-                                        badgeTitle: "Runtime",
+                                        title: LocalizedString.text("lead_runtime_card_title"),
+                                        badgeTitle: LocalizedString.text("runtime_category"),
                                         color: .blue,
                                         thread: thread,
                                         detailText: thread.relatedSession.map {
-                                            "Runtime Q \($0.queuedDispatchCount) • Run \($0.inflightDispatchCount) • F \($0.failedDispatchCount)"
-                                        } ?? "This thread is still linked to active runtime pressure."
+                                            LocalizedString.format("runtime_thread_pressure_summary", $0.queuedDispatchCount, $0.inflightDispatchCount, $0.failedDispatchCount)
+                                        } ?? LocalizedString.text("runtime_thread_pressure_fallback")
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -1937,9 +1950,9 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Intervention Queue")
+                    sectionTitle(LocalizedString.text("intervention_queue_title"))
                     if interventionThreads.isEmpty {
-                        opsInlineEmptyState("No actionable thread queue is currently visible in the selected scope.")
+                        opsInlineEmptyState(LocalizedString.text("no_actionable_thread_queue"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(Array(interventionThreads.prefix(8))) { thread in
@@ -1951,7 +1964,7 @@ private struct OpsCenterThreadsDashboardView: View {
                                 .buttonStyle(.plain)
                                 .contextMenu {
                                     if let sessionID = thread.relatedSession?.sessionID {
-                                        Button("Open Linked Session") {
+                                        Button(LocalizedString.text("open_linked_session")) {
                                             onSelectSession(sessionID)
                                         }
                                     }
@@ -1960,9 +1973,9 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Hotspot Lanes")
+                    sectionTitle(LocalizedString.text("hotspot_lanes_title"))
                     if hotspotLanes.isEmpty {
-                        opsInlineEmptyState("No thread lane matches the current search, filter, or focus mode.")
+                        opsInlineEmptyState(LocalizedString.text("no_thread_lane_matches"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(Array(hotspotLanes.prefix(5))) { lane in
@@ -1976,9 +1989,9 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Pressure Modes")
+                    sectionTitle(LocalizedString.text("pressure_modes_title"))
                     if pressureModes.isEmpty {
-                        opsInlineEmptyState("No pressure mode is currently visible in the selected thread scope.")
+                        opsInlineEmptyState(LocalizedString.text("no_pressure_mode_visible"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(pressureModes) { mode in
@@ -1992,9 +2005,9 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Session Hotspots")
+                    sectionTitle(LocalizedString.text("session_hotspots_title"))
                     if sessionHotspots.isEmpty {
-                        opsInlineEmptyState("No runtime-linked session family is currently visible in the selected thread scope.")
+                        opsInlineEmptyState(LocalizedString.text("no_runtime_linked_session_family"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(sessionHotspots) { session in
@@ -2010,11 +2023,11 @@ private struct OpsCenterThreadsDashboardView: View {
                                 .buttonStyle(.plain)
                                 .contextMenu {
                                     if let sessionID = session.sessionID {
-                                        Button("Open Lead Session") {
+                                        Button(LocalizedString.text("open_lead_session")) {
                                             onSelectSession(sessionID)
                                         }
                                     }
-                                    Button("Open Lead Thread") {
+                                    Button(LocalizedString.text("open_lead_thread")) {
                                         onSelectThread(session.leadThreadID)
                                     }
                                 }
@@ -2022,9 +2035,9 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Pressure Timeline")
+                    sectionTitle(LocalizedString.text("pressure_timeline_title"))
                     if pressureTimeline.isEmpty {
-                        opsInlineEmptyState("No recent thread pressure slice is available yet in the selected scope.")
+                        opsInlineEmptyState(LocalizedString.text("no_recent_thread_pressure_slice"))
                     } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
                             ForEach(pressureTimeline) { slice in
@@ -2039,7 +2052,7 @@ private struct OpsCenterThreadsDashboardView: View {
                     }
 
                     if !approvalThreads.isEmpty {
-                        sectionTitle("Approval Queue")
+                        sectionTitle(LocalizedString.text("approval_queue_title"))
                         VStack(spacing: 8) {
                             ForEach(Array(approvalThreads.prefix(4))) { thread in
                                 Button {
@@ -2052,9 +2065,9 @@ private struct OpsCenterThreadsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Thread Inventory")
+                    sectionTitle(LocalizedString.text("thread_inventory_title"))
                     if displayedThreads.isEmpty {
-                        opsInlineEmptyState("No threads match the current search, filter, or focus mode.")
+                        opsInlineEmptyState(LocalizedString.text("no_threads_match_scope"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(displayedThreads) { thread in
@@ -2066,7 +2079,7 @@ private struct OpsCenterThreadsDashboardView: View {
                                 .buttonStyle(.plain)
                                 .contextMenu {
                                     if let sessionID = thread.relatedSession?.sessionID {
-                                        Button("Open Linked Session") {
+                                        Button(LocalizedString.text("open_linked_session")) {
                                             onSelectSession(sessionID)
                                         }
                                     }
@@ -2151,7 +2164,7 @@ private struct OpsCenterThreadsDashboardView: View {
     private func hotspotLaneRow(_ lane: OpsCenterThreadClusterDigest) -> some View {
         HStack(alignment: .top, spacing: 12) {
             opsStatusPill(
-                title: lane.hotspotThreadCount > 0 ? "Pressure Lane" : "Stable Lane",
+                title: lane.hotspotThreadCount > 0 ? LocalizedString.text("pressure_lane_badge") : LocalizedString.text("stable_lane_badge"),
                 color: lane.hotspotThreadCount > 0 ? .orange : .green
             )
             .frame(width: 104, alignment: .leading)
@@ -2173,10 +2186,10 @@ private struct OpsCenterThreadsDashboardView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text("T \(lane.threadCount) • H \(lane.hotspotThreadCount)")
+                Text(LocalizedString.format("lane_count_summary", lane.threadCount, lane.hotspotThreadCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("A \(lane.approvalPressure) • B \(lane.blockedThreadCount) • R \(lane.runtimeLinkedThreadCount)")
+                Text(LocalizedString.format("lane_pressure_summary", lane.approvalPressure, lane.blockedThreadCount, lane.runtimeLinkedThreadCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 if let latestAt = lane.latestAt {
@@ -2222,13 +2235,13 @@ private struct OpsCenterThreadsDashboardView: View {
             Text([
                 thread.workflowName,
                 thread.entryAgentName,
-                thread.participantNames.isEmpty ? nil : "\(thread.participantNames.count) participants"
+                thread.participantNames.isEmpty ? nil : LocalizedString.format("participants_count_summary", thread.participantNames.count)
             ].compactMap { $0 }.joined(separator: " • "))
             .font(.caption2)
             .foregroundColor(.secondary)
             .lineLimit(1)
 
-            Text("A \(thread.pendingApprovalCount) • B \(thread.blockedTaskCount) • R \(thread.activeTaskCount) • M \(thread.messageCount)")
+            Text(LocalizedString.format("thread_load_summary", thread.pendingApprovalCount, thread.blockedTaskCount, thread.activeTaskCount, thread.messageCount))
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
@@ -2252,7 +2265,7 @@ private struct OpsCenterThreadsDashboardView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
-                Text("\(mode.threadCount) threads • \(mode.hotspotThreadCount) hotspots • score \(mode.totalHotspotScore)")
+                Text(LocalizedString.format("mode_count_summary", mode.threadCount, mode.hotspotThreadCount, mode.totalHotspotScore))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -2261,10 +2274,10 @@ private struct OpsCenterThreadsDashboardView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text("A \(mode.approvalPressure) • B \(mode.blockedThreadCount)")
+                Text(LocalizedString.format("mode_pressure_summary", mode.approvalPressure, mode.blockedThreadCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("F \(mode.runtimeFailureCount) • Q \(mode.runtimeBacklogCount)")
+                Text(LocalizedString.format("mode_runtime_summary", mode.runtimeFailureCount, mode.runtimeBacklogCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 if let latestAt = mode.latestAt {
@@ -2282,7 +2295,7 @@ private struct OpsCenterThreadsDashboardView: View {
     private func sessionHotspotRow(_ session: OpsCenterThreadSessionDigest) -> some View {
         HStack(alignment: .top, spacing: 12) {
             opsStatusPill(
-                title: session.failedDispatchCount > 0 ? "Session Failure" : "Session Watch",
+                title: session.failedDispatchCount > 0 ? LocalizedString.text("session_failure_badge") : LocalizedString.text("session_watch_badge"),
                 color: session.failedDispatchCount > 0 ? .red : .orange
             )
             .frame(width: 104, alignment: .leading)
@@ -2295,7 +2308,7 @@ private struct OpsCenterThreadsDashboardView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
-                Text("\(session.threadCount) threads • \(session.hotspotThreadCount) hotspots • A \(session.approvalPressure)")
+                Text(LocalizedString.format("session_hotspot_summary", session.threadCount, session.hotspotThreadCount, session.approvalPressure))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -2304,7 +2317,7 @@ private struct OpsCenterThreadsDashboardView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text("Q \(session.queuedDispatchCount) • R \(session.inflightDispatchCount)")
+                Text(LocalizedString.format("session_hotspot_runtime_summary", session.queuedDispatchCount, session.inflightDispatchCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Text("F \(session.failedDispatchCount)")
@@ -2330,7 +2343,7 @@ private struct OpsCenterThreadsDashboardView: View {
                     .foregroundColor(.primary)
                 Spacer()
                 opsStatusPill(
-                    title: slice.hotspotThreadCount > 0 ? "Hot" : "Quiet",
+                    title: slice.hotspotThreadCount > 0 ? LocalizedString.text("hot_badge") : LocalizedString.text("quiet_badge"),
                     color: slice.hotspotThreadCount > 0 ? .orange : .green
                 )
             }
@@ -2340,11 +2353,11 @@ private struct OpsCenterThreadsDashboardView: View {
                 .foregroundColor(.secondary)
                 .lineLimit(3)
 
-            Text("T \(slice.threadCount) • H \(slice.hotspotThreadCount) • A \(slice.approvalPressure)")
+            Text(LocalizedString.format("timeline_count_summary", slice.threadCount, slice.hotspotThreadCount, slice.approvalPressure))
                 .font(.caption2)
                 .foregroundColor(.secondary)
 
-            Text("B \(slice.blockedThreadCount) • R \(slice.runtimeLinkedThreadCount)")
+            Text(LocalizedString.format("timeline_pressure_summary", slice.blockedThreadCount, slice.runtimeLinkedThreadCount))
                 .font(.caption2)
                 .foregroundColor(.secondary)
 
@@ -2459,20 +2472,20 @@ private struct OpsCenterLiveRunDashboardView: View {
             VStack(alignment: .leading, spacing: 18) {
                 if workflow == nil {
                     opsEmptyState(
-                        title: "No workflow available",
-                        detail: "Create or select a workflow to inspect live runtime posture."
+                        title: LocalizedString.text("no_workflow_available"),
+                        detail: LocalizedString.text("no_workflow_available_desc")
                     )
                 } else {
-                    sectionTitle("Current Runtime")
+                    sectionTitle(LocalizedString.text("current_runtime_title"))
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
-                        opsMetricCard(title: "Workflow", value: snapshot.workflowName, detail: "Selected runtime surface", color: .blue)
-                        opsMetricCard(title: "Active Sessions", value: "\(effectiveActiveSessionCount)", detail: "\(effectiveTotalSessionCount) visible in current scope", color: .green)
-                        opsMetricCard(title: "Active Threads", value: "\(activeThreadCount)", detail: "\(threadSummaries.count) workbench threads currently visible", color: activeThreadCount > 0 ? .purple : .green)
-                        opsMetricCard(title: "Hot Threads", value: "\(hotspotThreads.count)", detail: hotspotThreads.first.map(opsThreadHotspotReason) ?? "No thread currently needs urgent drill-down", color: hotspotThreads.isEmpty ? .green : .orange)
-                        opsMetricCard(title: "Queued", value: "\(snapshot.queuedDispatchCount)", detail: "Dispatches waiting to move", color: .blue)
-                        opsMetricCard(title: "Running", value: "\(snapshot.inflightDispatchCount)", detail: "Inflight dispatches", color: .orange)
-                        opsMetricCard(title: "Failures", value: "\(effectiveFailureCount)", detail: snapshot.latestErrorText ?? projections?.liveRun?.latestErrorText ?? "No recent runtime failure text", color: effectiveFailureCount > 0 ? .red : .green)
-                        opsMetricCard(title: "Approvals", value: "\(effectiveApprovalCount)", detail: "Pending approval gates", color: effectiveApprovalCount > 0 ? .yellow : .secondary)
+                        opsMetricCard(title: LocalizedString.text("workflow_label"), value: snapshot.workflowName, detail: LocalizedString.text("selected_runtime_surface"), color: .blue)
+                        opsMetricCard(title: LocalizedString.text("active_sessions_label"), value: "\(effectiveActiveSessionCount)", detail: LocalizedString.format("active_sessions_in_scope", effectiveTotalSessionCount), color: .green)
+                        opsMetricCard(title: LocalizedString.text("active_threads_label"), value: "\(activeThreadCount)", detail: LocalizedString.format("active_threads_in_scope", threadSummaries.count), color: activeThreadCount > 0 ? .purple : .green)
+                        opsMetricCard(title: LocalizedString.text("hot_threads_label"), value: "\(hotspotThreads.count)", detail: hotspotThreads.first.map(opsThreadHotspotReason) ?? LocalizedString.text("no_urgent_thread_drilldown"), color: hotspotThreads.isEmpty ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("queued_status"), value: "\(snapshot.queuedDispatchCount)", detail: LocalizedString.text("queued_dispatches_waiting"), color: .blue)
+                        opsMetricCard(title: LocalizedString.text("running_status"), value: "\(snapshot.inflightDispatchCount)", detail: LocalizedString.text("inflight_dispatches"), color: .orange)
+                        opsMetricCard(title: LocalizedString.text("failures_label"), value: "\(effectiveFailureCount)", detail: snapshot.latestErrorText ?? projections?.liveRun?.latestErrorText ?? LocalizedString.text("no_recent_runtime_failure"), color: effectiveFailureCount > 0 ? .red : .green)
+                        opsMetricCard(title: LocalizedString.text("approvals_label"), value: "\(effectiveApprovalCount)", detail: LocalizedString.text("pending_approval_gates"), color: effectiveApprovalCount > 0 ? .yellow : .secondary)
                     }
 
                     if let projectionContextText {
@@ -2481,13 +2494,13 @@ private struct OpsCenterLiveRunDashboardView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    Text("Select a node or session to open the investigation panel with linked events, dispatches, receipts, and workbench history.")
+                    Text(LocalizedString.text("live_run_investigation_hint"))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    sectionTitle("Hot Threads")
+                    sectionTitle(LocalizedString.text("hot_threads_title"))
                     if hotspotThreads.isEmpty {
-                        opsInlineEmptyState("No workbench thread hotspot is currently visible in the selected runtime scope.")
+                        opsInlineEmptyState(LocalizedString.text("hot_threads_empty"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(Array(hotspotThreads.prefix(5))) { thread in
@@ -2501,7 +2514,7 @@ private struct OpsCenterLiveRunDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Hot Nodes")
+                    sectionTitle(LocalizedString.text("hot_nodes_title"))
                     VStack(spacing: 8) {
                         ForEach(effectiveNodeSummaries.prefix(8)) { node in
                             Button {
@@ -2515,7 +2528,7 @@ private struct OpsCenterLiveRunDashboardView: View {
                                         Text(node.title)
                                             .font(.subheadline.weight(.medium))
                                             .foregroundColor(.primary)
-                                        Text(node.agentName ?? "No bound agent")
+                                        Text(node.agentName ?? LocalizedString.text("no_bound_agent"))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                         if let latestDetail = node.latestDetail, !latestDetail.isEmpty {
@@ -2529,11 +2542,11 @@ private struct OpsCenterLiveRunDashboardView: View {
                                     Spacer()
 
                                     VStack(alignment: .trailing, spacing: 4) {
-                                        Text("In \(node.incomingEdgeCount) / Out \(node.outgoingEdgeCount)")
+                                        Text(LocalizedString.format("node_io_summary", node.incomingEdgeCount, node.outgoingEdgeCount))
                                             .font(.caption2)
                                             .foregroundColor(.secondary)
                                         if let averageDuration = node.averageDuration {
-                                            Text("Avg \(opsDurationText(averageDuration))")
+                                            Text(LocalizedString.format("average_duration_short", opsDurationText(averageDuration)))
                                                 .font(.caption2)
                                                 .foregroundColor(.secondary)
                                         }
@@ -2552,7 +2565,7 @@ private struct OpsCenterLiveRunDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Active Sessions")
+                    sectionTitle(LocalizedString.text("active_sessions_title"))
                     VStack(spacing: 8) {
                         ForEach(effectiveSessionSummaries.prefix(6)) { session in
                             Button {
@@ -2572,7 +2585,7 @@ private struct OpsCenterLiveRunDashboardView: View {
     private func sessionRow(_ session: OpsCenterSessionSummary) -> some View {
         HStack(alignment: .top, spacing: 12) {
             opsStatusPill(
-                title: session.isPrimaryRuntimeSession ? "Primary" : "Session",
+                title: session.isPrimaryRuntimeSession ? LocalizedString.text("primary_badge") : LocalizedString.text("session_badge"),
                 color: session.isPrimaryRuntimeSession ? .teal : .secondary
             )
             .frame(width: 72, alignment: .leading)
@@ -2582,12 +2595,7 @@ private struct OpsCenterLiveRunDashboardView: View {
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(.primary)
                 Text(
-                    [
-                        "Events \(session.eventCount)",
-                        "Dispatches \(session.dispatchCount)",
-                        "Receipts \(session.receiptCount)"
-                    ]
-                    .joined(separator: " • ")
+                    LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount)
                 )
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -2603,10 +2611,10 @@ private struct OpsCenterLiveRunDashboardView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text("Q \(session.queuedDispatchCount) / R \(session.inflightDispatchCount)")
+                Text(LocalizedString.format("session_runtime_summary", session.queuedDispatchCount, session.inflightDispatchCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("F \(session.failedDispatchCount) / C \(session.completedDispatchCount)")
+                Text(LocalizedString.format("session_completion_summary", session.failedDispatchCount, session.completedDispatchCount))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 if let lastUpdatedAt = session.lastUpdatedAt {
@@ -2717,23 +2725,23 @@ private struct OpsCenterSessionsDashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                sectionTitle("Workbench Thread Frontline")
+                sectionTitle(LocalizedString.text("sessions_thread_frontline_title"))
                 if threadSummaries.isEmpty {
-                    opsInlineEmptyState("No workbench thread has been linked into the current workflow scope yet.")
+                    opsInlineEmptyState(LocalizedString.text("sessions_thread_frontline_empty"))
                 } else {
-                    Text("Threads are now treated as the operator-facing front door: approval stalls, blocked work, and live session pressure surface here before session deep dives.")
+                    Text(LocalizedString.text("sessions_thread_frontline_desc"))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
-                        opsMetricCard(title: "Hotspot Threads", value: "\(hotspotThreads.count)", detail: "Threads with approval waits, blocked work, or runtime pressure", color: hotspotThreads.isEmpty ? .green : .orange)
-                        opsMetricCard(title: "Approval Pressure", value: "\(threadApprovalPressure)", detail: "Pending thread-level approvals retained in the visible scope", color: threadApprovalPressure > 0 ? .yellow : .green)
-                        opsMetricCard(title: "Blocked Threads", value: "\(blockedThreadCount)", detail: "Threads carrying blocked workbench tasks", color: blockedThreadCount > 0 ? .red : .green)
-                        opsMetricCard(title: "Lead Thread", value: leadHotspotThread.map { String($0.threadID.prefix(12)) } ?? "None", detail: leadHotspotThread.map(opsThreadHotspotReason) ?? "No current thread hotspot requires immediate intervention", color: leadHotspotThread == nil ? .green : .red)
+                        opsMetricCard(title: LocalizedString.text("hotspot_threads_label"), value: "\(hotspotThreads.count)", detail: LocalizedString.text("hotspot_threads_detail"), color: hotspotThreads.isEmpty ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("approval_pressure_label"), value: "\(threadApprovalPressure)", detail: LocalizedString.text("thread_approval_pressure_detail"), color: threadApprovalPressure > 0 ? .yellow : .green)
+                        opsMetricCard(title: LocalizedString.text("blocked_tasks"), value: "\(blockedThreadCount)", detail: LocalizedString.text("thread_blocked_detail"), color: blockedThreadCount > 0 ? .red : .green)
+                        opsMetricCard(title: LocalizedString.text("lead_thread_title"), value: leadHotspotThread.map { String($0.threadID.prefix(12)) } ?? LocalizedString.text("ops_none"), detail: leadHotspotThread.map(opsThreadHotspotReason) ?? LocalizedString.text("lead_thread_intervention_detail"), color: leadHotspotThread == nil ? .green : .red)
                     }
 
                     if !hotspotThreads.isEmpty {
-                        sectionTitle("Current Thread Hotspots")
+                        sectionTitle(LocalizedString.text("current_thread_hotspots_title"))
                         VStack(spacing: 8) {
                             ForEach(Array(hotspotThreads.prefix(4))) { thread in
                                 Button {
@@ -2746,7 +2754,7 @@ private struct OpsCenterSessionsDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Workbench Threads")
+                    sectionTitle(LocalizedString.text("workbench_threads_title"))
                     VStack(spacing: 8) {
                         ForEach(threadSummaries) { thread in
                             Button {
@@ -2759,23 +2767,23 @@ private struct OpsCenterSessionsDashboardView: View {
                     }
                 }
 
-                sectionTitle("Session Investigation Queue")
+                sectionTitle(LocalizedString.text("session_queue_title"))
                 if effectiveSessions.isEmpty {
                     opsEmptyState(
-                        title: "No runtime sessions captured",
-                        detail: "Sessions will appear after workbench or workflow runtime activity enters the managed project runtime store."
+                        title: LocalizedString.text("session_queue_empty_title"),
+                        detail: LocalizedString.text("session_queue_empty_desc")
                     )
                 } else {
-                    Text("Open any session to inspect related runtime events, receipts, dispatch pressure, and workbench context together.")
+                    Text(LocalizedString.text("session_queue_hint"))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .center, spacing: 12) {
-                            TextField("Search session ID, workflow ID, or failure text", text: $searchText)
+                            TextField(LocalizedString.text("session_search_placeholder"), text: $searchText)
                                 .textFieldStyle(.roundedBorder)
 
-                            Picker("Filter", selection: $selectedFilter) {
+                            Picker(LocalizedString.text("ops_filter_label"), selection: $selectedFilter) {
                                 ForEach(OpsCenterSessionListFilter.allCases) { filter in
                                     Text(filter.title).tag(filter)
                                 }
@@ -2785,7 +2793,7 @@ private struct OpsCenterSessionsDashboardView: View {
                         }
 
                         HStack(alignment: .center, spacing: 12) {
-                            Picker("Focus", selection: $selectedFocus) {
+                            Picker(LocalizedString.text("ops_focus_label"), selection: $selectedFocus) {
                                 ForEach(OpsCenterSessionFocus.allCases) { focus in
                                     Text(focus.title).tag(focus)
                                 }
@@ -2793,7 +2801,7 @@ private struct OpsCenterSessionsDashboardView: View {
                             .pickerStyle(.segmented)
                             .frame(width: 230)
 
-                            Picker("Sort", selection: $selectedSort) {
+                            Picker(LocalizedString.text("ops_sort_label"), selection: $selectedSort) {
                                 ForEach(OpsCenterSessionSort.allCases) { sort in
                                     Text(sort.title).tag(sort)
                                 }
@@ -2803,27 +2811,27 @@ private struct OpsCenterSessionsDashboardView: View {
 
                             Spacer()
 
-                            Text("\(displayedSessions.count) of \(effectiveSessions.count) sessions visible in current scope.")
+                            Text(LocalizedString.format("sessions_visible_in_scope", displayedSessions.count, effectiveSessions.count))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
-                        opsMetricCard(title: "Hotspot Sessions", value: "\(hotspotSessions.count)", detail: "Sessions with failure, active dispatch, or primary-runtime signal", color: hotspotSessions.isEmpty ? .green : .orange)
-                        opsMetricCard(title: "Dispatch Pressure", value: "\(hotspotDispatchPressure)", detail: "Queued and inflight dispatches across hotspot sessions", color: hotspotDispatchPressure > 0 ? .orange : .green)
-                        opsMetricCard(title: "Failure Signals", value: "\(hotspotFailureSignals)", detail: "Failed dispatches retained across hotspot sessions", color: hotspotFailureSignals > 0 ? .red : .green)
-                        opsMetricCard(title: "Lead Hotspot", value: leadHotspotSession.map { String($0.sessionID.prefix(12)) } ?? "None", detail: leadHotspotSession.map(opsSessionHotspotReason) ?? "No current hotspot requires immediate drill-down", color: leadHotspotSession == nil ? .green : .red)
+                        opsMetricCard(title: LocalizedString.text("hotspot_sessions_label"), value: "\(hotspotSessions.count)", detail: LocalizedString.text("hotspot_sessions_detail"), color: hotspotSessions.isEmpty ? .green : .orange)
+                        opsMetricCard(title: LocalizedString.text("dispatch_pressure_label"), value: "\(hotspotDispatchPressure)", detail: LocalizedString.text("dispatch_pressure_detail"), color: hotspotDispatchPressure > 0 ? .orange : .green)
+                        opsMetricCard(title: LocalizedString.text("failure_signals_label"), value: "\(hotspotFailureSignals)", detail: LocalizedString.text("failure_signals_detail"), color: hotspotFailureSignals > 0 ? .red : .green)
+                        opsMetricCard(title: LocalizedString.text("lead_hotspot_label"), value: leadHotspotSession.map { String($0.sessionID.prefix(12)) } ?? LocalizedString.text("ops_none"), detail: leadHotspotSession.map(opsSessionHotspotReason) ?? LocalizedString.text("lead_hotspot_detail"), color: leadHotspotSession == nil ? .green : .red)
                     }
 
                     if sessions.isEmpty, let freshestProjectionAt = projections?.freshestGeneratedAt {
-                        Text("Using persisted session projections from \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)).")
+                        Text(LocalizedString.format("persisted_sessions_notice", freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
 
                     if !hotspotSessions.isEmpty {
-                        sectionTitle("Current Hotspots")
+                        sectionTitle(LocalizedString.text("ops_hotspots"))
                         VStack(spacing: 8) {
                             ForEach(Array(hotspotSessions.prefix(3))) { session in
                                 Button {
@@ -2837,7 +2845,7 @@ private struct OpsCenterSessionsDashboardView: View {
                                             Text(opsSessionHotspotReason(session))
                                                 .font(.caption.weight(.medium))
                                                 .foregroundColor(.primary)
-                                            Text("Queued \(session.queuedDispatchCount) • Running \(session.inflightDispatchCount) • Failed \(session.failedDispatchCount) • Receipts \(session.receiptCount)")
+                                            Text(LocalizedString.format("queued_running_failed_receipts_summary", session.queuedDispatchCount, session.inflightDispatchCount, session.failedDispatchCount, session.receiptCount))
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
                                         }
@@ -2846,7 +2854,7 @@ private struct OpsCenterSessionsDashboardView: View {
 
                                         VStack(alignment: .trailing, spacing: 6) {
                                             opsStatusPill(
-                                                title: session.failedDispatchCount > 0 ? "Failure Hotspot" : (session.inflightDispatchCount > 0 ? "Running Hotspot" : "Watch"),
+                                                title: session.failedDispatchCount > 0 ? LocalizedString.text("failure_hotspot_badge") : (session.inflightDispatchCount > 0 ? LocalizedString.text("running_hotspot_badge") : LocalizedString.text("watch_badge")),
                                                 color: session.failedDispatchCount > 0 ? .red : (session.inflightDispatchCount > 0 ? .orange : .teal)
                                             )
                                             if let lastUpdatedAt = session.lastUpdatedAt {
@@ -2866,7 +2874,7 @@ private struct OpsCenterSessionsDashboardView: View {
                     }
 
                     if displayedSessions.isEmpty {
-                        opsInlineEmptyState("No sessions match the current search, filter, or focus mode.")
+                        opsInlineEmptyState(LocalizedString.text("sessions_no_match_scope"))
                     }
 
                     ForEach(displayedSessions) { session in
@@ -2880,23 +2888,23 @@ private struct OpsCenterSessionsDashboardView: View {
                                         .foregroundColor(.primary)
                                     Spacer()
                                     opsStatusPill(
-                                        title: session.isPrimaryRuntimeSession ? "Primary Runtime Session" : "Linked Session",
+                                        title: session.isPrimaryRuntimeSession ? LocalizedString.text("primary_runtime_session_badge") : LocalizedString.text("linked_session_badge"),
                                         color: session.isPrimaryRuntimeSession ? .teal : .blue
                                     )
                                 }
 
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], spacing: 12) {
-                                    opsMetricCard(title: "Events", value: "\(session.eventCount)", detail: "Runtime event count", color: .blue)
-                                    opsMetricCard(title: "Dispatches", value: "\(session.dispatchCount)", detail: "Queued + inflight + terminal", color: .orange)
-                                    opsMetricCard(title: "Receipts", value: "\(session.receiptCount)", detail: "Execution receipts in scope", color: .green)
-                                    opsMetricCard(title: "Failures", value: "\(session.failedDispatchCount)", detail: session.latestFailureText ?? "No recent failure text", color: session.failedDispatchCount > 0 ? .red : .green)
+                                    opsMetricCard(title: LocalizedString.text("events"), value: "\(session.eventCount)", detail: LocalizedString.text("events_detail"), color: .blue)
+                                    opsMetricCard(title: LocalizedString.text("dispatches_label"), value: "\(session.dispatchCount)", detail: LocalizedString.text("dispatches_detail"), color: .orange)
+                                    opsMetricCard(title: LocalizedString.text("receipts_label"), value: "\(session.receiptCount)", detail: LocalizedString.text("receipts_detail"), color: .green)
+                                    opsMetricCard(title: LocalizedString.text("failures_label"), value: "\(session.failedDispatchCount)", detail: session.latestFailureText ?? LocalizedString.text("no_recent_runtime_failure"), color: session.failedDispatchCount > 0 ? .red : .green)
                                 }
 
                                 HStack(spacing: 12) {
                                     Text(
                                         session.workflowIDs.isEmpty
-                                            ? "No workflow IDs resolved yet"
-                                            : "Workflow IDs: \(session.workflowIDs.joined(separator: ", "))"
+                                            ? LocalizedString.text("no_workflow_ids_resolved")
+                                            : LocalizedString.format("workflow_ids_prefix", session.workflowIDs.joined(separator: ", "))
                                     )
                                     .font(.caption)
                                     .foregroundColor(.secondary)
@@ -2904,7 +2912,7 @@ private struct OpsCenterSessionsDashboardView: View {
                                     Spacer()
 
                                     if let lastUpdatedAt = session.lastUpdatedAt {
-                                        Text("Updated \(lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                        Text(LocalizedString.format("updated_time", lastUpdatedAt.formatted(date: .abbreviated, time: .shortened)))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                     }
@@ -2993,11 +3001,11 @@ private enum OpsCenterSessionListFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All"
+            return LocalizedString.text("ops_all")
         case .active:
-            return "Active"
+            return LocalizedString.text("ops_active")
         case .failed:
-            return "Failed"
+            return LocalizedString.text("failed_label")
         }
     }
 }
@@ -3012,11 +3020,11 @@ private enum OpsCenterThreadListFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All"
+            return LocalizedString.text("ops_all")
         case .active:
-            return "Active"
+            return LocalizedString.text("ops_active")
         case .blocked:
-            return "Blocked"
+            return LocalizedString.blocked
         }
     }
 }
@@ -3033,15 +3041,15 @@ private enum OpsCenterThreadFocus: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All"
+            return LocalizedString.text("ops_all")
         case .hotspots:
-            return "Hotspots"
+            return LocalizedString.text("ops_hotspots")
         case .approval:
-            return "Approval"
+            return LocalizedString.text("approval")
         case .blocked:
-            return "Blocked"
+            return LocalizedString.blocked
         case .runtime:
-            return "Runtime"
+            return LocalizedString.text("runtime_category")
         }
     }
 }
@@ -3058,15 +3066,15 @@ private enum OpsCenterThreadSort: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .hotspot:
-            return "Hotspot Score"
+            return LocalizedString.text("ops_hotspot_score")
         case .recent:
-            return "Most Recent"
+            return LocalizedString.text("ops_most_recent")
         case .approval:
-            return "Approval Load"
+            return LocalizedString.text("ops_approval_load")
         case .runtime:
-            return "Runtime Load"
+            return LocalizedString.text("ops_runtime_load")
         case .messages:
-            return "Message Load"
+            return LocalizedString.text("ops_message_load")
         }
     }
 }
@@ -3082,13 +3090,13 @@ private enum OpsCenterSignalListFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All"
+            return LocalizedString.text("ops_all")
         case .crons:
-            return "Crons"
+            return LocalizedString.text("ops_crons")
         case .tools:
-            return "Tools"
+            return LocalizedString.tools
         case .projections:
-            return "Projections"
+            return LocalizedString.text("ops_projections")
         }
     }
 }
@@ -3103,11 +3111,11 @@ private enum OpsCenterSignalSort: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .priority:
-            return "Priority"
+            return LocalizedString.priority
         case .recent:
-            return "Most Recent"
+            return LocalizedString.text("ops_most_recent")
         case .name:
-            return "Name"
+            return LocalizedString.text("ops_name")
         }
     }
 }
@@ -3125,34 +3133,34 @@ private enum OpsCenterThreadPressureMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .approval:
-            return "Approval Gridlock"
+            return LocalizedString.text("ops_approval_gridlock")
         case .blocked:
-            return "Blocked Work"
+            return LocalizedString.text("ops_blocked_work")
         case .runtimeFailure:
-            return "Runtime Failure"
+            return LocalizedString.text("ops_runtime_failure")
         case .runtimeBacklog:
-            return "Runtime Backlog"
+            return LocalizedString.text("ops_runtime_backlog")
         case .activeWork:
-            return "Active Work"
+            return LocalizedString.text("ops_active_work")
         case .stable:
-            return "Stable Hold"
+            return LocalizedString.text("ops_stable_hold")
         }
     }
 
     var shortTitle: String {
         switch self {
         case .approval:
-            return "Approval"
+            return LocalizedString.text("approval")
         case .blocked:
-            return "Blocked"
+            return LocalizedString.blocked
         case .runtimeFailure:
-            return "Failure"
+            return LocalizedString.text("ops_failure_short")
         case .runtimeBacklog:
-            return "Backlog"
+            return LocalizedString.text("ops_backlog_short")
         case .activeWork:
-            return "Active"
+            return LocalizedString.text("ops_active")
         case .stable:
-            return "Stable"
+            return LocalizedString.text("ops_stable_short")
         }
     }
 
@@ -3182,11 +3190,11 @@ private enum OpsCenterSignalKind: String {
     var title: String {
         switch self {
         case .cron:
-            return "Cron"
+            return LocalizedString.text("cron_category")
         case .tool:
-            return "Tool"
+            return LocalizedString.text("tool_category")
         case .projection:
-            return "Projection"
+            return LocalizedString.text("ops_projections")
         }
     }
 }
@@ -3200,9 +3208,9 @@ private enum OpsCenterSessionFocus: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All Sessions"
+            return LocalizedString.text("ops_all_sessions")
         case .hotspots:
-            return "Hotspots"
+            return LocalizedString.text("ops_hotspots")
         }
     }
 }
@@ -3217,11 +3225,11 @@ private enum OpsCenterSessionSort: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .recent:
-            return "Most Recent"
+            return LocalizedString.text("ops_most_recent")
         case .failures:
-            return "Failure Pressure"
+            return LocalizedString.text("ops_failure_pressure")
         case .activity:
-            return "Activity Load"
+            return LocalizedString.text("ops_activity_load")
         }
     }
 }
@@ -3270,9 +3278,9 @@ private struct OpsCenterWorkflowMapDashboardView: View {
 
             return OpsCenterEdgeSummary(
                 id: edge.id,
-                title: edge.label.isEmpty ? "Path" : edge.label,
-                fromTitle: workflow.nodes.first(where: { $0.id == edge.fromNodeID })?.title ?? "Unknown",
-                toTitle: workflow.nodes.first(where: { $0.id == edge.toNodeID })?.title ?? "Unknown",
+                title: edge.label.isEmpty ? LocalizedString.text("route_path_fallback") : edge.label,
+                fromTitle: workflow.nodes.first(where: { $0.id == edge.fromNodeID })?.title ?? LocalizedString.text("investigation_unknown_title"),
+                toTitle: workflow.nodes.first(where: { $0.id == edge.toNodeID })?.title ?? LocalizedString.text("investigation_unknown_title"),
                 activityCount: activityCount,
                 requiresApproval: edge.requiresApproval
             )
@@ -3345,9 +3353,9 @@ private struct OpsCenterWorkflowMapDashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    sectionTitle("Workflow Runtime Map")
+                    sectionTitle(LocalizedString.text("workflow_runtime_map_title"))
                     Spacer()
-                    Picker("Layer", selection: $selectedLayer) {
+                    Picker(LocalizedString.text("ops_layer_label"), selection: $selectedLayer) {
                         ForEach(OpsCenterMapLayer.allCases) { layer in
                             Text(layer.title).tag(layer)
                         }
@@ -3358,8 +3366,8 @@ private struct OpsCenterWorkflowMapDashboardView: View {
 
                 if workflow == nil {
                     opsEmptyState(
-                        title: "No workflow selected",
-                        detail: "Workflow Map needs a concrete workflow to project runtime state."
+                        title: LocalizedString.text("no_workflow_selected"),
+                        detail: LocalizedString.text("workflow_map_needs_workflow")
                     )
                 } else {
                     Text(selectedLayer.detail)
@@ -3367,7 +3375,12 @@ private struct OpsCenterWorkflowMapDashboardView: View {
                         .foregroundColor(.secondary)
 
                     if snapshot.nodeSummaries.isEmpty, let freshestProjectionAt = projections?.freshestGeneratedAt {
-                        Text("Rendering persisted node-runtime projection from \(freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)).")
+                        Text(
+                            LocalizedString.format(
+                                "workflow_map_projection_notice",
+                                freshestProjectionAt.formatted(date: .abbreviated, time: .shortened)
+                            )
+                        )
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -3383,7 +3396,7 @@ private struct OpsCenterWorkflowMapDashboardView: View {
                                             Text(node.title)
                                                 .font(.subheadline.weight(.semibold))
                                                 .foregroundColor(.primary)
-                                            Text(node.agentName ?? "No bound agent")
+                                            Text(node.agentName ?? LocalizedString.text("no_bound_agent"))
                                                 .font(.caption)
                                                 .foregroundColor(.secondary)
                                         }
@@ -3401,7 +3414,7 @@ private struct OpsCenterWorkflowMapDashboardView: View {
                                         let anomalyCount = historyAnomalyCount(for: node)
                                         if anomalyCount > 0 {
                                             opsStatusPill(
-                                                title: "\(anomalyCount) anomalies",
+                                                title: LocalizedString.format("anomalies_count_badge", anomalyCount),
                                                 color: anomalyCount > 2 ? .red : .orange
                                             )
                                         }
@@ -3420,8 +3433,8 @@ private struct OpsCenterWorkflowMapDashboardView: View {
                                     }
 
                                     HStack {
-                                        Text("In \(node.incomingEdgeCount)")
-                                        Text("Out \(node.outgoingEdgeCount)")
+                                        Text(LocalizedString.format("incoming_count_badge", node.incomingEdgeCount))
+                                        Text(LocalizedString.format("outgoing_count_badge", node.outgoingEdgeCount))
                                         Spacer()
                                         if let lastUpdatedAt = node.lastUpdatedAt {
                                             Text(lastUpdatedAt.formatted(date: .omitted, time: .shortened))
@@ -3438,7 +3451,7 @@ private struct OpsCenterWorkflowMapDashboardView: View {
                         }
                     }
 
-                    sectionTitle("Edge Activity")
+                    sectionTitle(LocalizedString.text("edge_activity_title"))
                     VStack(spacing: 8) {
                         ForEach(effectiveEdgeSummaries) { edge in
                             let routeAnomalyCount = historyAnomalyCount(forEdge: edge)
@@ -3466,26 +3479,26 @@ private struct OpsCenterWorkflowMapDashboardView: View {
 
                                     HStack(spacing: 8) {
                                         opsStatusPill(
-                                            title: "Flow \(edge.activityCount)",
+                                            title: LocalizedString.format("edge_flow_badge", edge.activityCount),
                                             color: edge.activityCount > 0 ? .blue : .secondary
                                         )
 
                                         if routeSharedSessionCount > 0 {
                                             opsStatusPill(
-                                                title: "Shared \(routeSharedSessionCount)",
+                                                title: LocalizedString.format("edge_shared_badge", routeSharedSessionCount),
                                                 color: routeSharedSessionCount > 1 ? .orange : .secondary
                                             )
                                         }
 
                                         if routeAnomalyCount > 0 {
                                             opsStatusPill(
-                                                title: "\(routeAnomalyCount) anomalies",
+                                                title: LocalizedString.format("anomalies_count_badge", routeAnomalyCount),
                                                 color: routeAnomalyCount > 2 ? .red : .orange
                                             )
                                         }
 
                                         if edge.requiresApproval {
-                                            opsStatusPill(title: "Approval", color: .yellow)
+                                            opsStatusPill(title: LocalizedString.text("approval"), color: .yellow)
                                         }
                                     }
 
@@ -3517,21 +3530,23 @@ private struct OpsCenterWorkflowMapDashboardView: View {
     private func layerDetail(for node: OpsCenterNodeSummary) -> String {
         switch selectedLayer {
         case .state:
-            return node.latestDetail ?? "No runtime detail captured for this node yet."
+            return node.latestDetail ?? LocalizedString.text("node_state_detail_empty")
         case .latency:
-            return node.averageDuration.map { "Average runtime \(opsDurationText($0))." } ?? "No average runtime captured yet."
+            return node.averageDuration.map {
+                LocalizedString.format("node_latency_detail_prefix", opsDurationText($0))
+            } ?? LocalizedString.text("node_latency_detail_empty")
         case .failures:
             return node.status == .failed
-                ? (node.latestDetail ?? "This node currently surfaces a failure signal.")
-                : "No active failure signal for this node."
+                ? (node.latestDetail ?? LocalizedString.text("node_failure_detail_active"))
+                : LocalizedString.text("node_failure_detail_clear")
         case .routing:
-            return "Incoming edges \(node.incomingEdgeCount), outgoing edges \(node.outgoingEdgeCount). Use this layer to inspect where flow density is concentrating."
+            return LocalizedString.format("node_routing_detail", node.incomingEdgeCount, node.outgoingEdgeCount)
         case .approvals:
             return node.status == .waitingApproval
-                ? "This node is currently blocked by an approval gate."
-                : "No active approval gate detected on this node."
+                ? LocalizedString.text("node_approval_detail_active")
+                : LocalizedString.text("node_approval_detail_clear")
         case .files:
-            return "File scope overlays will be projected here as workflow-derived file access data is migrated into the new Ops Center surfaces."
+            return LocalizedString.text("node_files_detail")
         }
     }
 
@@ -3543,12 +3558,12 @@ private struct OpsCenterWorkflowMapDashboardView: View {
         if let trace = latestProjectionTraceByNodeID[node.id] {
             let statusText = trace.status.rawValue
             let summary = compactWorkflowMapPreview(trace.previewText, limit: 110)
-            return "Recent trace: \(statusText) • \(summary)"
+            return LocalizedString.format("history_trace_summary_recent", statusText, summary)
         }
 
         if let result = latestLiveResultByNodeID[node.id] {
             let summary = compactWorkflowMapPreview(result.summaryText, limit: 110)
-            return "Live trace: \(result.status.rawValue) • \(summary)"
+            return LocalizedString.format("history_trace_summary_live", result.status.rawValue, summary)
         }
 
         return nil
@@ -3560,7 +3575,7 @@ private struct OpsCenterWorkflowMapDashboardView: View {
             .joined(separator: " ")
             .replacingOccurrences(of: "\t", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !singleLine.isEmpty else { return "No retained trace summary." }
+        guard !singleLine.isEmpty else { return LocalizedString.text("history_trace_summary_empty") }
         guard singleLine.count > limit else { return singleLine }
         return "\(singleLine.prefix(limit))..."
     }
@@ -3599,18 +3614,18 @@ private struct OpsCenterWorkflowMapDashboardView: View {
         let sessionCount = sharedSessionCount(forEdge: edge)
 
         if anomalyCount > 0 {
-            return "Route carries \(anomalyCount) retained anomaly signal(s) across its connected nodes."
+            return LocalizedString.format("route_detail_anomalies", anomalyCount)
         }
         if sessionCount > 0 {
-            return "Route is shared by \(sessionCount) retained session(s) in the persisted runtime projection."
+            return LocalizedString.format("route_detail_shared_sessions", sessionCount)
         }
         if edge.activityCount > 0 {
-            return "Route is currently active in live or projected runtime flow."
+            return LocalizedString.text("route_detail_active")
         }
         if edge.requiresApproval {
-            return "Route includes an approval gate and should be watched for operator latency."
+            return LocalizedString.text("route_detail_approval")
         }
-        return "No recent retained congestion or failure signal on this route."
+        return LocalizedString.text("route_detail_clear")
     }
 
     private func routeTraceSummary(for edge: OpsCenterEdgeSummary) -> String? {
@@ -3688,13 +3703,13 @@ private enum OpsCenterHistoryListFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All"
+            return LocalizedString.text("history_filter_all")
         case .anomalies:
-            return "Anomalies"
+            return LocalizedString.text("history_filter_anomalies")
         case .traces:
-            return "Traces"
+            return LocalizedString.text("history_filter_traces")
         case .actionable:
-            return "Actionable"
+            return LocalizedString.text("history_filter_actionable")
         }
     }
 }
@@ -3709,11 +3724,11 @@ private enum OpsCenterHistoryFocus: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all:
-            return "All Signals"
+            return LocalizedString.text("ops_all_signals")
         case .hotspots:
-            return "Hotspots"
+            return LocalizedString.text("history_focus_hotspots")
         case .current:
-            return "Current Focus"
+            return LocalizedString.text("history_focus_current")
         }
     }
 }
@@ -3728,11 +3743,11 @@ private enum OpsCenterHistorySort: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .newest:
-            return "Newest First"
+            return LocalizedString.text("ops_newest_first")
         case .severity:
-            return "Severity First"
+            return LocalizedString.text("ops_severity_first")
         case .runtimeCost:
-            return "Runtime Cost"
+            return LocalizedString.text("ops_runtime_cost")
         }
     }
 }
@@ -3950,27 +3965,27 @@ private struct OpsCenterHistoryDashboardView: View {
             cards.append(
                 OpsCenterHistoryGoalDigest(
                     id: "projection-reliability",
-                    title: "Execution Reliability",
+                    title: LocalizedString.text("history_execution_reliability_title"),
                     valueText: "\(successRate)%",
-                    detailText: "\(overview.completedExecutionCount) completed / \(overview.failedExecutionCount) failed from persisted runtime traces",
+                    detailText: LocalizedString.format("history_execution_reliability_detail", overview.completedExecutionCount, overview.failedExecutionCount),
                     status: overview.failedExecutionCount > 0 ? .warning : .healthy
                 )
             )
             cards.append(
                 OpsCenterHistoryGoalDigest(
                     id: "projection-error-budget",
-                    title: "Error Budget",
+                    title: LocalizedString.text("history_error_budget_title"),
                     valueText: "\(overview.errorLogCount)",
-                    detailText: "\(overview.warningLogCount) warnings retained in persisted analytics snapshot",
+                    detailText: LocalizedString.format("history_error_budget_detail", overview.warningLogCount),
                     status: overview.errorLogCount > 0 ? .critical : (overview.warningLogCount > 0 ? .warning : .healthy)
                 )
             )
             cards.append(
                 OpsCenterHistoryGoalDigest(
                     id: "projection-approvals",
-                    title: "Approval Pressure",
+                    title: LocalizedString.text("approval_pressure_label"),
                     valueText: "\(overview.pendingApprovalCount)",
-                    detailText: "Pending approval gates captured in the latest filesystem projection",
+                    detailText: LocalizedString.text("history_projection_approval_detail"),
                     status: overview.pendingApprovalCount > 0 ? .warning : .healthy
                 )
             )
@@ -3979,7 +3994,7 @@ private struct OpsCenterHistoryDashboardView: View {
         let projectedLiveRun = projections?.liveRun.map { liveRun in
             OpsCenterProjectionWorkflowLiveRunEntry(
                 workflowID: workflow?.id ?? UUID(),
-                workflowName: workflow?.name ?? "Project Runtime",
+                workflowName: workflow?.name ?? LocalizedString.text("history_project_runtime"),
                 sessionCount: liveRun.totalSessionCount,
                 activeSessionCount: liveRun.activeSessionCount,
                 activeNodeCount: 0,
@@ -3993,9 +4008,9 @@ private struct OpsCenterHistoryDashboardView: View {
             cards.append(
                 OpsCenterHistoryGoalDigest(
                     id: "projection-sessions",
-                    title: "Session Load",
+                    title: LocalizedString.text("history_session_load_title"),
                     valueText: "\(liveRun.activeSessionCount) / \(liveRun.sessionCount)",
-                    detailText: "Active versus visible sessions in the persisted runtime projection",
+                    detailText: LocalizedString.text("history_session_load_detail"),
                     status: liveRun.activeSessionCount > 0 ? .warning : .neutral
                 )
             )
@@ -4005,9 +4020,9 @@ private struct OpsCenterHistoryDashboardView: View {
             cards.append(
                 OpsCenterHistoryGoalDigest(
                     id: "projection-workflow-health",
-                    title: "Workflow Hotspots",
+                    title: LocalizedString.text("history_workflow_hotspots_title"),
                     valueText: "\(workflowHealth.failedNodeCount)",
-                    detailText: "\(workflowHealth.waitingApprovalNodeCount) approval nodes and \(workflowHealth.activeNodeCount) active nodes in current health projection",
+                    detailText: LocalizedString.format("history_workflow_hotspots_detail", workflowHealth.waitingApprovalNodeCount, workflowHealth.activeNodeCount),
                     status: workflowHealth.failedNodeCount > 0 ? .critical : (workflowHealth.waitingApprovalNodeCount > 0 ? .warning : .healthy)
                 )
             )
@@ -4104,9 +4119,9 @@ private struct OpsCenterHistoryDashboardView: View {
             .map { entry in
                 OpsCenterHistoryTraceDigest(
                     id: "projection-\(entry.executionID.uuidString)",
-                    title: nodeTitlesByID[entry.nodeID] ?? "Runtime Trace",
-                    agentName: agentNamesByID[entry.agentID] ?? "Unknown Agent",
-                    sourceLabel: entry.sessionID ?? "Persisted Trace",
+                    title: nodeTitlesByID[entry.nodeID] ?? LocalizedString.text("history_runtime_trace_title"),
+                    agentName: agentNamesByID[entry.agentID] ?? LocalizedString.text("investigation_unknown_agent"),
+                    sourceLabel: entry.sessionID ?? LocalizedString.text("history_persisted_trace_title"),
                     statusText: entry.status.rawValue,
                     previewText: entry.previewText,
                     outputTypeText: entry.outputType.rawValue,
@@ -4304,7 +4319,7 @@ private struct OpsCenterHistoryDashboardView: View {
             .map { anomaly in
                 OpsCenterHistorySpotlightDigest(
                     id: "anomaly-\(anomaly.id)",
-                    kindTitle: "Anomaly",
+                    kindTitle: LocalizedString.text("history_anomaly_kind"),
                     title: anomaly.title,
                     detailText: "\(anomaly.sourceLabel) • \(anomaly.detailText)",
                     timestamp: anomaly.timestamp,
@@ -4320,7 +4335,7 @@ private struct OpsCenterHistoryDashboardView: View {
             .map { trace in
                 OpsCenterHistorySpotlightDigest(
                     id: "trace-\(trace.id)",
-                    kindTitle: "Trace",
+                    kindTitle: LocalizedString.text("history_trace_kind"),
                     title: trace.title,
                     detailText: "\(trace.agentName) • \(trace.statusText) • \(trace.previewText)",
                     timestamp: trace.timestamp,
@@ -4345,17 +4360,17 @@ private struct OpsCenterHistoryDashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                sectionTitle("History")
-                Text("Use history to inspect retained runtime posture, recent failures, and execution drift even when the live graph has already cooled down.")
+                sectionTitle(LocalizedString.text("history_panel_title"))
+                Text(LocalizedString.text("history_panel_desc"))
                     .font(.caption)
                     .foregroundColor(.secondary)
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 12) {
-                        TextField("Search anomaly text, node, agent, or session", text: $searchText)
+                        TextField(LocalizedString.text("history_search_placeholder"), text: $searchText)
                             .textFieldStyle(.roundedBorder)
 
-                        Picker("Signal", selection: $selectedFilter) {
+                        Picker(LocalizedString.text("history_signal_label"), selection: $selectedFilter) {
                             ForEach(OpsCenterHistoryListFilter.allCases) { filter in
                                 Text(filter.title).tag(filter)
                             }
@@ -4365,7 +4380,7 @@ private struct OpsCenterHistoryDashboardView: View {
                     }
 
                     HStack(alignment: .center, spacing: 12) {
-                        Picker("Focus", selection: $selectedFocus) {
+                        Picker(LocalizedString.text("ops_focus_label"), selection: $selectedFocus) {
                             ForEach(OpsCenterHistoryFocus.allCases) { focus in
                                 Text(focus.title).tag(focus)
                             }
@@ -4373,7 +4388,7 @@ private struct OpsCenterHistoryDashboardView: View {
                         .pickerStyle(.segmented)
                         .frame(width: 300)
 
-                        Picker("Sort", selection: $selectedSort) {
+                        Picker(LocalizedString.text("ops_sort_label"), selection: $selectedSort) {
                             ForEach(OpsCenterHistorySort.allCases) { sort in
                                 Text(sort.title).tag(sort)
                             }
@@ -4383,24 +4398,24 @@ private struct OpsCenterHistoryDashboardView: View {
 
                         Spacer()
 
-                        Text("\(filteredAnomalies.count) anomalies and \(filteredTraces.count) traces visible in current focus.")
+                        Text(LocalizedString.format("history_visible_summary", filteredAnomalies.count, filteredTraces.count))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
-                    opsMetricCard(title: "Goal Cards", value: "\(effectiveGoalCards.count)", detail: "Current health summary cards", color: .blue)
-                    opsMetricCard(title: "Trend Series", value: "\(snapshot.historicalSeries.count)", detail: "In-memory historical metric series", color: .green)
-                    opsMetricCard(title: "Current Hotspots", value: "\(currentHotspotItems.count)", detail: "Combined anomaly and trace items worth immediate inspection", color: currentHotspotItems.isEmpty ? .green : .orange)
-                    opsMetricCard(title: "Hot Nodes", value: "\(workflowHotspotNodeIDs.count)", detail: "Workflow nodes currently running, waiting, or failed in live posture", color: workflowHotspotNodeIDs.isEmpty ? .green : .red)
-                    opsMetricCard(title: "Cron Runs", value: "\(recentCronRuns.count)", detail: effectiveCronSummary.map { "\($0.successfulRuns) ok / \($0.failedRuns) failed in retained cron history" } ?? "No cron reliability window is currently retained", color: (effectiveCronSummary?.failedRuns ?? 0) > 0 ? .orange : .green)
-                    opsMetricCard(title: "Tool Hotspots", value: "\(toolHotspots.count)", detail: toolHotspots.first.map { "\($0.toolIdentifier) has \($0.failureCount) recent anomaly signals" } ?? "No tool-specific anomaly hotspot is currently retained", color: toolHotspots.isEmpty ? .green : .orange)
-                    opsMetricCard(title: "Projection Docs", value: "\(archiveProjectionInvestigation?.documentDigests.filter { $0.generatedAt != nil }.count ?? 0)", detail: archiveProjectionInvestigation?.freshestGeneratedAt.map { "Freshest projection \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "No archive projection bundle loaded", color: archiveProjectionInvestigation == nil ? .orange : .blue)
-                    opsMetricCard(title: "Anomalies", value: "\(filteredAnomalies.count)", detail: "Merged live and persisted anomaly queue", color: filteredAnomalies.isEmpty ? .green : .orange)
-                    opsMetricCard(title: "Trace Rows", value: "\(filteredTraces.count)", detail: "Merged live and persisted execution traces", color: .purple)
-                    opsMetricCard(title: "Failures", value: "\(projections?.overview?.failedExecutionCount ?? snapshot.failedExecutions)", detail: "Retained failed executions in current scope", color: (projections?.overview?.failedExecutionCount ?? snapshot.failedExecutions) > 0 ? .red : .green)
-                    opsMetricCard(title: "Avg Duration", value: filteredAverageTraceDuration.map(opsDurationText) ?? "n/a", detail: "Average runtime duration across retained traces", color: .teal)
+                    opsMetricCard(title: LocalizedString.text("history_goal_cards_title"), value: "\(effectiveGoalCards.count)", detail: LocalizedString.text("history_goal_cards_detail"), color: .blue)
+                    opsMetricCard(title: LocalizedString.text("history_trend_series_title"), value: "\(snapshot.historicalSeries.count)", detail: LocalizedString.text("history_trend_series_detail"), color: .green)
+                    opsMetricCard(title: LocalizedString.text("history_current_hotspots_title"), value: "\(currentHotspotItems.count)", detail: LocalizedString.text("history_current_hotspots_detail"), color: currentHotspotItems.isEmpty ? .green : .orange)
+                    opsMetricCard(title: LocalizedString.text("history_hot_nodes_title"), value: "\(workflowHotspotNodeIDs.count)", detail: LocalizedString.text("history_hot_nodes_detail"), color: workflowHotspotNodeIDs.isEmpty ? .green : .red)
+                    opsMetricCard(title: LocalizedString.text("history_cron_runs_title"), value: "\(recentCronRuns.count)", detail: effectiveCronSummary.map { LocalizedString.format("history_cron_runs_summary", $0.successfulRuns, $0.failedRuns) } ?? LocalizedString.text("history_cron_runs_empty"), color: (effectiveCronSummary?.failedRuns ?? 0) > 0 ? .orange : .green)
+                    opsMetricCard(title: LocalizedString.text("history_tool_hotspots_title"), value: "\(toolHotspots.count)", detail: toolHotspots.first.map { LocalizedString.format("history_tool_hotspots_summary", $0.toolIdentifier, $0.failureCount) } ?? LocalizedString.text("history_tool_hotspots_empty"), color: toolHotspots.isEmpty ? .green : .orange)
+                    opsMetricCard(title: LocalizedString.text("history_projection_docs_title"), value: "\(archiveProjectionInvestigation?.documentDigests.filter { $0.generatedAt != nil }.count ?? 0)", detail: archiveProjectionInvestigation?.freshestGeneratedAt.map { LocalizedString.format("history_projection_docs_summary", $0.formatted(date: .abbreviated, time: .shortened)) } ?? LocalizedString.text("history_projection_docs_empty"), color: archiveProjectionInvestigation == nil ? .orange : .blue)
+                    opsMetricCard(title: LocalizedString.text("history_filter_anomalies"), value: "\(filteredAnomalies.count)", detail: LocalizedString.text("history_anomalies_detail"), color: filteredAnomalies.isEmpty ? .green : .orange)
+                    opsMetricCard(title: LocalizedString.text("history_trace_rows_title"), value: "\(filteredTraces.count)", detail: LocalizedString.text("history_trace_rows_detail"), color: .purple)
+                    opsMetricCard(title: LocalizedString.text("failures_label"), value: "\(projections?.overview?.failedExecutionCount ?? snapshot.failedExecutions)", detail: LocalizedString.text("history_failures_detail"), color: (projections?.overview?.failedExecutionCount ?? snapshot.failedExecutions) > 0 ? .red : .green)
+                    opsMetricCard(title: LocalizedString.text("history_avg_duration_title"), value: filteredAverageTraceDuration.map(opsDurationText) ?? LocalizedString.text("na"), detail: LocalizedString.text("history_avg_duration_detail"), color: .teal)
                 }
 
                 if let projectionSummaryText {
@@ -4410,32 +4425,32 @@ private struct OpsCenterHistoryDashboardView: View {
                 }
 
                 if hasCurrentFocusSignals {
-                    Text("Current workflow focus is tracking \(workflowHotspotNodeIDs.count) hot nodes and \(workflowHotspotSessionIDs.count) hot sessions from live runtime posture.")
+                    Text(LocalizedString.format("history_current_focus_summary", workflowHotspotNodeIDs.count, workflowHotspotSessionIDs.count))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
-                sectionTitle("Cron Reliability")
+                sectionTitle(LocalizedString.text("history_cron_reliability_title"))
                 if recentCronRuns.isEmpty && effectiveCronSummary == nil {
-                    opsInlineEmptyState("No cron reliability data is currently available in retained analytics.")
+                    opsInlineEmptyState(LocalizedString.text("history_cron_reliability_empty"))
                 } else {
                     if let cronSummary = effectiveCronSummary {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Success Rate \(Int(cronSummary.successRate.rounded()))%")
+                                Text(LocalizedString.format("history_success_rate_summary", Int(cronSummary.successRate.rounded())))
                                     .font(.subheadline.weight(.semibold))
-                                Text("\(cronSummary.successfulRuns) ok • \(cronSummary.failedRuns) failed")
+                                Text(LocalizedString.format("cron_ok_failed_summary", cronSummary.successfulRuns, cronSummary.failedRuns))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 if let latestRunAt = cronSummary.latestRunAt {
-                                    Text("Latest run \(latestRunAt.formatted(date: .abbreviated, time: .shortened))")
+                                    Text(LocalizedString.format("latest_run_at", latestRunAt.formatted(date: .abbreviated, time: .shortened)))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
                             }
                             Spacer()
                             if let leadCronName = recentCronRuns.first?.cronName {
-                                historyActionButton(title: "Open Cron") {
+                                historyActionButton(title: LocalizedString.text("open_cron")) {
                                     onSelectCron(leadCronName)
                                 }
                             }
@@ -4467,7 +4482,7 @@ private struct OpsCenterHistoryDashboardView: View {
                                 Spacer()
 
                                 VStack(alignment: .trailing, spacing: 6) {
-                                    historyActionButton(title: "Open Cron") {
+                                    historyActionButton(title: LocalizedString.text("open_cron")) {
                                         onSelectCron(run.cronName)
                                     }
                                     if let duration = run.duration {
@@ -4487,14 +4502,14 @@ private struct OpsCenterHistoryDashboardView: View {
                     }
                 }
 
-                sectionTitle("Tool Hotspots")
+                sectionTitle(LocalizedString.text("history_tool_hotspots_title"))
                 if toolHotspots.isEmpty {
-                    opsInlineEmptyState("No tool-specific hotspot is currently retained in anomaly history.")
+                    opsInlineEmptyState(LocalizedString.text("history_tool_hotspots_list_empty"))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(Array(toolHotspots.prefix(6))) { tool in
                             HStack(alignment: .top, spacing: 12) {
-                                opsStatusPill(title: tool.failureCount > 1 ? "Tool Hotspot" : "Tool Watch", color: historyColor(for: tool.status))
+                                opsStatusPill(title: tool.failureCount > 1 ? LocalizedString.text("tool_hotspot_badge") : LocalizedString.text("tool_watch_badge"), color: historyColor(for: tool.status))
                                     .frame(width: 96, alignment: .leading)
 
                                 VStack(alignment: .leading, spacing: 4) {
@@ -4504,7 +4519,7 @@ private struct OpsCenterHistoryDashboardView: View {
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                         .lineLimit(3)
-                                    Text("Failures \(tool.failureCount) • Timeouts \(tool.timeoutCount)")
+                                    Text(LocalizedString.format("failures_timeouts_summary", tool.failureCount, tool.timeoutCount))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -4512,7 +4527,7 @@ private struct OpsCenterHistoryDashboardView: View {
                                 Spacer()
 
                                 VStack(alignment: .trailing, spacing: 6) {
-                                    historyActionButton(title: "Open Tool") {
+                                    historyActionButton(title: LocalizedString.text("open_tool")) {
                                         onSelectTool(tool.toolIdentifier)
                                     }
                                     Text(tool.latestAt.formatted(date: .abbreviated, time: .shortened))
@@ -4527,24 +4542,24 @@ private struct OpsCenterHistoryDashboardView: View {
                     }
                 }
 
-                sectionTitle("Archive Projection Health")
+                sectionTitle(LocalizedString.text("history_projection_health_title"))
                 if let archiveProjectionInvestigation {
                     VStack(spacing: 8) {
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(archiveProjectionInvestigation.scopeTitle)
                                     .font(.subheadline.weight(.semibold))
-                                Text("Sessions \(archiveProjectionInvestigation.sessionCount) • Nodes \(archiveProjectionInvestigation.nodeCount) • Traces \(archiveProjectionInvestigation.traceCount) • Anomalies \(archiveProjectionInvestigation.anomalyCount)")
+                                Text(LocalizedString.format("projection_scope_counts", archiveProjectionInvestigation.sessionCount, archiveProjectionInvestigation.nodeCount, archiveProjectionInvestigation.traceCount, archiveProjectionInvestigation.anomalyCount))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text(archiveProjectionInvestigation.liveRunSummary ?? archiveProjectionInvestigation.workflowHealthSummary ?? "Projection bundle is loaded but no scope-specific summary is available yet.")
+                                Text(archiveProjectionInvestigation.liveRunSummary ?? archiveProjectionInvestigation.workflowHealthSummary ?? LocalizedString.text("projection_scope_summary_missing"))
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .lineLimit(3)
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 6) {
-                                historyActionButton(title: "Open Projection") {
+                                historyActionButton(title: LocalizedString.text("open_projection")) {
                                     onSelectArchiveProjection()
                                 }
                                 if let freshestGeneratedAt = archiveProjectionInvestigation.freshestGeneratedAt {
@@ -4586,12 +4601,12 @@ private struct OpsCenterHistoryDashboardView: View {
                         }
                     }
                 } else {
-                    opsInlineEmptyState("No persisted archive projection bundle is currently loaded.")
+                    opsInlineEmptyState(LocalizedString.text("projection_bundle_missing"))
                 }
 
-                sectionTitle("Current Hotspots")
+                sectionTitle(LocalizedString.text("history_current_hotspots_title"))
                 if currentHotspotItems.isEmpty {
-                    opsInlineEmptyState("No cross-source hotspot signals are currently retained.")
+                    opsInlineEmptyState(LocalizedString.text("history_current_hotspots_empty"))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(Array(currentHotspotItems.prefix(6))) { item in
@@ -4626,11 +4641,11 @@ private struct OpsCenterHistoryDashboardView: View {
 
                 if effectiveGoalCards.isEmpty {
                     opsEmptyState(
-                        title: "No history snapshot available yet",
-                        detail: "Trend cards, anomalies, and retained traces will populate after runtime and analytics projections are written."
+                        title: LocalizedString.text("history_snapshot_empty_title"),
+                        detail: LocalizedString.text("history_snapshot_empty_detail")
                     )
                 } else {
-                    sectionTitle("Runtime Snapshot")
+                    sectionTitle(LocalizedString.text("history_runtime_snapshot_title"))
                     VStack(spacing: 8) {
                         ForEach(effectiveGoalCards) { card in
                             HStack(alignment: .top, spacing: 12) {
@@ -4651,10 +4666,10 @@ private struct OpsCenterHistoryDashboardView: View {
                     }
                 }
 
-                sectionTitle("Trend Signals")
+                sectionTitle(LocalizedString.text("history_trend_signals_title"))
                 if snapshot.historicalSeries.isEmpty {
                     if snapshot.dailyActivity.isEmpty {
-                        opsInlineEmptyState("No retained trend series are available yet.")
+                        opsInlineEmptyState(LocalizedString.text("history_trend_signals_empty"))
                     } else {
                         VStack(spacing: 8) {
                             ForEach(snapshot.dailyActivity.suffix(7)) { point in
@@ -4678,7 +4693,7 @@ private struct OpsCenterHistoryDashboardView: View {
                                     }
                                     .frame(height: 12)
 
-                                    Text("C \(point.completedCount) / F \(point.failedCount) / E \(point.errorCount)")
+                                    Text(LocalizedString.format("history_daily_activity_summary", point.completedCount, point.failedCount, point.errorCount))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                         .frame(width: 120, alignment: .trailing)
@@ -4695,9 +4710,11 @@ private struct OpsCenterHistoryDashboardView: View {
                             let latest = series.latestPoint?.value
                             let previous = series.previousPoint?.value
                             let deltaText: String = {
-                                guard let latest, let previous else { return "No prior point" }
+                                guard let latest, let previous else { return LocalizedString.text("history_no_prior_point") }
                                 let delta = latest - previous
-                                return delta == 0 ? "Stable" : String(format: "%@%.0f", delta > 0 ? "+" : "", delta)
+                                return delta == 0
+                                    ? LocalizedString.text("history_delta_stable")
+                                    : LocalizedString.format("history_delta_value", delta > 0 ? "+" : "", Int(delta.rounded()))
                             }()
 
                             HStack(alignment: .center, spacing: 12) {
@@ -4712,7 +4729,7 @@ private struct OpsCenterHistoryDashboardView: View {
                                 Spacer()
 
                                 VStack(alignment: .trailing, spacing: 4) {
-                                    Text(latest.map(series.metric.formattedValue) ?? "n/a")
+                                    Text(latest.map(series.metric.formattedValue) ?? LocalizedString.text("na"))
                                         .font(.subheadline.weight(.semibold))
                                     Text(deltaText)
                                         .font(.caption2)
@@ -4726,9 +4743,9 @@ private struct OpsCenterHistoryDashboardView: View {
                     }
                 }
 
-                sectionTitle("Recent Anomalies")
+                sectionTitle(LocalizedString.text("history_recent_anomalies_title"))
                 if filteredAnomalies.isEmpty {
-                    opsInlineEmptyState("No retained anomalies match the current search or filter.")
+                    opsInlineEmptyState(LocalizedString.text("history_recent_anomalies_empty"))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(filteredAnomalies.prefix(8)) { anomaly in
@@ -4761,9 +4778,9 @@ private struct OpsCenterHistoryDashboardView: View {
                     }
                 }
 
-                sectionTitle("Recent Traces")
+                sectionTitle(LocalizedString.text("history_recent_traces_title"))
                 if filteredTraces.isEmpty {
-                    opsInlineEmptyState("No retained traces match the current search or filter.")
+                    opsInlineEmptyState(LocalizedString.text("history_recent_traces_empty"))
                 } else {
                     VStack(spacing: 8) {
                         ForEach(filteredTraces.prefix(10)) { trace in
@@ -4793,7 +4810,7 @@ private struct OpsCenterHistoryDashboardView: View {
                                             .foregroundColor(.secondary)
                                     }
                                     if trace.protocolRepairCount > 0 {
-                                        Text("Repair \(trace.protocolRepairCount)")
+                                        Text(LocalizedString.format("history_repair_badge", trace.protocolRepairCount))
                                             .font(.caption2)
                                             .foregroundColor(.orange)
                                     }
@@ -5030,16 +5047,16 @@ private struct OpsCenterHistoryDashboardView: View {
         if normalizedSessionID != nil || nodeID != nil {
             HStack(spacing: 6) {
                 if let normalizedSessionID {
-                    historyActionButton(title: "Session") {
+                    historyActionButton(title: LocalizedString.text("ops_session_short")) {
                         onSelectSession(normalizedSessionID)
                     }
-                    historyActionButton(title: "Thread") {
+                    historyActionButton(title: LocalizedString.text("ops_thread_short")) {
                         onSelectThread(normalizedSessionID)
                     }
                 }
 
                 if let nodeID {
-                    historyActionButton(title: "Node") {
+                    historyActionButton(title: LocalizedString.text("ops_node_short")) {
                         onSelectNode(nodeID)
                     }
                 }
@@ -5110,25 +5127,25 @@ private struct OpsCenterInvestigationPanel: View {
     @ViewBuilder
     private func sessionInvestigationBody(_ investigation: OpsCenterSessionInvestigation) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            opsMetricCard(title: "Events", value: "\(investigation.session.eventCount)", detail: "Runtime events in this session", color: .blue)
-            opsMetricCard(title: "Dispatches", value: "\(investigation.session.dispatchCount)", detail: "Queue + inflight + terminal", color: .orange)
-            opsMetricCard(title: "Receipts", value: "\(investigation.session.receiptCount)", detail: "Execution receipts linked to session", color: .green)
-            opsMetricCard(title: "Failures", value: "\(investigation.session.failedDispatchCount)", detail: investigation.session.latestFailureText ?? "No recent failure text", color: investigation.session.failedDispatchCount > 0 ? .red : .green)
-            opsMetricCard(title: "Workbench Messages", value: "\(investigation.messages.count)", detail: "Messages currently linked", color: .purple)
-            opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Workbench tasks linked to session", color: .teal)
+            opsMetricCard(title: LocalizedString.text("events"), value: "\(investigation.session.eventCount)", detail: LocalizedString.text("investigation_session_events_detail"), color: .blue)
+            opsMetricCard(title: LocalizedString.text("dispatches_label"), value: "\(investigation.session.dispatchCount)", detail: LocalizedString.text("dispatches_detail"), color: .orange)
+            opsMetricCard(title: LocalizedString.text("receipts_label"), value: "\(investigation.session.receiptCount)", detail: LocalizedString.text("investigation_session_receipts_detail"), color: .green)
+            opsMetricCard(title: LocalizedString.text("failures_label"), value: "\(investigation.session.failedDispatchCount)", detail: investigation.session.latestFailureText ?? LocalizedString.text("investigation_no_recent_failure_text"), color: investigation.session.failedDispatchCount > 0 ? .red : .green)
+            opsMetricCard(title: LocalizedString.text("investigation_workbench_messages_title"), value: "\(investigation.messages.count)", detail: LocalizedString.text("investigation_session_messages_detail"), color: .purple)
+            opsMetricCard(title: LocalizedString.text("tasks"), value: "\(investigation.tasks.count)", detail: LocalizedString.text("investigation_session_tasks_detail"), color: .teal)
         }
 
-        opsInvestigationSection("Session Entry", detail: "Open the workbench thread view when you need the conversation-first perspective for this session.") {
+        opsInvestigationSection(LocalizedString.text("investigation_session_entry_title"), detail: LocalizedString.text("investigation_session_entry_detail")) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(investigation.session.sessionID)
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    Text("Thread and session keys are aligned in the current workbench runtime model.")
+                    Text(LocalizedString.text("investigation_session_thread_alignment"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                investigationActionButton(title: "Open Thread") {
+                investigationActionButton(title: LocalizedString.text("open_thread")) {
                     onSelectThread(investigation.session.sessionID)
                 }
             }
@@ -5137,22 +5154,22 @@ private struct OpsCenterInvestigationPanel: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
-        opsInvestigationSection("Related Nodes", detail: "Nodes touched by this session's dispatches, receipts, tasks, or runtime events.") {
+        opsInvestigationSection(LocalizedString.text("investigation_related_nodes_title"), detail: LocalizedString.text("investigation_session_related_nodes_detail")) {
             if investigation.relatedNodes.isEmpty {
-                opsInlineEmptyState("No node relationships resolved yet.")
+                opsInlineEmptyState(LocalizedString.text("investigation_session_related_nodes_empty"))
             } else {
                 ForEach(investigation.relatedNodes) { node in
                     HStack(alignment: .center, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(node.title)
                                 .font(.subheadline.weight(.medium))
-                            Text(node.agentName ?? "No bound agent")
+                            Text(node.agentName ?? LocalizedString.text("no_bound_agent"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
                         opsStatusPill(title: node.status.title, color: node.status.color)
-                        investigationActionButton(title: "Open Node") {
+                        investigationActionButton(title: LocalizedString.text("open_node")) {
                             onSelectNode(node.id)
                         }
                     }
@@ -5163,9 +5180,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Runtime Events", detail: "Recent runtime events emitted under this session key.") {
+        opsInvestigationSection(LocalizedString.text("investigation_runtime_events_title"), detail: LocalizedString.text("investigation_session_runtime_events_detail")) {
             if investigation.events.isEmpty {
-                opsInlineEmptyState("No session events captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_session_runtime_events_empty"))
             } else {
                 ForEach(investigation.events.prefix(10)) { event in
                     OpsCenterEventDigestCard(event: event)
@@ -5173,9 +5190,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Dispatches", detail: "Dispatch pressure and terminal outcomes for this session.") {
+        opsInvestigationSection(LocalizedString.text("dispatches_label"), detail: LocalizedString.text("investigation_session_dispatches_detail")) {
             if investigation.dispatches.isEmpty {
-                opsInlineEmptyState("No dispatch records captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_session_dispatches_empty"))
             } else {
                 ForEach(investigation.dispatches.prefix(12)) { dispatch in
                     OpsCenterDispatchDigestCard(dispatch: dispatch)
@@ -5183,9 +5200,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Receipts", detail: "Execution receipts observed for this session.") {
+        opsInvestigationSection(LocalizedString.text("receipts_label"), detail: LocalizedString.text("investigation_session_receipts_section_detail")) {
             if investigation.receipts.isEmpty {
-                opsInlineEmptyState("No execution receipts captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_session_receipts_empty"))
             } else {
                 ForEach(investigation.receipts.prefix(10)) { receipt in
                     OpsCenterReceiptDigestCard(receipt: receipt)
@@ -5193,9 +5210,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Messages", detail: "User and agent conversation linked to this session.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_session_messages_section_detail")) {
             if investigation.messages.isEmpty {
-                opsInlineEmptyState("No workbench messages linked.")
+                opsInlineEmptyState(LocalizedString.text("investigation_session_messages_empty"))
             } else {
                 ForEach(investigation.messages.prefix(10)) { message in
                     OpsCenterMessageDigestCard(message: message)
@@ -5203,9 +5220,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Tasks", detail: "Tasks carrying the same session key.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_tasks_title"), detail: LocalizedString.text("investigation_session_tasks_section_detail")) {
             if investigation.tasks.isEmpty {
-                opsInlineEmptyState("No tasks linked to this session.")
+                opsInlineEmptyState(LocalizedString.text("investigation_session_tasks_empty"))
             } else {
                 ForEach(investigation.tasks.prefix(10)) { task in
                     OpsCenterTaskDigestCard(task: task)
@@ -5218,23 +5235,23 @@ private struct OpsCenterInvestigationPanel: View {
     private func threadInvestigationBody(_ investigation: OpsCenterThreadInvestigation) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
             opsMetricCard(
-                title: "Thread Status",
+                title: LocalizedString.text("investigation_thread_status_title"),
                 value: workbenchThreadStatusTitle(investigation.status),
-                detail: investigation.entryAgentName ?? "No entry agent resolved",
+                detail: investigation.entryAgentName ?? LocalizedString.text("investigation_no_entry_agent"),
                 color: workbenchThreadStatusColor(investigation.status)
             )
-            opsMetricCard(title: "Participants", value: "\(investigation.participantNames.count)", detail: "Named agents participating in this thread", color: .blue)
-            opsMetricCard(title: "Messages", value: "\(investigation.messages.count)", detail: "Workbench dialog retained under this thread", color: .purple)
-            opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Workbench tasks carried by this thread", color: .teal)
-            opsMetricCard(title: "Approvals", value: "\(investigation.pendingApprovalCount)", detail: "Pending approval waits still retained", color: investigation.pendingApprovalCount > 0 ? .yellow : .green)
-            opsMetricCard(title: "Runtime Evidence", value: "\(investigation.events.count + investigation.dispatches.count + investigation.receipts.count)", detail: "Events, dispatches, and receipts correlated back to the thread session", color: .orange)
+            opsMetricCard(title: LocalizedString.text("investigation_participants_title"), value: "\(investigation.participantNames.count)", detail: LocalizedString.text("investigation_thread_participants_detail"), color: .blue)
+            opsMetricCard(title: LocalizedString.text("messages"), value: "\(investigation.messages.count)", detail: LocalizedString.text("investigation_thread_messages_detail"), color: .purple)
+            opsMetricCard(title: LocalizedString.text("tasks"), value: "\(investigation.tasks.count)", detail: LocalizedString.text("investigation_thread_tasks_detail"), color: .teal)
+            opsMetricCard(title: LocalizedString.text("approvals_label"), value: "\(investigation.pendingApprovalCount)", detail: LocalizedString.text("investigation_thread_approvals_detail"), color: investigation.pendingApprovalCount > 0 ? .yellow : .green)
+            opsMetricCard(title: LocalizedString.text("investigation_runtime_evidence_title"), value: "\(investigation.events.count + investigation.dispatches.count + investigation.receipts.count)", detail: LocalizedString.text("investigation_runtime_evidence_detail"), color: .orange)
         }
 
-        opsInvestigationSection("Thread Posture", detail: "Top-level runtime identity, session binding, workflow binding, and operator-relevant timestamps.") {
+        opsInvestigationSection(LocalizedString.text("investigation_thread_posture_title"), detail: LocalizedString.text("investigation_thread_posture_detail")) {
             VStack(spacing: 8) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Workflow")
+                        Text(LocalizedString.text("workflow_label"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(investigation.workflowName)
@@ -5249,14 +5266,14 @@ private struct OpsCenterInvestigationPanel: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Session Key")
+                        Text(LocalizedString.text("investigation_session_key_title"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(investigation.sessionID)
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     }
                     Spacer()
-                    investigationActionButton(title: "Open Session") {
+                    investigationActionButton(title: LocalizedString.text("open_session")) {
                         onSelectSession(investigation.sessionID)
                     }
                 }
@@ -5266,21 +5283,21 @@ private struct OpsCenterInvestigationPanel: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Entry Agent")
+                        Text(LocalizedString.text("investigation_entry_agent_title"))
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text(investigation.entryAgentName ?? "No entry agent resolved")
+                        Text(investigation.entryAgentName ?? LocalizedString.text("investigation_no_entry_agent"))
                             .font(.subheadline.weight(.medium))
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 4) {
                         if let startedAt = investigation.startedAt {
-                            Text("Started \(startedAt.formatted(date: .abbreviated, time: .shortened))")
+                            Text(LocalizedString.format("started_at_label", startedAt.formatted(date: .abbreviated, time: .shortened)))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
                         if let lastUpdatedAt = investigation.lastUpdatedAt {
-                            Text("Updated \(lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))")
+                            Text(LocalizedString.format("updated_time", lastUpdatedAt.formatted(date: .abbreviated, time: .shortened)))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -5292,16 +5309,16 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Participants", detail: "Named agents that have appeared in dialog, assignments, or entry metadata for this thread.") {
+        opsInvestigationSection(LocalizedString.text("investigation_participants_title"), detail: LocalizedString.text("investigation_thread_participants_section_detail")) {
             if investigation.participantNames.isEmpty {
-                opsInlineEmptyState("No named thread participants resolved yet.")
+                opsInlineEmptyState(LocalizedString.text("investigation_thread_participants_empty"))
             } else {
                 ForEach(investigation.participantNames, id: \.self) { participantName in
                     HStack {
                         Text(participantName)
                             .font(.subheadline.weight(.medium))
                         Spacer()
-                        opsStatusPill(title: "Participant", color: .blue)
+                        opsStatusPill(title: LocalizedString.text("investigation_participant_badge"), color: .blue)
                     }
                     .padding(10)
                     .background(Color(.controlBackgroundColor))
@@ -5310,22 +5327,22 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Related Session", detail: "Runtime counters from the session that this workbench thread is currently bound to.") {
+        opsInvestigationSection(LocalizedString.text("investigation_related_session_title"), detail: LocalizedString.text("investigation_related_session_detail")) {
             if let session = investigation.relatedSession {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(session.sessionID)
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        Text("Events \(session.eventCount) • Dispatches \(session.dispatchCount) • Receipts \(session.receiptCount)")
+                        Text(LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                     Spacer()
                     opsStatusPill(
-                        title: session.failedDispatchCount > 0 ? "Failure Signal" : (session.isPrimaryRuntimeSession ? "Primary" : "Observed"),
+                        title: session.failedDispatchCount > 0 ? LocalizedString.text("failure_signal_badge") : (session.isPrimaryRuntimeSession ? LocalizedString.text("primary_badge") : LocalizedString.text("observed_badge")),
                         color: session.failedDispatchCount > 0 ? .red : (session.isPrimaryRuntimeSession ? .teal : .blue)
                     )
-                    investigationActionButton(title: "Open Session") {
+                    investigationActionButton(title: LocalizedString.text("open_session")) {
                         onSelectSession(session.sessionID)
                     }
                 }
@@ -5333,26 +5350,26 @@ private struct OpsCenterInvestigationPanel: View {
                 .background(Color(.controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
-                opsInlineEmptyState("No session digest could be resolved for this thread yet.")
+                opsInlineEmptyState(LocalizedString.text("investigation_related_session_empty"))
             }
         }
 
-        opsInvestigationSection("Related Nodes", detail: "Workflow nodes touched by this thread's tasks, dispatches, runtime events, or execution receipts.") {
+        opsInvestigationSection(LocalizedString.text("investigation_related_nodes_title"), detail: LocalizedString.text("investigation_thread_related_nodes_detail")) {
             if investigation.relatedNodes.isEmpty {
-                opsInlineEmptyState("No related workflow nodes resolved for this thread.")
+                opsInlineEmptyState(LocalizedString.text("investigation_thread_related_nodes_empty"))
             } else {
                 ForEach(investigation.relatedNodes) { node in
                     HStack(alignment: .center, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(node.title)
                                 .font(.subheadline.weight(.medium))
-                            Text(node.agentName ?? "No bound agent")
+                            Text(node.agentName ?? LocalizedString.text("no_bound_agent"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
                         opsStatusPill(title: node.status.title, color: node.status.color)
-                        investigationActionButton(title: "Open Node") {
+                        investigationActionButton(title: LocalizedString.text("open_node")) {
                             onSelectNode(node.id)
                         }
                     }
@@ -5363,9 +5380,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Messages", detail: "Conversation evidence retained directly inside the workbench thread archive.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_thread_messages_section_detail")) {
             if investigation.messages.isEmpty {
-                opsInlineEmptyState("No workbench messages linked to this thread.")
+                opsInlineEmptyState(LocalizedString.text("investigation_thread_messages_empty"))
             } else {
                 ForEach(investigation.messages.prefix(12)) { message in
                     OpsCenterMessageDigestCard(message: message)
@@ -5373,9 +5390,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Tasks", detail: "Task cards retained under the same workbench thread key.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_tasks_title"), detail: LocalizedString.text("investigation_thread_tasks_section_detail")) {
             if investigation.tasks.isEmpty {
-                opsInlineEmptyState("No workbench tasks linked to this thread.")
+                opsInlineEmptyState(LocalizedString.text("investigation_thread_tasks_empty"))
             } else {
                 ForEach(investigation.tasks.prefix(12)) { task in
                     OpsCenterTaskDigestCard(task: task)
@@ -5383,9 +5400,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Runtime Dispatches", detail: "Dispatch traffic currently correlated back from the thread session.") {
+        opsInvestigationSection(LocalizedString.text("investigation_runtime_dispatches_title"), detail: LocalizedString.text("investigation_runtime_dispatches_detail")) {
             if investigation.dispatches.isEmpty {
-                opsInlineEmptyState("No runtime dispatches correlated back to this thread.")
+                opsInlineEmptyState(LocalizedString.text("investigation_runtime_dispatches_empty"))
             } else {
                 ForEach(investigation.dispatches.prefix(12)) { dispatch in
                     OpsCenterDispatchDigestCard(dispatch: dispatch)
@@ -5393,9 +5410,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Execution Receipts", detail: "Execution outcomes emitted while this thread's session was active.") {
+        opsInvestigationSection(LocalizedString.text("investigation_execution_receipts_title"), detail: LocalizedString.text("investigation_execution_receipts_detail")) {
             if investigation.receipts.isEmpty {
-                opsInlineEmptyState("No execution receipts correlated back to this thread.")
+                opsInlineEmptyState(LocalizedString.text("investigation_execution_receipts_empty"))
             } else {
                 ForEach(investigation.receipts.prefix(10)) { receipt in
                     OpsCenterReceiptDigestCard(receipt: receipt)
@@ -5403,9 +5420,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Runtime Events", detail: "Recent runtime events emitted under the same bound session key.") {
+        opsInvestigationSection(LocalizedString.text("investigation_runtime_events_title"), detail: LocalizedString.text("investigation_thread_runtime_events_detail")) {
             if investigation.events.isEmpty {
-                opsInlineEmptyState("No runtime events linked to this thread.")
+                opsInlineEmptyState(LocalizedString.text("investigation_thread_runtime_events_empty"))
             } else {
                 ForEach(investigation.events.prefix(10)) { event in
                     OpsCenterEventDigestCard(event: event)
@@ -5416,22 +5433,22 @@ private struct OpsCenterInvestigationPanel: View {
 
     @ViewBuilder
     private func cronInvestigationBody(_ investigation: OpsCenterCronInvestigation) -> some View {
-        let successRateText = investigation.summary.map { "\(Int($0.successRate.rounded()))%" } ?? "n/a"
+        let successRateText = investigation.summary.map { "\(Int($0.successRate.rounded()))%" } ?? LocalizedString.text("na")
         let latestRun = investigation.runs.max(by: { $0.runAt < $1.runAt })
 
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            opsMetricCard(title: "Success Rate", value: successRateText, detail: investigation.summary.map { "\($0.successfulRuns) ok / \($0.failedRuns) failed" } ?? "No cron summary retained", color: (investigation.summary?.failedRuns ?? 0) > 0 ? .orange : .green)
-            opsMetricCard(title: "Recent Runs", value: "\(investigation.runs.count)", detail: latestRun.map { "Latest run \($0.runAt.formatted(date: .abbreviated, time: .shortened))" } ?? "No recent cron run retained", color: .blue)
-            opsMetricCard(title: "Anomalies", value: "\(investigation.anomalies.count)", detail: "Recent cron-linked anomaly records", color: investigation.anomalies.isEmpty ? .green : .red)
-            opsMetricCard(title: "Trend Series", value: "\(investigation.historySeries.count)", detail: "Scoped historical cron metric series", color: .teal)
+            opsMetricCard(title: LocalizedString.text("investigation_success_rate_title"), value: successRateText, detail: investigation.summary.map { LocalizedString.format("cron_ok_failed_summary", $0.successfulRuns, $0.failedRuns) } ?? LocalizedString.text("investigation_cron_summary_empty"), color: (investigation.summary?.failedRuns ?? 0) > 0 ? .orange : .green)
+            opsMetricCard(title: LocalizedString.text("investigation_recent_runs_title"), value: "\(investigation.runs.count)", detail: latestRun.map { LocalizedString.format("latest_run_at", $0.runAt.formatted(date: .abbreviated, time: .shortened)) } ?? LocalizedString.text("investigation_recent_cron_runs_empty"), color: .blue)
+            opsMetricCard(title: LocalizedString.text("history_filter_anomalies"), value: "\(investigation.anomalies.count)", detail: LocalizedString.text("investigation_cron_anomalies_detail"), color: investigation.anomalies.isEmpty ? .green : .red)
+            opsMetricCard(title: LocalizedString.text("history_trend_series_title"), value: "\(investigation.historySeries.count)", detail: LocalizedString.text("investigation_cron_trend_series_detail"), color: .teal)
         }
 
-        opsInvestigationSection("Cron Posture", detail: "Top-level reliability posture for the selected scheduled job.") {
+        opsInvestigationSection(LocalizedString.text("investigation_cron_posture_title"), detail: LocalizedString.text("investigation_cron_posture_detail")) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(investigation.cronName)
                         .font(.subheadline.weight(.semibold))
-                    Text(investigation.summary.map { "\($0.successfulRuns) successful runs and \($0.failedRuns) failures retained in the current analysis window." } ?? "No persisted cron summary is currently available for this job.")
+                    Text(investigation.summary.map { LocalizedString.format("investigation_cron_posture_summary", $0.successfulRuns, $0.failedRuns) } ?? LocalizedString.text("investigation_cron_posture_empty"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -5447,9 +5464,9 @@ private struct OpsCenterInvestigationPanel: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
-        opsInvestigationSection("Trend Signals", detail: "Retained metric series scoped to this cron job.") {
+        opsInvestigationSection(LocalizedString.text("history_trend_signals_title"), detail: LocalizedString.text("investigation_cron_trend_signals_detail")) {
             if investigation.historySeries.isEmpty {
-                opsInlineEmptyState("No scoped cron trend series is currently retained.")
+                opsInlineEmptyState(LocalizedString.text("investigation_cron_trend_signals_empty"))
             } else {
                 ForEach(investigation.historySeries) { series in
                     HStack(alignment: .center, spacing: 12) {
@@ -5462,9 +5479,9 @@ private struct OpsCenterInvestigationPanel: View {
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text(series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "n/a")
+                            Text(series.latestPoint.map { series.metric.formattedValue($0.value) } ?? LocalizedString.text("na"))
                                 .font(.subheadline.weight(.semibold))
-                            Text(series.latestPoint.map { $0.date.formatted(date: .abbreviated, time: .shortened) } ?? "No points")
+                            Text(series.latestPoint.map { $0.date.formatted(date: .abbreviated, time: .shortened) } ?? LocalizedString.text("investigation_no_points"))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -5476,9 +5493,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Recent Runs", detail: "Latest retained cron execution rows for this job.") {
+        opsInvestigationSection(LocalizedString.text("investigation_recent_runs_title"), detail: LocalizedString.text("investigation_recent_runs_detail")) {
             if investigation.runs.isEmpty {
-                opsInlineEmptyState("No recent cron runs are retained for this job.")
+                opsInlineEmptyState(LocalizedString.text("investigation_recent_runs_empty"))
             } else {
                 ForEach(investigation.runs.prefix(12)) { run in
                     HStack(alignment: .top, spacing: 12) {
@@ -5514,9 +5531,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Anomalies", detail: "Cron-linked anomalies retained alongside recent runs.") {
+        opsInvestigationSection(LocalizedString.text("history_filter_anomalies"), detail: LocalizedString.text("investigation_cron_anomalies_section_detail")) {
             if investigation.anomalies.isEmpty {
-                opsInlineEmptyState("No cron anomalies were retained for this job.")
+                opsInlineEmptyState(LocalizedString.text("investigation_cron_anomalies_empty"))
             } else {
                 ForEach(investigation.anomalies.prefix(12)) { anomaly in
                     opsAnomalyRow(anomaly)
@@ -5536,18 +5553,18 @@ private struct OpsCenterInvestigationPanel: View {
         let failingSpanCount = investigation.spans.filter { $0.statusText.lowercased() != "completed" }.count
 
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            opsMetricCard(title: "Tool", value: investigation.toolIdentifier, detail: "Selected tool/service identifier", color: .blue)
-            opsMetricCard(title: "Recent Spans", value: "\(investigation.spans.count)", detail: latestSpan.map { "Latest span \($0.startedAt.formatted(date: .abbreviated, time: .shortened))" } ?? "No recent tool span retained", color: .green)
-            opsMetricCard(title: "Failures", value: "\(investigation.anomalies.count)", detail: "\(failingSpanCount) tool spans are non-completed in retained history", color: investigation.anomalies.isEmpty ? .green : .red)
-            opsMetricCard(title: "Avg Duration", value: averageDuration.map(opsDurationText) ?? "n/a", detail: "Average retained tool span duration", color: .teal)
+            opsMetricCard(title: LocalizedString.text("tool_category"), value: investigation.toolIdentifier, detail: LocalizedString.text("investigation_tool_identifier_detail"), color: .blue)
+            opsMetricCard(title: LocalizedString.text("investigation_recent_spans_title"), value: "\(investigation.spans.count)", detail: latestSpan.map { LocalizedString.format("investigation_latest_span_at", $0.startedAt.formatted(date: .abbreviated, time: .shortened)) } ?? LocalizedString.text("investigation_recent_tool_spans_empty"), color: .green)
+            opsMetricCard(title: LocalizedString.text("failures_label"), value: "\(investigation.anomalies.count)", detail: LocalizedString.format("investigation_tool_failures_detail", failingSpanCount), color: investigation.anomalies.isEmpty ? .green : .red)
+            opsMetricCard(title: LocalizedString.text("history_avg_duration_title"), value: averageDuration.map(opsDurationText) ?? LocalizedString.text("na"), detail: LocalizedString.text("investigation_tool_avg_duration_detail"), color: .teal)
         }
 
-        opsInvestigationSection("Tool Posture", detail: "High-level posture for the selected tool/service identity.") {
+        opsInvestigationSection(LocalizedString.text("investigation_tool_posture_title"), detail: LocalizedString.text("investigation_tool_posture_detail")) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(investigation.toolIdentifier)
                         .font(.subheadline.weight(.semibold))
-                    Text("Retained tool history includes \(investigation.spans.count) spans and \(investigation.anomalies.count) anomalies in the current analysis window.")
+                    Text(LocalizedString.format("investigation_tool_posture_summary", investigation.spans.count, investigation.anomalies.count))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -5563,9 +5580,9 @@ private struct OpsCenterInvestigationPanel: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
-        opsInvestigationSection("Trend Signals", detail: "Scoped history series generated for this tool identifier.") {
+        opsInvestigationSection(LocalizedString.text("history_trend_signals_title"), detail: LocalizedString.text("investigation_tool_trend_signals_detail")) {
             if investigation.historySeries.isEmpty {
-                opsInlineEmptyState("No scoped tool trend series is currently retained.")
+                opsInlineEmptyState(LocalizedString.text("investigation_tool_trend_signals_empty"))
             } else {
                 ForEach(investigation.historySeries) { series in
                     HStack(alignment: .center, spacing: 12) {
@@ -5578,9 +5595,9 @@ private struct OpsCenterInvestigationPanel: View {
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text(series.latestPoint.map { series.metric.formattedValue($0.value) } ?? "n/a")
+                            Text(series.latestPoint.map { series.metric.formattedValue($0.value) } ?? LocalizedString.text("na"))
                                 .font(.subheadline.weight(.semibold))
-                            Text(series.latestPoint.map { $0.date.formatted(date: .abbreviated, time: .shortened) } ?? "No points")
+                            Text(series.latestPoint.map { $0.date.formatted(date: .abbreviated, time: .shortened) } ?? LocalizedString.text("investigation_no_points"))
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -5592,9 +5609,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Recent Tool Spans", detail: "Latest retained spans emitted under this tool/service identifier.") {
+        opsInvestigationSection(LocalizedString.text("investigation_recent_tool_spans_title"), detail: LocalizedString.text("investigation_recent_tool_spans_detail")) {
             if investigation.spans.isEmpty {
-                opsInlineEmptyState("No tool spans are currently retained for this identifier.")
+                opsInlineEmptyState(LocalizedString.text("investigation_recent_tool_spans_empty"))
             } else {
                 ForEach(investigation.spans.prefix(12)) { span in
                     HStack(alignment: .top, spacing: 12) {
@@ -5633,9 +5650,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Anomalies", detail: "Recent anomalies that point back to this tool/service identifier.") {
+        opsInvestigationSection(LocalizedString.text("history_filter_anomalies"), detail: LocalizedString.text("investigation_tool_anomalies_detail")) {
             if investigation.anomalies.isEmpty {
-                opsInlineEmptyState("No tool anomalies were retained for this identifier.")
+                opsInlineEmptyState(LocalizedString.text("investigation_tool_anomalies_empty"))
             } else {
                 ForEach(investigation.anomalies.prefix(12)) { anomaly in
                     opsAnomalyRow(anomaly)
@@ -5647,25 +5664,25 @@ private struct OpsCenterInvestigationPanel: View {
     @ViewBuilder
     private func archiveProjectionInvestigationBody(_ investigation: OpsCenterArchiveProjectionInvestigation) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            opsMetricCard(title: "Scope", value: investigation.scopeTitle, detail: investigation.projectName, color: .blue)
-            opsMetricCard(title: "Documents", value: "\(investigation.documentDigests.filter { $0.generatedAt != nil }.count)", detail: "\(investigation.documentDigests.count) observability projection lanes tracked", color: .green)
-            opsMetricCard(title: "Sessions / Nodes", value: "\(investigation.sessionCount) / \(investigation.nodeCount)", detail: "Scoped archive counts retained in the current bundle", color: .orange)
-            opsMetricCard(title: "Traces / Anomalies", value: "\(investigation.traceCount) / \(investigation.anomalyCount)", detail: "Persisted history retained for this scope", color: .teal)
+            opsMetricCard(title: LocalizedString.text("investigation_scope_title"), value: investigation.scopeTitle, detail: investigation.projectName, color: .blue)
+            opsMetricCard(title: LocalizedString.text("investigation_documents_title"), value: "\(investigation.documentDigests.filter { $0.generatedAt != nil }.count)", detail: LocalizedString.format("investigation_projection_documents_detail", investigation.documentDigests.count), color: .green)
+            opsMetricCard(title: LocalizedString.text("investigation_sessions_nodes_title"), value: "\(investigation.sessionCount) / \(investigation.nodeCount)", detail: LocalizedString.text("investigation_sessions_nodes_detail"), color: .orange)
+            opsMetricCard(title: LocalizedString.text("investigation_traces_anomalies_title"), value: "\(investigation.traceCount) / \(investigation.anomalyCount)", detail: LocalizedString.text("investigation_traces_anomalies_detail"), color: .teal)
         }
 
-        opsInvestigationSection("Projection Freshness", detail: "Freshness posture for the loaded filesystem projection bundle.") {
+        opsInvestigationSection(LocalizedString.text("investigation_projection_freshness_title"), detail: LocalizedString.text("investigation_projection_freshness_detail")) {
             VStack(spacing: 8) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Freshest Generated At")
+                        Text(LocalizedString.text("investigation_freshest_generated_at"))
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text(investigation.freshestGeneratedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Unavailable")
+                        Text(investigation.freshestGeneratedAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedString.text("ops_unavailable"))
                             .font(.subheadline.weight(.medium))
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 4) {
-                        Text("Loaded At")
+                        Text(LocalizedString.text("investigation_loaded_at"))
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(investigation.loadedAt.formatted(date: .abbreviated, time: .shortened))
@@ -5698,7 +5715,7 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Projection Documents", detail: "Each retained document is now surfaced as an operator-visible archive observation lane.") {
+        opsInvestigationSection(LocalizedString.text("investigation_projection_documents_title"), detail: LocalizedString.text("investigation_projection_documents_section_detail")) {
             ForEach(investigation.documentDigests) { document in
                 HStack(alignment: .top, spacing: 12) {
                     opsStatusPill(title: document.title, color: opsHistoryHealthColor(document.status))
@@ -5715,7 +5732,7 @@ private struct OpsCenterInvestigationPanel: View {
 
                     Spacer()
 
-                    Text(document.generatedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Missing")
+                    Text(document.generatedAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedString.text("investigation_missing"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -5763,30 +5780,30 @@ private struct OpsCenterInvestigationPanel: View {
     @ViewBuilder
     private func nodeInvestigationBody(_ investigation: OpsCenterNodeInvestigation) -> some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            opsMetricCard(title: "Node Status", value: investigation.node.status.title, detail: investigation.node.latestDetail ?? "No runtime detail captured", color: investigation.node.status.color)
-            opsMetricCard(title: "Sessions", value: "\(investigation.relatedSessions.count)", detail: "Sessions touching this node", color: .blue)
-            opsMetricCard(title: "Dispatches", value: "\(investigation.dispatches.count)", detail: "Recent dispatch records resolved", color: .orange)
-            opsMetricCard(title: "Receipts", value: "\(investigation.receipts.count)", detail: "Execution receipts for this node", color: .green)
-            opsMetricCard(title: "Messages", value: "\(investigation.messages.count)", detail: "Linked workbench messages", color: .purple)
-            opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Tasks mapped by node or agent", color: .teal)
+            opsMetricCard(title: LocalizedString.text("investigation_node_status_title"), value: investigation.node.status.title, detail: investigation.node.latestDetail ?? LocalizedString.text("node_state_detail_empty"), color: investigation.node.status.color)
+            opsMetricCard(title: LocalizedString.text("ops_all_sessions"), value: "\(investigation.relatedSessions.count)", detail: LocalizedString.text("investigation_node_sessions_detail"), color: .blue)
+            opsMetricCard(title: LocalizedString.text("dispatches_label"), value: "\(investigation.dispatches.count)", detail: LocalizedString.text("investigation_node_dispatches_detail"), color: .orange)
+            opsMetricCard(title: LocalizedString.text("receipts_label"), value: "\(investigation.receipts.count)", detail: LocalizedString.text("investigation_node_receipts_detail"), color: .green)
+            opsMetricCard(title: LocalizedString.text("messages"), value: "\(investigation.messages.count)", detail: LocalizedString.text("investigation_node_messages_detail"), color: .purple)
+            opsMetricCard(title: LocalizedString.text("tasks"), value: "\(investigation.tasks.count)", detail: LocalizedString.text("investigation_node_tasks_detail"), color: .teal)
         }
 
-        opsInvestigationSection("Routing Context", detail: "Incoming and outgoing paths around this node.") {
+        opsInvestigationSection(LocalizedString.text("investigation_routing_context_title"), detail: LocalizedString.text("investigation_routing_context_detail")) {
             if investigation.incomingEdges.isEmpty && investigation.outgoingEdges.isEmpty {
-                opsInlineEmptyState("No routing edges connected.")
+                opsInlineEmptyState(LocalizedString.text("investigation_routing_context_empty"))
             } else {
                 ForEach(investigation.incomingEdges) { edge in
                     HStack {
                         Text("\(edge.fromTitle) -> \(edge.toTitle)")
                             .font(.caption.weight(.medium))
                         Spacer()
-                        Text("Flow \(edge.activityCount)")
+                        Text(LocalizedString.format("edge_flow_badge", edge.activityCount))
                             .font(.caption)
                             .foregroundColor(edge.activityCount > 0 ? .blue : .secondary)
                         if edge.requiresApproval {
-                            opsStatusPill(title: "Approval", color: .yellow)
+                            opsStatusPill(title: LocalizedString.text("approval"), color: .yellow)
                         }
-                        investigationActionButton(title: "Open Route") {
+                        investigationActionButton(title: LocalizedString.text("open_route")) {
                             onSelectRoute(edge.id)
                         }
                     }
@@ -5799,13 +5816,13 @@ private struct OpsCenterInvestigationPanel: View {
                         Text("\(edge.fromTitle) -> \(edge.toTitle)")
                             .font(.caption.weight(.medium))
                         Spacer()
-                        Text("Flow \(edge.activityCount)")
+                        Text(LocalizedString.format("edge_flow_badge", edge.activityCount))
                             .font(.caption)
                             .foregroundColor(edge.activityCount > 0 ? .blue : .secondary)
                         if edge.requiresApproval {
-                            opsStatusPill(title: "Approval", color: .yellow)
+                            opsStatusPill(title: LocalizedString.text("approval"), color: .yellow)
                         }
-                        investigationActionButton(title: "Open Route") {
+                        investigationActionButton(title: LocalizedString.text("open_route")) {
                             onSelectRoute(edge.id)
                         }
                     }
@@ -5816,28 +5833,28 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Related Sessions", detail: "Sessions whose work currently touches this node.") {
+        opsInvestigationSection(LocalizedString.text("investigation_related_sessions_title"), detail: LocalizedString.text("investigation_node_related_sessions_detail")) {
             if investigation.relatedSessions.isEmpty {
-                opsInlineEmptyState("No related sessions resolved.")
+                opsInlineEmptyState(LocalizedString.text("investigation_node_related_sessions_empty"))
             } else {
                 ForEach(investigation.relatedSessions) { session in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(session.sessionID)
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            Text("Events \(session.eventCount) • Dispatches \(session.dispatchCount) • Receipts \(session.receiptCount)")
+                        Text(session.sessionID)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            Text(LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
                         opsStatusPill(
-                            title: session.isPrimaryRuntimeSession ? "Primary" : "Linked",
+                            title: session.isPrimaryRuntimeSession ? LocalizedString.text("primary_badge") : LocalizedString.text("linked_badge"),
                             color: session.isPrimaryRuntimeSession ? .teal : .blue
                         )
-                        investigationActionButton(title: "Open Session") {
+                        investigationActionButton(title: LocalizedString.text("open_session")) {
                             onSelectSession(session.sessionID)
                         }
-                        investigationActionButton(title: "Open Thread") {
+                        investigationActionButton(title: LocalizedString.text("open_thread")) {
                             onSelectThread(session.sessionID)
                         }
                     }
@@ -5848,9 +5865,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Runtime Events", detail: "Recent runtime events directly touching this node or its sessions.") {
+        opsInvestigationSection(LocalizedString.text("investigation_runtime_events_title"), detail: LocalizedString.text("investigation_node_runtime_events_detail")) {
             if investigation.events.isEmpty {
-                opsInlineEmptyState("No node events captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_node_runtime_events_empty"))
             } else {
                 ForEach(investigation.events.prefix(10)) { event in
                     OpsCenterEventDigestCard(event: event)
@@ -5858,9 +5875,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Dispatches", detail: "Dispatch records touching the node or its bound agent.") {
+        opsInvestigationSection(LocalizedString.text("dispatches_label"), detail: LocalizedString.text("investigation_node_dispatches_section_detail")) {
             if investigation.dispatches.isEmpty {
-                opsInlineEmptyState("No dispatch records captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_node_dispatches_empty"))
             } else {
                 ForEach(investigation.dispatches.prefix(12)) { dispatch in
                     OpsCenterDispatchDigestCard(dispatch: dispatch)
@@ -5868,9 +5885,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Receipts", detail: "Execution receipts emitted by this node.") {
+        opsInvestigationSection(LocalizedString.text("receipts_label"), detail: LocalizedString.text("investigation_node_receipts_section_detail")) {
             if investigation.receipts.isEmpty {
-                opsInlineEmptyState("No execution receipts captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_node_receipts_empty"))
             } else {
                 ForEach(investigation.receipts.prefix(10)) { receipt in
                     OpsCenterReceiptDigestCard(receipt: receipt)
@@ -5878,9 +5895,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Messages", detail: "Messages linked by session or bound agent.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_node_messages_section_detail")) {
             if investigation.messages.isEmpty {
-                opsInlineEmptyState("No related workbench messages.")
+                opsInlineEmptyState(LocalizedString.text("investigation_node_messages_empty"))
             } else {
                 ForEach(investigation.messages.prefix(10)) { message in
                     OpsCenterMessageDigestCard(message: message)
@@ -5888,9 +5905,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Tasks", detail: "Tasks linked by workflow node binding or agent assignment.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_tasks_title"), detail: LocalizedString.text("investigation_node_tasks_section_detail")) {
             if investigation.tasks.isEmpty {
-                opsInlineEmptyState("No related tasks.")
+                opsInlineEmptyState(LocalizedString.text("investigation_node_tasks_empty"))
             } else {
                 ForEach(investigation.tasks.prefix(10)) { task in
                     OpsCenterTaskDigestCard(task: task)
@@ -5905,45 +5922,45 @@ private struct OpsCenterInvestigationPanel: View {
         let timelineEntries = routeTimelineEntries(for: investigation)
 
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-            opsMetricCard(title: "Route Flow", value: "\(investigation.edge.activityCount)", detail: investigation.edge.title, color: .blue)
-            opsMetricCard(title: "Sessions", value: "\(investigation.relatedSessions.count)", detail: "Sessions correlated to this route", color: .green)
-            opsMetricCard(title: "Dispatches", value: "\(investigation.dispatches.count)", detail: "Direct dispatches across this route", color: .orange)
-            opsMetricCard(title: "Receipts", value: "\(investigation.receipts.count)", detail: "Endpoint receipts linked to route sessions", color: .teal)
-            opsMetricCard(title: "Messages", value: "\(investigation.messages.count)", detail: "Workbench messages under route sessions", color: .purple)
-            opsMetricCard(title: "Tasks", value: "\(investigation.tasks.count)", detail: "Tasks retained under route sessions", color: .indigo)
+            opsMetricCard(title: LocalizedString.text("investigation_route_flow_title"), value: "\(investigation.edge.activityCount)", detail: investigation.edge.title, color: .blue)
+            opsMetricCard(title: LocalizedString.text("ops_all_sessions"), value: "\(investigation.relatedSessions.count)", detail: LocalizedString.text("investigation_route_sessions_detail"), color: .green)
+            opsMetricCard(title: LocalizedString.text("dispatches_label"), value: "\(investigation.dispatches.count)", detail: LocalizedString.text("investigation_route_dispatches_detail"), color: .orange)
+            opsMetricCard(title: LocalizedString.text("receipts_label"), value: "\(investigation.receipts.count)", detail: LocalizedString.text("investigation_route_receipts_detail"), color: .teal)
+            opsMetricCard(title: LocalizedString.text("messages"), value: "\(investigation.messages.count)", detail: LocalizedString.text("investigation_route_messages_detail"), color: .purple)
+            opsMetricCard(title: LocalizedString.text("tasks"), value: "\(investigation.tasks.count)", detail: LocalizedString.text("investigation_route_tasks_detail"), color: .indigo)
         }
 
-        opsInvestigationSection("Route Posture", detail: "Upstream, downstream, and gate posture for the selected workflow route.") {
+        opsInvestigationSection(LocalizedString.text("investigation_route_posture_title"), detail: LocalizedString.text("investigation_route_posture_detail")) {
             VStack(alignment: .leading, spacing: 8) {
-                routeEndpointCard(title: "Upstream", node: investigation.upstreamNode, fallbackTitle: investigation.edge.fromTitle)
+                routeEndpointCard(title: LocalizedString.text("investigation_upstream_title"), node: investigation.upstreamNode, fallbackTitle: investigation.edge.fromTitle)
                 if let upstreamNode = investigation.upstreamNode {
                     HStack {
                         Spacer()
-                        investigationActionButton(title: "Open Upstream Node") {
+                        investigationActionButton(title: LocalizedString.text("open_upstream_node")) {
                             onSelectNode(upstreamNode.id)
                         }
                     }
                 }
 
-                routeEndpointCard(title: "Downstream", node: investigation.downstreamNode, fallbackTitle: investigation.edge.toTitle)
+                routeEndpointCard(title: LocalizedString.text("investigation_downstream_title"), node: investigation.downstreamNode, fallbackTitle: investigation.edge.toTitle)
                 if let downstreamNode = investigation.downstreamNode {
                     HStack {
                         Spacer()
-                        investigationActionButton(title: "Open Downstream Node") {
+                        investigationActionButton(title: LocalizedString.text("open_downstream_node")) {
                             onSelectNode(downstreamNode.id)
                         }
                     }
                 }
 
                 HStack {
-                    Text("Label")
+                    Text(LocalizedString.text("investigation_label_title"))
                         .font(.caption.weight(.medium))
                     Spacer()
                     Text(investigation.edge.title)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     if investigation.edge.requiresApproval {
-                        opsStatusPill(title: "Approval", color: .yellow)
+                        opsStatusPill(title: LocalizedString.text("approval"), color: .yellow)
                     }
                 }
                 .padding(10)
@@ -5952,7 +5969,7 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Pressure Judgement", detail: "Route-level judgement of upstream backlog, downstream sink pressure, approval gating, and likely bottleneck direction.") {
+        opsInvestigationSection(LocalizedString.text("investigation_pressure_judgement_title"), detail: LocalizedString.text("investigation_pressure_judgement_detail")) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
                 ForEach(pressureDigests) { digest in
                     opsMetricCard(title: digest.title, value: digest.valueText, detail: digest.detailText, color: digest.color)
@@ -5960,9 +5977,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Timeline Summary", detail: "Most recent dispatch, receipt, runtime event, message, and task evidence merged into one route-centric stream.") {
+        opsInvestigationSection(LocalizedString.text("investigation_timeline_summary_title"), detail: LocalizedString.text("investigation_timeline_summary_detail")) {
             if timelineEntries.isEmpty {
-                opsInlineEmptyState("No merged timeline evidence is currently retained for this route.")
+                opsInlineEmptyState(LocalizedString.text("investigation_timeline_summary_empty"))
             } else {
                 ForEach(Array(timelineEntries.prefix(16))) { entry in
                     HStack(alignment: .top, spacing: 12) {
@@ -5999,28 +6016,28 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Related Sessions", detail: "Sessions that retained evidence of traffic across this route.") {
+        opsInvestigationSection(LocalizedString.text("investigation_related_sessions_title"), detail: LocalizedString.text("investigation_route_related_sessions_detail")) {
             if investigation.relatedSessions.isEmpty {
-                opsInlineEmptyState("No route-correlated sessions resolved.")
+                opsInlineEmptyState(LocalizedString.text("investigation_route_related_sessions_empty"))
             } else {
                 ForEach(investigation.relatedSessions) { session in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(session.sessionID)
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            Text("Events \(session.eventCount) • Dispatches \(session.dispatchCount) • Receipts \(session.receiptCount)")
+                        Text(session.sessionID)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            Text(LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
                         opsStatusPill(
-                            title: session.failedDispatchCount > 0 ? "Failure Signal" : "Observed",
+                            title: session.failedDispatchCount > 0 ? LocalizedString.text("failure_signal_badge") : LocalizedString.text("observed_badge"),
                             color: session.failedDispatchCount > 0 ? .red : .blue
                         )
-                        investigationActionButton(title: "Open Session") {
+                        investigationActionButton(title: LocalizedString.text("open_session")) {
                             onSelectSession(session.sessionID)
                         }
-                        investigationActionButton(title: "Open Thread") {
+                        investigationActionButton(title: LocalizedString.text("open_thread")) {
                             onSelectThread(session.sessionID)
                         }
                     }
@@ -6031,9 +6048,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Dispatches", detail: "Direct dispatches observed between the route endpoints.") {
+        opsInvestigationSection(LocalizedString.text("dispatches_label"), detail: LocalizedString.text("investigation_route_dispatches_section_detail")) {
             if investigation.dispatches.isEmpty {
-                opsInlineEmptyState("No direct route dispatches captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_route_dispatches_empty"))
             } else {
                 ForEach(investigation.dispatches.prefix(12)) { dispatch in
                     OpsCenterDispatchDigestCard(dispatch: dispatch)
@@ -6041,9 +6058,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Endpoint Receipts", detail: "Execution receipts emitted by the route endpoints inside correlated sessions.") {
+        opsInvestigationSection(LocalizedString.text("investigation_endpoint_receipts_title"), detail: LocalizedString.text("investigation_endpoint_receipts_detail")) {
             if investigation.receipts.isEmpty {
-                opsInlineEmptyState("No endpoint receipts captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_endpoint_receipts_empty"))
             } else {
                 ForEach(investigation.receipts.prefix(12)) { receipt in
                     OpsCenterReceiptDigestCard(receipt: receipt)
@@ -6051,9 +6068,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Runtime Events", detail: "Recent runtime events retained under route-correlated sessions.") {
+        opsInvestigationSection(LocalizedString.text("investigation_runtime_events_title"), detail: LocalizedString.text("investigation_route_runtime_events_detail")) {
             if investigation.events.isEmpty {
-                opsInlineEmptyState("No route events captured.")
+                opsInlineEmptyState(LocalizedString.text("investigation_route_runtime_events_empty"))
             } else {
                 ForEach(investigation.events.prefix(10)) { event in
                     OpsCenterEventDigestCard(event: event)
@@ -6061,9 +6078,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Messages", detail: "Messages linked to sessions moving across this route.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_messages_title"), detail: LocalizedString.text("investigation_route_messages_section_detail")) {
             if investigation.messages.isEmpty {
-                opsInlineEmptyState("No route-linked workbench messages.")
+                opsInlineEmptyState(LocalizedString.text("investigation_route_messages_empty"))
             } else {
                 ForEach(investigation.messages.prefix(10)) { message in
                     OpsCenterMessageDigestCard(message: message)
@@ -6071,9 +6088,9 @@ private struct OpsCenterInvestigationPanel: View {
             }
         }
 
-        opsInvestigationSection("Workbench Tasks", detail: "Tasks retained inside sessions that flowed through this route.") {
+        opsInvestigationSection(LocalizedString.text("investigation_workbench_tasks_title"), detail: LocalizedString.text("investigation_route_tasks_section_detail")) {
             if investigation.tasks.isEmpty {
-                opsInlineEmptyState("No route-linked tasks.")
+                opsInlineEmptyState(LocalizedString.text("investigation_route_tasks_empty"))
             } else {
                 ForEach(investigation.tasks.prefix(10)) { task in
                     OpsCenterTaskDigestCard(task: task)
@@ -6109,46 +6126,46 @@ private struct OpsCenterInvestigationPanel: View {
             if gateScore >= max(upstreamScore, downstreamScore), gateScore > 0 {
                 return OpsCenterRoutePressureDigest(
                     id: "bottleneck",
-                    title: "Likely Bottleneck",
-                    valueText: "Approval Gate",
+                    title: LocalizedString.text("investigation_likely_bottleneck_title"),
+                    valueText: LocalizedString.text("investigation_approval_gate_value"),
                     detailText: waitingApprovals > 0
-                        ? "\(waitingApprovals) approval waits are retaining the route."
-                        : "The route is approval-gated and should be watched for operator latency.",
+                        ? LocalizedString.format("investigation_route_approval_waits_detail", waitingApprovals)
+                        : LocalizedString.text("investigation_route_approval_gate_detail"),
                     color: .yellow
                 )
             }
             if downstreamScore > upstreamScore + 1 {
                 return OpsCenterRoutePressureDigest(
                     id: "bottleneck",
-                    title: "Likely Bottleneck",
-                    valueText: "Downstream Sink",
-                    detailText: "\(downstreamFailures) failed receipts and \(downstreamWaiting) waiting receipts suggest the target side is absorbing pressure slowly.",
+                    title: LocalizedString.text("investigation_likely_bottleneck_title"),
+                    valueText: LocalizedString.text("investigation_downstream_sink_value"),
+                    detailText: LocalizedString.format("investigation_downstream_sink_detail", downstreamFailures, downstreamWaiting),
                     color: .red
                 )
             }
             if upstreamScore > downstreamScore + 1 {
                 return OpsCenterRoutePressureDigest(
                     id: "bottleneck",
-                    title: "Likely Bottleneck",
-                    valueText: "Upstream Backlog",
-                    detailText: "\(upstreamBacklog) queued or inflight dispatches are stacking before the route clears.",
+                    title: LocalizedString.text("investigation_likely_bottleneck_title"),
+                    valueText: LocalizedString.text("investigation_upstream_backlog_value"),
+                    detailText: LocalizedString.format("investigation_upstream_backlog_detail", upstreamBacklog),
                     color: .orange
                 )
             }
             if failedDispatches > 0 {
                 return OpsCenterRoutePressureDigest(
                     id: "bottleneck",
-                    title: "Likely Bottleneck",
-                    valueText: "Failure Churn",
-                    detailText: "\(failedDispatches) failed route dispatches are recycling pressure across both ends.",
+                    title: LocalizedString.text("investigation_likely_bottleneck_title"),
+                    valueText: LocalizedString.text("investigation_failure_churn_value"),
+                    detailText: LocalizedString.format("investigation_failure_churn_detail", failedDispatches),
                     color: .red
                 )
             }
             return OpsCenterRoutePressureDigest(
                 id: "bottleneck",
-                title: "Likely Bottleneck",
-                valueText: "Flowing",
-                detailText: "No dominant retained bottleneck signal is currently stronger than normal route traffic.",
+                title: LocalizedString.text("investigation_likely_bottleneck_title"),
+                valueText: LocalizedString.text("investigation_flowing_value"),
+                detailText: LocalizedString.text("investigation_flowing_detail"),
                 color: .green
             )
         }()
@@ -6156,25 +6173,25 @@ private struct OpsCenterInvestigationPanel: View {
         return [
             OpsCenterRoutePressureDigest(
                 id: "upstream",
-                title: "Upstream Pressure",
+                title: LocalizedString.text("investigation_upstream_pressure_title"),
                 valueText: routePressureLabel(for: upstreamScore),
-                detailText: "\(upstreamBacklog) queued or inflight dispatches with source node status \(investigation.upstreamNode?.status.title ?? "Unknown").",
+                detailText: LocalizedString.format("investigation_upstream_pressure_detail", upstreamBacklog, investigation.upstreamNode?.status.title ?? LocalizedString.text("investigation_unknown_status")),
                 color: routePressureColor(for: upstreamScore)
             ),
             OpsCenterRoutePressureDigest(
                 id: "downstream",
-                title: "Downstream Pressure",
+                title: LocalizedString.text("investigation_downstream_pressure_title"),
                 valueText: routePressureLabel(for: downstreamScore),
-                detailText: "\(downstreamFailures) failed receipts and \(downstreamWaiting) waiting receipts with target node status \(investigation.downstreamNode?.status.title ?? "Unknown").",
+                detailText: LocalizedString.format("investigation_downstream_pressure_detail", downstreamFailures, downstreamWaiting, investigation.downstreamNode?.status.title ?? LocalizedString.text("investigation_unknown_status")),
                 color: routePressureColor(for: downstreamScore)
             ),
             OpsCenterRoutePressureDigest(
                 id: "approval",
-                title: "Approval Gating",
-                valueText: gateScore > 0 ? (waitingApprovals > 0 ? "Waiting" : "Armed") : "Clear",
+                title: LocalizedString.text("investigation_approval_gating_title"),
+                valueText: gateScore > 0 ? (waitingApprovals > 0 ? LocalizedString.text("investigation_waiting_value") : LocalizedString.text("investigation_armed_value")) : LocalizedString.text("investigation_clear_value"),
                 detailText: gateScore > 0
-                    ? "\(waitingApprovals) active waits and route gate flag \(investigation.edge.requiresApproval ? "enabled" : "clear")."
-                    : "No approval backlog is currently retained for this route.",
+                    ? LocalizedString.format("investigation_approval_gating_detail", waitingApprovals, investigation.edge.requiresApproval ? LocalizedString.text("investigation_gate_enabled") : LocalizedString.text("investigation_gate_clear"))
+                    : LocalizedString.text("investigation_approval_gating_empty"),
                 color: gateScore > 0 ? .yellow : .green
             ),
             bottleneckDigest
@@ -6185,7 +6202,7 @@ private struct OpsCenterInvestigationPanel: View {
         let dispatchEntries = investigation.dispatches.map { dispatch in
             OpsCenterRouteTimelineDigest(
                 id: "dispatch-\(dispatch.id)",
-                kindTitle: "Dispatch",
+                kindTitle: LocalizedString.text("dispatches_label"),
                 title: "\(dispatch.sourceName) -> \(dispatch.targetName)",
                 detailText: "\(opsDispatchStatusTitle(dispatch.status)) • \(dispatch.summary)",
                 timestamp: dispatch.updatedAt,
@@ -6197,9 +6214,9 @@ private struct OpsCenterInvestigationPanel: View {
         let receiptEntries = investigation.receipts.map { receipt in
             OpsCenterRouteTimelineDigest(
                 id: "receipt-\(receipt.id.uuidString)",
-                kindTitle: "Receipt",
+                kindTitle: LocalizedString.text("receipt_label"),
                 title: receipt.nodeTitle,
-                detailText: "\(receipt.status.rawValue) • \(receipt.summary)",
+                detailText: "\(opsExecutionStatusTitle(receipt.status)) • \(receipt.summary)",
                 timestamp: receipt.timestamp,
                 color: opsExecutionStatusColor(receipt.status),
                 sessionID: receipt.sessionID
@@ -6209,8 +6226,8 @@ private struct OpsCenterInvestigationPanel: View {
         let eventEntries = investigation.events.map { event in
             OpsCenterRouteTimelineDigest(
                 id: "event-\(event.id)",
-                kindTitle: "Event",
-                title: event.eventType.rawValue,
+                kindTitle: LocalizedString.text("event_label"),
+                title: opsRuntimeEventTypeTitle(event.eventType),
                 detailText: "\(event.participants) • \(event.summary)",
                 timestamp: event.timestamp,
                 color: .blue,
@@ -6221,9 +6238,9 @@ private struct OpsCenterInvestigationPanel: View {
         let messageEntries = investigation.messages.map { message in
             OpsCenterRouteTimelineDigest(
                 id: "message-\(message.id.uuidString)",
-                kindTitle: "Message",
+                kindTitle: LocalizedString.text("message"),
                 title: message.routeTitle,
-                detailText: "\(message.status.rawValue) • \(message.summary)",
+                detailText: "\(opsMessageStatusTitle(message.status)) • \(message.summary)",
                 timestamp: message.timestamp,
                 color: message.status.color,
                 sessionID: nil
@@ -6233,9 +6250,9 @@ private struct OpsCenterInvestigationPanel: View {
         let taskEntries = investigation.tasks.map { task in
             OpsCenterRouteTimelineDigest(
                 id: "task-\(task.id.uuidString)",
-                kindTitle: "Task",
+                kindTitle: LocalizedString.text("task"),
                 title: task.title,
-                detailText: "\(task.status.rawValue) • \(task.summary)",
+                detailText: "\(task.status.displayName) • \(task.summary)",
                 timestamp: task.timestamp,
                 color: task.priority.color,
                 sessionID: nil
@@ -6271,13 +6288,13 @@ private struct OpsCenterInvestigationPanel: View {
     private func routePressureLabel(for score: Int) -> String {
         switch score {
         case 7...:
-            return "High"
+            return LocalizedString.text("high")
         case 3...6:
-            return "Medium"
+            return LocalizedString.text("medium")
         case 1...2:
-            return "Low"
+            return LocalizedString.text("low")
         default:
-            return "Clear"
+            return LocalizedString.text("investigation_clear_value")
         }
     }
 
@@ -6297,15 +6314,15 @@ private struct OpsCenterInvestigationPanel: View {
     private func workbenchThreadStatusTitle(_ status: String) -> String {
         switch status {
         case "approval_pending":
-            return "Approval Pending"
+            return LocalizedString.text("workbench_thread_status_approval_pending")
         case "blocked":
-            return "Blocked"
+            return LocalizedString.text("workbench_thread_status_blocked")
         case "active":
-            return "Active"
+            return LocalizedString.text("workbench_thread_status_active")
         case "completed":
-            return "Completed"
+            return LocalizedString.text("workbench_thread_status_completed")
         default:
-            return "Idle"
+            return LocalizedString.text("workbench_thread_status_idle")
         }
     }
 
@@ -6350,7 +6367,7 @@ private func routeEndpointCard(
                 .foregroundColor(.secondary)
             Text(node?.title ?? fallbackTitle)
                 .font(.subheadline.weight(.medium))
-            Text(node?.agentName ?? "No bound agent")
+            Text(node?.agentName ?? LocalizedString.text("no_bound_agent"))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -6413,12 +6430,12 @@ private struct OpsCenterReceiptDigestCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(receipt.nodeTitle)
                         .font(.caption.weight(.medium))
-                    Text(receipt.agentName ?? "Unknown agent")
+                    Text(receipt.agentName ?? LocalizedString.text("investigation_unknown_agent"))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                opsStatusPill(title: receipt.status.rawValue, color: opsExecutionStatusColor(receipt.status))
+                opsStatusPill(title: opsExecutionStatusTitle(receipt.status), color: opsExecutionStatusColor(receipt.status))
             }
 
             Text(receipt.summary)
@@ -6427,7 +6444,7 @@ private struct OpsCenterReceiptDigestCard: View {
                 .lineLimit(3)
 
             HStack {
-                Text(receipt.outputType.rawValue)
+                Text(opsExecutionOutputTypeTitle(receipt.outputType))
                 Spacer()
                 if let duration = receipt.duration {
                     Text(opsDurationText(duration))
@@ -6449,7 +6466,7 @@ private struct OpsCenterEventDigestCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(event.eventType.rawValue)
+                Text(opsRuntimeEventTypeTitle(event.eventType))
                     .font(.caption.weight(.medium))
                 Spacer()
                 Text(event.timestamp.formatted(date: .abbreviated, time: .shortened))
@@ -6487,7 +6504,7 @@ private struct OpsCenterMessageDigestCard: View {
                 Text(message.routeTitle)
                     .font(.caption.weight(.medium))
                 Spacer()
-                opsStatusPill(title: message.status.rawValue, color: message.status.color)
+                opsStatusPill(title: opsMessageStatusTitle(message.status), color: message.status.color)
             }
 
             Text(message.summary)
@@ -6514,8 +6531,8 @@ private struct OpsCenterTaskDigestCard: View {
                 Text(task.title)
                     .font(.caption.weight(.medium))
                 Spacer()
-                opsStatusPill(title: task.status.rawValue, color: task.status.color)
-                opsStatusPill(title: task.priority.rawValue, color: task.priority.color)
+                opsStatusPill(title: task.status.displayName, color: task.status.color)
+                opsStatusPill(title: task.priority.displayName, color: task.priority.color)
             }
 
             Text(task.summary)
@@ -6546,34 +6563,34 @@ private enum OpsCenterMapLayer: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .state:
-            return "State"
+            return LocalizedString.text("map_layer_state")
         case .latency:
-            return "Latency"
+            return LocalizedString.text("map_layer_latency")
         case .failures:
-            return "Failures"
+            return LocalizedString.text("map_layer_failures")
         case .routing:
-            return "Routing"
+            return LocalizedString.text("map_layer_routing")
         case .approvals:
-            return "Approvals"
+            return LocalizedString.text("map_layer_approvals")
         case .files:
-            return "Files"
+            return LocalizedString.text("map_layer_files")
         }
     }
 
     var detail: String {
         switch self {
         case .state:
-            return "Shows the latest runtime state projected onto each node."
+            return LocalizedString.text("map_layer_state_detail")
         case .latency:
-            return "Shows where runtime duration is concentrating."
+            return LocalizedString.text("map_layer_latency_detail")
         case .failures:
-            return "Highlights where execution pressure is failing."
+            return LocalizedString.text("map_layer_failures_detail")
         case .routing:
-            return "Shows structural flow concentration across the workflow."
+            return LocalizedString.text("map_layer_routing_detail")
         case .approvals:
-            return "Surfaces approval-gated nodes and edges."
+            return LocalizedString.text("map_layer_approvals_detail")
         case .files:
-            return "Reserved for managed file-scope overlays from workflow-derived data."
+            return LocalizedString.text("map_layer_files_detail")
         }
     }
 }
@@ -6657,27 +6674,88 @@ private func opsInlineEmptyState(_ detail: String) -> some View {
 private func opsDispatchStatusTitle(_ status: RuntimeDispatchStatus) -> String {
     switch status {
     case .created:
-        return "Created"
+        return LocalizedString.text("dispatch_status_created")
     case .dispatched:
-        return "Dispatched"
+        return LocalizedString.text("dispatch_status_dispatched")
     case .accepted:
-        return "Accepted"
+        return LocalizedString.text("dispatch_status_accepted")
     case .running:
-        return "Running"
+        return LocalizedString.text("dispatch_status_running")
     case .waitingApproval:
-        return "Approval"
+        return LocalizedString.text("dispatch_status_approval")
     case .waitingDependency:
-        return "Waiting"
+        return LocalizedString.text("dispatch_status_waiting")
     case .completed:
-        return "Completed"
+        return LocalizedString.text("dispatch_status_completed")
     case .failed:
-        return "Failed"
+        return LocalizedString.text("dispatch_status_failed")
     case .aborted:
-        return "Aborted"
+        return LocalizedString.text("dispatch_status_aborted")
     case .expired:
-        return "Expired"
+        return LocalizedString.text("dispatch_status_expired")
     case .partial:
-        return "Partial"
+        return LocalizedString.text("dispatch_status_partial")
+    }
+}
+
+private func opsExecutionStatusTitle(_ status: ExecutionStatus) -> String {
+    status.displayName
+}
+
+private func opsExecutionOutputTypeTitle(_ outputType: ExecutionOutputType) -> String {
+    switch outputType {
+    case .agentFinalResponse:
+        return LocalizedString.text("execution_output_agent_final_response")
+    case .runtimeLog:
+        return LocalizedString.text("execution_output_runtime_log")
+    case .errorSummary:
+        return LocalizedString.text("execution_output_error_summary")
+    case .empty:
+        return LocalizedString.text("execution_output_empty")
+    }
+}
+
+private func opsRuntimeEventTypeTitle(_ eventType: OpenClawRuntimeEventType) -> String {
+    switch eventType {
+    case .taskDispatch:
+        return LocalizedString.text("runtime_event_task_dispatch")
+    case .taskAccepted:
+        return LocalizedString.text("runtime_event_task_accepted")
+    case .taskProgress:
+        return LocalizedString.text("runtime_event_task_progress")
+    case .taskResult:
+        return LocalizedString.text("runtime_event_task_result")
+    case .taskRoute:
+        return LocalizedString.text("runtime_event_task_route")
+    case .taskError:
+        return LocalizedString.text("runtime_event_task_error")
+    case .taskApprovalRequired:
+        return LocalizedString.text("runtime_event_task_approval_required")
+    case .taskApproved:
+        return LocalizedString.text("runtime_event_task_approved")
+    case .sessionSync:
+        return LocalizedString.text("runtime_event_session_sync")
+    }
+}
+
+private func opsMessageStatusTitle(_ status: MessageStatus) -> String {
+    switch status {
+    case .pending:
+        return LocalizedString.pending
+    case .sent:
+        return LocalizedString.text("message_status_sent")
+    case .delivered:
+        return LocalizedString.text("message_status_delivered")
+    case .read:
+        return LocalizedString.text("message_status_read")
+    case .failed:
+        return LocalizedString.text("dispatch_status_failed")
+    case .waitingForApproval:
+        return LocalizedString.text("pending_approval")
+    case .approved:
+        return LocalizedString.text("message_status_approved")
+    case .rejected:
+        return LocalizedString.text("message_status_rejected")
     }
 }
 
@@ -6870,7 +6948,7 @@ private func opsBuildThreadSummaries(
             let summary = OpsCenterThreadSummary(
                 threadID: sessionID,
                 workflowID: resolvedWorkflowID,
-                workflowName: resolvedWorkflowID.flatMap { workflowsByID[$0] } ?? workflow?.name ?? "Workbench Thread",
+                workflowName: resolvedWorkflowID.flatMap { workflowsByID[$0] } ?? workflow?.name ?? LocalizedString.text("workbench_thread_label"),
                 status: status,
                 entryAgentName: entryAgentID.flatMap { agentNamesByID[$0] },
                 participantNames: participantNames,
@@ -6915,7 +6993,7 @@ private func opsBuildThreadSummaries(
         let summary = OpsCenterThreadSummary(
             threadID: entry.threadID,
             workflowID: entry.workflowID,
-            workflowName: entry.workflowName ?? workflow?.name ?? "Workbench Thread",
+            workflowName: entry.workflowName ?? workflow?.name ?? LocalizedString.text("workbench_thread_label"),
             status: entry.status,
             entryAgentName: entry.entryAgentName,
             participantNames: entry.participantNames,
@@ -7009,15 +7087,15 @@ private func opsWorkbenchThreadStatus(messages: [Message], tasks: [Task]) -> Str
 private func opsWorkbenchThreadStatusTitle(_ status: String) -> String {
     switch status {
     case "approval_pending":
-        return "Approval Pending"
+        return LocalizedString.text("workbench_thread_status_approval_pending")
     case "blocked":
-        return "Blocked"
+        return LocalizedString.text("workbench_thread_status_blocked")
     case "active":
-        return "Active"
+        return LocalizedString.text("workbench_thread_status_active")
     case "completed":
-        return "Completed"
+        return LocalizedString.text("workbench_thread_status_completed")
     default:
-        return "Idle"
+        return LocalizedString.text("workbench_thread_status_idle")
     }
 }
 
@@ -7080,27 +7158,27 @@ private func opsThreadRuntimePressureScore(_ thread: OpsCenterThreadSummary) -> 
 
 private func opsThreadHotspotReason(_ thread: OpsCenterThreadSummary) -> String {
     if thread.pendingApprovalCount > 0 {
-        return "Approval is holding this thread at the front of the operator queue."
+        return LocalizedString.text("thread_hotspot_reason_approval")
     }
     if thread.blockedTaskCount > 0 {
-        return "Blocked workbench tasks are preventing this thread from advancing."
+        return LocalizedString.text("thread_hotspot_reason_blocked")
     }
     if let relatedSession = thread.relatedSession, relatedSession.failedDispatchCount > 0 {
-        return "Linked runtime dispatch failures are now concentrating on this thread."
+        return LocalizedString.text("thread_hotspot_reason_runtime_failure")
     }
     if let relatedSession = thread.relatedSession, relatedSession.inflightDispatchCount > 0 {
-        return "This thread still owns inflight runtime work."
+        return LocalizedString.text("thread_hotspot_reason_inflight")
     }
     if let relatedSession = thread.relatedSession, relatedSession.queuedDispatchCount > 0 {
-        return "Queued runtime work is backing up behind this thread."
+        return LocalizedString.text("thread_hotspot_reason_queued")
     }
     if thread.activeTaskCount > 0 {
-        return "Workbench tasks are still actively progressing inside this thread."
+        return LocalizedString.text("thread_hotspot_reason_active_work")
     }
     if thread.completedTaskCount > 0 {
-        return "Completed work is retained here for audit and replay."
+        return LocalizedString.text("thread_hotspot_reason_completed")
     }
-    return "Observed thread with retained workbench context."
+    return LocalizedString.text("thread_hotspot_reason_observed")
 }
 
 private func opsPrimaryThreadPressureMode(_ thread: OpsCenterThreadSummary) -> OpsCenterThreadPressureMode {
@@ -7140,7 +7218,7 @@ private func opsBuildThreadClusterDigests(_ threads: [OpsCenterThreadSummary]) -
             return nil
         }
 
-        let title = leadThread.entryAgentName ?? "Unassigned Entry"
+        let title = leadThread.entryAgentName ?? LocalizedString.text("unassigned_entry")
         let hotspotThreadCount = items.filter(opsThreadIsHotspot).count
         let approvalPressure = items.reduce(0) { $0 + $1.pendingApprovalCount }
         let blockedThreadCount = items.filter { $0.blockedTaskCount > 0 || $0.status == "blocked" }.count
@@ -7149,19 +7227,19 @@ private func opsBuildThreadClusterDigests(_ threads: [OpsCenterThreadSummary]) -
         let latestAt = items.compactMap(\.lastUpdatedAt).max()
         let subtitleText = [
             leadThread.workflowName,
-            "\(items.count) threads",
-            hotspotThreadCount > 0 ? "\(hotspotThreadCount) hotspots" : nil
+            LocalizedString.format("thread_count_summary", items.count),
+            hotspotThreadCount > 0 ? LocalizedString.format("hotspot_count_summary", hotspotThreadCount) : nil
         ]
         .compactMap { $0 }
         .joined(separator: " • ")
 
         let detailText: String
         if approvalPressure > 0 {
-            detailText = "\(approvalPressure) pending approvals are stacking inside this entry lane."
+            detailText = LocalizedString.format("thread_cluster_approval_detail", approvalPressure)
         } else if blockedThreadCount > 0 {
-            detailText = "\(blockedThreadCount) blocked threads are concentrated in this lane."
+            detailText = LocalizedString.format("thread_cluster_blocked_detail", blockedThreadCount)
         } else if runtimeLinkedThreadCount > 0 {
-            detailText = "\(runtimeLinkedThreadCount) threads in this lane are still coupled to live runtime pressure."
+            detailText = LocalizedString.format("thread_cluster_runtime_detail", runtimeLinkedThreadCount)
         } else {
             detailText = opsThreadHotspotReason(leadThread)
         }
@@ -7224,17 +7302,17 @@ private func opsBuildThreadPressureDigests(_ threads: [OpsCenterThreadSummary]) 
         let detailText: String
         switch mode {
         case .approval:
-            detailText = "\(approvalPressure) approvals are explicitly blocking forward progress across these threads."
+            detailText = LocalizedString.format("thread_pressure_approval_detail", approvalPressure)
         case .blocked:
-            detailText = "\(blockedThreadCount) threads have workbench blockers and should be inspected before more runtime load is added."
+            detailText = LocalizedString.format("thread_pressure_blocked_detail", blockedThreadCount)
         case .runtimeFailure:
-            detailText = "\(runtimeFailureCount) threads now carry failed runtime dispatches or failed message evidence."
+            detailText = LocalizedString.format("thread_pressure_runtime_failure_detail", runtimeFailureCount)
         case .runtimeBacklog:
-            detailText = "\(runtimeBacklogCount) threads are still carrying queued or inflight runtime pressure."
+            detailText = LocalizedString.format("thread_pressure_runtime_backlog_detail", runtimeBacklogCount)
         case .activeWork:
-            detailText = "These threads are actively moving work and are the best place to observe live orchestration behavior."
+            detailText = LocalizedString.text("thread_pressure_active_work_detail")
         case .stable:
-            detailText = "These retained threads are stable and primarily useful for audit, replay, and comparative debugging."
+            detailText = LocalizedString.text("thread_pressure_stable_detail")
         }
 
         return OpsCenterThreadPressureDigest(
@@ -7296,16 +7374,16 @@ private func opsBuildThreadSessionDigests(_ threads: [OpsCenterThreadSummary]) -
         let approvalPressure = items.reduce(0) { $0 + $1.pendingApprovalCount }
         let latestAt = items.compactMap(\.lastUpdatedAt).max()
 
-        let title = leadSession.map { "Session \(String($0.sessionID.prefix(12)))" } ?? "Detached Threads"
+        let title = leadSession.map { LocalizedString.format("thread_session_title", String($0.sessionID.prefix(12))) } ?? LocalizedString.text("detached_threads_title")
         let detailText: String
         if let leadSession, leadSession.failedDispatchCount > 0 {
-            detailText = leadSession.latestFailureText ?? "\(leadSession.failedDispatchCount) runtime failure signal(s) are landing in this session family."
+            detailText = leadSession.latestFailureText ?? LocalizedString.format("thread_session_failure_detail", leadSession.failedDispatchCount)
         } else if let leadSession, leadSession.queuedDispatchCount > 0 || leadSession.inflightDispatchCount > 0 {
-            detailText = "This session family is still carrying queued or inflight runtime work across visible threads."
+            detailText = LocalizedString.text("thread_session_runtime_detail")
         } else if approvalPressure > 0 {
-            detailText = "\(approvalPressure) approvals are stacking on threads linked to this session family."
+            detailText = LocalizedString.format("thread_session_approval_detail", approvalPressure)
         } else {
-            detailText = "Threads in this family are primarily retained for context, replay, and session-linked debugging."
+            detailText = LocalizedString.text("thread_session_context_detail")
         }
 
         return OpsCenterThreadSessionDigest(
@@ -7450,20 +7528,20 @@ private func opsBuildThreadPressureTimelineDigests(_ threads: [OpsCenterThreadSu
         let latestAt = bucketThreads.compactMap(\.lastUpdatedAt).max()
         let title: String
         if offset == 0 {
-            title = "Current Hour"
+            title = LocalizedString.text("thread_timeline_current_hour")
         } else {
-            title = "\(offset)h Ago"
+            title = LocalizedString.format("thread_timeline_hours_ago", offset)
         }
 
         let detailText: String
         if approvalPressure > 0 {
-            detailText = "\(approvalPressure) approval waits were visible in this hour slice."
+            detailText = LocalizedString.format("thread_timeline_approval_detail", approvalPressure)
         } else if blockedThreadCount > 0 {
-            detailText = "\(blockedThreadCount) blocked threads were active in this hour slice."
+            detailText = LocalizedString.format("thread_timeline_blocked_detail", blockedThreadCount)
         } else if runtimeLinkedThreadCount > 0 {
-            detailText = "\(runtimeLinkedThreadCount) runtime-linked threads were active in this hour slice."
+            detailText = LocalizedString.format("thread_timeline_runtime_detail", runtimeLinkedThreadCount)
         } else {
-            detailText = "Retained thread activity was present, but without dominant approval or failure pressure."
+            detailText = LocalizedString.text("thread_timeline_stable_detail")
         }
 
         return OpsCenterThreadPressureTimelineDigest(

@@ -289,6 +289,33 @@ struct OpenClawRuntimeSyncReceipt: Codable, Identifiable, Hashable {
         }
         return nil
     }
+
+    var blockedReasonMessage: String? {
+        guard let runtimeWriteStep = steps.first(where: { $0.step == .writeRuntimeSession }) else {
+            return nil
+        }
+        guard runtimeWriteStep.status != .succeeded else { return nil }
+
+        let message = runtimeWriteStep.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty ? nil : message
+    }
+
+    var issueStepsExcludingBlockedReason: [OpenClawRuntimeSyncStepReceipt] {
+        steps.filter { step in
+            guard step.status != .succeeded else { return false }
+            if step.step == .writeRuntimeSession, blockedReasonMessage != nil {
+                return false
+            }
+            return true
+        }
+    }
+
+    var normalizedWarnings: [String] {
+        warnings.compactMap { warning in
+            let trimmed = warning.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
 }
 
 struct ProjectWorkspaceRecord: Codable, Identifiable, Hashable {

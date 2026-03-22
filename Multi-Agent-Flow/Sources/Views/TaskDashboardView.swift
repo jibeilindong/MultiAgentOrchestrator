@@ -3011,6 +3011,8 @@ struct MonitoringDashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            runtimeSyncDiagnosticsSection
+
             HStack(spacing: 10) {
                 Button(appState.openClawManager.isConnected ? LocalizedString.text("disconnect_openclaw") + " OpenClaw" : LocalizedString.text("connect_openclaw") + " OpenClaw") {
                     if appState.openClawManager.isConnected {
@@ -3072,6 +3074,62 @@ struct MonitoringDashboardView: View {
                 .buttonStyle(.bordered)
             }
         }
+    }
+
+    @ViewBuilder
+    private var runtimeSyncDiagnosticsSection: some View {
+        if appState.hasOpenClawLatestRuntimeSyncDiagnostics {
+            VStack(alignment: .leading, spacing: 8) {
+                if let blockedReason = appState.openClawLatestRuntimeSyncBlockedReason {
+                    runtimeSyncDiagnosticGroup(
+                        title: LocalizedString.text("openclaw_runtime_sync_blocked_reason_label"),
+                        items: [blockedReason],
+                        color: openClawLatestSyncColor
+                    )
+                }
+
+                if !appState.openClawLatestRuntimeSyncIssueLines.isEmpty {
+                    runtimeSyncDiagnosticGroup(
+                        title: LocalizedString.text("openclaw_runtime_sync_step_issues_label"),
+                        items: appState.openClawLatestRuntimeSyncIssueLines,
+                        color: appState.latestOpenClawRuntimeSyncReceipt?.status == .failed ? .red : .orange
+                    )
+                }
+
+                if !appState.openClawLatestRuntimeSyncWarnings.isEmpty {
+                    runtimeSyncDiagnosticGroup(
+                        title: LocalizedString.text("openclaw_runtime_sync_warnings_label"),
+                        items: appState.openClawLatestRuntimeSyncWarnings,
+                        color: .orange
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func runtimeSyncDiagnosticGroup(title: String, items: [String], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(color)
+
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .top, spacing: 6) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 5)
+                    Text(item)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(10)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var taskSection: some View {
@@ -6410,6 +6468,7 @@ private struct DashboardModelTokenUsageRow: Identifiable {
 struct TaskDashboardView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject var taskManager: TaskManager
+    @ObservedObject private var localizationManager = LocalizationManager.shared
     
     @State private var selectedTimeRange: TimeRange = .week
     @State private var showingAgentStats = false
@@ -6457,6 +6516,7 @@ struct TaskDashboardView: View {
                 }
             }
         }
+        .environment(\.locale, Locale(identifier: localizationManager.currentLanguage.rawValue))
     }
     
     // MARK: - 子视图
@@ -6528,10 +6588,10 @@ struct TaskDashboardView: View {
     private var agentStatsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(LocalizedString.agent + " " + LocalizedString.performance)
+                Text(LocalizedString.text("agent_performance"))
                     .font(.headline)
                 Spacer()
-                    Button(LocalizedString.text("show_details")) {
+                Button(LocalizedString.text("show_details")) {
                     showingAgentStats = true
                 }
                 .font(.caption)
@@ -6565,7 +6625,7 @@ struct TaskDashboardView: View {
     
     private var recentActivitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(LocalizedString.actions)
+            Text(LocalizedString.text("recent_activity"))
                 .font(.headline)
             
             VStack(spacing: 8) {
@@ -6582,13 +6642,25 @@ struct TaskDashboardView: View {
     // MARK: - 辅助方法
     
     private func formatDuration(_ duration: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.maximumUnitCount = 1
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: localizationManager.currentLanguage.rawValue)
+        formatter.calendar = calendar
+
         if duration < 60 {
-            return "\(Int(duration))s"
+            formatter.allowedUnits = [.second]
         } else if duration < 3600 {
-            return "\(Int(duration / 60))m"
+            formatter.allowedUnits = [.minute]
+        } else if duration < 86_400 {
+            formatter.allowedUnits = [.hour]
         } else {
-            return "\(Int(duration / 3600))h"
+            formatter.allowedUnits = [.day]
         }
+
+        return formatter.string(from: duration) ?? "\(Int(duration))"
     }
 }
 
@@ -6715,14 +6787,14 @@ struct ActivityRow: View {
                 Text(task.title)
                     .font(.caption)
                     .lineLimit(1)
-                Text("\(task.status.rawValue) • \(task.createdAt.formatted(date: .omitted, time: .shortened))")
+                Text("\(task.status.displayName) • \(task.createdAt.formatted(date: .omitted, time: .shortened))")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
             
             Spacer()
             
-            Text(task.priority.rawValue)
+            Text(task.priority.displayName)
                 .font(.caption2)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -6792,7 +6864,7 @@ struct AgentDetailRow: View {
                 
                 Spacer()
                 
-                Text("\(stats.total) tasks")
+                Text(LocalizedString.format("tasks_count", stats.total))
                     .font(.caption)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -6800,10 +6872,10 @@ struct AgentDetailRow: View {
             }
             
             HStack(spacing: 16) {
-                StatPill(count: stats.todo, label: "To Do", color: .gray)
-                StatPill(count: stats.inProgress, label: "In Progress", color: .blue)
-                StatPill(count: stats.done, label: "Done", color: .green)
-                StatPill(count: stats.blocked, label: "Blocked", color: .red)
+                StatPill(count: stats.todo, label: LocalizedString.todo, color: .gray)
+                StatPill(count: stats.inProgress, label: LocalizedString.inProgress, color: .blue)
+                StatPill(count: stats.done, label: LocalizedString.text("done_label"), color: .green)
+                StatPill(count: stats.blocked, label: LocalizedString.blocked, color: .red)
             }
         }
         .padding(.vertical, 8)

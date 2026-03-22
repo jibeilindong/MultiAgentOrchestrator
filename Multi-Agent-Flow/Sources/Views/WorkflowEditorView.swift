@@ -1336,6 +1336,12 @@ struct EditorToolbar: View {
                     }
                 }
                 .padding(.top, 8)
+
+                if let runtimeSyncDiagnostic = appState.openClawLatestRuntimeSyncCompactDiagnostic,
+                   appState.latestOpenClawRuntimeSyncReceipt?.status != .succeeded {
+                    workflowRuntimeSyncDiagnosticView(runtimeSyncDiagnostic)
+                        .padding(.top, 6)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -1813,6 +1819,31 @@ struct EditorToolbar: View {
         .overlay(
             Capsule(style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func workflowRuntimeSyncDiagnosticView(_ detail: String) -> some View {
+        let color: Color = appState.latestOpenClawRuntimeSyncReceipt?.status == .failed ? .red : .orange
+
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: appState.latestOpenClawRuntimeSyncReceipt?.status == .failed ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                .foregroundColor(color)
+                .padding(.top, 1)
+            Text(detail)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(color.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(color.opacity(0.16), lineWidth: 1)
         )
     }
 

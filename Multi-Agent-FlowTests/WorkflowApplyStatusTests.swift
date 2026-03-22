@@ -88,6 +88,40 @@ final class WorkflowApplyStatusTests: XCTestCase {
         XCTAssertEqual(receipt.primaryIssueMessage, "allow list failed")
     }
 
+    func testRuntimeSyncReceiptExposesBlockedReasonAndNonBlockedIssueSteps() {
+        let receipt = OpenClawRuntimeSyncReceipt(
+            projectID: UUID(),
+            requestedMirrorRevision: 9,
+            appliedRuntimeRevision: 6,
+            status: .partial,
+            steps: [
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .stageProjectMirror,
+                    status: .partial,
+                    message: "planner 的 SOUL 路径未解析"
+                ),
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .writeRuntimeSession,
+                    status: .skipped,
+                    message: "项目镜像 staging 不完整，已阻止本次运行时写回。"
+                ),
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .syncCommunicationAllowList,
+                    status: .skipped,
+                    message: "运行时写回未完成，已跳过通信 allow list 同步。"
+                )
+            ],
+            warnings: ["以下 agent 的 SOUL 路径未能解析"]
+        )
+
+        XCTAssertEqual(receipt.blockedReasonMessage, "项目镜像 staging 不完整，已阻止本次运行时写回。")
+        XCTAssertEqual(
+            receipt.issueStepsExcludingBlockedReason.map(\.step),
+            [.stageProjectMirror, .syncCommunicationAllowList]
+        )
+        XCTAssertEqual(receipt.normalizedWarnings, ["以下 agent 的 SOUL 路径未能解析"])
+    }
+
     func testRuntimeStatePersistsLatestRuntimeSyncReceipt() throws {
         let receipt = OpenClawRuntimeSyncReceipt(
             projectID: UUID(),
