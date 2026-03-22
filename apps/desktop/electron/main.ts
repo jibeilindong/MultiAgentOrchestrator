@@ -2,11 +2,9 @@ import path from "node:path";
 import os from "node:os";
 import * as net from "node:net";
 import * as tls from "node:tls";
-import { execFile } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign as signData } from "node:crypto";
 import type { JsonWebKey as NodeJsonWebKey } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { promisify } from "node:util";
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import {
   buildConnectionStateFromProbeReport,
@@ -21,7 +19,7 @@ import {
   buildContainerOpenClawRootDiscoveryScript,
   buildOpenClawRootFallbackCandidates
 } from "./openclaw-discovery";
-import { resolveLocalOpenClawBinaryPath } from "./openclaw-local-runtime";
+import { OpenClawHost, shellSingleQuote } from "./openclaw-host";
 import {
   buildOpenClawGovernanceAuditReport,
   assessOpenClawSandboxSecurityFromText,
@@ -60,7 +58,6 @@ const APP_DOCUMENTS_DIR = "Multi-Agent-Flow";
 const APP_AUTOSAVE_DIR = "AutoSave";
 const RECENT_PROJECTS_FILE = "recent-projects.json";
 const APP_ID = "com.multiagentflow.desktop";
-const execFileAsync = promisify(execFile);
 const OPENCLAW_PROBE_SOURCE = "desktop-shell.probe.v1";
 const DESKTOP_GATEWAY_CLIENT_ID = "gateway-client";
 const DESKTOP_GATEWAY_CLIENT_MODE = "backend";
@@ -71,6 +68,14 @@ interface ProjectFileHandle {
   project: MAProject;
   filePath: string | null;
 }
+
+const openClawHost = new OpenClawHost(() => ({
+  platform: process.platform,
+  homeDirectory: os.homedir(),
+  resourcesPath: process.resourcesPath,
+  appPath: app.getAppPath(),
+  userDataPath: app.getPath("userData")
+}));
 
 interface RecentProjectRecord {
   name: string;
@@ -1123,47 +1128,12 @@ async function inspectOpenClawAgents(config: OpenClawConfig, fallbackAgentNames:
     : [];
 }
 
-function resolveLocalBinaryPath(config: OpenClawConfig): string {
-  return resolveLocalOpenClawBinaryPath(config, {
-    platform: process.platform,
-    homeDirectory: os.homedir(),
-    resourcesPath: process.resourcesPath,
-    appPath: app.getAppPath(),
-    userDataPath: app.getPath("userData")
-  });
-}
-
-async function runCommand(command: string, args: string[], options?: { timeoutMs?: number }) {
-  return execFileAsync(command, args, {
-    timeout: options?.timeoutMs ?? 15000,
-    windowsHide: true,
-    maxBuffer: 1024 * 1024
-  });
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
-}
-
 async function runOpenClawDeploymentCommand(
   config: OpenClawConfig,
   args: string[],
   options?: { timeoutMs?: number }
 ) {
-  switch (config.deploymentKind) {
-    case "local":
-      return runCommand(resolveLocalBinaryPath(config), args, options);
-    case "container": {
-      const engine = config.container.engine.trim() || "docker";
-      const containerName = config.container.containerName.trim();
-      if (!containerName) {
-        throw new Error("Container name is required.");
-      }
-      return runCommand(engine, ["exec", containerName, "openclaw", ...args], options);
-    }
-    case "remoteServer":
-      throw new Error("Remote server mode does not support direct OpenClaw CLI execution yet.");
-  }
+  return openClawHost.runDeploymentCommand(config, args, options);
 }
 
 async function runOpenClawDeploymentShell(
@@ -1171,20 +1141,7 @@ async function runOpenClawDeploymentShell(
   script: string,
   options?: { timeoutMs?: number }
 ) {
-  switch (config.deploymentKind) {
-    case "local":
-      return runCommand("/bin/sh", ["-lc", script], options);
-    case "container": {
-      const engine = config.container.engine.trim() || "docker";
-      const containerName = config.container.containerName.trim();
-      if (!containerName) {
-        throw new Error("Container name is required.");
-      }
-      return runCommand(engine, ["exec", containerName, "sh", "-lc", script], options);
-    }
-    case "remoteServer":
-      throw new Error("Remote server mode does not support shell-based OpenClaw file management yet.");
-  }
+  return openClawHost.runDeploymentShell(config, script, options);
 }
 
 function expandHomePath(candidatePath: string, homeDirectory: string | null): string {

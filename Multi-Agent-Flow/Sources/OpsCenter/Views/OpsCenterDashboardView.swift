@@ -1175,6 +1175,1343 @@ struct OpsCenterDashboardView: View {
     }
 }
 
+private struct OpsCenterWarRoomDashboardView: View {
+    @EnvironmentObject var appState: AppState
+    let onFocusLogs: (String, OpsCenterLogLevelFilter, OpsCenterLogScope) -> Void
+
+    @State private var assetSnapshot: OpsCenterAssetRadarSnapshot = .empty
+
+    private var currentProject: MAProject? {
+        appState.currentProject
+    }
+
+    private var agentNamesByID: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: (currentProject?.agents ?? []).map { ($0.id, $0.name) })
+    }
+
+    private var nodeAgentIDs: [UUID: UUID] {
+        Dictionary(
+            uniqueKeysWithValues: (currentProject?.workflows ?? [])
+                .flatMap(\.nodes)
+                .compactMap { node in
+                    guard let agentID = node.agentID else { return nil }
+                    return (node.id, agentID)
+                }
+        )
+    }
+
+    private var trackedMemoryAgentIDs: Set<UUID> {
+        Set(currentProject?.memoryData.agentMemories.map(\.agentID) ?? [])
+    }
+
+    private var agentDigests: [OpsCenterAgentRadarDigest] {
+        opsBuildAgentRadarDigests(
+            agents: currentProject?.agents ?? [],
+            trackedMemoryAgentIDs: trackedMemoryAgentIDs,
+            tasks: appState.taskManager.tasks,
+            executionResults: appState.openClawService.executionResults,
+            executionLogs: appState.openClawService.executionLogs,
+            activeAgentIDs: Set(appState.openClawManager.activeAgents.keys),
+            nodeAgentIDs: nodeAgentIDs
+        )
+    }
+
+    private var connectionSnapshot: OpsCenterConnectionRadarSnapshot {
+        opsBuildConnectionRadarSnapshot(
+            config: appState.openClawManager.config,
+            connectionState: appState.openClawManager.connectionState,
+            probeReport: appState.openClawManager.lastProbeReport,
+            projectAttachment: appState.openClawManager.projectAttachment,
+            sessionLifecycle: appState.openClawManager.sessionLifecycle,
+            executionResults: appState.openClawService.executionResults,
+            executionLogs: appState.openClawService.executionLogs
+        )
+    }
+
+    private var focusCards: [OpsCenterWarRoomFocusCardData] {
+        [
+            leadAgentFocusCard,
+            leadConnectionFocusCard,
+            leadAssetFocusCard
+        ]
+        .compactMap { $0 }
+        .sorted { lhs, rhs in
+            let lhsRank = opsHealthStatusRank(lhs.status)
+            let rhsRank = opsHealthStatusRank(rhs.status)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
+        }
+    }
+
+    private var leadIssueLabel: String {
+        focusCards.first?.label ?? LocalizedString.text("ops_none")
+    }
+
+    private var activeAgentCount: Int {
+        agentDigests.filter(\.isActive).count
+    }
+
+    private var agentAlertCount: Int {
+        agentDigests.filter { $0.status == .critical || $0.status == .warning }.count
+    }
+
+    private var leadAgentFocusCard: OpsCenterWarRoomFocusCardData? {
+        guard let digest = agentDigests.first(where: { $0.status != .healthy && $0.status != .neutral }) ?? agentDigests.first else {
+            return nil
+        }
+
+        return OpsCenterWarRoomFocusCardData(
+            id: "agent-\(digest.id.uuidString)",
+            title: LocalizedString.text("war_room_agent_section_title"),
+            label: digest.agentName,
+            detailText: digest.attentionText,
+            status: digest.status,
+            logQuery: digest.logQuery,
+            levelFilter: digest.status == .critical ? .errors : .all
+        )
+    }
+
+    private var leadConnectionFocusCard: OpsCenterWarRoomFocusCardData? {
+        if let incident = connectionSnapshot.incidents.first {
+            return OpsCenterWarRoomFocusCardData(
+                id: "connection-incident-\(incident.id)",
+                title: LocalizedString.text("war_room_connection_section_title"),
+                label: incident.title,
+                detailText: incident.detailText,
+                status: incident.status,
+                logQuery: incident.query,
+                levelFilter: incident.status == .critical ? .errors : .warnings
+            )
+        }
+
+        guard let lane = connectionSnapshot.lanes.first(where: { $0.status != .healthy && $0.status != .neutral }) else {
+            return nil
+        }
+
+        return OpsCenterWarRoomFocusCardData(
+            id: "connection-lane-\(lane.id)",
+            title: LocalizedString.text("war_room_connection_section_title"),
+            label: lane.title,
+            detailText: lane.detailText,
+            status: lane.status,
+            logQuery: lane.logQuery,
+            levelFilter: lane.status == .critical ? .errors : .all
+        )
+    }
+
+    private var leadAssetFocusCard: OpsCenterWarRoomFocusCardData? {
+        if let workspace = assetSnapshot.workspaces.first(where: { $0.status != .healthy }) {
+            return OpsCenterWarRoomFocusCardData(
+                id: "asset-workspace-\(workspace.id.uuidString)",
+                title: LocalizedString.text("war_room_assets_section_title"),
+                label: workspace.workspaceName,
+                detailText: workspace.detailText,
+                status: workspace.status,
+                logQuery: workspace.logQuery,
+                levelFilter: .all
+            )
+        }
+
+        guard let memory = assetSnapshot.memoryDigests.first(where: { $0.status != .healthy }) else {
+            return nil
+        }
+
+        return OpsCenterWarRoomFocusCardData(
+            id: "asset-memory-\(memory.id.uuidString)",
+            title: LocalizedString.text("war_room_assets_section_title"),
+            label: memory.agentName,
+            detailText: memory.detailText,
+            status: memory.status,
+            logQuery: memory.logQuery,
+            levelFilter: .all
+        )
+    }
+
+    private var assetRefreshKey: String {
+        guard let project = currentProject else { return "no-project" }
+        let workspaceStamp = project.workspaceIndex
+            .map { "\($0.taskID.uuidString)-\(Int($0.updatedAt.timeIntervalSince1970))" }
+            .sorted()
+            .joined(separator: "|")
+        let memoryStamp = project.memoryData.agentMemories
+            .map { "\($0.agentID.uuidString)-\(Int($0.lastCapturedAt.timeIntervalSince1970))" }
+            .sorted()
+            .joined(separator: "|")
+        return [
+            project.id.uuidString,
+            workspaceStamp,
+            memoryStamp,
+            project.taskData.workspaceRootPath ?? ""
+        ].joined(separator: "::")
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                sectionTitle(LocalizedString.text("war_room_frontline_title"))
+                Text(LocalizedString.text("war_room_frontline_desc"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_agent_alerts"),
+                        value: "\(agentAlertCount)",
+                        detail: leadAgentFocusCard?.detailText ?? LocalizedString.text("war_room_no_agent_intervention"),
+                        color: agentAlertCount > 0 ? .orange : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_connection_alerts"),
+                        value: "\(connectionSnapshot.alertCount)",
+                        detail: leadConnectionFocusCard?.detailText
+                            ?? (connectionSnapshot.phaseSummary.isEmpty
+                                ? LocalizedString.text("war_room_no_connection_lead")
+                                : connectionSnapshot.phaseSummary),
+                        color: connectionSnapshot.alertCount > 0 ? .orange : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_asset_alerts"),
+                        value: "\(assetSnapshot.alertCount)",
+                        detail: leadAssetFocusCard?.detailText ?? LocalizedString.text("war_room_no_asset_lead"),
+                        color: assetSnapshot.alertCount > 0 ? .orange : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_lead_issue"),
+                        value: leadIssueLabel,
+                        detail: focusCards.first?.title ?? LocalizedString.text("war_room_monitoring_detail"),
+                        color: focusCards.first.map { opsHistoryHealthColor($0.status) } ?? .blue
+                    )
+                }
+
+                sectionTitle(LocalizedString.text("war_room_operator_focus_title"))
+                if focusCards.isEmpty {
+                    opsInlineEmptyState(LocalizedString.text("war_room_focus_empty"))
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
+                        ForEach(focusCards) { card in
+                            Group {
+                                if let query = card.logQuery {
+                                    Button {
+                                        onFocusLogs(query, card.levelFilter, .all)
+                                    } label: {
+                                        OpsCenterWarRoomFocusCard(card: card)
+                                    }
+                                    .buttonStyle(.plain)
+                                } else {
+                                    OpsCenterWarRoomFocusCard(card: card)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                sectionTitle(LocalizedString.text("war_room_agent_section_title"))
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_active_agents"),
+                        value: "\(activeAgentCount)",
+                        detail: LocalizedString.format("war_room_visible_agents_detail", agentDigests.count),
+                        color: activeAgentCount > 0 ? .blue : .secondary
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_agents_need_help"),
+                        value: "\(agentAlertCount)",
+                        detail: leadAgentFocusCard?.label ?? LocalizedString.text("war_room_no_operator_help"),
+                        color: agentAlertCount > 0 ? .orange : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_memory_coverage"),
+                        value: "\(trackedMemoryAgentIDs.count)/\(max(agentDigests.count, 1))",
+                        detail: LocalizedString.text("war_room_memory_coverage_detail"),
+                        color: trackedMemoryAgentIDs.count < agentDigests.count ? .yellow : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_cost_pressure"),
+                        value: agentDigests.first.map(\.agentName) ?? LocalizedString.text("ops_none"),
+                        detail: agentDigests.first.map { LocalizedString.format("war_room_pressure_score", $0.costPressureText) }
+                            ?? LocalizedString.text("war_room_no_cost_pressure"),
+                        color: agentDigests.first.map { opsHistoryHealthColor($0.status) } ?? .secondary
+                    )
+                }
+
+                if agentDigests.isEmpty {
+                    opsInlineEmptyState(LocalizedString.text("war_room_agent_queue_empty"))
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(agentDigests.prefix(6))) { digest in
+                            Button {
+                                onFocusLogs(digest.logQuery, digest.status == .critical ? .errors : .all, .all)
+                            } label: {
+                                OpsCenterWarRoomQueueRow(
+                                    title: digest.agentName,
+                                    status: digest.status,
+                                    detailText: digest.attentionText,
+                                    metadataText: opsAgentDigestMetadata(digest),
+                                    accentText: LocalizedString.format("war_room_burn_label", digest.costPressureText)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                sectionTitle(LocalizedString.text("war_room_connection_section_title"))
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_connection_phase"),
+                        value: connectionSnapshot.phaseText,
+                        detail: connectionSnapshot.phaseSummary.isEmpty
+                            ? LocalizedString.text("war_room_no_probe_summary")
+                            : connectionSnapshot.phaseSummary,
+                        color: opsHistoryHealthColor(connectionSnapshot.phaseStatus)
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_connection_latency"),
+                        value: connectionSnapshot.latencyMs.map { "\($0) ms" } ?? LocalizedString.text("na"),
+                        detail: connectionSnapshot.lastProbeText,
+                        color: connectionSnapshot.latencyMs.map(opsLatencyColor) ?? .secondary
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_connection_fallbacks"),
+                        value: "\(connectionSnapshot.fallbackCount)",
+                        detail: connectionSnapshot.fallbackCount > 0
+                            ? LocalizedString.text("war_room_fallback_observed")
+                            : LocalizedString.text("war_room_no_fallback_observed"),
+                        color: connectionSnapshot.fallbackCount > 0 ? .orange : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_connection_errors"),
+                        value: "\(connectionSnapshot.errorCount)",
+                        detail: connectionSnapshot.incidents.first?.title ?? LocalizedString.text("war_room_no_error_index_lead"),
+                        color: connectionSnapshot.errorCount > 0 ? .red : .green
+                    )
+                }
+
+                if connectionSnapshot.lanes.isEmpty && connectionSnapshot.incidents.isEmpty {
+                    opsInlineEmptyState(LocalizedString.text("war_room_connection_queue_empty"))
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(connectionSnapshot.incidents.prefix(3)) { incident in
+                            Button {
+                                onFocusLogs(incident.query, incident.status == .critical ? .errors : .warnings, .all)
+                            } label: {
+                                OpsCenterWarRoomQueueRow(
+                                    title: incident.title,
+                                    status: incident.status,
+                                    detailText: incident.detailText,
+                                    metadataText: "\(incident.count)x • \(incident.latestAt.formatted(date: .abbreviated, time: .shortened))",
+                                    accentText: LocalizedString.text("war_room_incident_index_label")
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        ForEach(connectionSnapshot.lanes) { lane in
+                            Button {
+                                onFocusLogs(lane.logQuery, lane.status == .critical ? .errors : .all, .all)
+                            } label: {
+                                OpsCenterWarRoomQueueRow(
+                                    title: lane.title,
+                                    status: lane.status,
+                                    detailText: lane.detailText,
+                                    metadataText: lane.metadataText,
+                                    accentText: lane.readinessText
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                sectionTitle(LocalizedString.text("war_room_assets_section_title"))
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_workspace_count"),
+                        value: "\(assetSnapshot.workspaces.count)",
+                        detail: LocalizedString.format(
+                            "war_room_workspace_rollup_detail",
+                            assetSnapshot.missingWorkspaceCount,
+                            assetSnapshot.staleWorkspaceCount
+                        ),
+                        color: assetSnapshot.workspaces.isEmpty ? .secondary : (assetSnapshot.missingWorkspaceCount > 0 ? .red : .blue)
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_workspace_size"),
+                        value: opsByteCountText(assetSnapshot.totalBytes),
+                        detail: LocalizedString.format("war_room_workspace_size_detail", assetSnapshot.totalFileCount),
+                        color: assetSnapshot.totalBytes > 0 ? .teal : .secondary
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_memory_backups"),
+                        value: "\(assetSnapshot.memoryDigests.count)",
+                        detail: LocalizedString.format("war_room_memory_backup_detail", assetSnapshot.missingMemoryCount),
+                        color: assetSnapshot.missingMemoryCount > 0 ? .orange : .green
+                    )
+                    opsMetricCard(
+                        title: LocalizedString.text("war_room_compression_candidates"),
+                        value: "\(assetSnapshot.compressionCandidateCount)",
+                        detail: assetSnapshot.workspaces.first(where: \.compressionCandidate)?.workspaceName
+                            ?? LocalizedString.text("war_room_no_compression_candidate"),
+                        color: assetSnapshot.compressionCandidateCount > 0 ? .orange : .green
+                    )
+                }
+
+                if assetSnapshot.workspaces.isEmpty && assetSnapshot.memoryDigests.isEmpty {
+                    opsInlineEmptyState(LocalizedString.text("war_room_asset_queue_empty"))
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(assetSnapshot.workspaces.prefix(5))) { workspace in
+                            Button {
+                                onFocusLogs(workspace.logQuery, workspace.status == .critical ? .errors : .all, .all)
+                            } label: {
+                                OpsCenterWarRoomQueueRow(
+                                    title: workspace.workspaceName,
+                                    status: workspace.status,
+                                    detailText: workspace.detailText,
+                                    metadataText: opsAssetWorkspaceMetadata(workspace),
+                                    accentText: workspace.statusLabel
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        ForEach(assetSnapshot.memoryDigests.filter { $0.status != .healthy }.prefix(3)) { memory in
+                            Button {
+                                onFocusLogs(memory.logQuery, .all, .all)
+                            } label: {
+                                OpsCenterWarRoomQueueRow(
+                                    title: memory.agentName,
+                                    status: memory.status,
+                                    detailText: memory.detailText,
+                                    metadataText: memory.metadataText,
+                                    accentText: memory.statusLabel
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+        .onAppear(perform: refreshAssetSnapshot)
+        .onChange(of: assetRefreshKey) { _, _ in
+            refreshAssetSnapshot()
+        }
+    }
+
+    private func refreshAssetSnapshot() {
+        guard let project = currentProject else {
+            assetSnapshot = .empty
+            return
+        }
+
+        let tasks = appState.taskManager.tasks
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0.name) })
+        let workspaceRootURL = resolvedWorkspaceRootURL(for: project)
+
+        DispatchQueue.global(qos: .utility).async {
+            let snapshot = opsBuildAssetRadarSnapshot(
+                workspaceRecords: project.workspaceIndex,
+                memoryData: project.memoryData,
+                tasks: tasks,
+                agentNamesByID: agentNamesByID,
+                workspaceRootURL: workspaceRootURL
+            )
+
+            DispatchQueue.main.async {
+                self.assetSnapshot = snapshot
+            }
+        }
+    }
+
+    private func resolvedWorkspaceRootURL(for project: MAProject) -> URL {
+        let configuredPath = project.taskData.workspaceRootPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !configuredPath.isEmpty {
+            let url = URL(fileURLWithPath: configuredPath, isDirectory: true)
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        return appState.projectManager.defaultWorkspaceRootDirectory(for: project.id)
+    }
+}
+
+private struct OpsCenterWarRoomFocusCard: View {
+    let card: OpsCenterWarRoomFocusCardData
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                opsStatusPill(title: opsWarRoomStatusTitle(card.status), color: opsHistoryHealthColor(card.status))
+                Spacer()
+                Text(card.title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Text(card.label)
+                .font(.headline)
+                .foregroundColor(.primary)
+                .lineLimit(2)
+
+            Text(card.detailText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.leading)
+                .lineLimit(3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct OpsCenterWarRoomQueueRow: View {
+    let title: String
+    let status: OpsHealthStatus
+    let detailText: String
+    let metadataText: String
+    let accentText: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            opsStatusPill(title: opsWarRoomStatusTitle(status), color: opsHistoryHealthColor(status))
+                .frame(width: 60, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .default))
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+
+                Text(detailText)
+                    .font(.caption)
+                    .foregroundColor(.primary)
+                    .lineLimit(3)
+
+                Text(metadataText)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(accentText)
+                .font(.caption2.weight(.medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(12)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct OpsCenterWarRoomFocusCardData: Identifiable {
+    let id: String
+    let title: String
+    let label: String
+    let detailText: String
+    let status: OpsHealthStatus
+    let logQuery: String?
+    let levelFilter: OpsCenterLogLevelFilter
+}
+
+struct OpsCenterAgentRadarDigest: Identifiable {
+    let id: UUID
+    let agentName: String
+    let status: OpsHealthStatus
+    let completedCount: Int
+    let failedCount: Int
+    let warningCount: Int
+    let errorCount: Int
+    let activeTaskCount: Int
+    let averageDuration: TimeInterval?
+    let lastActivityAt: Date?
+    let hasTrackedMemory: Bool
+    let isActive: Bool
+    let costPressureScore: Double
+    let attentionText: String
+    let logQuery: String
+
+    var costPressureText: String {
+        String(format: "%.1f", costPressureScore)
+    }
+}
+
+struct OpsCenterConnectionLaneDigest: Identifiable {
+    let id: String
+    let title: String
+    let status: OpsHealthStatus
+    let readinessText: String
+    let detailText: String
+    let metadataText: String
+    let logQuery: String
+}
+
+struct OpsCenterConnectionIncidentDigest: Identifiable {
+    let id: String
+    let title: String
+    let detailText: String
+    let status: OpsHealthStatus
+    let count: Int
+    let latestAt: Date
+    let query: String
+}
+
+struct OpsCenterConnectionRadarSnapshot {
+    let phaseText: String
+    let phaseStatus: OpsHealthStatus
+    let phaseSummary: String
+    let latencyMs: Int?
+    let lastProbeText: String
+    let fallbackCount: Int
+    let errorCount: Int
+    let lanes: [OpsCenterConnectionLaneDigest]
+    let incidents: [OpsCenterConnectionIncidentDigest]
+
+    static var empty: OpsCenterConnectionRadarSnapshot {
+        OpsCenterConnectionRadarSnapshot(
+            phaseText: LocalizedString.text("war_room_phase_idle"),
+            phaseStatus: .neutral,
+            phaseSummary: "",
+            latencyMs: nil,
+            lastProbeText: LocalizedString.text("war_room_no_probe_recorded"),
+            fallbackCount: 0,
+            errorCount: 0,
+            lanes: [],
+            incidents: []
+        )
+    }
+
+    var alertCount: Int {
+        lanes.filter { $0.status == .critical || $0.status == .warning }.count
+            + incidents.filter { $0.status == .critical || $0.status == .warning }.count
+    }
+}
+
+struct OpsCenterAssetWorkspaceDigest: Identifiable {
+    let id: UUID
+    let workspaceName: String
+    let ownerName: String?
+    let fileCount: Int
+    let totalBytes: Int64
+    let updatedAt: Date?
+    let status: OpsHealthStatus
+    let detailText: String
+    let compressionCandidate: Bool
+    let isMissing: Bool
+    let logQuery: String
+
+    var statusLabel: String {
+        if isMissing {
+            return LocalizedString.text("war_room_asset_status_missing")
+        }
+        if compressionCandidate {
+            return LocalizedString.text("war_room_asset_status_compress")
+        }
+        return updatedAt == nil
+            ? LocalizedString.text("war_room_asset_status_watch")
+            : LocalizedString.text("war_room_asset_status_tracked")
+    }
+}
+
+struct OpsCenterAssetMemoryDigest: Identifiable {
+    let id: UUID
+    let agentName: String
+    let status: OpsHealthStatus
+    let detailText: String
+    let metadataText: String
+    let logQuery: String
+
+    var statusLabel: String {
+        switch status {
+        case .critical:
+            return LocalizedString.text("war_room_asset_status_missing")
+        case .warning:
+            return LocalizedString.text("war_room_asset_status_watch")
+        case .healthy:
+            return LocalizedString.text("war_room_memory_status_ready")
+        case .neutral:
+            return LocalizedString.text("war_room_memory_status_info")
+        }
+    }
+}
+
+struct OpsCenterAssetRadarSnapshot {
+    let totalFileCount: Int
+    let totalBytes: Int64
+    let workspaces: [OpsCenterAssetWorkspaceDigest]
+    let memoryDigests: [OpsCenterAssetMemoryDigest]
+    let missingWorkspaceCount: Int
+    let staleWorkspaceCount: Int
+    let compressionCandidateCount: Int
+    let missingMemoryCount: Int
+
+    static let empty = OpsCenterAssetRadarSnapshot(
+        totalFileCount: 0,
+        totalBytes: 0,
+        workspaces: [],
+        memoryDigests: [],
+        missingWorkspaceCount: 0,
+        staleWorkspaceCount: 0,
+        compressionCandidateCount: 0,
+        missingMemoryCount: 0
+    )
+
+    var alertCount: Int {
+        missingWorkspaceCount + staleWorkspaceCount + compressionCandidateCount + missingMemoryCount
+    }
+}
+
+private struct OpsCenterDirectoryStats {
+    let exists: Bool
+    let fileCount: Int
+    let totalBytes: Int64
+    let lastModifiedAt: Date?
+
+    static let missing = OpsCenterDirectoryStats(exists: false, fileCount: 0, totalBytes: 0, lastModifiedAt: nil)
+}
+
+func opsBuildAgentRadarDigests(
+    agents: [Agent],
+    trackedMemoryAgentIDs: Set<UUID>,
+    tasks: [Task],
+    executionResults: [ExecutionResult],
+    executionLogs: [ExecutionLogEntry],
+    activeAgentIDs: Set<UUID>,
+    nodeAgentIDs: [UUID: UUID]
+) -> [OpsCenterAgentRadarDigest] {
+    let taskBuckets = Dictionary(grouping: tasks.compactMap { task -> (UUID, Task)? in
+        guard let agentID = task.assignedAgentID else { return nil }
+        return (agentID, task)
+    }, by: \.0)
+
+    let resultBuckets = Dictionary(grouping: executionResults, by: \.agentID)
+
+    let logBuckets = Dictionary(grouping: executionLogs.compactMap { entry -> (UUID, ExecutionLogEntry)? in
+        if let agentID = entry.agentID {
+            return (agentID, entry)
+        }
+        guard let nodeID = entry.nodeID, let agentID = nodeAgentIDs[nodeID] else { return nil }
+        return (agentID, entry)
+    }, by: \.0)
+
+    return agents.map { agent in
+        let agentTasks = (taskBuckets[agent.id] ?? []).map(\.1)
+        let activeTaskCount = agentTasks.filter { !$0.isCompleted }.count
+        let results = resultBuckets[agent.id] ?? []
+        let logs = (logBuckets[agent.id] ?? []).map(\.1)
+        let completedCount = results.filter { $0.status == .completed }.count
+        let failedCount = results.filter { $0.status == .failed }.count
+        let warningCount = logs.filter { $0.level == .warning }.count
+        let errorCount = logs.filter { $0.level == .error }.count
+        let averageDuration = opsAverageTimeInterval(results.compactMap(\.duration))
+        let lastActivityAt = (results.compactMap { $0.completedAt ?? $0.startedAt } + logs.map(\.timestamp)).max()
+        let hasTrackedMemory = trackedMemoryAgentIDs.contains(agent.id)
+        let isActive = activeAgentIDs.contains(agent.id) || activeTaskCount > 0
+
+        let costPressureScore = Double(failedCount * 5 + errorCount * 4 + warningCount * 2 + activeTaskCount)
+            + (averageDuration ?? 0) / 120
+
+        let status: OpsHealthStatus
+        if failedCount > 0 || errorCount > 0 {
+            status = .critical
+        } else if warningCount > 0 || (isActive && !hasTrackedMemory) || costPressureScore >= 4 {
+            status = .warning
+        } else if completedCount > 0 || isActive || hasTrackedMemory {
+            status = .healthy
+        } else {
+            status = .neutral
+        }
+
+        let attentionText: String
+        if failedCount > 0 {
+            attentionText = LocalizedString.format("war_room_attention_failed_runs", failedCount)
+        } else if errorCount > 0 {
+            attentionText = LocalizedString.format("war_room_attention_error_logs", errorCount)
+        } else if isActive && !hasTrackedMemory {
+            attentionText = LocalizedString.text("war_room_attention_missing_memory")
+        } else if warningCount > 0 {
+            attentionText = LocalizedString.format("war_room_attention_warning_logs", warningCount)
+        } else if let averageDuration, averageDuration >= 120 {
+            attentionText = LocalizedString.format("war_room_attention_duration", opsDurationText(averageDuration))
+        } else if hasTrackedMemory {
+            attentionText = LocalizedString.text("war_room_attention_memory_stable")
+        } else {
+            attentionText = LocalizedString.text("war_room_attention_no_pressure")
+        }
+
+        return OpsCenterAgentRadarDigest(
+            id: agent.id,
+            agentName: agent.name,
+            status: status,
+            completedCount: completedCount,
+            failedCount: failedCount,
+            warningCount: warningCount,
+            errorCount: errorCount,
+            activeTaskCount: activeTaskCount,
+            averageDuration: averageDuration,
+            lastActivityAt: lastActivityAt,
+            hasTrackedMemory: hasTrackedMemory,
+            isActive: isActive,
+            costPressureScore: costPressureScore,
+            attentionText: attentionText,
+            logQuery: agent.name
+        )
+    }
+    .sorted { lhs, rhs in
+        let lhsRank = opsHealthStatusRank(lhs.status)
+        let rhsRank = opsHealthStatusRank(rhs.status)
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+        if lhs.costPressureScore != rhs.costPressureScore {
+            return lhs.costPressureScore > rhs.costPressureScore
+        }
+        let lhsActivity = lhs.lastActivityAt ?? .distantPast
+        let rhsActivity = rhs.lastActivityAt ?? .distantPast
+        if lhsActivity != rhsActivity {
+            return lhsActivity > rhsActivity
+        }
+        return lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName) == .orderedAscending
+    }
+}
+
+func opsBuildConnectionRadarSnapshot(
+    config: OpenClawConfig,
+    connectionState: OpenClawConnectionStateSnapshot,
+    probeReport: OpenClawProbeReportSnapshot?,
+    projectAttachment: OpenClawProjectAttachmentSnapshot,
+    sessionLifecycle: OpenClawSessionLifecycleSnapshot,
+    executionResults: [ExecutionResult],
+    executionLogs: [ExecutionLogEntry]
+) -> OpsCenterConnectionRadarSnapshot {
+    let transportCounts = Dictionary(grouping: executionResults.compactMap(\.transportKind), by: { $0.lowercased() })
+        .mapValues(\.count)
+    let connectionLogs = executionLogs.filter(opsConnectionLogRelevant)
+    let fallbackCount = connectionLogs.filter {
+        let message = $0.message.lowercased()
+        return message.contains("fallback") || message.contains("falling back")
+    }.count
+    let errorLogs = connectionLogs.filter { $0.level == .error || $0.level == .warning }
+
+    let lanes = [
+        opsBuildConnectionLaneDigest(
+            id: "cli",
+            title: LocalizedString.text("war_room_lane_title_cli"),
+            available: connectionState.capabilities.cliAvailable,
+            degraded: !connectionState.capabilities.cliAvailable && connectionState.capabilities.gatewayReachable,
+            required: connectionState.deploymentKind != .remoteServer,
+            observedCount: transportCounts["cli"] ?? 0,
+            detailWhenReady: LocalizedString.format("war_room_lane_cli_ready", transportCounts["cli"] ?? 0),
+            detailWhenDegraded: LocalizedString.text("war_room_lane_cli_degraded"),
+            detailWhenUnavailable: connectionState.deploymentKind == .remoteServer
+                ? LocalizedString.text("war_room_lane_cli_not_required")
+                : LocalizedString.text("war_room_lane_cli_unavailable"),
+            logQuery: "cli"
+        ),
+        opsBuildConnectionLaneDigest(
+            id: "gateway-agent",
+            title: LocalizedString.text("war_room_lane_title_gateway_agent"),
+            available: connectionState.capabilities.hasGatewayAgentExecution,
+            degraded: connectionState.capabilities.gatewayReachable || connectionState.capabilities.gatewayAuthenticated,
+            required: connectionState.deploymentKind == .remoteServer,
+            observedCount: transportCounts["gateway_agent"] ?? 0,
+            detailWhenReady: LocalizedString.format(
+                "war_room_lane_gateway_agent_ready",
+                transportCounts["gateway_agent"] ?? 0,
+                (probeReport?.observedDefaultTransports ?? []).joined(separator: ", ").isEmpty
+                    ? LocalizedString.text("war_room_lane_default_transports_none")
+                    : (probeReport?.observedDefaultTransports ?? []).joined(separator: ", ")
+            ),
+            detailWhenDegraded: probeReport?.message.isEmpty == false
+                ? probeReport?.message ?? ""
+                : LocalizedString.text("war_room_lane_gateway_agent_degraded"),
+            detailWhenUnavailable: LocalizedString.text("war_room_lane_gateway_agent_unavailable"),
+            logQuery: "gateway"
+        ),
+        opsBuildConnectionLaneDigest(
+            id: "gateway-chat",
+            title: LocalizedString.text("war_room_lane_title_gateway_chat"),
+            available: connectionState.capabilities.hasGatewayConversationExecution,
+            degraded: connectionState.capabilities.gatewayReachable || connectionState.capabilities.gatewayAuthenticated,
+            required: false,
+            observedCount: transportCounts["gateway_chat"] ?? 0,
+            detailWhenReady: LocalizedString.format("war_room_lane_gateway_chat_ready", transportCounts["gateway_chat"] ?? 0),
+            detailWhenDegraded: LocalizedString.text("war_room_lane_gateway_chat_degraded"),
+            detailWhenUnavailable: LocalizedString.text("war_room_lane_gateway_chat_unavailable"),
+            logQuery: "gateway chat"
+        ),
+        opsBuildConnectionLaneDigest(
+            id: "session-history",
+            title: LocalizedString.text("war_room_lane_title_session_history"),
+            available: connectionState.canReadSessionHistory,
+            degraded: connectionState.capabilities.gatewayReachable && connectionState.capabilities.gatewayAuthenticated,
+            required: false,
+            observedCount: 0,
+            detailWhenReady: LocalizedString.text("war_room_lane_session_history_ready"),
+            detailWhenDegraded: LocalizedString.text("war_room_lane_session_history_degraded"),
+            detailWhenUnavailable: LocalizedString.text("war_room_lane_session_history_unavailable"),
+            logQuery: "history refresh"
+        ),
+        opsBuildConnectionLaneDigest(
+            id: "project-attach",
+            title: LocalizedString.text("war_room_lane_title_project_attach"),
+            available: projectAttachment.state == .attached || connectionState.canAttachProject,
+            degraded: sessionLifecycle.hasPendingMirrorChanges || sessionLifecycle.stage == .pendingSync,
+            required: false,
+            observedCount: 0,
+            detailWhenReady: projectAttachment.state == .attached
+                ? LocalizedString.text("war_room_lane_project_attach_attached")
+                : LocalizedString.text("war_room_lane_project_attach_available"),
+            detailWhenDegraded: LocalizedString.text("war_room_lane_project_attach_degraded"),
+            detailWhenUnavailable: LocalizedString.text("war_room_lane_project_attach_unavailable"),
+            logQuery: "attach"
+        )
+    ]
+
+    let incidents = Dictionary(grouping: errorLogs, by: { opsConnectionIncidentKey($0.message) })
+        .map { key, entries in
+            let latestAt = entries.map(\.timestamp).max() ?? .distantPast
+            let representative = entries.max { lhs, rhs in
+                lhs.timestamp < rhs.timestamp
+            } ?? entries[0]
+            let status: OpsHealthStatus = entries.contains(where: { $0.level == .error }) ? .critical : .warning
+            return OpsCenterConnectionIncidentDigest(
+                id: key,
+                title: representative.message.compactSingleLinePreview(limit: 72),
+                detailText: representative.message.compactSingleLinePreview(limit: 140),
+                status: status,
+                count: entries.count,
+                latestAt: latestAt,
+                query: opsConnectionIncidentQuery(from: representative.message)
+            )
+        }
+        .sorted { lhs, rhs in
+            let lhsRank = opsHealthStatusRank(lhs.status)
+            let rhsRank = opsHealthStatusRank(rhs.status)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            if lhs.count != rhs.count {
+                return lhs.count > rhs.count
+            }
+            return lhs.latestAt > rhs.latestAt
+        }
+
+    let phaseStatus: OpsHealthStatus = {
+        switch connectionState.phase {
+        case .ready:
+            return .healthy
+        case .degraded:
+            return .warning
+        case .failed:
+            return .critical
+        case .idle, .discovering, .probed, .detached:
+            return .neutral
+        }
+    }()
+
+    let latencyMs = probeReport?.health.latencyMs ?? connectionState.health.latencyMs
+    let lastProbeText = (probeReport?.health.lastProbeAt ?? connectionState.health.lastProbeAt)
+        .map { LocalizedString.format("war_room_last_probe_at", $0.formatted(date: .abbreviated, time: .shortened)) }
+        ?? LocalizedString.text("war_room_no_probe_recorded")
+    let phaseSummary = connectionState.health.degradationReason
+        ?? connectionState.health.lastMessage
+        ?? probeReport?.message
+        ?? config.deploymentSummary
+
+    return OpsCenterConnectionRadarSnapshot(
+        phaseText: opsConnectionPhaseText(connectionState.phase),
+        phaseStatus: phaseStatus,
+        phaseSummary: phaseSummary,
+        latencyMs: latencyMs,
+        lastProbeText: lastProbeText,
+        fallbackCount: fallbackCount,
+        errorCount: errorLogs.count,
+        lanes: lanes.sorted { lhs, rhs in
+            let lhsRank = opsHealthStatusRank(lhs.status)
+            let rhsRank = opsHealthStatusRank(rhs.status)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        },
+        incidents: incidents
+    )
+}
+
+func opsBuildAssetRadarSnapshot(
+    workspaceRecords: [ProjectWorkspaceRecord],
+    memoryData: ProjectMemoryData,
+    tasks: [Task],
+    agentNamesByID: [UUID: String],
+    workspaceRootURL: URL,
+    now: Date = Date(),
+    fileManager: FileManager = .default
+) -> OpsCenterAssetRadarSnapshot {
+    let taskByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
+    var totalFileCount = 0
+    var totalBytes: Int64 = 0
+    var missingWorkspaceCount = 0
+    var staleWorkspaceCount = 0
+    var compressionCandidateCount = 0
+
+    let workspaces = workspaceRecords.map { record -> OpsCenterAssetWorkspaceDigest in
+        let url = workspaceRootURL.appendingPathComponent(record.workspaceRelativePath, isDirectory: true)
+        let stats = opsCollectDirectoryStats(at: url, fileManager: fileManager)
+        totalFileCount += stats.fileCount
+        totalBytes += stats.totalBytes
+
+        let task = taskByID[record.taskID]
+        let ownerName = task?.assignedAgentID.flatMap { agentNamesByID[$0] }
+            ?? task?.createdBy.flatMap { agentNamesByID[$0] }
+        let effectiveUpdatedAt = stats.lastModifiedAt ?? record.updatedAt
+        let isStale = effectiveUpdatedAt.timeIntervalSince(now) < -(60 * 60 * 24 * 7)
+        let compressionCandidate = stats.totalBytes >= 50 * 1024 * 1024 || stats.fileCount >= 250
+
+        if !stats.exists {
+            missingWorkspaceCount += 1
+        } else if isStale {
+            staleWorkspaceCount += 1
+        }
+
+        if compressionCandidate {
+            compressionCandidateCount += 1
+        }
+
+        let status: OpsHealthStatus
+        if !stats.exists {
+            status = .critical
+        } else if compressionCandidate || isStale {
+            status = .warning
+        } else {
+            status = .healthy
+        }
+
+        let detailText: String
+        if !stats.exists {
+            detailText = LocalizedString.text("war_room_workspace_missing_detail")
+        } else if compressionCandidate {
+            detailText = LocalizedString.text("war_room_workspace_compress_detail")
+        } else if isStale {
+            detailText = LocalizedString.text("war_room_workspace_stale_detail")
+        } else {
+            detailText = LocalizedString.text("war_room_workspace_ok_detail")
+        }
+
+        return OpsCenterAssetWorkspaceDigest(
+            id: record.taskID,
+            workspaceName: record.workspaceName,
+            ownerName: ownerName,
+            fileCount: stats.fileCount,
+            totalBytes: stats.totalBytes,
+            updatedAt: effectiveUpdatedAt,
+            status: status,
+            detailText: detailText,
+            compressionCandidate: compressionCandidate,
+            isMissing: !stats.exists,
+            logQuery: ownerName ?? record.workspaceName
+        )
+    }
+    .sorted { lhs, rhs in
+        let lhsRank = opsHealthStatusRank(lhs.status)
+        let rhsRank = opsHealthStatusRank(rhs.status)
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+        if lhs.totalBytes != rhs.totalBytes {
+            return lhs.totalBytes > rhs.totalBytes
+        }
+        return lhs.workspaceName.localizedCaseInsensitiveCompare(rhs.workspaceName) == .orderedAscending
+    }
+
+    var missingMemoryCount = 0
+    let memoryDigests = memoryData.agentMemories
+        .map { memory -> OpsCenterAssetMemoryDigest in
+            let sourcePath = memory.sourcePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sourceURL = sourcePath.isEmpty ? nil : URL(fileURLWithPath: sourcePath)
+            let exists = sourceURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
+            let isStale = memory.lastCapturedAt.timeIntervalSince(now) < -(60 * 60 * 24 * 14)
+
+            let status: OpsHealthStatus
+            let detailText: String
+            if sourcePath.isEmpty {
+                status = .critical
+                detailText = LocalizedString.text("war_room_memory_no_source_detail")
+                missingMemoryCount += 1
+            } else if !exists {
+                status = .critical
+                detailText = LocalizedString.text("war_room_memory_missing_source_detail")
+                missingMemoryCount += 1
+            } else if isStale {
+                status = .warning
+                detailText = LocalizedString.text("war_room_memory_stale_detail")
+            } else {
+                status = .healthy
+                detailText = LocalizedString.text("war_room_memory_ready_detail")
+            }
+
+            return OpsCenterAssetMemoryDigest(
+                id: memory.agentID,
+                agentName: memory.agentName,
+                status: status,
+                detailText: detailText,
+                metadataText: sourcePath.isEmpty
+                    ? LocalizedString.text("war_room_memory_no_source_label")
+                    : "\(memory.lastCapturedAt.formatted(date: .abbreviated, time: .shortened)) • \(sourcePath)",
+                logQuery: memory.agentName
+            )
+        }
+        .sorted { lhs, rhs in
+            let lhsRank = opsHealthStatusRank(lhs.status)
+            let rhsRank = opsHealthStatusRank(rhs.status)
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return lhs.agentName.localizedCaseInsensitiveCompare(rhs.agentName) == .orderedAscending
+        }
+
+    return OpsCenterAssetRadarSnapshot(
+        totalFileCount: totalFileCount,
+        totalBytes: totalBytes,
+        workspaces: workspaces,
+        memoryDigests: memoryDigests,
+        missingWorkspaceCount: missingWorkspaceCount,
+        staleWorkspaceCount: staleWorkspaceCount,
+        compressionCandidateCount: compressionCandidateCount,
+        missingMemoryCount: missingMemoryCount
+    )
+}
+
+private func opsBuildConnectionLaneDigest(
+    id: String,
+    title: String,
+    available: Bool,
+    degraded: Bool,
+    required: Bool,
+    observedCount: Int,
+    detailWhenReady: String,
+    detailWhenDegraded: String,
+    detailWhenUnavailable: String,
+    logQuery: String
+) -> OpsCenterConnectionLaneDigest {
+    let status: OpsHealthStatus
+    let readinessText: String
+    let detailText: String
+
+    if available {
+        status = .healthy
+        readinessText = LocalizedString.text("war_room_lane_ready")
+        detailText = detailWhenReady
+    } else if degraded || !required {
+        status = required ? .warning : .neutral
+        readinessText = required
+            ? LocalizedString.text("war_room_lane_degraded")
+            : LocalizedString.text("war_room_lane_optional")
+        detailText = degraded ? detailWhenDegraded : detailWhenUnavailable
+    } else {
+        status = .critical
+        readinessText = LocalizedString.text("war_room_lane_down")
+        detailText = detailWhenUnavailable
+    }
+
+    let metadataText = observedCount > 0
+        ? LocalizedString.format("war_room_lane_observed_runs", observedCount)
+        : LocalizedString.text("war_room_lane_no_sample")
+
+    return OpsCenterConnectionLaneDigest(
+        id: id,
+        title: title,
+        status: status,
+        readinessText: readinessText,
+        detailText: detailText.compactSingleLinePreview(limit: 140),
+        metadataText: metadataText,
+        logQuery: logQuery
+    )
+}
+
+private func opsCollectDirectoryStats(
+    at url: URL,
+    fileManager: FileManager = .default
+) -> OpsCenterDirectoryStats {
+    var isDirectory: ObjCBool = false
+    guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        return .missing
+    }
+
+    if !isDirectory.boolValue {
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        let modifiedAt = attributes?[.modificationDate] as? Date
+        return OpsCenterDirectoryStats(exists: true, fileCount: 1, totalBytes: size, lastModifiedAt: modifiedAt)
+    }
+
+    let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+    let enumerator = fileManager.enumerator(
+        at: url,
+        includingPropertiesForKeys: Array(keys),
+        options: [.skipsHiddenFiles]
+    )
+
+    var fileCount = 0
+    var totalBytes: Int64 = 0
+    var lastModifiedAt: Date?
+
+    while let next = enumerator?.nextObject() as? URL {
+        guard let values = try? next.resourceValues(forKeys: keys),
+              values.isRegularFile == true else {
+            continue
+        }
+
+        fileCount += 1
+        totalBytes += Int64(values.fileSize ?? 0)
+        if let modifiedAt = values.contentModificationDate {
+            lastModifiedAt = max(lastModifiedAt ?? .distantPast, modifiedAt)
+        }
+    }
+
+    let rootModifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
+    return OpsCenterDirectoryStats(
+        exists: true,
+        fileCount: fileCount,
+        totalBytes: totalBytes,
+        lastModifiedAt: max(lastModifiedAt ?? .distantPast, rootModifiedAt ?? .distantPast)
+    )
+}
+
+private func opsConnectionLogRelevant(_ entry: ExecutionLogEntry) -> Bool {
+    let message = entry.message.lowercased()
+    let keywords = [
+        "gateway",
+        "cli",
+        "transport",
+        "fallback",
+        "probe",
+        "history refresh",
+        "attach",
+        "websocket",
+        "session"
+    ]
+    return keywords.contains { message.contains($0) }
+}
+
+private func opsConnectionIncidentKey(_ message: String) -> String {
+    message
+        .lowercased()
+        .replacingOccurrences(of: "\n", with: " ")
+        .compactSingleLinePreview(limit: 120)
+}
+
+private func opsConnectionIncidentQuery(from message: String) -> String {
+    let lowered = message.lowercased()
+    if lowered.contains("gateway") {
+        return "gateway"
+    }
+    if lowered.contains("cli") {
+        return "cli"
+    }
+    if lowered.contains("attach") {
+        return "attach"
+    }
+    if lowered.contains("history") {
+        return "history refresh"
+    }
+    if lowered.contains("fallback") {
+        return "fallback"
+    }
+    return message.compactSingleLinePreview(limit: 60)
+}
+
+private func opsConnectionPhaseText(_ phase: OpenClawConnectionPhase) -> String {
+    switch phase {
+    case .idle:
+        return LocalizedString.text("war_room_phase_idle")
+    case .discovering:
+        return LocalizedString.text("war_room_phase_discover")
+    case .probed:
+        return LocalizedString.text("war_room_phase_probed")
+    case .ready:
+        return LocalizedString.text("war_room_phase_ready")
+    case .degraded:
+        return LocalizedString.text("war_room_phase_degraded")
+    case .detached:
+        return LocalizedString.text("war_room_phase_detached")
+    case .failed:
+        return LocalizedString.text("war_room_phase_failed")
+    }
+}
+
+private func opsAgentDigestMetadata(_ digest: OpsCenterAgentRadarDigest) -> String {
+    let durationText = digest.averageDuration.map(opsDurationText) ?? LocalizedString.text("na")
+    let memoryText = digest.hasTrackedMemory
+        ? LocalizedString.text("war_room_agent_memory_tracked")
+        : LocalizedString.text("war_room_agent_memory_gap")
+    return LocalizedString.format(
+        "war_room_agent_metadata",
+        digest.completedCount,
+        digest.failedCount,
+        digest.warningCount + digest.errorCount,
+        durationText,
+        memoryText
+    )
+}
+
+private func opsAssetWorkspaceMetadata(_ workspace: OpsCenterAssetWorkspaceDigest) -> String {
+    let updatedText = workspace.updatedAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedString.text("na")
+    let ownerText = workspace.ownerName ?? LocalizedString.text("unassigned_entry")
+    return LocalizedString.format(
+        "war_room_workspace_metadata",
+        ownerText,
+        workspace.fileCount,
+        opsByteCountText(workspace.totalBytes),
+        updatedText
+    )
+}
+
+private func opsWarRoomStatusTitle(_ status: OpsHealthStatus) -> String {
+    switch status {
+    case .critical:
+        return LocalizedString.text("war_room_status_crit")
+    case .warning:
+        return LocalizedString.text("war_room_status_warn")
+    case .healthy:
+        return LocalizedString.text("war_room_status_ok")
+    case .neutral:
+        return LocalizedString.text("war_room_status_info")
+    }
+}
+
+private func opsByteCountText(_ bytes: Int64) -> String {
+    guard bytes > 0 else { return "0 KB" }
+    let formatter = ByteCountFormatter()
+    formatter.allowedUnits = [.useKB, .useMB, .useGB]
+    formatter.countStyle = .file
+    return formatter.string(fromByteCount: bytes)
+}
+
+private func opsLatencyColor(_ latencyMs: Int) -> Color {
+    switch latencyMs {
+    case ..<400:
+        return .green
+    case ..<1200:
+        return .orange
+    default:
+        return .red
+    }
+}
+
+private func opsAverageTimeInterval(_ values: [TimeInterval]) -> TimeInterval? {
+    guard !values.isEmpty else { return nil }
+    let total = values.reduce(0, +)
+    return total / Double(values.count)
+}
+
 private struct OpsCenterSignalsDashboardView: View {
     @EnvironmentObject var appState: AppState
     let workflow: Workflow?

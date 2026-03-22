@@ -127,19 +127,22 @@ struct WorkbenchConversationView: View {
     private var recommendedRuntimePreparationAction: WorkbenchRuntimePreparationAction? {
         guard appState.openClawManager.config.deploymentKind != .remoteServer else { return nil }
 
-        if !appState.openClawManager.isConnected {
+        switch appState.currentOpenClawRuntimeControlPlaneEntry.gate {
+        case .probe:
             return .connect
-        }
-        if !appState.isCurrentProjectAttachedToOpenClaw {
+        case .bind:
             return .attach
+        case .publish:
+            if !appState.isProjectMirrorPrepared || appState.hasPendingWorkflowConfiguration || hasAgentsMissingManagedPath {
+                return .prepareMirror
+            }
+            if appState.hasPendingOpenClawSessionSync {
+                return .syncSession
+            }
+            return nil
+        case .execute:
+            return nil
         }
-        if !appState.isProjectMirrorPrepared || appState.hasPendingWorkflowConfiguration || hasAgentsMissingManagedPath {
-            return .prepareMirror
-        }
-        if appState.hasPendingOpenClawSessionSync {
-            return .syncSession
-        }
-        return nil
     }
 
     private var canConnectRuntimePreparation: Bool {
@@ -543,6 +546,10 @@ struct WorkbenchConversationView: View {
     private var runtimeStatusBadges: some View {
         HStack(spacing: 8) {
             statusBadge(title: openClawRuntimeBadgeTitle, color: openClawRuntimeBadgeColor)
+            statusBadge(
+                title: appState.openClawRuntimeControlPlaneBadgeTitle,
+                color: appState.openClawRuntimeControlPlaneBadgeColor
+            )
             statusBadge(
                 title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
                 color: appState.openClawService.isExecuting ? .orange : .secondary

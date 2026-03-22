@@ -841,6 +841,209 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(bundle.toolEntries().map(\.toolIdentifier), ["search.web"])
     }
 
+    func testBuildAgentRadarDigestsRanksCriticalAgentAheadOfStableAgent() throws {
+        let strugglingAgent = Agent(name: "Struggling Agent")
+        let stableAgent = Agent(name: "Stable Agent")
+        let startedAt = Date(timeIntervalSince1970: 1_710_500_000)
+
+        let activeTask = Task(
+            title: "Investigate Runtime",
+            description: "Check the failing workflow path",
+            status: .inProgress,
+            priority: .high,
+            assignedAgentID: strugglingAgent.id
+        )
+
+        let failingResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: strugglingAgent.id,
+            status: .failed,
+            output: "Gateway execution failed",
+            outputType: .errorSummary,
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(240)
+        )
+
+        let stableResult = ExecutionResult(
+            nodeID: UUID(),
+            agentID: stableAgent.id,
+            status: .completed,
+            output: "All clear",
+            outputType: .agentFinalResponse,
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(24)
+        )
+
+        let digests = opsBuildAgentRadarDigests(
+            agents: [stableAgent, strugglingAgent],
+            trackedMemoryAgentIDs: Set([stableAgent.id]),
+            tasks: [activeTask],
+            executionResults: [stableResult, failingResult],
+            executionLogs: [
+                ExecutionLogEntry(
+                    level: .error,
+                    message: "Gateway timeout reached while dispatching",
+                    agentID: strugglingAgent.id
+                )
+            ],
+            activeAgentIDs: Set([strugglingAgent.id]),
+            nodeAgentIDs: [:]
+        )
+
+        XCTAssertEqual(digests.first?.id, strugglingAgent.id)
+
+        let strugglingDigest = try XCTUnwrap(digests.first(where: { $0.id == strugglingAgent.id }))
+        XCTAssertEqual(strugglingDigest.status, .critical)
+        XCTAssertEqual(strugglingDigest.failedCount, 1)
+        XCTAssertEqual(strugglingDigest.errorCount, 1)
+        XCTAssertEqual(strugglingDigest.activeTaskCount, 1)
+        XCTAssertTrue(strugglingDigest.isActive)
+        XCTAssertFalse(strugglingDigest.hasTrackedMemory)
+
+        let stableDigest = try XCTUnwrap(digests.first(where: { $0.id == stableAgent.id }))
+        XCTAssertEqual(stableDigest.status, .healthy)
+        XCTAssertEqual(stableDigest.completedCount, 1)
+        XCTAssertTrue(stableDigest.hasTrackedMemory)
+        XCTAssertFalse(stableDigest.isActive)
+    }
+
+    func testBuildAssetRadarSnapshotSurfacesMissingStaleAndCompressionSignals() throws {
+        let fileManager = FileManager.default
+        let rootURL = fileManager.temporaryDirectory
+            .appendingPathComponent("ops-war-room-assets-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: rootURL) }
+
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_710_600_000)
+        let staleDate = now.addingTimeInterval(-(60 * 60 * 24 * 9))
+        let owner = Agent(name: "Archivist Agent")
+
+        let compressedTask = Task(
+            title: "Compressed Workspace",
+            description: "Large generated output",
+            status: .todo,
+            priority: .medium,
+            assignedAgentID: owner.id
+        )
+        let staleTask = Task(
+            title: "Stale Workspace",
+            description: "Quiet archive candidate",
+            status: .todo,
+            priority: .medium,
+            assignedAgentID: owner.id
+        )
+        let missingTask = Task(
+            title: "Missing Workspace",
+            description: "Workspace path is gone",
+            status: .todo,
+            priority: .medium,
+            assignedAgentID: owner.id
+        )
+
+        let compressedURL = rootURL.appendingPathComponent("compressed", isDirectory: true)
+        let staleURL = rootURL.appendingPathComponent("stale", isDirectory: true)
+        try fileManager.createDirectory(at: compressedURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: staleURL, withIntermediateDirectories: true)
+
+        for index in 0..<251 {
+            let fileURL = compressedURL.appendingPathComponent("file-\(index).txt")
+            try Data("x".utf8).write(to: fileURL)
+        }
+
+        let staleFileURL = staleURL.appendingPathComponent("state.json")
+        try Data("stale".utf8).write(to: staleFileURL)
+        try fileManager.setAttributes([.modificationDate: staleDate], ofItemAtPath: staleFileURL.path)
+        try fileManager.setAttributes([.modificationDate: staleDate], ofItemAtPath: staleURL.path)
+
+        let readyMemoryURL = rootURL.appendingPathComponent("memory-ready.json")
+        let staleMemoryURL = rootURL.appendingPathComponent("memory-stale.json")
+        try Data("ready".utf8).write(to: readyMemoryURL)
+        try Data("stale-memory".utf8).write(to: staleMemoryURL)
+
+        let snapshot = opsBuildAssetRadarSnapshot(
+            workspaceRecords: [
+                ProjectWorkspaceRecord(
+                    taskID: compressedTask.id,
+                    workspaceRelativePath: "compressed",
+                    workspaceName: "Compressed Workspace",
+                    createdAt: now,
+                    updatedAt: now
+                ),
+                ProjectWorkspaceRecord(
+                    taskID: staleTask.id,
+                    workspaceRelativePath: "stale",
+                    workspaceName: "Stale Workspace",
+                    createdAt: staleDate,
+                    updatedAt: staleDate
+                ),
+                ProjectWorkspaceRecord(
+                    taskID: missingTask.id,
+                    workspaceRelativePath: "missing",
+                    workspaceName: "Missing Workspace",
+                    createdAt: now,
+                    updatedAt: now
+                )
+            ],
+            memoryData: ProjectMemoryData(
+                agentMemories: [
+                    AgentMemoryBackupRecord(
+                        agentID: owner.id,
+                        agentName: owner.name,
+                        sourcePath: nil,
+                        lastCapturedAt: now
+                    ),
+                    AgentMemoryBackupRecord(
+                        agentID: UUID(),
+                        agentName: "Stale Memory Agent",
+                        sourcePath: staleMemoryURL.path,
+                        lastCapturedAt: now.addingTimeInterval(-(60 * 60 * 24 * 15))
+                    ),
+                    AgentMemoryBackupRecord(
+                        agentID: UUID(),
+                        agentName: "Ready Memory Agent",
+                        sourcePath: readyMemoryURL.path,
+                        lastCapturedAt: now.addingTimeInterval(-(60 * 60 * 24))
+                    )
+                ]
+            ),
+            tasks: [compressedTask, staleTask, missingTask],
+            agentNamesByID: [owner.id: owner.name],
+            workspaceRootURL: rootURL,
+            now: now,
+            fileManager: fileManager
+        )
+
+        XCTAssertEqual(snapshot.totalFileCount, 252)
+        XCTAssertEqual(snapshot.missingWorkspaceCount, 1)
+        XCTAssertEqual(snapshot.staleWorkspaceCount, 1)
+        XCTAssertEqual(snapshot.compressionCandidateCount, 1)
+        XCTAssertEqual(snapshot.missingMemoryCount, 1)
+
+        let missingWorkspace = try XCTUnwrap(snapshot.workspaces.first(where: { $0.workspaceName == "Missing Workspace" }))
+        XCTAssertTrue(missingWorkspace.isMissing)
+        XCTAssertEqual(missingWorkspace.status, .critical)
+
+        let compressedWorkspace = try XCTUnwrap(snapshot.workspaces.first(where: { $0.workspaceName == "Compressed Workspace" }))
+        XCTAssertTrue(compressedWorkspace.compressionCandidate)
+        XCTAssertEqual(compressedWorkspace.fileCount, 251)
+        XCTAssertEqual(compressedWorkspace.status, .warning)
+
+        let staleWorkspace = try XCTUnwrap(snapshot.workspaces.first(where: { $0.workspaceName == "Stale Workspace" }))
+        XCTAssertFalse(staleWorkspace.isMissing)
+        XCTAssertEqual(staleWorkspace.fileCount, 1)
+        XCTAssertEqual(staleWorkspace.status, .warning)
+
+        let missingMemory = try XCTUnwrap(snapshot.memoryDigests.first(where: { $0.agentName == owner.name }))
+        XCTAssertEqual(missingMemory.status, .critical)
+
+        let staleMemory = try XCTUnwrap(snapshot.memoryDigests.first(where: { $0.agentName == "Stale Memory Agent" }))
+        XCTAssertEqual(staleMemory.status, .warning)
+
+        let readyMemory = try XCTUnwrap(snapshot.memoryDigests.first(where: { $0.agentName == "Ready Memory Agent" }))
+        XCTAssertEqual(readyMemory.status, .healthy)
+    }
+
     private func writeJSON<T: Encodable>(
         _ value: T,
         to url: URL,

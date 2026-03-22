@@ -41,6 +41,20 @@ Execution Plane
 
 `OpenClaw 负责“跑起来”，本软件负责“为什么跑、以什么边界跑、如何记录、如何治理、如何恢复”。`
 
+## 当前已落地进展
+
+截至 2026-03-23，以下关键骨架已进入代码实现：
+
+- 本地运行时已从“默认依赖外部 CLI”升级为“`deploymentKind = local` + `runtimeOwnership`”双因子模型。
+- `runtimeOwnership = appManaged` 时，系统会优先解析应用包内、应用托管目录中的 OpenClaw，再回退到系统路径。
+- Electron 侧已新增 `openclaw-host.ts`，统一处理本地二进制解析、容器命令规划与执行入口。
+- Swift 侧已新增 `OpenClawHost.swift`，开始接管本地/容器命令规划、OpenClaw CLI 调用、ClawHub 调用与本地配置文件解析。
+- `OpenClawManager` 已不再承担全部路径解析和命令规划职责，而是通过 `OpenClawHost` 进入受控执行面。
+- UI 与 AppState 已从固定的 `Connect -> Attach -> Sync -> Run/Chat` 语义，升级为 `Probe / Bind / Publish / Execute` 控制面展示。
+- 项目快照 `ProjectOpenClawSnapshot` 已新增控制面快照投影，后续可作为聊天态与执行态共存时的统一恢复锚点。
+
+这意味着当前系统已经从“方案设计阶段”进入“运行时宿主抽象与控制面下沉阶段”。
+
 ## 一、总体架构
 
 系统整体分为 6 层。

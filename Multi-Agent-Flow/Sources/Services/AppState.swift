@@ -34,6 +34,73 @@ enum OpenClawCurrentProjectAttachmentState: Equatable {
     case attachedDifferentProject
 }
 
+enum OpenClawRuntimeControlPlaneGate: String, CaseIterable, Identifiable {
+    case probe
+    case bind
+    case publish
+    case execute
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .probe:
+            return "Probe"
+        case .bind:
+            return "Bind"
+        case .publish:
+            return "Publish"
+        case .execute:
+            return "Execute"
+        }
+    }
+}
+
+enum OpenClawRuntimeControlPlaneGateStatus: String {
+    case blocked
+    case pending
+    case ready
+    case active
+    case notRequired = "not_required"
+
+    var badgeTitle: String {
+        switch self {
+        case .blocked:
+            return "Blocked"
+        case .pending:
+            return "Pending"
+        case .ready:
+            return "Ready"
+        case .active:
+            return "Active"
+        case .notRequired:
+            return "N/A"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .blocked:
+            return .red
+        case .pending:
+            return .orange
+        case .ready:
+            return .green
+        case .active:
+            return .blue
+        case .notRequired:
+            return .secondary
+        }
+    }
+}
+
+struct OpenClawRuntimeControlPlaneEntry: Identifiable {
+    var id: OpenClawRuntimeControlPlaneGate { gate }
+    let gate: OpenClawRuntimeControlPlaneGate
+    let status: OpenClawRuntimeControlPlaneGateStatus
+    let detail: String
+}
+
 // 项目文件管理器
 class ProjectManager: ObservableObject {
     struct StorageDirectories {
@@ -879,6 +946,152 @@ class AppState: ObservableObject {
             && !isSyncingOpenClawSession
     }
 
+    var openClawRuntimeControlPlane: [OpenClawRuntimeControlPlaneEntry] {
+        let connectionPhase = openClawManager.connectionState.phase
+        let probeStatus: OpenClawRuntimeControlPlaneGateStatus
+        let probeDetail: String
+
+        switch connectionPhase {
+        case .ready:
+            probeStatus = .ready
+            probeDetail = "运行时探测已完成，Gateway 与执行能力可用。"
+        case .degraded:
+            probeStatus = .ready
+            probeDetail = "运行时探测已完成，但当前能力存在降级；聊天或执行可能受限。"
+        case .probed:
+            probeStatus = .ready
+            probeDetail = "运行时基础探测已完成，正在等待进入可执行状态。"
+        case .discovering:
+            probeStatus = .pending
+            probeDetail = "正在探测 OpenClaw 运行时与 Gateway 健康状态。"
+        case .idle, .detached:
+            probeStatus = .blocked
+            probeDetail = "尚未完成运行时探测，请先执行 Probe。"
+        case .failed:
+            probeStatus = .blocked
+            probeDetail = openClawManager.connectionState.health.degradationReason ?? "运行时探测失败，请先修复连接或本地运行时。"
+        }
+
+        let bindStatus: OpenClawRuntimeControlPlaneGateStatus
+        let bindDetail: String
+        switch currentProjectOpenClawAttachmentState {
+        case .remoteConnectionOnly:
+            bindStatus = .notRequired
+            bindDetail = "当前远端模式暂不支持项目级 Bind，运行时仅保持远程连接。"
+        case .attachedCurrentProject:
+            bindStatus = .ready
+            bindDetail = "当前项目已经绑定到 OpenClaw 会话。"
+        case .attachedDifferentProject:
+            bindStatus = .pending
+            bindDetail = "当前 OpenClaw 会话绑定的是其他项目，请重新绑定当前项目。"
+        case .unattached:
+            bindStatus = .pending
+            bindDetail = "当前项目尚未绑定到 OpenClaw 会话。"
+        case .noProject:
+            bindStatus = .blocked
+            bindDetail = "当前没有选中的项目，无法执行 Bind。"
+        }
+
+        let publishStatus: OpenClawRuntimeControlPlaneGateStatus
+        let publishDetail: String
+        if openClawManager.config.deploymentKind == .remoteServer {
+            publishStatus = .notRequired
+            publishDetail = "当前远端模式暂不支持项目级 Publish。"
+        } else if bindStatus == .blocked || bindStatus == .pending {
+            publishStatus = .blocked
+            publishDetail = "请先完成当前项目的 Bind，再执行 Publish。"
+        } else if isSyncingOpenClawSession {
+            publishStatus = .active
+            publishDetail = "正在把当前项目镜像发布到 OpenClaw 运行时会话。"
+        } else if isApplyingWorkflowConfiguration {
+            publishStatus = .active
+            publishDetail = "正在准备项目镜像，随后可继续执行 Publish。"
+        } else if isCurrentProjectRuntimeSessionSynchronized {
+            publishStatus = .ready
+            publishDetail = "当前项目镜像已经发布到运行时会话。"
+        } else if hasPendingOpenClawSessionSync {
+            publishStatus = .pending
+            publishDetail = "项目镜像已经准备完成，但仍有待发布的运行时修订。"
+        } else if hasPendingWorkflowConfiguration || !isProjectMirrorPrepared {
+            publishStatus = .pending
+            publishDetail = "工作流镜像仍有待准备的变更，请先更新镜像再执行 Publish。"
+        } else {
+            publishStatus = .pending
+            publishDetail = "当前项目已经绑定，但仍未执行最终 Publish。"
+        }
+
+        let executeStatus: OpenClawRuntimeControlPlaneGateStatus
+        let executeDetail: String
+        if openClawService.isExecuting {
+            executeStatus = .active
+            executeDetail = "OpenClaw 正在执行当前工作流或聊天请求。"
+        } else if openClawManager.canRunConversation || openClawManager.canRunWorkflow {
+            executeStatus = .ready
+            if publishStatus == .ready || publishStatus == .notRequired {
+                executeDetail = "聊天模式与执行模式都可以按当前运行时状态继续推进。"
+            } else {
+                executeDetail = "运行时已经具备执行能力；聊天可以继续，正式执行建议先完成 Publish。"
+            }
+        } else if probeStatus == .blocked {
+            executeStatus = .blocked
+            executeDetail = "运行时尚未完成 Probe，当前不能进入 Execute。"
+        } else {
+            executeStatus = .pending
+            executeDetail = "运行时已可见，但聊天或执行能力尚未完全就绪。"
+        }
+
+        return [
+            OpenClawRuntimeControlPlaneEntry(gate: .probe, status: probeStatus, detail: probeDetail),
+            OpenClawRuntimeControlPlaneEntry(gate: .bind, status: bindStatus, detail: bindDetail),
+            OpenClawRuntimeControlPlaneEntry(gate: .publish, status: publishStatus, detail: publishDetail),
+            OpenClawRuntimeControlPlaneEntry(gate: .execute, status: executeStatus, detail: executeDetail)
+        ]
+    }
+
+    var currentOpenClawRuntimeControlPlaneEntry: OpenClawRuntimeControlPlaneEntry {
+        openClawRuntimeControlPlane.first(where: { $0.status != .ready && $0.status != .notRequired }) ?? openClawRuntimeControlPlane.last!
+    }
+
+    var openClawRuntimeControlPlaneBadgeTitle: String {
+        let entry = currentOpenClawRuntimeControlPlaneEntry
+        return "\(entry.gate.title) · \(entry.status.badgeTitle)"
+    }
+
+    var openClawRuntimeControlPlaneBadgeColor: Color {
+        currentOpenClawRuntimeControlPlaneEntry.status.color
+    }
+
+    var openClawRuntimeControlPlaneSummary: String {
+        currentOpenClawRuntimeControlPlaneEntry.detail
+    }
+
+    private func projectedOpenClawSnapshot() -> ProjectOpenClawSnapshot {
+        var snapshot = openClawManager.snapshot()
+        snapshot.controlPlane = openClawRuntimeControlPlaneSnapshot()
+        return snapshot
+    }
+
+    private func openClawRuntimeControlPlaneSnapshot() -> ProjectOpenClawControlPlaneSnapshot {
+        let entries = openClawRuntimeControlPlane.map { entry in
+            ProjectOpenClawControlPlaneEntrySnapshot(
+                gate: ProjectOpenClawControlPlaneGate(rawValue: entry.gate.rawValue) ?? .probe,
+                status: ProjectOpenClawControlPlaneStatus(rawValue: entry.status.rawValue) ?? .blocked,
+                detail: entry.detail
+            )
+        }
+
+        let highlightedGate = ProjectOpenClawControlPlaneGate(
+            rawValue: currentOpenClawRuntimeControlPlaneEntry.gate.rawValue
+        )
+
+        return ProjectOpenClawControlPlaneSnapshot(
+            entries: entries,
+            highlightedGate: highlightedGate,
+            summary: openClawRuntimeControlPlaneSummary,
+            updatedAt: Date()
+        )
+    }
+
     private var projectPendingConfirmation: Bool {
         hasPendingWorkflowConfiguration
     }
@@ -1046,7 +1259,7 @@ class AppState: ObservableObject {
         project.messages = messageManager.messages
         project.executionResults = openClawService.executionResults
         project.executionLogs = openClawService.executionLogs
-        project.openClaw = openClawManager.snapshot()
+        project.openClaw = projectedOpenClawSnapshot()
         normalizeManagedSessionSnapshotPaths(in: &project)
         project.taskData.lastUpdatedAt = Date()
         project.workspaceIndex = ensureWorkspaceIndex(
@@ -2319,7 +2532,7 @@ class AppState: ObservableObject {
         project.messages = messageManager.messages
         project.executionResults = openClawService.executionResults
         project.executionLogs = openClawService.executionLogs
-        project.openClaw = openClawManager.snapshot()
+        project.openClaw = projectedOpenClawSnapshot()
         normalizeManagedSessionSnapshotPaths(in: &project)
         project.taskData.lastUpdatedAt = Date()
         project.workspaceIndex = ensureWorkspaceIndex(

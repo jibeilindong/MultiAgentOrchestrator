@@ -1,0 +1,98 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import type { OpenClawConfig } from "@multi-agent-flow/domain";
+import { OpenClawHost, shellSingleQuote } from "../electron/openclaw-host";
+
+const baseConfig: OpenClawConfig = {
+  deploymentKind: "local",
+  runtimeOwnership: "appManaged",
+  host: "127.0.0.1",
+  port: 18789,
+  useSSL: false,
+  apiKey: "",
+  defaultAgent: "default",
+  timeout: 30,
+  autoConnect: true,
+  localBinaryPath: "",
+  container: {
+    engine: "docker",
+    containerName: "openclaw-dev",
+    workspaceMountPath: "/workspace"
+  },
+  cliQuietMode: true,
+  cliLogLevel: "warning"
+};
+
+test("openclaw host resolves app-managed local command plans through bundled runtime candidates", () => {
+  const host = new OpenClawHost(() => ({
+    platform: "darwin",
+    homeDirectory: "/Users/tester",
+    resourcesPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources",
+    appPath: "/Users/tester/dev/MultiAgentOrchestrator/apps/desktop",
+    userDataPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow",
+    pathExists: (candidate) => candidate === "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw"
+  }));
+
+  const plan = host.buildDeploymentCommandPlan(baseConfig, ["agents", "list"]);
+
+  assert.deepEqual(plan, {
+    command: "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
+    args: ["agents", "list"]
+  });
+});
+
+test("openclaw host keeps external local command plans pinned to configured binary path", () => {
+  const host = new OpenClawHost(() => ({
+    platform: "darwin",
+    homeDirectory: "/Users/tester",
+    resourcesPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources",
+    appPath: "/Users/tester/dev/MultiAgentOrchestrator/apps/desktop",
+    userDataPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow"
+  }));
+
+  const plan = host.buildDeploymentCommandPlan(
+    {
+      ...baseConfig,
+      runtimeOwnership: "externalLocal",
+      localBinaryPath: "/custom/openclaw/bin/openclaw"
+    },
+    ["agents", "list"]
+  );
+
+  assert.deepEqual(plan, {
+    command: "/custom/openclaw/bin/openclaw",
+    args: ["agents", "list"]
+  });
+});
+
+test("openclaw host builds container shell plans through the container engine", () => {
+  const host = new OpenClawHost(() => ({
+    platform: "darwin",
+    homeDirectory: "/Users/tester",
+    resourcesPath: null,
+    appPath: null,
+    userDataPath: null
+  }));
+
+  const plan = host.buildDeploymentShellPlan(
+    {
+      ...baseConfig,
+      deploymentKind: "container",
+      container: {
+        ...baseConfig.container,
+        engine: "podman",
+        containerName: "openclaw-runtime"
+      }
+    },
+    "printf %s \"$HOME\""
+  );
+
+  assert.deepEqual(plan, {
+    command: "podman",
+    args: ["exec", "openclaw-runtime", "sh", "-lc", "printf %s \"$HOME\""]
+  });
+});
+
+test("shell quoting keeps single-quoted shell scripts safe", () => {
+  assert.equal(shellSingleQuote("/srv/app'space"), "'/srv/app'\"'\"'space'");
+});

@@ -255,7 +255,7 @@ struct OpenClawConfigView: View {
     }
 
     private var sessionLifecycleHint: String {
-        appState.openClawAttachmentStatusDetail
+        appState.openClawRuntimeControlPlaneSummary
     }
 
     private var runtimeStatusTitle: String {
@@ -318,12 +318,24 @@ struct OpenClawConfigView: View {
                     value: appState.openClawAttachmentStatusTitle,
                     color: attachmentStatusColor
                 )
+                statusPill(
+                    label: "控制面",
+                    value: appState.openClawRuntimeControlPlaneBadgeTitle,
+                    color: appState.openClawRuntimeControlPlaneBadgeColor
+                )
             }
 
             Text(sessionLifecycleHint)
                 .font(.footnote)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if sessionLifecycleHint != appState.openClawAttachmentStatusDetail {
+                Text(appState.openClawAttachmentStatusDetail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let revisionSummary = appState.openClawRevisionSummary {
                 Text(revisionSummary)

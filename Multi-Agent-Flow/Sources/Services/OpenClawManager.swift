@@ -6,120 +6,9 @@
 import Foundation
 import Combine
 import CryptoKit
-import Darwin
 
 private let openClawSoulFileNames = ["SOUL.md", "soul.md"]
 private let openClawSoulNestedDirectories = ["", "agent", "private"]
-
-private func executeProcessAndCaptureOutput(
-    executableURL: URL,
-    arguments: [String],
-    standardInput: FileHandle? = nil,
-    timeoutSeconds: TimeInterval? = nil,
-    onStdoutChunk: ((Data) -> Void)? = nil
-) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
-    let process = Process()
-    process.executableURL = executableURL
-    process.arguments = arguments
-    process.standardInput = standardInput
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-
-    let lock = NSLock()
-    var stdoutData = Data()
-    var stderrData = Data()
-    let terminationSemaphore = DispatchSemaphore(value: 0)
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-        let data = handle.availableData
-        guard !data.isEmpty else { return }
-        lock.lock()
-        stdoutData.append(data)
-        lock.unlock()
-        onStdoutChunk?(data)
-    }
-
-    stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-        let data = handle.availableData
-        guard !data.isEmpty else { return }
-        lock.lock()
-        stderrData.append(data)
-        lock.unlock()
-    }
-
-    process.terminationHandler = { _ in
-        terminationSemaphore.signal()
-    }
-
-    try process.run()
-
-    let waitResult: DispatchTimeoutResult
-    if let timeoutSeconds {
-        waitResult = terminationSemaphore.wait(timeout: .now() + max(timeoutSeconds, 1))
-    } else {
-        terminationSemaphore.wait()
-        waitResult = .success
-    }
-
-    if waitResult == .timedOut {
-        if process.isRunning {
-            process.terminate()
-            if terminationSemaphore.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-                _ = terminationSemaphore.wait(timeout: .now() + 1)
-            }
-        }
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        if !stdout.isEmpty {
-            lock.lock()
-            stdoutData.append(stdout)
-            lock.unlock()
-        }
-        if !stderr.isEmpty {
-            lock.lock()
-            stderrData.append(stderr)
-            lock.unlock()
-        }
-
-        throw NSError(
-            domain: "OpenClawManager",
-            code: 9801,
-            userInfo: [NSLocalizedDescriptionKey: "命令执行超时（\(Int(max(timeoutSeconds ?? 0, 1))) 秒）：\((arguments.first ?? executableURL.lastPathComponent))"]
-        )
-    }
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-    stderrPipe.fileHandleForReading.readabilityHandler = nil
-
-    let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    if !remainingStdout.isEmpty {
-        lock.lock()
-        stdoutData.append(remainingStdout)
-        lock.unlock()
-        onStdoutChunk?(remainingStdout)
-    }
-
-    let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    if !remainingStderr.isEmpty {
-        lock.lock()
-        stderrData.append(remainingStderr)
-        lock.unlock()
-    }
-
-    lock.lock()
-    let finalStdout = stdoutData
-    let finalStderr = stderrData
-    lock.unlock()
-
-    return (process.terminationStatus, finalStdout, finalStderr)
-}
 
 func openClawSoulCandidateURLs(in rootURL: URL, maxAncestorDepth: Int = 2) -> [URL] {
     var directories: [URL] = []
@@ -180,7 +69,8 @@ func preferredOpenClawSoulURL(
 
 class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
-    private let fileManager = FileManager.default
+    private let fileManager: FileManager
+    private let host: OpenClawHost
     private let notificationCenter: NotificationCenter
     private let gatewayClient = OpenClawGatewayClient()
     private var gatewayDisconnectObserver: NSObjectProtocol?
@@ -229,6 +119,58 @@ class OpenClawManager: ObservableObject {
 
     var attachedProjectID: UUID? {
         projectAttachment.projectID
+    }
+
+    static func localBinaryPathCandidates(
+        for config: OpenClawConfig,
+        bundleResourceURL: URL? = Bundle.main.resourceURL,
+        managedRuntimeRootURL: URL? = nil,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String] {
+        let configured = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard config.deploymentKind == .local else {
+            return configured.isEmpty ? [] : [configured]
+        }
+
+        if config.requiresExplicitLocalBinaryPath {
+            return configured.isEmpty ? [] : [configured]
+        }
+
+        let managedRoot = managedRuntimeRootURL
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                .first?
+                .appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+                .appendingPathComponent("openclaw", isDirectory: true)
+                .appendingPathComponent("runtime", isDirectory: true)
+
+        let bundleCandidates = [bundleResourceURL].compactMap { $0 }.flatMap { resourceURL in
+            [
+                resourceURL.appendingPathComponent("OpenClaw/bin/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("openclaw/bin/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("OpenClaw/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("openclaw/openclaw", isDirectory: false).path
+            ]
+        }
+        let managedCandidates = [managedRoot].compactMap { $0 }.flatMap { rootURL in
+            [
+                rootURL.appendingPathComponent("bin/openclaw", isDirectory: false).path,
+                rootURL.appendingPathComponent("openclaw", isDirectory: false).path
+            ]
+        }
+        let systemCandidates = [
+            homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
+            "/usr/local/bin/openclaw",
+            "/opt/homebrew/bin/openclaw",
+            "/usr/bin/openclaw"
+        ]
+
+        var seen = Set<String>()
+        return (bundleCandidates + managedCandidates + systemCandidates).compactMap { candidate in
+            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
     }
     
     enum OpenClawStatus {
@@ -809,50 +751,16 @@ class OpenClawManager: ObservableObject {
     }
 
     private final class AgentRuntimeChannel {
-        private enum CommandLaunchMode {
-            case executable(url: URL, baseArguments: [String])
-        }
-
         private let key: String
-        private let launchMode: CommandLaunchMode
+        private let commandPlan: OpenClawHostCommandPlan
         private let stateLock = NSLock()
         private var executionCount = 0
         private let createdAt = Date()
         private var lastUsedAt = Date()
 
-        init(key: String, config: OpenClawConfig, resolvedOpenClawPath: String) throws {
+        init(key: String, commandPlan: OpenClawHostCommandPlan) {
             self.key = key
-
-            switch config.deploymentKind {
-            case .local:
-                launchMode = .executable(
-                    url: URL(fileURLWithPath: resolvedOpenClawPath),
-                    baseArguments: []
-                )
-            case .container:
-                let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !containerName.isEmpty else {
-                    throw NSError(
-                        domain: "OpenClawManager",
-                        code: 301,
-                        userInfo: [NSLocalizedDescriptionKey: "容器名称未配置，无法创建 OpenClaw Agent Runtime 通道。"]
-                    )
-                }
-
-                let engine = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "docker"
-                    : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
-                launchMode = .executable(
-                    url: URL(fileURLWithPath: "/usr/bin/env"),
-                    baseArguments: [engine, "exec", containerName, "openclaw"]
-                )
-            case .remoteServer:
-                throw NSError(
-                    domain: "OpenClawManager",
-                    code: 302,
-                    userInfo: [NSLocalizedDescriptionKey: "远程网关模式暂不支持创建本地 OpenClaw Agent Runtime 通道。"]
-                )
-            }
+            self.commandPlan = commandPlan
         }
 
         func execute(
@@ -860,17 +768,9 @@ class OpenClawManager: ObservableObject {
             standardInput: FileHandle? = nil,
             onStdoutChunk: ((String) -> Void)? = nil
         ) throws -> AgentRuntimeCommandResult {
-            let executableURL: URL
-            let commandArguments: [String]
-            switch launchMode {
-            case .executable(let url, let baseArguments):
-                executableURL = url
-                commandArguments = baseArguments + arguments
-            }
-
             let result = try executeProcessAndCaptureOutput(
-                executableURL: executableURL,
-                arguments: commandArguments,
+                executableURL: commandPlan.executableURL,
+                arguments: commandPlan.arguments + arguments,
                 standardInput: standardInput,
                 onStdoutChunk: onStdoutChunk.map { callback in
                     { data in
@@ -918,7 +818,13 @@ class OpenClawManager: ObservableObject {
         discoverySnapshotContext?.snapshotURL
     }
 
-    init(notificationCenter: NotificationCenter = .default) {
+    init(
+        notificationCenter: NotificationCenter = .default,
+        fileManager: FileManager = .default,
+        host: OpenClawHost? = nil
+    ) {
+        self.fileManager = fileManager
+        self.host = host ?? OpenClawHost(fileManager: fileManager)
         self.notificationCenter = notificationCenter
         // 创建备份目录
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
@@ -3553,7 +3459,7 @@ class OpenClawManager: ObservableObject {
     }
 
     func resolvedOpenClawPath(using config: OpenClawConfig? = nil) -> String {
-        resolveOpenClawPath(for: config ?? self.config)
+        host.resolveLocalBinaryPath(for: config ?? self.config)
     }
 
     private func agentRuntimeChannel(for config: OpenClawConfig) throws -> AgentRuntimeChannel {
@@ -3566,10 +3472,13 @@ class OpenClawManager: ObservableObject {
         }
         agentRuntimeChannelLock.unlock()
 
-        let channel = try AgentRuntimeChannel(
+        let commandPlan = try host.buildOpenClawCommandPlan(
+            for: config,
+            arguments: []
+        )
+        let channel = AgentRuntimeChannel(
             key: key,
-            config: config,
-            resolvedOpenClawPath: resolveOpenClawPath(for: config)
+            commandPlan: commandPlan
         )
 
         agentRuntimeChannelLock.lock()
@@ -4718,27 +4627,12 @@ class OpenClawManager: ObservableObject {
         standardInput: FileHandle? = nil,
         timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
-        switch config.deploymentKind {
-        case .local:
-            return try executeProcessAndCaptureOutput(
-                executableURL: URL(fileURLWithPath: resolveOpenClawPath(for: config)),
-                arguments: arguments,
-                standardInput: standardInput,
-                timeoutSeconds: timeoutSeconds
-            )
-        case .container:
-            guard let containerName = containerName(for: config) else {
-                throw NSError(domain: "OpenClawManager", code: 11, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
-            }
-            return try runDeploymentCommand(
-                using: config,
-                arguments: ["exec", containerName, "openclaw"] + arguments,
-                standardInput: standardInput,
-                timeoutSeconds: timeoutSeconds
-            )
-        case .remoteServer:
-            throw NSError(domain: "OpenClawManager", code: 12, userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 OpenClaw CLI"])
-        }
+        try host.runOpenClawCommand(
+            using: config,
+            arguments: arguments,
+            standardInput: standardInput,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 
     private func runClawHubCommand(
@@ -4747,27 +4641,12 @@ class OpenClawManager: ObservableObject {
         standardInput: FileHandle? = nil,
         timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
-        switch config.deploymentKind {
-        case .local:
-            return try executeProcessAndCaptureOutput(
-                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: ["clawhub"] + arguments,
-                standardInput: standardInput,
-                timeoutSeconds: timeoutSeconds
-            )
-        case .container:
-            guard let containerName = containerName(for: config) else {
-                throw NSError(domain: "OpenClawManager", code: 13, userInfo: [NSLocalizedDescriptionKey: "容器名称未配置"])
-            }
-            return try runDeploymentCommand(
-                using: config,
-                arguments: ["exec", containerName, "clawhub"] + arguments,
-                standardInput: standardInput,
-                timeoutSeconds: timeoutSeconds
-            )
-        case .remoteServer:
-            throw NSError(domain: "OpenClawManager", code: 14, userInfo: [NSLocalizedDescriptionKey: "远程网关模式不支持直接执行 ClawHub CLI"])
-        }
+        try host.runClawHubCommand(
+            using: config,
+            arguments: arguments,
+            standardInput: standardInput,
+            timeoutSeconds: timeoutSeconds
+        )
     }
 
     private func mergeImportedRecords(_ importedRecords: [ProjectOpenClawDetectedAgentRecord]) -> [ProjectOpenClawDetectedAgentRecord] {
@@ -4783,23 +4662,7 @@ class OpenClawManager: ObservableObject {
     }
 
     private func fallbackLocalOpenClawRootURL() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent(".openclaw", isDirectory: true)
-    }
-
-    private func normalizeCLIReportedPath(_ output: String) -> String? {
-        let lines = output
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        guard let candidate = lines.last else { return nil }
-        if candidate.hasPrefix("~/") {
-            return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-                .appendingPathComponent(String(candidate.dropFirst(2)), isDirectory: false)
-                .path
-        }
-        return candidate
+        host.fallbackLocalOpenClawRootURL()
     }
 
     func resolveLocalOpenClawConfigURL(
@@ -4808,37 +4671,10 @@ class OpenClawManager: ObservableObject {
     ) -> URL? {
         let resolvedConfig = config ?? self.config
         guard resolvedConfig.deploymentKind == .local else { return nil }
-
-        let fallbackURL = fallbackLocalOpenClawRootURL()
-            .appendingPathComponent("openclaw.json", isDirectory: false)
-        let binaryPath = resolveOpenClawPath(for: resolvedConfig)
-        guard fileManager.fileExists(atPath: binaryPath) else {
-            return allowFallback ? fallbackURL : nil
-        }
-
-        do {
-            let result = try executeProcessAndCaptureOutput(
-                executableURL: URL(fileURLWithPath: binaryPath),
-                arguments: ["config", "file"],
-                timeoutSeconds: TimeInterval(max(resolvedConfig.timeout, 5))
-            )
-
-            guard result.terminationStatus == 0 else {
-                return allowFallback ? fallbackURL : nil
-            }
-
-            let output = String(
-                data: result.standardOutput + result.standardError,
-                encoding: .utf8
-            ) ?? ""
-            guard let resolvedPath = normalizeCLIReportedPath(output) else {
-                return allowFallback ? fallbackURL : nil
-            }
-
-            return URL(fileURLWithPath: resolvedPath, isDirectory: false)
-        } catch {
-            return allowFallback ? fallbackURL : nil
-        }
+        return host.resolveLocalOpenClawConfigURL(
+            using: resolvedConfig,
+            allowFallback: allowFallback
+        )
     }
 
     func localOpenClawRootURL(using config: OpenClawConfig? = nil) -> URL {
@@ -9241,9 +9077,9 @@ class OpenClawManager: ObservableObject {
         standardInput: FileHandle? = nil,
         timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
-        return try executeProcessAndCaptureOutput(
-            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: [containerEngine(for: config)] + arguments,
+        try host.runDeploymentCommand(
+            using: config,
+            arguments: arguments,
             standardInput: standardInput,
             timeoutSeconds: timeoutSeconds
         )
@@ -9399,73 +9235,12 @@ class OpenClawManager: ObservableObject {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
-    private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
-        var seen = Set<String>()
-        return candidates.compactMap { candidate in
-            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else { return nil }
-            guard seen.insert(normalized).inserted else { return nil }
-            return normalized
-        }
-    }
-
-    private static func defaultManagedLocalRuntimeRootURL() -> URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
-            .appendingPathComponent("openclaw", isDirectory: true)
-            .appendingPathComponent("runtime", isDirectory: true)
-    }
-
-    static func localBinaryPathCandidates(
-        for config: OpenClawConfig,
-        bundleResourceURL: URL? = Bundle.main.resourceURL,
-        managedRuntimeRootURL: URL? = nil,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) -> [String] {
-        let configured = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard config.deploymentKind == .local else {
-            return configured.isEmpty ? [] : [configured]
-        }
-
-        if config.requiresExplicitLocalBinaryPath {
-            return configured.isEmpty ? [] : [configured]
-        }
-
-        let managedRoot = managedRuntimeRootURL ?? defaultManagedLocalRuntimeRootURL()
-        let bundleCandidates = [bundleResourceURL].compactMap { $0 }.flatMap { resourceURL in
-            [
-                resourceURL.appendingPathComponent("OpenClaw/bin/openclaw", isDirectory: false).path,
-                resourceURL.appendingPathComponent("openclaw/bin/openclaw", isDirectory: false).path,
-                resourceURL.appendingPathComponent("OpenClaw/openclaw", isDirectory: false).path,
-                resourceURL.appendingPathComponent("openclaw/openclaw", isDirectory: false).path
-            ]
-        }
-        let managedCandidates = [managedRoot].compactMap { $0 }.flatMap { rootURL in
-            [
-                rootURL.appendingPathComponent("bin/openclaw", isDirectory: false).path,
-                rootURL.appendingPathComponent("openclaw", isDirectory: false).path
-            ]
-        }
-        let systemCandidates = [
-            homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
-            "/usr/local/bin/openclaw",
-            "/opt/homebrew/bin/openclaw",
-            "/usr/bin/openclaw"
-        ]
-
-        return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates + systemCandidates)
-    }
-
     func resolvedLocalBinaryPath(for config: OpenClawConfig) -> String {
-        let candidates = Self.localBinaryPathCandidates(for: config)
-        return candidates.first(where: { fileManager.fileExists(atPath: $0) })
-            ?? candidates.first
-            ?? config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        host.resolveLocalBinaryPath(for: config)
     }
 
     private func resolveOpenClawPath(for config: OpenClawConfig) -> String {
-        resolvedLocalBinaryPath(for: config)
+        host.resolveLocalBinaryPath(for: config)
     }
 
     private static func parseAgentNames(from output: String) -> [String] {
@@ -9484,7 +9259,7 @@ class OpenClawManager: ObservableObject {
         completion: @escaping (Bool, String, [String]) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let binaryPath = self.resolveOpenClawPath(for: config)
+            let binaryPath = self.host.resolveLocalBinaryPath(for: config)
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 DispatchQueue.main.async {
                     completion(false, "未找到 OpenClaw 可执行文件：\(binaryPath)", [])
@@ -9493,8 +9268,8 @@ class OpenClawManager: ObservableObject {
             }
 
             do {
-                let result = try executeProcessAndCaptureOutput(
-                    executableURL: URL(fileURLWithPath: binaryPath),
+                let result = try self.runOpenClawCommand(
+                    using: config,
                     arguments: ["agents", "list"],
                     timeoutSeconds: TimeInterval(max(config.timeout, 5))
                 )
@@ -9596,14 +9371,10 @@ class OpenClawManager: ObservableObject {
                 return
             }
 
-            let engine = config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "docker"
-                : config.container.engine.trimmingCharacters(in: .whitespacesAndNewlines)
-
             do {
-                let result = try executeProcessAndCaptureOutput(
-                    executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                    arguments: [engine, "exec", containerName, "openclaw", "agents", "list"],
+                let result = try self.runOpenClawCommand(
+                    using: config,
+                    arguments: ["agents", "list"],
                     timeoutSeconds: TimeInterval(max(config.timeout, 5))
                 )
                 let output = String(

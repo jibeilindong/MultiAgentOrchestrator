@@ -12,7 +12,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate:openclaw-connection": "tsx --test scripts/openclaw-connection-state.test.ts scripts/openclaw-discovery.test.ts scripts/openclaw-local-runtime.test.ts scripts/openclaw-runtime-readiness.test.ts scripts/openclaw-recovery-report.test.ts scripts/openclaw-recovery-audit.test.ts scripts/openclaw-retry-guidance.test.ts scripts/openclaw-retry-policy.test.ts",
+    "validate:openclaw-connection": "tsx --test scripts/openclaw-connection-state.test.ts scripts/openclaw-discovery.test.ts scripts/openclaw-host.test.ts scripts/openclaw-local-runtime.test.ts scripts/openclaw-runtime-readiness.test.ts scripts/openclaw-recovery-report.test.ts scripts/openclaw-recovery-audit.test.ts scripts/openclaw-retry-guidance.test.ts scripts/openclaw-retry-policy.test.ts",
     "capture:canvas-doc-screenshots": "npx playwright install chromium && node ./scripts/capture-canvas-doc-screenshots.mjs",
     "generate:canvas-doc-assets": "node -e \"require('node:fs').rmSync('.tmp-canvas-doc-assets', { recursive: true, force: true })\" && tsc -p tsconfig.canvas-doc-assets.json && node ./.tmp-canvas-doc-assets/scripts/generate-canvas-doc-assets.js",
     "validate:routing": "node -e \"require('node:fs').rmSync('.tmp-routing-validation', { recursive: true, force: true })\" && tsc -p tsconfig.routing-validation.json && node ./.tmp-routing-validation/scripts/validate-routing.js",

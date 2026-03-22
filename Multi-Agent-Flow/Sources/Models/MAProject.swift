@@ -846,6 +846,57 @@ struct OpenClawRecoveryReportSnapshot: Codable {
     }
 }
 
+enum ProjectOpenClawControlPlaneGate: String, Codable, CaseIterable, Hashable {
+    case probe
+    case bind
+    case publish
+    case execute
+}
+
+enum ProjectOpenClawControlPlaneStatus: String, Codable, Hashable {
+    case blocked
+    case pending
+    case ready
+    case active
+    case notRequired = "not_required"
+}
+
+struct ProjectOpenClawControlPlaneEntrySnapshot: Codable, Identifiable, Hashable {
+    var id: ProjectOpenClawControlPlaneGate { gate }
+    var gate: ProjectOpenClawControlPlaneGate
+    var status: ProjectOpenClawControlPlaneStatus
+    var detail: String
+
+    init(
+        gate: ProjectOpenClawControlPlaneGate,
+        status: ProjectOpenClawControlPlaneStatus,
+        detail: String
+    ) {
+        self.gate = gate
+        self.status = status
+        self.detail = detail
+    }
+}
+
+struct ProjectOpenClawControlPlaneSnapshot: Codable, Hashable {
+    var entries: [ProjectOpenClawControlPlaneEntrySnapshot]
+    var highlightedGate: ProjectOpenClawControlPlaneGate?
+    var summary: String?
+    var updatedAt: Date
+
+    init(
+        entries: [ProjectOpenClawControlPlaneEntrySnapshot] = [],
+        highlightedGate: ProjectOpenClawControlPlaneGate? = nil,
+        summary: String? = nil,
+        updatedAt: Date = Date()
+    ) {
+        self.entries = entries
+        self.highlightedGate = highlightedGate
+        self.summary = summary
+        self.updatedAt = updatedAt
+    }
+}
+
 struct ProjectOpenClawSnapshot: Codable {
     var config: OpenClawConfig
     var isConnected: Bool
@@ -857,6 +908,7 @@ struct ProjectOpenClawSnapshot: Codable {
     var connectionState: OpenClawConnectionStateSnapshot
     var projectAttachment: OpenClawProjectAttachmentSnapshot
     var sessionLifecycle: OpenClawSessionLifecycleSnapshot
+    var controlPlane: ProjectOpenClawControlPlaneSnapshot
     var lastProbeReport: OpenClawProbeReportSnapshot?
     var recoveryReports: [OpenClawRecoveryReportSnapshot]
     var sessionBackupPath: String?
@@ -877,6 +929,7 @@ struct ProjectOpenClawSnapshot: Codable {
         case connectionState
         case projectAttachment
         case sessionLifecycle
+        case controlPlane
         case lastProbeReport
         case recoveryReports
         case sessionBackupPath
@@ -898,6 +951,7 @@ struct ProjectOpenClawSnapshot: Codable {
         connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot(),
         projectAttachment: OpenClawProjectAttachmentSnapshot = OpenClawProjectAttachmentSnapshot(),
         sessionLifecycle: OpenClawSessionLifecycleSnapshot = OpenClawSessionLifecycleSnapshot(),
+        controlPlane: ProjectOpenClawControlPlaneSnapshot = ProjectOpenClawControlPlaneSnapshot(),
         lastProbeReport: OpenClawProbeReportSnapshot? = nil,
         recoveryReports: [OpenClawRecoveryReportSnapshot] = [],
         sessionBackupPath: String? = nil,
@@ -917,6 +971,7 @@ struct ProjectOpenClawSnapshot: Codable {
         self.connectionState = connectionState
         self.projectAttachment = projectAttachment
         self.sessionLifecycle = sessionLifecycle
+        self.controlPlane = controlPlane
         self.lastProbeReport = lastProbeReport
         self.recoveryReports = recoveryReports
         self.sessionBackupPath = sessionBackupPath
@@ -945,6 +1000,8 @@ struct ProjectOpenClawSnapshot: Codable {
             ?? OpenClawProjectAttachmentSnapshot()
         sessionLifecycle = try container.decodeIfPresent(OpenClawSessionLifecycleSnapshot.self, forKey: .sessionLifecycle)
             ?? OpenClawSessionLifecycleSnapshot()
+        controlPlane = try container.decodeIfPresent(ProjectOpenClawControlPlaneSnapshot.self, forKey: .controlPlane)
+            ?? ProjectOpenClawControlPlaneSnapshot()
         lastProbeReport = try container.decodeIfPresent(OpenClawProbeReportSnapshot.self, forKey: .lastProbeReport)
         recoveryReports = try container.decodeIfPresent([OpenClawRecoveryReportSnapshot].self, forKey: .recoveryReports) ?? []
         sessionBackupPath = try container.decodeIfPresent(String.self, forKey: .sessionBackupPath)
@@ -967,6 +1024,7 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(connectionState, forKey: .connectionState)
         try container.encode(projectAttachment, forKey: .projectAttachment)
         try container.encode(sessionLifecycle, forKey: .sessionLifecycle)
+        try container.encode(controlPlane, forKey: .controlPlane)
         try container.encodeIfPresent(lastProbeReport, forKey: .lastProbeReport)
         try container.encode(recoveryReports, forKey: .recoveryReports)
         try container.encodeIfPresent(sessionBackupPath, forKey: .sessionBackupPath)
