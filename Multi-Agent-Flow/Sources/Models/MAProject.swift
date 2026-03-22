@@ -861,6 +861,9 @@ struct ProjectOpenClawSnapshot: Codable {
     var recoveryReports: [OpenClawRecoveryReportSnapshot]
     var sessionBackupPath: String?
     var sessionMirrorPath: String?
+    var localRuntimeBootstrapDirectory: String?
+    var localRuntimeWorkspaceDirectoriesByNodeID: [String: String]
+    var localRuntimeWorkspaceDirectoriesByAgentID: [String: String]
     var lastSyncedAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -878,6 +881,9 @@ struct ProjectOpenClawSnapshot: Codable {
         case recoveryReports
         case sessionBackupPath
         case sessionMirrorPath
+        case localRuntimeBootstrapDirectory
+        case localRuntimeWorkspaceDirectoriesByNodeID
+        case localRuntimeWorkspaceDirectoriesByAgentID
         case lastSyncedAt
     }
 
@@ -896,6 +902,9 @@ struct ProjectOpenClawSnapshot: Codable {
         recoveryReports: [OpenClawRecoveryReportSnapshot] = [],
         sessionBackupPath: String? = nil,
         sessionMirrorPath: String? = nil,
+        localRuntimeBootstrapDirectory: String? = nil,
+        localRuntimeWorkspaceDirectoriesByNodeID: [String: String] = [:],
+        localRuntimeWorkspaceDirectoriesByAgentID: [String: String] = [:],
         lastSyncedAt: Date = Date()
     ) {
         self.config = config
@@ -912,6 +921,9 @@ struct ProjectOpenClawSnapshot: Codable {
         self.recoveryReports = recoveryReports
         self.sessionBackupPath = sessionBackupPath
         self.sessionMirrorPath = sessionMirrorPath
+        self.localRuntimeBootstrapDirectory = localRuntimeBootstrapDirectory
+        self.localRuntimeWorkspaceDirectoriesByNodeID = localRuntimeWorkspaceDirectoriesByNodeID
+        self.localRuntimeWorkspaceDirectoriesByAgentID = localRuntimeWorkspaceDirectoriesByAgentID
         self.lastSyncedAt = lastSyncedAt
     }
 
@@ -937,6 +949,9 @@ struct ProjectOpenClawSnapshot: Codable {
         recoveryReports = try container.decodeIfPresent([OpenClawRecoveryReportSnapshot].self, forKey: .recoveryReports) ?? []
         sessionBackupPath = try container.decodeIfPresent(String.self, forKey: .sessionBackupPath)
         sessionMirrorPath = try container.decodeIfPresent(String.self, forKey: .sessionMirrorPath)
+        localRuntimeBootstrapDirectory = try container.decodeIfPresent(String.self, forKey: .localRuntimeBootstrapDirectory)
+        localRuntimeWorkspaceDirectoriesByNodeID = try container.decodeIfPresent([String: String].self, forKey: .localRuntimeWorkspaceDirectoriesByNodeID) ?? [:]
+        localRuntimeWorkspaceDirectoriesByAgentID = try container.decodeIfPresent([String: String].self, forKey: .localRuntimeWorkspaceDirectoriesByAgentID) ?? [:]
         lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt) ?? Date()
     }
 
@@ -956,6 +971,9 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(recoveryReports, forKey: .recoveryReports)
         try container.encodeIfPresent(sessionBackupPath, forKey: .sessionBackupPath)
         try container.encodeIfPresent(sessionMirrorPath, forKey: .sessionMirrorPath)
+        try container.encodeIfPresent(localRuntimeBootstrapDirectory, forKey: .localRuntimeBootstrapDirectory)
+        try container.encode(localRuntimeWorkspaceDirectoriesByNodeID, forKey: .localRuntimeWorkspaceDirectoriesByNodeID)
+        try container.encode(localRuntimeWorkspaceDirectoriesByAgentID, forKey: .localRuntimeWorkspaceDirectoriesByAgentID)
         try container.encode(lastSyncedAt, forKey: .lastSyncedAt)
     }
 }

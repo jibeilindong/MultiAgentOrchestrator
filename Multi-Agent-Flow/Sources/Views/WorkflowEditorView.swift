@@ -8,19 +8,24 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
+import Combine
+
+final class WorkflowEditorSessionState: ObservableObject {
+    @Published var viewMode: WorkflowEditorView.EditorViewMode = .architecture
+    @Published var canvasOffset: CGSize = .zero
+    @Published var canvasLastOffset: CGSize = .zero
+    @Published var selectedAgentID: UUID?
+}
 
 struct WorkflowEditorView: View {
     @EnvironmentObject var appState: AppState
     @Binding var zoomScale: CGFloat
+    @ObservedObject var sessionState: WorkflowEditorSessionState
     
-    @State private var viewMode: EditorViewMode = .architecture
     @State private var selectedNodeID: UUID?
     @State private var selectedNodeIDs: Set<UUID> = []
     @State private var selectedEdgeID: UUID?
     @State private var selectedBoundaryIDs: Set<UUID> = []
-    @State private var selectedAgentID: UUID?
-    @State private var canvasOffset: CGSize = .zero
-    @State private var canvasLastOffset: CGSize = .zero
     @State private var isConnectMode: Bool = false
     @State private var connectFromAgentID: UUID?
     @State private var isBatchConnectMode: Bool = false
@@ -80,6 +85,13 @@ struct WorkflowEditorView: View {
         }
     }
 
+    private var selectedAgentBinding: Binding<UUID?> {
+        Binding(
+            get: { sessionState.selectedAgentID },
+            set: { sessionState.selectedAgentID = $0 }
+        )
+    }
+
     private struct BatchFeedback: Equatable {
         let message: String
         let isError: Bool
@@ -88,7 +100,7 @@ struct WorkflowEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             EditorToolbar(
-                viewMode: $viewMode,
+                viewMode: $sessionState.viewMode,
                 selectedNodeID: $selectedNodeID,
                 selectedNodeIDs: $selectedNodeIDs,
                 selectedEdgeID: $selectedEdgeID,
@@ -122,17 +134,17 @@ struct WorkflowEditorView: View {
                 onCommitBatchConnections: commitBatchConnections,
                 onCancelBatchConnections: cancelBatchConnectionMode,
                 onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() },
-                onSyncWorkflowSession: { appState.syncOpenClawActiveSession() }
+                onSyncWorkflowSession: { appState.syncOpenClawActiveSession(workflowID: currentWorkflow()?.id) }
             )
             .zIndex(1000)
             .background(
                 ZStack {
                     DeleteKeyMonitor(
-                        isEnabled: { viewMode == .architecture },
+                        isEnabled: { sessionState.viewMode == .architecture },
                         onDelete: handleDeleteShortcut
                     )
                     WorkflowShortcutMonitor(
-                        isEnabled: { viewMode == .architecture },
+                        isEnabled: { sessionState.viewMode == .architecture },
                         onCopy: copySelection,
                         onCut: cutSelection,
                         onPaste: pasteSelection,
@@ -151,69 +163,13 @@ struct WorkflowEditorView: View {
                     .padding(.top, 10)
             }
             
-            ZStack {
-                ArchitectureView(
-                    isActive: viewMode == .architecture,
-                    zoomScale: $zoomScale,
-                    offset: $canvasOffset,
-                    lastOffset: $canvasLastOffset,
-                    isConnectMode: $isConnectMode,
-                    connectFromAgentID: $connectFromAgentID,
-                    connectionType: $connectionType,
-                    selectedNodeID: $selectedNodeID,
-                    selectedNodeIDs: $selectedNodeIDs,
-                    selectedAgentID: $selectedAgentID,
-                    selectedEdgeID: $selectedEdgeID,
-                    selectedBoundaryIDs: $selectedBoundaryIDs,
-                    isLassoMode: $isLassoMode,
-                    isBatchConnectMode: $isBatchConnectMode,
-                    batchSourceNodeIDs: $batchSourceNodeIDs,
-                    batchTargetNodeIDs: $batchTargetNodeIDs,
-                    batchPreview: $batchPreview,
-                    batchCreatedEdgeIDs: $batchCreatedEdgeIDs,
-                    batchHighlightedEdgeIDs: batchHighlightedEdgeIDs,
-                    batchEdgeLabel: $batchEdgeLabel,
-                    batchEdgeColorHex: $batchEdgeColorHex,
-                    batchRequiresApproval: $batchRequiresApproval,
-                    shouldPresentSelectedNodeProperties: $shouldPresentNewNodeProperties,
-                    onAssignBatchSources: assignBatchSourcesFromSelection,
-                    onAssignBatchTargets: assignBatchTargetsFromSelection,
-                    onPreviewBatchConnections: previewBatchConnections,
-                    onCommitBatchConnections: commitBatchConnections,
-                    onCancelBatchConnections: cancelBatchConnectionMode,
-                    onUndoBatchConnections: undoLastBatchConnection,
-                    onConnect: handleAgentConnection
-                )
-                .modifier(EditorPaneVisibility(isVisible: viewMode == .architecture))
-
-                if hasActivatedListView || viewMode == .list {
-                    AgentListView(
-                        snapshot: agentCollectionSnapshot,
-                        collectionSignature: agentCollectionSignature,
-                        isActive: viewMode == .list,
-                        selectedAgentID: $selectedAgentID,
-                        isConnectMode: isConnectMode,
-                        connectFromAgentID: connectFromAgentID,
-                        onConnect: handleAgentConnection
-                    )
-                    .modifier(EditorPaneVisibility(isVisible: viewMode == .list))
+            activeEditorPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    retainedEditorPanes
                 }
-
-                if hasActivatedGridView || viewMode == .grid {
-                    AgentGridView(
-                        snapshot: agentCollectionSnapshot,
-                        collectionSignature: agentCollectionSignature,
-                        isActive: viewMode == .grid,
-                        selectedAgentID: $selectedAgentID,
-                        isConnectMode: isConnectMode,
-                        connectFromAgentID: connectFromAgentID,
-                        onConnect: handleAgentConnection
-                    )
-                    .modifier(EditorPaneVisibility(isVisible: viewMode == .grid))
-                }
-            }
         }
-        .onChange(of: viewMode) { _, newValue in
+        .onChange(of: sessionState.viewMode) { _, newValue in
             if newValue == .list {
                 hasActivatedListView = true
             } else if newValue == .grid {
@@ -234,6 +190,7 @@ struct WorkflowEditorView: View {
             hasActivatedListView = true
             hasActivatedGridView = true
             refreshAgentCollectionSnapshot(immediate: true)
+            reconcileSelectionState()
         }
         .onChange(of: selectedNodeID) { _, newValue in
             appState.selectedNodeID = newValue
@@ -242,29 +199,143 @@ struct WorkflowEditorView: View {
                   let nodeID = newValue,
                   let node = workflow.nodes.first(where: { $0.id == nodeID }),
                   let agentID = node.agentID else {
+                if newValue == nil, selectedNodeIDs.isEmpty, selectedEdgeID == nil, selectedBoundaryIDs.isEmpty {
+                    sessionState.selectedAgentID = nil
+                }
                 return
             }
 
-            selectedAgentID = agentID
+            sessionState.selectedAgentID = agentID
         }
         .onChange(of: selectedNodeIDs) { _, newValue in
             if !newValue.isEmpty {
                 appState.selectedNodeID = nil
+                sessionState.selectedAgentID = nil
             }
         }
         .onChange(of: selectedEdgeID) { _, newValue in
             if newValue != nil {
                 appState.selectedNodeID = nil
+                sessionState.selectedAgentID = nil
             }
         }
         .onChange(of: selectedBoundaryIDs) { _, newValue in
             if !newValue.isEmpty {
                 appState.selectedNodeID = nil
+                sessionState.selectedAgentID = nil
+            }
+        }
+        .onChange(of: appState.selectedNodeID) { _, newValue in
+            guard newValue != selectedNodeID else { return }
+
+            if let newValue {
+                selectedNodeID = newValue
+                selectedNodeIDs.removeAll()
+                selectedEdgeID = nil
+                selectedBoundaryIDs.removeAll()
+            } else if selectedNodeID != nil,
+                      selectedNodeIDs.isEmpty,
+                      selectedEdgeID == nil,
+                      selectedBoundaryIDs.isEmpty {
+                selectedNodeID = nil
+                sessionState.selectedAgentID = nil
             }
         }
         .onChange(of: agentCollectionSignature) { _, _ in
             refreshAgentCollectionSnapshot()
+            reconcileSelectionState()
         }
+    }
+
+    @ViewBuilder
+    private var activeEditorPane: some View {
+        switch sessionState.viewMode {
+        case .architecture:
+            architecturePane(isActive: true)
+        case .list:
+            listPane(isActive: true)
+        case .grid:
+            gridPane(isActive: true)
+        }
+    }
+
+    @ViewBuilder
+    private var retainedEditorPanes: some View {
+        ZStack {
+            if sessionState.viewMode != .architecture {
+                architecturePane(isActive: false)
+                    .modifier(BackgroundRetainedPane())
+            }
+
+            if hasActivatedListView && sessionState.viewMode != .list {
+                listPane(isActive: false)
+                    .modifier(BackgroundRetainedPane())
+            }
+
+            if hasActivatedGridView && sessionState.viewMode != .grid {
+                gridPane(isActive: false)
+                    .modifier(BackgroundRetainedPane())
+            }
+        }
+    }
+
+    private func architecturePane(isActive: Bool) -> some View {
+        ArchitectureView(
+            isActive: isActive,
+            zoomScale: $zoomScale,
+            offset: $sessionState.canvasOffset,
+            lastOffset: $sessionState.canvasLastOffset,
+            isConnectMode: $isConnectMode,
+            connectFromAgentID: $connectFromAgentID,
+            connectionType: $connectionType,
+            selectedNodeID: $selectedNodeID,
+            selectedNodeIDs: $selectedNodeIDs,
+            selectedAgentID: selectedAgentBinding,
+            selectedEdgeID: $selectedEdgeID,
+            selectedBoundaryIDs: $selectedBoundaryIDs,
+            isLassoMode: $isLassoMode,
+            isBatchConnectMode: $isBatchConnectMode,
+            batchSourceNodeIDs: $batchSourceNodeIDs,
+            batchTargetNodeIDs: $batchTargetNodeIDs,
+            batchPreview: $batchPreview,
+            batchCreatedEdgeIDs: $batchCreatedEdgeIDs,
+            batchHighlightedEdgeIDs: batchHighlightedEdgeIDs,
+            batchEdgeLabel: $batchEdgeLabel,
+            batchEdgeColorHex: $batchEdgeColorHex,
+            batchRequiresApproval: $batchRequiresApproval,
+            shouldPresentSelectedNodeProperties: $shouldPresentNewNodeProperties,
+            onAssignBatchSources: assignBatchSourcesFromSelection,
+            onAssignBatchTargets: assignBatchTargetsFromSelection,
+            onPreviewBatchConnections: previewBatchConnections,
+            onCommitBatchConnections: commitBatchConnections,
+            onCancelBatchConnections: cancelBatchConnectionMode,
+            onUndoBatchConnections: undoLastBatchConnection,
+            onConnect: handleAgentConnection
+        )
+    }
+
+    private func listPane(isActive: Bool) -> some View {
+        AgentListView(
+            snapshot: agentCollectionSnapshot,
+            collectionSignature: agentCollectionSignature,
+            isActive: isActive,
+            selectedAgentID: selectedAgentBinding,
+            isConnectMode: isConnectMode,
+            connectFromAgentID: connectFromAgentID,
+            onConnect: handleAgentConnection
+        )
+    }
+
+    private func gridPane(isActive: Bool) -> some View {
+        AgentGridView(
+            snapshot: agentCollectionSnapshot,
+            collectionSignature: agentCollectionSignature,
+            isActive: isActive,
+            selectedAgentID: selectedAgentBinding,
+            isConnectMode: isConnectMode,
+            connectFromAgentID: connectFromAgentID,
+            onConnect: handleAgentConnection
+        )
     }
 
     private var agentCollectionSignature: AgentCollectionSignature {
@@ -465,6 +536,37 @@ struct WorkflowEditorView: View {
         appState.currentProject?.workflows.first
     }
 
+    private func reconcileSelectionState() {
+        let validAgentIDs = Set((appState.currentProject?.agents ?? []).map(\.id))
+        if let selectedAgentID = sessionState.selectedAgentID,
+           !validAgentIDs.contains(selectedAgentID) {
+            sessionState.selectedAgentID = nil
+        }
+
+        guard let workflow = currentWorkflow() else {
+            selectedNodeID = nil
+            selectedNodeIDs.removeAll()
+            selectedEdgeID = nil
+            selectedBoundaryIDs.removeAll()
+            return
+        }
+
+        let validNodeIDs = Set(workflow.nodes.map(\.id))
+        let validEdgeIDs = Set(workflow.edges.map(\.id))
+        let validBoundaryIDs = Set(workflow.boundaries.map(\.id))
+
+        if let selectedNodeID, !validNodeIDs.contains(selectedNodeID) {
+            self.selectedNodeID = nil
+        }
+        selectedNodeIDs = selectedNodeIDs.intersection(validNodeIDs)
+
+        if let selectedEdgeID, !validEdgeIDs.contains(selectedEdgeID) {
+            self.selectedEdgeID = nil
+        }
+
+        selectedBoundaryIDs = selectedBoundaryIDs.intersection(validBoundaryIDs)
+    }
+
     private func activeNodeSelection() -> Set<UUID> {
         if !selectedNodeIDs.isEmpty {
             return selectedNodeIDs
@@ -585,12 +687,12 @@ struct WorkflowEditorView: View {
         if createdNodeIDs.count == 1, let nodeID = createdNodeIDs.first {
             selectedNodeID = nodeID
             selectedNodeIDs.removeAll()
-            selectedAgentID = createdPrimaryAgentID
+            sessionState.selectedAgentID = createdPrimaryAgentID
             shouldPresentNewNodeProperties = true
         } else if !createdNodeIDs.isEmpty {
             selectedNodeID = nil
             selectedNodeIDs = Set(createdNodeIDs)
-            selectedAgentID = nil
+            sessionState.selectedAgentID = nil
             shouldPresentNewNodeProperties = false
         }
     }
@@ -661,7 +763,7 @@ struct WorkflowEditorView: View {
         selectedNodeIDs.removeAll()
         selectedEdgeID = nil
         selectedBoundaryIDs.removeAll()
-        selectedAgentID = agent.id
+        sessionState.selectedAgentID = agent.id
         shouldPresentNewNodeProperties = nodeID != nil
     }
 
@@ -899,15 +1001,13 @@ struct WorkflowEditorView: View {
     }
 }
 
-private struct EditorPaneVisibility: ViewModifier {
-    let isVisible: Bool
-
+private struct BackgroundRetainedPane: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .opacity(isVisible ? 1 : 0)
-            .allowsHitTesting(isVisible)
-            .accessibilityHidden(!isVisible)
-            .zIndex(isVisible ? 1 : 0)
+            .frame(width: 0, height: 0)
+            .clipped()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -1315,33 +1415,11 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isSavingDraft || appState.lastDraftSaveTime != nil || appState.hasPendingWorkflowConfiguration || shouldShowWorkflowSyncStatus || appState.lastAppliedWorkflowConfigurationAt != nil || appState.openClawRevisionSummary != nil || appState.openClawLatestRuntimeSyncSummary != nil {
+            if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
                 HStack(spacing: 8) {
-                    if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
-                        toolbarSaveStatusView
-                    }
-                    if appState.hasPendingWorkflowConfiguration {
-                        workflowApplyStatusView
-                    }
-                    if shouldShowWorkflowSyncStatus {
-                        workflowSessionSyncStatusView
-                    } else if !appState.hasPendingWorkflowConfiguration, let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
-                        workflowAppliedStatusView(lastApplied)
-                    }
-                    if let revisionSummary = appState.openClawRevisionSummary {
-                        workflowRevisionStatusView(revisionSummary)
-                    }
-                    if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
-                        workflowRuntimeSyncReceiptStatusView(runtimeSyncSummary)
-                    }
+                    toolbarSaveStatusView
                 }
                 .padding(.top, 8)
-
-                if let runtimeSyncDiagnostic = appState.openClawLatestRuntimeSyncCompactDiagnostic,
-                   appState.latestOpenClawRuntimeSyncReceipt?.status != .succeeded {
-                    workflowRuntimeSyncDiagnosticView(runtimeSyncDiagnostic)
-                        .padding(.top, 6)
-                }
             }
         }
         .padding(.horizontal, 16)
@@ -3558,12 +3636,14 @@ struct ArchitectureView: View {
 // MARK: - Agent库侧边栏
 struct AgentLibrarySidebar: View {
     @EnvironmentObject var appState: AppState
+    @Binding var selectedAgentID: UUID?
     var onAddAll: () -> Void
     var isOpenClawConnected: Bool = false
     var openClawAgents: [String] = []
     @State private var openClawExpanded: Bool = true
     @State private var projectExpanded: Bool = true
     @State private var templateExpanded: Bool = false
+    @State private var deleteCandidate: Agent?
 
     private var templateGroups: [(family: AgentTemplateFamily, groups: [(category: AgentTemplateCategory, templates: [AgentTemplate])])] {
         AgentTemplateCatalog.families.compactMap { family in
@@ -3698,7 +3778,11 @@ struct AgentLibrarySidebar: View {
                             DraggableAgentItem(
                                 name: agent.name,
                                 agent: agent,
-                                dragPayload: "projectAgent:\(agent.id.uuidString)"
+                                dragPayload: "projectAgent:\(agent.id.uuidString)",
+                                isSelected: selectedAgentID == agent.id,
+                                onSelect: { selectedAgentID = agent.id },
+                                onOpen: { focusProjectAgent(agent.id) },
+                                onDelete: { deleteCandidate = currentProjectAgent(id: agent.id) ?? agent }
                             )
                                 .padding(.horizontal, 4)
                         }
@@ -3727,6 +3811,22 @@ struct AgentLibrarySidebar: View {
             .background(Color(.controlBackgroundColor))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .alert(LocalizedString.text("delete_agent_title"), isPresented: deleteConfirmationBinding) {
+            Button(LocalizedString.delete, role: .destructive) {
+                if let candidate = deleteCandidate {
+                    appState.deleteAgent(candidate.id)
+                    if selectedAgentID == candidate.id {
+                        selectedAgentID = nil
+                    }
+                }
+                deleteCandidate = nil
+            }
+            Button(LocalizedString.cancel, role: .cancel) {
+                deleteCandidate = nil
+            }
+        } message: {
+            Text(deleteCandidate.map { LocalizedString.format("delete_agent_message", $0.name) } ?? "")
+        }
     }
     
     private func loadOpenClawAgents() -> [String] {
@@ -3793,12 +3893,32 @@ struct AgentLibrarySidebar: View {
 
         appState.selectedNodeID = instantiated.nodeID
     }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { deleteCandidate != nil },
+            set: { if !$0 { deleteCandidate = nil } }
+        )
+    }
+
+    private func currentProjectAgent(id: UUID) -> Agent? {
+        appState.currentProject?.agents.first(where: { $0.id == id })
+    }
+
+    private func focusProjectAgent(_ agentID: UUID) {
+        selectedAgentID = agentID
+        _ = appState.focusAgentNode(agentID: agentID, createIfMissing: true, suggestedPosition: .zero)
+    }
 }
 
 struct DraggableAgentItem: View {
     let name: String
     var agent: Agent?
     var dragPayload: String?
+    var isSelected: Bool = false
+    var onSelect: (() -> Void)?
+    var onOpen: (() -> Void)?
+    var onDelete: (() -> Void)?
     
     var body: some View {
         HStack {
@@ -3809,13 +3929,48 @@ struct DraggableAgentItem: View {
                 .lineLimit(1)
             
             Spacer()
-            
-            Image(systemName: "line.3.horizontal")
-                .foregroundColor(.secondary)
+
+            if isSelected, let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.borderless)
+                .help(LocalizedString.text("delete_agent_help"))
+            } else {
+                Image(systemName: "line.3.horizontal")
+                    .foregroundColor(.secondary)
+            }
         }
         .padding(8)
-        .background(Color(.controlBackgroundColor))
-        .cornerRadius(6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? Color.accentColor.opacity(0.14) : Color(.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? Color.accentColor.opacity(0.85) : Color.clear, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .onTapGesture {
+            onSelect?()
+        }
+        .onTapGesture(count: 2) {
+            onOpen?()
+        }
+        .contextMenu {
+            if let onOpen {
+                Button(LocalizedString.text("focus")) {
+                    onOpen()
+                }
+            }
+
+            if let onDelete {
+                Button(LocalizedString.delete, role: .destructive) {
+                    onDelete()
+                }
+            }
+        }
         .onDrag { NSItemProvider(object: (dragPayload ?? name) as NSString) }
     }
 }

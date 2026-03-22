@@ -10,6 +10,7 @@ import SwiftUI
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
+    @ObservedObject var sessionState: WorkflowEditorSessionState
     @State private var showingProjectPicker = false
 
     var body: some View {
@@ -24,6 +25,10 @@ struct SidebarView: View {
                 Divider()
 
                 AgentLibrarySidebar(
+                    selectedAgentID: Binding(
+                        get: { sessionState.selectedAgentID },
+                        set: { sessionState.selectedAgentID = $0 }
+                    ),
                     onAddAll: { appState.generateArchitectureFromProjectAgents() },
                     isOpenClawConnected: appState.openClawManager.isConnected,
                     openClawAgents: filteredOpenClawAgents

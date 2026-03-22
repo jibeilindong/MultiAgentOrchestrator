@@ -536,6 +536,7 @@ class OpenClawService: ObservableObject {
     @Published var isRunningTransportBenchmark = false
     @Published var transportBenchmarkReport: TransportBenchmarkReport?
     @Published var transportBenchmarkError: String?
+    var currentProjectProvider: (() -> MAProject?)?
     
     // Agent配置
     @Published var agentConfig = OpenClawAgentConfig.default
@@ -653,6 +654,11 @@ class OpenClawService: ObservableObject {
         let rejectedTargets: [String]
         let repairTypes: [String]
         let safeDegradeApplied: Bool
+    }
+
+    private struct RuntimeRegistrationContext {
+        let project: MAProject
+        let workflowID: UUID?
     }
     
     // 初始化时检测连接状态
@@ -1082,6 +1088,7 @@ class OpenClawService: ObservableObject {
         executeNodeOnOpenClaw(
             node: node,
             agent: agent,
+            workflowID: workflow.id,
             prompt: prompt,
             isEntryNode: true,
             downstreamTargets: downstreamTargets,
@@ -1344,6 +1351,7 @@ class OpenClawService: ObservableObject {
             executeNodeOnOpenClaw(
                 node: node,
                 agent: agent,
+                workflowID: workflow.id,
                 prompt: prompt,
                 isEntryNode: entryNodeIDs.contains(node.id),
                 downstreamTargets: guardrails.directTargets,
@@ -1401,6 +1409,7 @@ class OpenClawService: ObservableObject {
     private func executeNodeOnOpenClaw(
         node: WorkflowNode,
         agent: Agent,
+        workflowID: UUID? = nil,
         prompt: String?,
         isEntryNode: Bool = false,
         downstreamTargets: [RoutingTargetDescriptor] = [],
@@ -1550,6 +1559,7 @@ class OpenClawService: ObservableObject {
             instruction: instruction,
             agentIdentifier: targetAgentID,
             runtimeAgent: agent,
+            workflowID: workflowID,
             sessionID: sessionID,
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: trackActiveRemoteRun,
@@ -1576,6 +1586,7 @@ class OpenClawService: ObservableObject {
                     self.executeNodeOnOpenClaw(
                         node: node,
                         agent: agent,
+                        workflowID: workflowID,
                         prompt: prompt,
                         isEntryNode: isEntryNode,
                         downstreamTargets: downstreamTargets,
@@ -2454,12 +2465,36 @@ class OpenClawService: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
     }
+
+    private func runtimeRegistrationContext(
+        for agent: Agent,
+        preferredWorkflowID: UUID?
+    ) -> RuntimeRegistrationContext? {
+        guard let project = currentProjectProvider?() else { return nil }
+        guard project.agents.contains(where: { $0.id == agent.id }) else { return nil }
+
+        if let preferredWorkflowID,
+           project.workflows.contains(where: { $0.id == preferredWorkflowID && $0.nodes.contains(where: { $0.type == .agent && $0.agentID == agent.id }) }) {
+            return RuntimeRegistrationContext(project: project, workflowID: preferredWorkflowID)
+        }
+
+        let matchingWorkflowIDs = project.workflows.compactMap { workflow in
+            workflow.nodes.contains(where: { $0.type == .agent && $0.agentID == agent.id }) ? workflow.id : nil
+        }
+
+        if matchingWorkflowIDs.count == 1, let workflowID = matchingWorkflowIDs.first {
+            return RuntimeRegistrationContext(project: project, workflowID: workflowID)
+        }
+
+        return RuntimeRegistrationContext(project: project, workflowID: nil)
+    }
     
     // 调用OpenClaw Agent
     private func callOpenClawAgent(
         instruction: String,
         agentIdentifier: String,
         runtimeAgent: Agent? = nil,
+        workflowID: UUID? = nil,
         sessionID: String? = nil,
         thinkingLevel: AgentThinkingLevel? = nil,
         trackActiveRemoteRun: Bool = false,
@@ -2527,8 +2562,14 @@ class OpenClawService: ObservableObject {
 
             var preferredRuntimeIdentifier = agentIdentifier
             if connectionConfig.deploymentKind == .local, let runtimeAgent {
+                let registrationContext = self.runtimeRegistrationContext(
+                    for: runtimeAgent,
+                    preferredWorkflowID: workflowID
+                )
                 let registration = manager.ensureLocalRuntimeAgentRegistration(
                     for: runtimeAgent,
+                    in: registrationContext?.project,
+                    workflowID: registrationContext?.workflowID,
                     using: connectionConfig
                 )
                 if !registration.identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -3604,19 +3645,10 @@ class OpenClawService: ObservableObject {
             return (matched, nil)
         }
 
-        if let defaultMatch = firstCaseInsensitiveMatch(
-            config.defaultAgent.trimmingCharacters(in: .whitespacesAndNewlines),
-            in: available
-        ) {
-            return (defaultMatch, "目标 agent \(preferredID) 在当前运行态不存在，已回退到默认 agent \(defaultMatch)。")
-        }
-
-        if let mainMatch = firstCaseInsensitiveMatch("main", in: available) {
-            return (mainMatch, "目标 agent \(preferredID) 在当前运行态不存在，已回退到 \(mainMatch)。")
-        }
-
-        let first = available[0]
-        return (first, "目标 agent \(preferredID) 在当前运行态不存在，已回退到 \(first)。")
+        return (
+            preferredID,
+            "目标 agent \(preferredID) 在当前本地运行态不存在，请先应用到 OpenClaw 或修复本地 runtime 注册。"
+        )
     }
 
     private func resolveRemoteRuntimeAgentIdentifier(

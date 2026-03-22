@@ -319,6 +319,37 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    private struct LocalAgentConfigEntry: Hashable {
+        let configIndex: Int
+        let id: String?
+        let name: String?
+        let workspacePath: String?
+        let agentDirPath: String?
+        let modelIdentifier: String?
+
+        var candidateKeys: Set<String> {
+            Set(
+                [id, name]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .map { $0.lowercased() }
+            )
+        }
+    }
+
+    private enum LocalAgentConfigResolutionStatus {
+        case missing
+        case invalid
+        case ambiguous
+        case uniqueValid
+    }
+
+    private struct LocalAgentConfigResolution {
+        let status: LocalAgentConfigResolutionStatus
+        let entries: [LocalAgentConfigEntry]
+        let selectedEntry: LocalAgentConfigEntry?
+    }
+
     private struct ManagedAgentBindingRecord: Hashable {
         var agentIdentifier: String
         var channelID: String
@@ -423,6 +454,64 @@ class OpenClawManager: ObservableObject {
         var unresolvedAgentNames: [String] = []
     }
 
+    private struct LocalRuntimeRegistrationResult {
+        var changedAgentNames: [String] = []
+        var warnings: [String] = []
+        var failureMessages: [String] = []
+        var bootstrapPathRequiredAgentNames: [String] = []
+        var workspacePathRequirements: [LocalRuntimeWorkspaceRequirement] = []
+
+        var workspacePathRequiredAgentNames: [String] {
+            Array(Set(workspacePathRequirements.map(\.agentName))).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        var success: Bool {
+            failureMessages.isEmpty
+        }
+
+        var changed: Bool {
+            !changedAgentNames.isEmpty
+        }
+    }
+
+    struct LocalRuntimeWorkspaceRequirement: Identifiable, Hashable {
+        var id: String {
+            nodeID.uuidString
+        }
+
+        let agentID: UUID
+        let workflowID: UUID
+        let nodeID: UUID
+        let agentName: String
+        let targetIdentifier: String
+        let diagnosticMessage: String?
+
+        init(
+            agentID: UUID,
+            workflowID: UUID,
+            nodeID: UUID,
+            agentName: String,
+            targetIdentifier: String,
+            diagnosticMessage: String? = nil
+        ) {
+            self.agentID = agentID
+            self.workflowID = workflowID
+            self.nodeID = nodeID
+            self.agentName = agentName
+            self.targetIdentifier = targetIdentifier
+            self.diagnosticMessage = diagnosticMessage
+        }
+    }
+
+    private struct LocalRuntimeRegistrationSpec {
+        let agent: Agent
+        let workflowID: UUID
+        let nodeID: UUID
+        let targetIdentifier: String
+    }
+
     enum ActiveSessionProjectSyncDeploymentStatus: String {
         case appliedToRuntime
         case skippedNoPendingChanges
@@ -438,6 +527,35 @@ class OpenClawManager: ObservableObject {
         let deploymentStatus: ActiveSessionProjectSyncDeploymentStatus
         let message: String
         let errorMessage: String?
+        let runtimeWarnings: [String]
+        let bootstrapPathRequiredAgentNames: [String]
+        let workspacePathRequirements: [LocalRuntimeWorkspaceRequirement]
+
+        var workspacePathRequiredAgentNames: [String] {
+            Array(Set(workspacePathRequirements.map(\.agentName))).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        init(
+            updatedAgentCount: Int,
+            unresolvedAgentNames: [String],
+            deploymentStatus: ActiveSessionProjectSyncDeploymentStatus,
+            message: String,
+            errorMessage: String?,
+            runtimeWarnings: [String] = [],
+            bootstrapPathRequiredAgentNames: [String] = [],
+            workspacePathRequirements: [LocalRuntimeWorkspaceRequirement] = []
+        ) {
+            self.updatedAgentCount = updatedAgentCount
+            self.unresolvedAgentNames = unresolvedAgentNames
+            self.deploymentStatus = deploymentStatus
+            self.message = message
+            self.errorMessage = errorMessage
+            self.runtimeWarnings = runtimeWarnings
+            self.bootstrapPathRequiredAgentNames = bootstrapPathRequiredAgentNames
+            self.workspacePathRequirements = workspacePathRequirements
+        }
 
         var didCompleteRuntimeWrite: Bool {
             deploymentStatus == .appliedToRuntime || deploymentStatus == .skippedNoPendingChanges
@@ -624,6 +742,9 @@ class OpenClawManager: ObservableObject {
     private var agentRuntimeChannels: [String: AgentRuntimeChannel] = [:]
     private let agentRuntimeChannelLock = NSLock()
     private var sessionDeploymentModified = false
+    private var userProvidedLocalBootstrapDirectory: URL?
+    private var userProvidedLocalWorkspaceDirectoriesByNodeID: [UUID: URL] = [:]
+    private var userProvidedLocalWorkspaceDirectoriesByAgentID: [UUID: URL] = [:]
 
     private var discoverySnapshotURL: URL? {
         discoverySnapshotContext?.snapshotURL
@@ -631,6 +752,7 @@ class OpenClawManager: ObservableObject {
 
     private static let possiblePaths = [
         "/Users/chenrongze/.local/bin/openclaw",
+        "/Users/chenrongze/.openclaw",
         "/usr/local/bin/openclaw",
         "/opt/homebrew/bin/openclaw",
         "/usr/bin/openclaw"
@@ -1197,6 +1319,13 @@ class OpenClawManager: ObservableObject {
             lastProbeReport: lastProbeReport,
             sessionBackupPath: sessionContext?.backupURL.path,
             sessionMirrorPath: sessionContext?.mirrorURL.path,
+            localRuntimeBootstrapDirectory: userProvidedLocalBootstrapDirectory?.path,
+            localRuntimeWorkspaceDirectoriesByNodeID: Dictionary(
+                uniqueKeysWithValues: userProvidedLocalWorkspaceDirectoriesByNodeID.map { ($0.key.uuidString, $0.value.path) }
+            ),
+            localRuntimeWorkspaceDirectoriesByAgentID: Dictionary(
+                uniqueKeysWithValues: userProvidedLocalWorkspaceDirectoriesByAgentID.map { ($0.key.uuidString, $0.value.path) }
+            ),
             lastSyncedAt: Date()
         )
     }
@@ -1229,6 +1358,25 @@ class OpenClawManager: ObservableObject {
                 )
             )
         })
+        userProvidedLocalBootstrapDirectory = firstNonEmptyPath(snapshot.localRuntimeBootstrapDirectory).map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        }
+        userProvidedLocalWorkspaceDirectoriesByNodeID = snapshot.localRuntimeWorkspaceDirectoriesByNodeID.reduce(into: [:]) {
+            partial, entry in
+            guard let nodeID = UUID(uuidString: entry.key),
+                  let path = firstNonEmptyPath(entry.value) else {
+                return
+            }
+            partial[nodeID] = URL(fileURLWithPath: path, isDirectory: true)
+        }
+        userProvidedLocalWorkspaceDirectoriesByAgentID = snapshot.localRuntimeWorkspaceDirectoriesByAgentID.reduce(into: [:]) {
+            partial, entry in
+            guard let agentID = UUID(uuidString: entry.key),
+                  let path = firstNonEmptyPath(entry.value) else {
+                return
+            }
+            partial[agentID] = URL(fileURLWithPath: path, isDirectory: true)
+        }
         isConnected = false
         status = .disconnected
     }
@@ -2116,6 +2264,7 @@ class OpenClawManager: ObservableObject {
 
     func syncProjectAgentsToActiveSession(
         _ project: MAProject,
+        workflowID: UUID? = nil,
         completion: @escaping (ActiveSessionProjectSyncResult) -> Void
     ) {
         if let sessionContext,
@@ -2146,7 +2295,7 @@ class OpenClawManager: ObservableObject {
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let stageResult = self.stageProjectAgentsIntoMirror(project)
+            let stageResult = self.stageProjectAgentsIntoMirror(project, workflowID: workflowID)
             if stageResult.updatedAgentCount > 0 {
                 self.markSessionPendingSync()
             }
@@ -2187,15 +2336,34 @@ class OpenClawManager: ObservableObject {
             }
 
             guard self.sessionLifecycle.hasPendingMirrorChanges else {
-                let message = self.mirrorStageMessage(from: stageResult) ?? "项目镜像已是最新，当前 OpenClaw 会话无需同步。"
+                let registrationResult = self.synchronizeProjectAgentsIntoLocalRuntime(
+                    project,
+                    workflowID: workflowID,
+                    using: sessionContext.deployment.config
+                )
+                let baseMessage = self.mirrorStageMessage(from: stageResult) ?? "项目镜像已是最新，当前 OpenClaw 会话无需同步。"
+                let registrationMessage = self.localRuntimeRegistrationSummary(from: registrationResult)
+                let message = [baseMessage, registrationMessage]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                let deploymentStatus: ActiveSessionProjectSyncDeploymentStatus = registrationResult.changed
+                    ? .appliedToRuntime
+                    : .skippedNoPendingChanges
+                let errorMessage = registrationResult.success
+                    ? nil
+                    : registrationResult.failureMessages.joined(separator: " ")
+
                 DispatchQueue.main.async {
                     completion(
                         ActiveSessionProjectSyncResult(
                             updatedAgentCount: stageResult.updatedAgentCount,
                             unresolvedAgentNames: stageResult.unresolvedAgentNames,
-                            deploymentStatus: .skippedNoPendingChanges,
-                            message: message,
-                            errorMessage: nil
+                            deploymentStatus: registrationResult.success ? deploymentStatus : .failed,
+                            message: registrationResult.success ? message : (errorMessage ?? message),
+                            errorMessage: errorMessage,
+                            runtimeWarnings: registrationResult.warnings,
+                            bootstrapPathRequiredAgentNames: registrationResult.bootstrapPathRequiredAgentNames,
+                            workspacePathRequirements: registrationResult.workspacePathRequirements
                         )
                     )
                 }
@@ -2204,16 +2372,33 @@ class OpenClawManager: ObservableObject {
 
             do {
                 try self.applySessionMirrorToDeployment()
-                let message = self.mirrorStageMessage(from: stageResult)
-                    ?? "项目镜像已同步到当前 OpenClaw 会话。"
+                let registrationResult = self.synchronizeProjectAgentsIntoLocalRuntime(
+                    project,
+                    workflowID: workflowID,
+                    using: sessionContext.deployment.config
+                )
+                let registrationMessage = self.localRuntimeRegistrationSummary(from: registrationResult)
+                let message = [
+                    self.mirrorStageMessage(from: stageResult) ?? "项目镜像已同步到当前 OpenClaw 会话。",
+                    registrationMessage
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                let errorMessage = registrationResult.success
+                    ? nil
+                    : registrationResult.failureMessages.joined(separator: " ")
+
                 DispatchQueue.main.async {
                     completion(
                         ActiveSessionProjectSyncResult(
                             updatedAgentCount: stageResult.updatedAgentCount,
                             unresolvedAgentNames: stageResult.unresolvedAgentNames,
-                            deploymentStatus: .appliedToRuntime,
-                            message: message,
-                            errorMessage: nil
+                            deploymentStatus: registrationResult.success ? .appliedToRuntime : .failed,
+                            message: registrationResult.success ? message : (errorMessage ?? message),
+                            errorMessage: errorMessage,
+                            runtimeWarnings: registrationResult.warnings,
+                            bootstrapPathRequiredAgentNames: registrationResult.bootstrapPathRequiredAgentNames,
+                            workspacePathRequirements: registrationResult.workspacePathRequirements
                         )
                     )
                 }
@@ -2234,12 +2419,190 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    private func synchronizeProjectAgentsIntoLocalRuntime(
+        _ project: MAProject,
+        workflowID: UUID? = nil,
+        using config: OpenClawConfig
+    ) -> LocalRuntimeRegistrationResult {
+        guard config.deploymentKind == .local else {
+            return LocalRuntimeRegistrationResult()
+        }
+
+        var result = LocalRuntimeRegistrationResult()
+        var changedNames = Set<String>()
+        var expectedIdentifiers = Set<String>()
+        let registrationSpecs = buildLocalRuntimeRegistrationSpecs(in: project, workflowID: workflowID)
+        let registerableAgents = registrationSpecs.map(\.agent)
+        let registerableAgentIDs = Set(registerableAgents.map(\.id))
+        let skippedAgents = project.agents.filter { !registerableAgentIDs.contains($0.id) }
+        let runtimeRecords: [ManagedAgentRecord]
+
+        do {
+            let listResult = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
+            runtimeRecords = parseManagedAgents(from: listResult.standardOutput, using: config)
+        } catch {
+            result.failureMessages.append("读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)")
+            return result
+        }
+
+        if !skippedAgents.isEmpty {
+            let skippedNames = skippedAgents
+                .map(\.name)
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                .joined(separator: "、")
+            let scopeDescription = workflowID == nil ? "任何 workflow 节点" : "当前 workflow 节点"
+            result.warnings.append("以下 agent 未绑定到\(scopeDescription)，已跳过自动注册：\(skippedNames)")
+        }
+
+        for spec in registrationSpecs {
+            let agent = spec.agent
+            let expectedIdentifier = spec.targetIdentifier
+            if !expectedIdentifier.isEmpty {
+                expectedIdentifiers.insert(normalizeAgentKey(expectedIdentifier))
+            }
+
+            let registration = ensureLocalRuntimeAgentRegistration(
+                for: agent,
+                in: project,
+                workflowID: workflowID,
+                cachedRuntimeRecords: runtimeRecords,
+                using: config
+            )
+            if !registration.success {
+                if !registration.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result.failureMessages.append(registration.message)
+                    if registration.bootstrapPathRequired {
+                        result.bootstrapPathRequiredAgentNames.append(agent.name)
+                    }
+                    if let workspaceRequirement = registration.workspaceRequirement {
+                        result.workspacePathRequirements.append(workspaceRequirement)
+                    }
+                } else {
+                    result.failureMessages.append("本地 workflow agent \(agent.name) 自动注册失败。")
+                }
+                continue
+            }
+
+            if !registration.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                changedNames.insert(agent.name)
+            }
+        }
+
+        if !changedNames.isEmpty {
+            result.changedAgentNames = changedNames.sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        if !result.bootstrapPathRequiredAgentNames.isEmpty {
+            result.bootstrapPathRequiredAgentNames = Array(Set(result.bootstrapPathRequiredAgentNames)).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        guard result.failureMessages.isEmpty, !expectedIdentifiers.isEmpty else {
+            return result
+        }
+
+        do {
+            let listResult = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
+            let verifiedRuntimeRecords = parseManagedAgents(from: listResult.standardOutput, using: config)
+            let availableIdentifiers = Set(verifiedRuntimeRecords.map { normalizeAgentKey($0.targetIdentifier) })
+            let missing = expectedIdentifiers.subtracting(availableIdentifiers)
+            if !missing.isEmpty {
+                let missingText = registerableAgents
+                    .filter { missing.contains(normalizeAgentKey(normalizedTargetIdentifier(for: $0))) }
+                    .map(\.name)
+                    .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                    .joined(separator: "、")
+                result.failureMessages.append("本地 runtime 注册校验失败，以下 agent 仍未出现在 OpenClaw CLI 中：\(missingText)")
+            }
+        } catch {
+            result.failureMessages.append("本地 runtime 注册校验失败：\(error.localizedDescription)")
+        }
+
+        return result
+    }
+
+    private func buildLocalRuntimeRegistrationSpecs(
+        in project: MAProject,
+        workflowID: UUID? = nil
+    ) -> [LocalRuntimeRegistrationSpec] {
+        workflowBoundProjectAgents(in: project, workflowID: workflowID).compactMap { agent in
+            guard let binding = nodeBinding(for: agent.id, in: project, workflowID: workflowID) else {
+                return nil
+            }
+
+            return LocalRuntimeRegistrationSpec(
+                agent: agent,
+                workflowID: binding.workflowID,
+                nodeID: binding.nodeID,
+                targetIdentifier: normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    private func workflowBoundProjectAgents(
+        in project: MAProject,
+        workflowID: UUID? = nil
+    ) -> [Agent] {
+        var boundAgentIDs = Set<UUID>()
+        let scopedWorkflows = workflows(in: project, matching: workflowID)
+
+        for workflow in scopedWorkflows {
+            for node in workflow.nodes where node.type == .agent {
+                guard let agentID = node.agentID else { continue }
+                boundAgentIDs.insert(agentID)
+            }
+        }
+
+        return project.agents.filter { boundAgentIDs.contains($0.id) }
+    }
+
+    private func localRuntimeRegistrationSummary(from result: LocalRuntimeRegistrationResult) -> String {
+        guard result.success, !result.changedAgentNames.isEmpty else {
+            return ""
+        }
+
+        let names = result.changedAgentNames.joined(separator: "、")
+        return "已补齐并校验本地 runtime agent 注册：\(names)。"
+    }
+
     func executeOpenClawCLI(
         arguments: [String],
         using config: OpenClawConfig? = nil,
         standardInput: FileHandle? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         try runOpenClawCommand(using: config ?? self.config, arguments: arguments, standardInput: standardInput)
+    }
+
+    func registerUserProvidedLocalBootstrapDirectory(_ directoryURL: URL) -> (success: Bool, message: String) {
+        guard let resolved = normalizedUserProvidedLocalBootstrapDirectory(directoryURL) else {
+            return (
+                false,
+                "所选路径中未找到可复用的 OpenClaw 鉴权配置。请选择包含 auth-profiles.json / models.json 的 agent 目录，或其上级 agents 目录。"
+            )
+        }
+
+        userProvidedLocalBootstrapDirectory = resolved
+
+        return (true, "已记录手动指定的 OpenClaw bootstrap 路径：\(resolved.path)")
+    }
+
+    func registerUserProvidedLocalWorkspaceDirectory(
+        _ directoryURL: URL,
+        for requirement: LocalRuntimeWorkspaceRequirement
+    ) -> (success: Bool, message: String) {
+        guard let resolved = normalizedUserProvidedLocalWorkspaceDirectory(directoryURL) else {
+            return (
+                false,
+                "所选路径不是有效的 workspace 目录。请选择该 agent 对应的工作目录。"
+            )
+        }
+
+        userProvidedLocalWorkspaceDirectoriesByNodeID[requirement.nodeID] = resolved
+        userProvidedLocalWorkspaceDirectoriesByAgentID[requirement.agentID] = resolved
+        return (true, "已记录 \(requirement.agentName) 的手动 workspace 路径：\(resolved.path)")
     }
 
     func executeAgentRuntimeCommand(
@@ -2862,6 +3225,26 @@ class OpenClawManager: ObservableObject {
         }
 
         do {
+            let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedIdentifier.isEmpty else {
+                return (false, "同步本地 runtime agent 配置失败：缺少有效的 agent 标识。")
+            }
+
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let desiredName = trimmedName.isEmpty ? trimmedIdentifier : trimmedName
+            let trimmedWorkspacePath: String? = {
+                let trimmed = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }()
+            let trimmedAgentDirPath: String? = {
+                let trimmed = agentDirPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }()
+            let trimmedModelIdentifier: String? = {
+                let trimmed = modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }()
+
             let data = try Data(contentsOf: configURL)
             guard
                 var root = (try JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -2871,59 +3254,248 @@ class OpenClawManager: ObservableObject {
                 return (false, "本地 OpenClaw 配置存在，但 agents.list 无法解析，未能自动同步 runtime agent 配置。")
             }
 
-            let normalizedIdentifier = normalizeAgentKey(identifier)
-            let normalizedName = normalizeAgentKey(name)
-            guard let index = list.firstIndex(where: { item in
-                normalizeAgentKey(stringValue(item, keys: ["id"]) ?? "") == normalizedIdentifier
-                    || normalizeAgentKey(stringValue(item, keys: ["name"]) ?? "") == normalizedName
-            }) else {
-                return (true, "")
+            let normalizedIdentifier = normalizeAgentKey(trimmedIdentifier)
+            let normalizedName = normalizeAgentKey(desiredName)
+            let normalizedDesiredWorkspacePath = trimmedWorkspacePath.flatMap(normalizeWorkspacePath)
+            let normalizedDesiredAgentDirPath = trimmedAgentDirPath.flatMap(normalizeWorkspacePath)
+            let parsedEntries = parseLocalAgentConfigEntries(from: list)
+            let matchingIndices = parsedEntries.compactMap { entry in
+                localAgentConfigEntryMatches(
+                    entry,
+                    normalizedIdentifier: normalizedIdentifier,
+                    normalizedName: normalizedName,
+                    normalizedWorkspacePath: normalizedDesiredWorkspacePath,
+                    normalizedAgentDirPath: normalizedDesiredAgentDirPath
+                ) ? entry.configIndex : nil
             }
 
-            var entry = list[index]
-            var updatedFields: [String] = []
+            let canonicalIndex = bestLocalAgentConfigCanonicalIndex(
+                matchingIndices,
+                in: list,
+                normalizedIdentifier: normalizedIdentifier,
+                normalizedName: normalizedName,
+                normalizedWorkspacePath: normalizedDesiredWorkspacePath,
+                normalizedAgentDirPath: normalizedDesiredAgentDirPath
+            )
 
-            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedName.isEmpty, (stringValue(entry, keys: ["name"]) ?? "") != trimmedName {
-                entry["name"] = trimmedName
+            var entry: [String: Any] = canonicalIndex.flatMap { index in
+                guard index >= 0 && index < list.count else { return nil }
+                return list[index]
+            } ?? [:]
+            var updatedFields: [String] = []
+            var removedDuplicateCount = 0
+
+            if (stringValue(entry, keys: ["id"]) ?? "") != trimmedIdentifier {
+                entry["id"] = trimmedIdentifier
+                updatedFields.append("id")
+            }
+
+            if (stringValue(entry, keys: ["name"]) ?? "") != desiredName {
+                entry["name"] = desiredName
                 updatedFields.append("name")
             }
 
-            if let workspacePath = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !workspacePath.isEmpty,
-               (stringValue(entry, keys: ["workspace"]) ?? "") != workspacePath {
-                entry["workspace"] = workspacePath
+            if let trimmedWorkspacePath,
+               (stringValue(entry, keys: ["workspace"]) ?? "") != trimmedWorkspacePath {
+                entry["workspace"] = trimmedWorkspacePath
                 updatedFields.append("workspace")
             }
 
-            if let agentDirPath = agentDirPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !agentDirPath.isEmpty,
-               (stringValue(entry, keys: ["agentDir"]) ?? "") != agentDirPath {
-                entry["agentDir"] = agentDirPath
+            if let trimmedAgentDirPath,
+               (stringValue(entry, keys: ["agentDir"]) ?? "") != trimmedAgentDirPath {
+                entry["agentDir"] = trimmedAgentDirPath
                 updatedFields.append("agentDir")
             }
 
-            if let modelIdentifier = modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !modelIdentifier.isEmpty,
-               (stringValue(entry, keys: ["model"]) ?? "") != modelIdentifier {
-                entry["model"] = modelIdentifier
+            if let trimmedModelIdentifier,
+               (stringValue(entry, keys: ["model"]) ?? "") != trimmedModelIdentifier {
+                entry["model"] = trimmedModelIdentifier
                 updatedFields.append("model")
             }
 
-            guard !updatedFields.isEmpty else {
+            if let canonicalIndex {
+                let matchingIndexSet = Set(matchingIndices)
+                var rebuiltList: [[String: Any]] = []
+                rebuiltList.reserveCapacity(list.count - max(matchingIndices.count - 1, 0))
+
+                for (index, item) in list.enumerated() {
+                    if index == canonicalIndex {
+                        rebuiltList.append(entry)
+                        continue
+                    }
+
+                    if matchingIndexSet.contains(index) {
+                        removedDuplicateCount += 1
+                        continue
+                    }
+
+                    rebuiltList.append(item)
+                }
+
+                list = rebuiltList
+            } else {
+                list.append(entry)
+                updatedFields.append("new")
+            }
+
+            guard !updatedFields.isEmpty || removedDuplicateCount > 0 else {
                 return (true, "")
             }
 
-            list[index] = entry
             agents["list"] = list
             root["agents"] = agents
 
             let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
             try updatedData.write(to: configURL, options: .atomic)
-            return (true, "已同步本地 runtime agent \(identifier) 的 \(updatedFields.joined(separator: "、")) 配置。")
+            cachedLocalWorkspaceMap = [:]
+            cachedLocalWorkspaceConfigModificationDate = nil
+
+            let verification = resolveLocalAgentConfigResolution(
+                matching: [trimmedIdentifier, desiredName],
+                at: configURL
+            )
+            guard verification.status == .uniqueValid,
+                  let selectedEntry = verification.selectedEntry else {
+                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：未找到唯一有效的 workspace 记录。")
+            }
+
+            if !selectedEntry.candidateKeys.contains(normalizedIdentifier) {
+                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：canonical 记录的标识不一致。")
+            }
+
+            if let normalizedDesiredWorkspacePath,
+               normalizeWorkspacePath(selectedEntry.workspacePath ?? "") != normalizedDesiredWorkspacePath {
+                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：workspace 未收敛到当前注册路径。")
+            }
+
+            if let normalizedDesiredAgentDirPath,
+               normalizeWorkspacePath(selectedEntry.agentDirPath ?? "") != normalizedDesiredAgentDirPath {
+                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：agentDir 未收敛到当前注册路径。")
+            }
+
+            var messageParts: [String] = []
+            if updatedFields.contains("new") {
+                messageParts.append("已写入本地 runtime agent \(trimmedIdentifier) 的 canonical 配置。")
+            } else {
+                let displayFields = updatedFields.filter { $0 != "new" }
+                if !displayFields.isEmpty {
+                    messageParts.append("已同步本地 runtime agent \(trimmedIdentifier) 的 \(displayFields.joined(separator: "、")) 配置。")
+                }
+            }
+            if removedDuplicateCount > 0 {
+                messageParts.append("已清理 \(removedDuplicateCount) 条重复的本地 runtime agent 配置记录。")
+            }
+
+            return (true, messageParts.joined(separator: " "))
         } catch {
             return (false, "同步本地 runtime agent \(identifier) 配置失败：\(error.localizedDescription)")
         }
+    }
+
+    private func parseLocalAgentConfigEntries(from list: [[String: Any]]) -> [LocalAgentConfigEntry] {
+        list.enumerated().map { index, entry in
+            LocalAgentConfigEntry(
+                configIndex: index,
+                id: stringValue(entry, keys: ["id", "agentID", "agentId"]),
+                name: stringValue(entry, keys: ["name", "displayName", "agentName"]),
+                workspacePath: stringValue(entry, keys: ["workspace", "workspacePath", "workdir", "workPath"]),
+                agentDirPath: stringValue(entry, keys: ["agentDir", "agentDirPath", "directory", "agentDirectory"]),
+                modelIdentifier: stringValue(entry, keys: ["model", "modelIdentifier", "primaryModel", "defaultModel"])
+            )
+        }
+    }
+
+    private func localAgentConfigEntryMatches(
+        _ entry: LocalAgentConfigEntry,
+        normalizedIdentifier: String,
+        normalizedName: String,
+        normalizedWorkspacePath: String?,
+        normalizedAgentDirPath: String?
+    ) -> Bool {
+        if entry.candidateKeys.contains(normalizedIdentifier) {
+            return true
+        }
+
+        if !normalizedName.isEmpty, entry.candidateKeys.contains(normalizedName) {
+            return true
+        }
+
+        if let normalizedWorkspacePath,
+           normalizeWorkspacePath(entry.workspacePath ?? "") == normalizedWorkspacePath {
+            return true
+        }
+
+        if let normalizedAgentDirPath,
+           normalizeWorkspacePath(entry.agentDirPath ?? "") == normalizedAgentDirPath {
+            return true
+        }
+
+        return false
+    }
+
+    private func bestLocalAgentConfigCanonicalIndex(
+        _ matchingIndices: [Int],
+        in list: [[String: Any]],
+        normalizedIdentifier: String,
+        normalizedName: String,
+        normalizedWorkspacePath: String?,
+        normalizedAgentDirPath: String?
+    ) -> Int? {
+        matchingIndices.max { lhs, rhs in
+            localAgentConfigCanonicalScore(
+                for: list[lhs],
+                normalizedIdentifier: normalizedIdentifier,
+                normalizedName: normalizedName,
+                normalizedWorkspacePath: normalizedWorkspacePath,
+                normalizedAgentDirPath: normalizedAgentDirPath
+            ) < localAgentConfigCanonicalScore(
+                for: list[rhs],
+                normalizedIdentifier: normalizedIdentifier,
+                normalizedName: normalizedName,
+                normalizedWorkspacePath: normalizedWorkspacePath,
+                normalizedAgentDirPath: normalizedAgentDirPath
+            )
+        }
+    }
+
+    private func localAgentConfigCanonicalScore(
+        for entry: [String: Any],
+        normalizedIdentifier: String,
+        normalizedName: String,
+        normalizedWorkspacePath: String?,
+        normalizedAgentDirPath: String?
+    ) -> Int {
+        let normalizedEntryID = normalizeAgentKey(stringValue(entry, keys: ["id", "agentID", "agentId"]) ?? "")
+        let normalizedEntryName = normalizeAgentKey(stringValue(entry, keys: ["name", "displayName", "agentName"]) ?? "")
+        let normalizedEntryWorkspacePath = normalizeWorkspacePath(
+            stringValue(entry, keys: ["workspace", "workspacePath", "workdir", "workPath"]) ?? ""
+        )
+        let normalizedEntryAgentDirPath = normalizeWorkspacePath(
+            stringValue(entry, keys: ["agentDir", "agentDirPath", "directory", "agentDirectory"]) ?? ""
+        )
+
+        var score = 0
+        if normalizedEntryID == normalizedIdentifier {
+            score += 100
+        }
+        if !normalizedName.isEmpty, normalizedEntryName == normalizedName {
+            score += 60
+        }
+        if let normalizedWorkspacePath,
+           normalizedEntryWorkspacePath == normalizedWorkspacePath {
+            score += 30
+        }
+        if let normalizedAgentDirPath,
+           normalizedEntryAgentDirPath == normalizedAgentDirPath {
+            score += 20
+        }
+        if normalizedEntryWorkspacePath != nil {
+            score += 5
+        }
+        if normalizedEntryAgentDirPath != nil {
+            score += 3
+        }
+        return score
     }
 
     private func loadInstalledSkills(
@@ -3416,7 +3988,7 @@ class OpenClawManager: ObservableObject {
             return (true, "")
         }
 
-        guard let bootstrapCandidate = preferredLocalAgentBootstrapCandidate(excluding: ["main"]) else {
+        guard let bootstrapCandidate = preferredLocalAgentBootstrapCandidate(excluding: ["main"], using: resolvedConfig) else {
             if needsAuthProfiles {
                 return (false, "本地默认 agent main 缺少 auth-profiles.json，且当前未找到可复用的本地 agent 鉴权配置。")
             }
@@ -3454,7 +4026,7 @@ class OpenClawManager: ObservableObject {
 
             return (
                 true,
-                "已为本地默认 agent main 自动补齐 \(copiedItems.joined(separator: "、"))，来源于本地 agent \(bootstrapCandidate.identifier)。"
+                "已为本地默认 agent main 自动补齐 \(copiedItems.joined(separator: "、"))，来源于\(bootstrapCandidate.sourceDescription)。"
             )
         } catch {
             return (false, "为本地默认 agent main 自动补齐鉴权配置失败：\(error.localizedDescription)")
@@ -3463,26 +4035,55 @@ class OpenClawManager: ObservableObject {
 
     func ensureLocalRuntimeAgentRegistration(
         for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil,
+        cachedRuntimeRecords: [ManagedAgentRecord]? = nil,
         using config: OpenClawConfig? = nil
-    ) -> (success: Bool, identifier: String, message: String) {
+    ) -> (
+        success: Bool,
+        identifier: String,
+        message: String,
+        bootstrapPathRequired: Bool,
+        workspaceRequirement: LocalRuntimeWorkspaceRequirement?
+    ) {
         let resolvedConfig = config ?? self.config
         guard resolvedConfig.deploymentKind == .local else {
             let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
-            return (true, identifier, "")
+            return (true, identifier, "", false, nil)
         }
 
         let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !identifier.isEmpty else {
-            return (false, "", "当前节点缺少可用的本地 runtime agent 标识。")
+            return (false, "", "当前节点缺少可用的本地 runtime agent 标识。", false, nil)
         }
 
         let runtimeRecords: [ManagedAgentRecord]
-        do {
-            let result = try runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
-            runtimeRecords = parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
-        } catch {
-            return (false, identifier, "读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)")
+        if let cachedRuntimeRecords {
+            runtimeRecords = cachedRuntimeRecords
+        } else {
+            do {
+                let result = try runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
+                runtimeRecords = parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
+            } catch {
+                return (false, identifier, "读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)", false, nil)
+            }
         }
+
+        let workspaceRequirement: LocalRuntimeWorkspaceRequirement? = {
+            guard let project,
+                  let binding = nodeBinding(for: agent.id, in: project, workflowID: workflowID) else {
+                return nil
+            }
+
+            return LocalRuntimeWorkspaceRequirement(
+                agentID: agent.id,
+                workflowID: binding.workflowID,
+                nodeID: binding.nodeID,
+                agentName: agent.name,
+                targetIdentifier: identifier,
+                diagnosticMessage: unresolvedWorkspaceDiagnosticMessage(for: agent, in: project, workflowID: workflowID)
+            )
+        }()
 
         if runtimeRecords.contains(where: {
             normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
@@ -3497,7 +4098,7 @@ class OpenClawManager: ObservableObject {
                     .appendingPathComponent("agents", isDirectory: true)
                     .appendingPathComponent(identifier, isDirectory: true)
                     .appendingPathComponent("agent", isDirectory: true)
-            let workspacePath = resolvedWorkspacePath(for: agent)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspacePath = resolvedWorkspacePath(for: agent, in: project, workflowID: workflowID)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 ?? matchedRecord.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
             let desiredModelIdentifier = qualifiedLocalRuntimeModelIdentifier(
                 agent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -3507,7 +4108,8 @@ class OpenClawManager: ObservableObject {
             )
             let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
                 at: runtimeAgentDirectory,
-                displayIdentifier: matchedRecord.targetIdentifier
+                displayIdentifier: matchedRecord.targetIdentifier,
+                using: resolvedConfig
             )
             let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
                 identifier: matchedRecord.targetIdentifier,
@@ -3522,13 +4124,23 @@ class OpenClawManager: ObservableObject {
             return (
                 bootstrap.success && syncResult.success,
                 matchedRecord.targetIdentifier,
-                combinedMessages
+                combinedMessages,
+                bootstrap.requiresUserProvidedBootstrapPath,
+                nil
             )
         }
 
-        guard let workspacePath = resolvedWorkspacePath(for: agent)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let workspacePath = resolvedWorkspacePath(for: agent, in: project, workflowID: workflowID)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !workspacePath.isEmpty else {
-            return (false, identifier, "本地 workflow agent \(identifier) 尚未解析到可用 workspace，因此无法自动注册到 OpenClaw CLI。")
+            let diagnosticMessage = unresolvedWorkspaceDiagnosticMessage(for: agent, in: project, workflowID: workflowID)
+            let baseMessage = "本地 workflow agent \(identifier) 尚未解析到可用 workspace，因此无法自动注册到 OpenClaw CLI。"
+            return (
+                false,
+                identifier,
+                [baseMessage, diagnosticMessage].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " "),
+                false,
+                workspaceRequirement
+            )
         }
 
         let agentDirectory = localOpenClawRootURL(using: resolvedConfig)
@@ -3559,7 +4171,7 @@ class OpenClawManager: ObservableObject {
                 let stdout = String(data: result.standardOutput, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let detail = !stderr.isEmpty ? stderr : stdout
-                return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(detail)")
+                return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(detail)", false, nil)
             }
 
             let registeredIdentifier = resolvedRegisteredAgentIdentifier(
@@ -3569,7 +4181,8 @@ class OpenClawManager: ObservableObject {
             )
             let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
                 at: agentDirectory,
-                displayIdentifier: registeredIdentifier
+                displayIdentifier: registeredIdentifier,
+                using: resolvedConfig
             )
             let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
                 identifier: registeredIdentifier,
@@ -3580,9 +4193,15 @@ class OpenClawManager: ObservableObject {
             )
             let registrationMessage = "已将本地 workflow agent \(identifier) 自动注册到 OpenClaw CLI（runtime id: \(registeredIdentifier)）。"
             let messageParts = [registrationMessage, bootstrap.message, syncResult.message].filter { !$0.isEmpty }
-            return (bootstrap.success && syncResult.success, registeredIdentifier, messageParts.joined(separator: " "))
+            return (
+                bootstrap.success && syncResult.success,
+                registeredIdentifier,
+                messageParts.joined(separator: " "),
+                bootstrap.requiresUserProvidedBootstrapPath,
+                nil
+            )
         } catch {
-            return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(error.localizedDescription)")
+            return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(error.localizedDescription)", false, nil)
         }
     }
 
@@ -3599,16 +4218,9 @@ class OpenClawManager: ObservableObject {
     }
 
     func localAgentWorkspacePath(matching candidateNames: [String]) -> String? {
-        let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
-        guard !normalizedNames.isEmpty else { return nil }
-
-        let workspaceMap = localAgentWorkspaceMap()
-        for name in normalizedNames {
-            if let workspacePath = workspaceMap[name] {
-                return workspacePath
-            }
-        }
-        return nil
+        let resolution = resolveLocalAgentConfigResolution(matching: candidateNames)
+        guard resolution.status == .uniqueValid else { return nil }
+        return resolution.selectedEntry?.workspacePath
     }
 
     func workspaceIsolationConflicts(for agents: [Agent]) -> [WorkspaceIsolationConflict] {
@@ -3690,9 +4302,17 @@ class OpenClawManager: ObservableObject {
         )
     }
 
-    func resolvedWorkspacePath(for agent: Agent) -> String? {
-        if let managedWorkspace = projectManagedWorkspacePath(for: agent) {
+    func resolvedWorkspacePath(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil
+    ) -> String? {
+        if let managedWorkspace = projectManagedWorkspacePath(for: agent, in: project, workflowID: workflowID) {
             return managedWorkspace
+        }
+
+        if let userProvidedWorkspace = userProvidedLocalWorkspacePath(for: agent, in: project, workflowID: workflowID) {
+            return userProvidedWorkspace
         }
 
         let candidateNames = [
@@ -3714,7 +4334,17 @@ class OpenClawManager: ObservableObject {
         return nil
     }
 
-    private func projectManagedWorkspacePath(for agent: Agent) -> String? {
+    private func projectManagedWorkspacePath(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil
+    ) -> String? {
+        if let project,
+           let managedWorkspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project, workflowID: workflowID) {
+            try? FileManager.default.createDirectory(at: managedWorkspaceURL, withIntermediateDirectories: true)
+            return managedWorkspaceURL.path
+        }
+
         if let memoryBackupPath = firstNonEmptyPath(agent.openClawDefinition.memoryBackupPath) {
             let privateURL = URL(fileURLWithPath: memoryBackupPath, isDirectory: true)
             let workspaceURL = (privateURL.lastPathComponent == "private"
@@ -3732,6 +4362,36 @@ class OpenClawManager: ObservableObject {
             if FileManager.default.fileExists(atPath: candidateRoot.path) {
                 return candidateRoot.path
             }
+        }
+
+        return nil
+    }
+
+    private func userProvidedLocalWorkspacePath(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil
+    ) -> String? {
+        if let project,
+           let binding = nodeBinding(for: agent.id, in: project, workflowID: workflowID),
+           let url = userProvidedLocalWorkspaceDirectoriesByNodeID[binding.nodeID] {
+            return url.path
+        }
+
+        if let project {
+            let scopedBindings = workflows(in: project, matching: workflowID)
+                .flatMap { workflow in
+                    workflow.nodes
+                        .filter { $0.type == .agent && $0.agentID == agent.id }
+                        .map { (workflowID: workflow.id, nodeID: $0.id) }
+                }
+            if scopedBindings.count <= 1, let url = userProvidedLocalWorkspaceDirectoriesByAgentID[agent.id] {
+                return url.path
+            }
+        }
+
+        if project == nil, let url = userProvidedLocalWorkspaceDirectoriesByAgentID[agent.id] {
+            return url.path
         }
 
         return nil
@@ -4618,6 +5278,7 @@ class OpenClawManager: ObservableObject {
 
     private func stageProjectAgentsIntoMirror(
         _ project: MAProject,
+        workflowID: UUID? = nil,
         stagePolicies: [UUID: SoulMirrorStagePolicy] = [:]
     ) -> MirrorStageResult {
         let mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
@@ -4631,14 +5292,19 @@ class OpenClawManager: ObservableObject {
         try? FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
 
         var result = MirrorStageResult()
-        for agent in project.agents {
+        for agent in workflowBoundProjectAgents(in: project, workflowID: workflowID) {
             guard let soulURL = resolveProjectMirrorSoulURL(for: agent, in: project, mirrorURL: mirrorURL, backupURL: backupURL) else {
                 result.unresolvedAgentNames.append(agent.name)
                 continue
             }
 
             do {
-                if try stageManagedWorkspaceDocuments(for: agent, in: project, mirrorSoulURL: soulURL) {
+                if try stageManagedWorkspaceDocuments(
+                    for: agent,
+                    in: project,
+                    workflowID: workflowID,
+                    mirrorSoulURL: soulURL
+                ) {
                     result.updatedAgentCount += 1
                     continue
                 }
@@ -4680,9 +5346,10 @@ class OpenClawManager: ObservableObject {
     private func stageManagedWorkspaceDocuments(
         for agent: Agent,
         in project: MAProject,
+        workflowID: UUID? = nil,
         mirrorSoulURL: URL
     ) throws -> Bool {
-        guard let workspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project),
+        guard let workspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project, workflowID: workflowID),
               FileManager.default.fileExists(atPath: workspaceURL.path) else {
             return false
         }
@@ -4720,8 +5387,12 @@ class OpenClawManager: ObservableObject {
         return stagedAny
     }
 
-    private func managedNodeOpenClawWorkspaceURL(for agent: Agent, in project: MAProject) -> URL? {
-        guard let binding = nodeBinding(for: agent.id, in: project) else { return nil }
+    private func managedNodeOpenClawWorkspaceURL(
+        for agent: Agent,
+        in project: MAProject,
+        workflowID: UUID? = nil
+    ) -> URL? {
+        guard let binding = nodeBinding(for: agent.id, in: project, workflowID: workflowID) else { return nil }
 
         return ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
             for: binding.nodeID,
@@ -4731,13 +5402,29 @@ class OpenClawManager: ObservableObject {
         )
     }
 
-    private func nodeBinding(for agentID: UUID, in project: MAProject) -> (workflowID: UUID, nodeID: UUID)? {
-        for workflow in project.workflows {
+    private func nodeBinding(
+        for agentID: UUID,
+        in project: MAProject,
+        workflowID: UUID? = nil
+    ) -> (workflowID: UUID, nodeID: UUID)? {
+        for workflow in workflows(in: project, matching: workflowID) {
             if let node = workflow.nodes.first(where: { $0.type == .agent && $0.agentID == agentID }) {
                 return (workflow.id, node.id)
             }
         }
         return nil
+    }
+
+    private func workflows(in project: MAProject, matching workflowID: UUID? = nil) -> [Workflow] {
+        guard let workflowID else {
+            return project.workflows
+        }
+
+        guard let workflow = project.workflows.first(where: { $0.id == workflowID }) else {
+            return []
+        }
+
+        return [workflow]
     }
 
     private func applySessionMirrorToDeployment() throws {
@@ -4752,7 +5439,7 @@ class OpenClawManager: ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: "无法解析本地 OpenClaw 路径"]
                 )
             }
-            _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: sessionContext.mirrorURL)
+            _ = try mergeDirectoryContents(of: openClawRoot, withContentsOf: sessionContext.mirrorURL)
         case .container:
             guard let deploymentRootPath = sessionContext.deployment.deploymentRootPath else {
                 throw NSError(
@@ -5130,6 +5817,151 @@ class OpenClawManager: ObservableObject {
 
         return score
     }
+    private func resolveLocalAgentConfigResolution(
+        matching candidateNames: [String],
+        at configURL: URL? = nil
+    ) -> LocalAgentConfigResolution {
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey).filter { !$0.isEmpty })
+        guard !normalizedNames.isEmpty else {
+            return LocalAgentConfigResolution(status: .missing, entries: [], selectedEntry: nil)
+        }
+
+        let resolvedConfigURL = configURL
+            ?? resolveLocalOpenClawConfigURL()
+            ?? localOpenClawRootURL().appendingPathComponent("openclaw.json")
+        let entries = readLocalAgentConfigEntries(at: resolvedConfigURL)
+        let matchingEntries = entries.filter { !$0.candidateKeys.isDisjoint(with: normalizedNames) }
+        guard !matchingEntries.isEmpty else {
+            return LocalAgentConfigResolution(status: .missing, entries: [], selectedEntry: nil)
+        }
+
+        let validEntries = matchingEntries.filter { entry in
+            guard let workspacePath = entry.workspacePath,
+                  let normalizedPath = normalizeWorkspacePath(workspacePath) else {
+                return false
+            }
+            return fileManager.fileExists(atPath: normalizedPath)
+        }
+
+        if validEntries.isEmpty {
+            return LocalAgentConfigResolution(status: .invalid, entries: matchingEntries, selectedEntry: nil)
+        }
+
+        let uniquePaths = Dictionary(grouping: validEntries) { entry in
+            normalizeWorkspacePath(entry.workspacePath ?? "") ?? ""
+        }.filter { !$0.key.isEmpty }
+
+        let selectedEntry = validEntries.sorted { lhs, rhs in
+            localAgentConfigReadPriority(lhs: lhs, rhs: rhs)
+        }.first
+
+        guard uniquePaths.count == 1,
+              let selectedEntry else {
+            return LocalAgentConfigResolution(status: .ambiguous, entries: validEntries, selectedEntry: nil)
+        }
+
+        return LocalAgentConfigResolution(status: .uniqueValid, entries: validEntries, selectedEntry: selectedEntry)
+    }
+
+    private func localAgentConfigReadPriority(lhs: LocalAgentConfigEntry, rhs: LocalAgentConfigEntry) -> Bool {
+        let lhsID = lhs.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rhsID = rhs.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !lhsID.isEmpty && rhsID.isEmpty {
+            return true
+        }
+        if lhsID.isEmpty && !rhsID.isEmpty {
+            return false
+        }
+
+        let lhsWorkspaceExists = lhs.workspacePath.flatMap(normalizeWorkspacePath).map { fileManager.fileExists(atPath: $0) } ?? false
+        let rhsWorkspaceExists = rhs.workspacePath.flatMap(normalizeWorkspacePath).map { fileManager.fileExists(atPath: $0) } ?? false
+        if lhsWorkspaceExists != rhsWorkspaceExists {
+            return lhsWorkspaceExists
+        }
+
+        return lhs.configIndex < rhs.configIndex
+    }
+
+    private func unresolvedWorkspaceDiagnosticMessage(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil
+    ) -> String? {
+        if let bindingDiagnostic = workflowBindingDiagnosticMessage(for: agent, in: project, workflowID: workflowID) {
+            return bindingDiagnostic
+        }
+
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ].map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+
+        let localResolution = resolveLocalAgentConfigResolution(matching: candidateNames)
+        switch localResolution.status {
+        case .ambiguous:
+            let paths = Array(
+                Set(
+                    localResolution.entries.compactMap { entry in
+                        if let normalized = normalizeWorkspacePath(entry.workspacePath ?? "") {
+                            return normalized
+                        }
+                        let trimmed = entry.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        return trimmed.isEmpty ? nil : trimmed
+                    }
+                )
+            ).sorted { (lhs: String, rhs: String) in
+                lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+            }
+            if paths.isEmpty {
+                return "openclaw.json 中存在多条同名或同标识 agent 记录，但这些记录的 workspace 信息彼此冲突。"
+            }
+            return "openclaw.json 中存在多条同名或同标识 agent 记录，且 workspace 不一致：\(paths.joined(separator: "；"))。"
+        case .invalid:
+            let paths = localResolution.entries.compactMap { entry -> String? in
+                let trimmed = entry.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            if paths.isEmpty {
+                return "openclaw.json 中找到了该 agent 的记录，但 workspace 字段缺失。"
+            }
+            return "openclaw.json 中找到了该 agent 的记录，但 workspace 不存在或当前不可用：\(paths.joined(separator: "；"))。"
+        case .missing:
+            if project != nil {
+                return "当前项目上下文中没有可直接复用的节点 workspace，openclaw.json 中也没有该 agent 的唯一有效记录。"
+            }
+            return "openclaw.json 中没有该 agent 的唯一有效 workspace 记录。"
+        case .uniqueValid:
+            return nil
+        }
+    }
+
+    private func workflowBindingDiagnosticMessage(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil
+    ) -> String? {
+        guard let project else { return nil }
+
+        let bindings = workflows(in: project, matching: workflowID)
+            .flatMap { workflow in
+                workflow.nodes
+                    .filter { $0.type == .agent && $0.agentID == agent.id }
+                    .map { (workflowID: workflow.id, nodeID: $0.id) }
+            }
+
+        if workflowID != nil, bindings.isEmpty {
+            return "当前 workflow 中没有绑定这个 agent 节点，因此无法推断应使用哪个 workspace。"
+        }
+
+        if workflowID == nil, bindings.count > 1 {
+            return "该 agent 同时绑定在多个 workflow 节点上，当前执行入口未提供明确的 workflow，因此无法自动判定 workspace。"
+        }
+
+        return nil
+    }
+
     private func localAgentWorkspaceMap() -> [String: String] {
         let configURL = resolveLocalOpenClawConfigURL()
             ?? localOpenClawRootURL().appendingPathComponent("openclaw.json")
@@ -5140,19 +5972,22 @@ class OpenClawManager: ObservableObject {
             return cachedLocalWorkspaceMap
         }
 
-        guard let list = readOpenClawAgentConfigList(at: configURL) else {
+        let entries = readLocalAgentConfigEntries(at: configURL)
+        guard !entries.isEmpty else {
             cachedLocalWorkspaceMap = [:]
             cachedLocalWorkspaceConfigModificationDate = currentModificationDate
             return [:]
         }
 
         var map: [String: String] = [:]
-        for entry in list {
-            guard let id = stringValue(entry, keys: ["id", "agentID", "agentId", "name"]),
-                  let workspace = stringValue(entry, keys: ["workspace", "workspacePath", "workdir", "workPath"]) else {
+        let keys = Set(entries.flatMap { $0.candidateKeys })
+        for key in keys {
+            let resolution = resolveLocalAgentConfigResolution(matching: [key], at: configURL)
+            guard resolution.status == .uniqueValid,
+                  let workspace = resolution.selectedEntry?.workspacePath else {
                 continue
             }
-            map[normalizeAgentKey(id)] = workspace
+            map[key] = workspace
         }
         cachedLocalWorkspaceMap = map
         cachedLocalWorkspaceConfigModificationDate = currentModificationDate
@@ -5338,6 +6173,7 @@ class OpenClawManager: ObservableObject {
         let identifier: String
         let authProfilesURL: URL?
         let modelsURL: URL?
+        let sourceDescription: String
 
         var hasAuthProfiles: Bool {
             authProfilesURL != nil
@@ -5582,6 +6418,13 @@ class OpenClawManager: ObservableObject {
         return list
     }
 
+    private func readLocalAgentConfigEntries(at configURL: URL) -> [LocalAgentConfigEntry] {
+        guard let list = readOpenClawAgentConfigList(at: configURL) else {
+            return []
+        }
+        return parseLocalAgentConfigEntries(from: list)
+    }
+
     private func firstExistingChildPath(in url: URL, candidates: [String]) -> String? {
         for candidate in candidates {
             let child = url.appendingPathComponent(candidate, isDirectory: true)
@@ -5665,22 +6508,27 @@ class OpenClawManager: ObservableObject {
 
     private func ensureLocalRuntimeAgentBootstrapFiles(
         at targetAgentDirectory: URL,
-        displayIdentifier identifier: String
-    ) -> (success: Bool, message: String) {
+        displayIdentifier identifier: String,
+        using config: OpenClawConfig? = nil
+    ) -> (success: Bool, message: String, requiresUserProvidedBootstrapPath: Bool) {
         let targetAuthProfilesURL = targetAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false)
         let targetModelsURL = targetAgentDirectory.appendingPathComponent("models.json", isDirectory: false)
         let needsAuthProfiles = !fileManager.fileExists(atPath: targetAuthProfilesURL.path)
         let needsModels = !fileManager.fileExists(atPath: targetModelsURL.path)
 
         guard needsAuthProfiles || needsModels else {
-            return (true, "")
+            return (true, "", false)
         }
 
-        guard let bootstrapCandidate = preferredLocalAgentBootstrapCandidate(excluding: [identifier]) else {
+        guard let bootstrapCandidate = preferredLocalAgentBootstrapCandidate(excluding: [identifier], using: config) else {
             if needsAuthProfiles {
-                return (false, "本地 workflow agent \(identifier) 缺少 auth-profiles.json，且当前未找到可复用的本地 agent 鉴权配置。")
+                return (
+                    false,
+                    "本地 workflow agent \(identifier) 缺少 auth-profiles.json，且当前未找到可复用的本地 agent 鉴权配置。",
+                    true
+                )
             }
-            return (true, "")
+            return (true, "", false)
         }
 
         do {
@@ -5704,59 +6552,34 @@ class OpenClawManager: ObservableObject {
             }
 
             if needsAuthProfiles && !fileManager.fileExists(atPath: targetAuthProfilesURL.path) {
-                return (false, "本地 workflow agent \(identifier) 缺少 auth-profiles.json，且未能从其他本地 agent 自动补齐。")
+                return (
+                    false,
+                    "本地 workflow agent \(identifier) 缺少 auth-profiles.json，且未能从其他本地 agent 自动补齐。",
+                    true
+                )
             }
 
             guard !copiedItems.isEmpty else {
-                return (true, "")
+                return (true, "", false)
             }
 
             return (
                 true,
-                "已为本地 workflow agent \(identifier) 自动补齐 \(copiedItems.joined(separator: "、"))，来源于本地 agent \(bootstrapCandidate.identifier)。"
+                "已为本地 workflow agent \(identifier) 自动补齐 \(copiedItems.joined(separator: "、"))，来源于\(bootstrapCandidate.sourceDescription)。",
+                false
             )
         } catch {
-            return (false, "为本地 workflow agent \(identifier) 自动补齐鉴权配置失败：\(error.localizedDescription)")
+            return (false, "为本地 workflow agent \(identifier) 自动补齐鉴权配置失败：\(error.localizedDescription)", false)
         }
     }
 
-    private func preferredLocalAgentBootstrapCandidate(excluding identifiers: Set<String>) -> LocalAgentBootstrapCandidate? {
-        let agentsDirectory = localOpenClawRootURL().appendingPathComponent("agents", isDirectory: true)
-        guard let contents = try? fileManager.contentsOfDirectory(
-            at: agentsDirectory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
-        let candidates = contents.compactMap { directoryURL -> LocalAgentBootstrapCandidate? in
-            guard (try? directoryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-                return nil
-            }
-
-            let identifier = directoryURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedIdentifier = normalizeAgentKey(identifier)
-            let normalizedExcludedIdentifiers = Set(identifiers.map(normalizeAgentKey))
-            guard !identifier.isEmpty, !normalizedExcludedIdentifiers.contains(normalizedIdentifier) else {
-                return nil
-            }
-
-            let agentDirectory = directoryURL.appendingPathComponent("agent", isDirectory: true)
-            let authProfilesURL = agentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false)
-            let modelsURL = agentDirectory.appendingPathComponent("models.json", isDirectory: false)
-            let resolvedAuthProfilesURL = fileManager.fileExists(atPath: authProfilesURL.path) ? authProfilesURL : nil
-            let resolvedModelsURL = fileManager.fileExists(atPath: modelsURL.path) ? modelsURL : nil
-
-            guard resolvedAuthProfilesURL != nil || resolvedModelsURL != nil else {
-                return nil
-            }
-
-            return LocalAgentBootstrapCandidate(
-                identifier: identifier,
-                authProfilesURL: resolvedAuthProfilesURL,
-                modelsURL: resolvedModelsURL
-            )
+    private func preferredLocalAgentBootstrapCandidate(
+        excluding identifiers: Set<String>,
+        using config: OpenClawConfig? = nil
+    ) -> LocalAgentBootstrapCandidate? {
+        let normalizedExcludedIdentifiers = Set(identifiers.map(normalizeAgentKey))
+        let candidates = localAgentBootstrapCandidates(using: config).filter { candidate in
+            !normalizedExcludedIdentifiers.contains(normalizeAgentKey(candidate.identifier))
         }
 
         return candidates.sorted { lhs, rhs in
@@ -5767,6 +6590,138 @@ class OpenClawManager: ObservableObject {
             }
             return lhs.identifier.localizedCaseInsensitiveCompare(rhs.identifier) == .orderedAscending
         }.first
+    }
+
+    private func localAgentBootstrapCandidates(
+        using config: OpenClawConfig? = nil
+    ) -> [LocalAgentBootstrapCandidate] {
+        var candidates: [LocalAgentBootstrapCandidate] = []
+
+        for source in localAgentBootstrapSourceDirectories(using: config) {
+            candidates.append(contentsOf: bootstrapCandidates(in: source.directoryURL, sourceDescription: source.description))
+        }
+
+        if let directoryURL = userProvidedLocalBootstrapDirectory {
+            candidates.append(contentsOf: bootstrapCandidates(in: directoryURL, sourceDescription: "手动指定路径"))
+        }
+
+        var seen = Set<String>()
+        return candidates.filter { candidate in
+            let key = [
+                normalizeAgentKey(candidate.identifier),
+                candidate.authProfilesURL?.path ?? "",
+                candidate.modelsURL?.path ?? ""
+            ].joined(separator: "|")
+            return seen.insert(key).inserted
+        }
+    }
+
+    private func localAgentBootstrapSourceDirectories(
+        using config: OpenClawConfig? = nil
+    ) -> [(directoryURL: URL, description: String)] {
+        let resolvedConfig = config ?? self.config
+        return [
+            (
+                localOpenClawRootURL(using: resolvedConfig).appendingPathComponent("agents", isDirectory: true),
+                "当前本地 runtime"
+            )
+        ]
+    }
+
+    private func bootstrapCandidates(
+        in directoryURL: URL,
+        sourceDescription: String
+    ) -> [LocalAgentBootstrapCandidate] {
+        guard fileManager.fileExists(atPath: directoryURL.path) else { return [] }
+
+        if let directCandidate = directBootstrapCandidate(at: directoryURL, sourceDescription: sourceDescription) {
+            return [directCandidate]
+        }
+
+        let nestedAgentsURL = directoryURL.appendingPathComponent("agents", isDirectory: true)
+        if nestedAgentsURL.path != directoryURL.path,
+           fileManager.fileExists(atPath: nestedAgentsURL.path) {
+            let nestedCandidates = bootstrapCandidates(in: nestedAgentsURL, sourceDescription: sourceDescription)
+            if !nestedCandidates.isEmpty {
+                return nestedCandidates
+            }
+        }
+
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return contents.compactMap { candidateRootURL in
+            guard (try? candidateRootURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                return nil
+            }
+
+            return directBootstrapCandidate(at: candidateRootURL, sourceDescription: sourceDescription)
+        }
+    }
+
+    private func directBootstrapCandidate(
+        at directoryURL: URL,
+        sourceDescription: String
+    ) -> LocalAgentBootstrapCandidate? {
+        let directAuthURL = directoryURL.appendingPathComponent("auth-profiles.json", isDirectory: false)
+        let directModelsURL = directoryURL.appendingPathComponent("models.json", isDirectory: false)
+        let nestedAgentDirectory = directoryURL.appendingPathComponent("agent", isDirectory: true)
+        let nestedAuthURL = nestedAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false)
+        let nestedModelsURL = nestedAgentDirectory.appendingPathComponent("models.json", isDirectory: false)
+
+        let resolvedAuthURL: URL?
+        let resolvedModelsURL: URL?
+        if fileManager.fileExists(atPath: directAuthURL.path) || fileManager.fileExists(atPath: directModelsURL.path) {
+            resolvedAuthURL = fileManager.fileExists(atPath: directAuthURL.path) ? directAuthURL : nil
+            resolvedModelsURL = fileManager.fileExists(atPath: directModelsURL.path) ? directModelsURL : nil
+        } else if fileManager.fileExists(atPath: nestedAuthURL.path) || fileManager.fileExists(atPath: nestedModelsURL.path) {
+            resolvedAuthURL = fileManager.fileExists(atPath: nestedAuthURL.path) ? nestedAuthURL : nil
+            resolvedModelsURL = fileManager.fileExists(atPath: nestedModelsURL.path) ? nestedModelsURL : nil
+        } else {
+            return nil
+        }
+
+        let identifierSourceURL = (directoryURL.lastPathComponent == "agent")
+            ? directoryURL.deletingLastPathComponent()
+            : directoryURL
+        let identifier = identifierSourceURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !identifier.isEmpty else { return nil }
+
+        return LocalAgentBootstrapCandidate(
+            identifier: identifier,
+            authProfilesURL: resolvedAuthURL,
+            modelsURL: resolvedModelsURL,
+            sourceDescription: "\(sourceDescription) \(directoryURL.path)"
+        )
+    }
+
+    private func normalizedUserProvidedLocalBootstrapDirectory(_ directoryURL: URL) -> URL? {
+        if directBootstrapCandidate(at: directoryURL, sourceDescription: "手动指定路径") != nil {
+            return directoryURL
+        }
+
+        let agentsDirectory = directoryURL.appendingPathComponent("agents", isDirectory: true)
+        if !bootstrapCandidates(in: agentsDirectory, sourceDescription: "手动指定路径").isEmpty {
+            return agentsDirectory
+        }
+
+        if !bootstrapCandidates(in: directoryURL, sourceDescription: "手动指定路径").isEmpty {
+            return directoryURL
+        }
+
+        return nil
+    }
+
+    private func normalizedUserProvidedLocalWorkspaceDirectory(_ directoryURL: URL) -> URL? {
+        let standardizedURL = directoryURL.standardizedFileURL
+        let isDirectory = (try? standardizedURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        guard isDirectory else { return nil }
+        return standardizedURL
     }
 
     private func directoryHasContent(_ url: URL) -> Bool {
@@ -5784,6 +6739,51 @@ class OpenClawManager: ObservableObject {
         for item in contents {
             try? fileManager.removeItem(at: item)
         }
+    }
+
+    private func mergeDirectoryContents(of destination: URL, withContentsOf source: URL) throws -> Int {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: source.path) else { return 0 }
+
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        let contents = try fileManager.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var copiedItemCount = 0
+
+        for item in contents {
+            let target = destination.appendingPathComponent(item.lastPathComponent, isDirectory: false)
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+
+            if isDirectory {
+                var targetIsDirectory = false
+                if fileManager.fileExists(atPath: target.path) {
+                    targetIsDirectory = (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                    if !targetIsDirectory {
+                        try fileManager.removeItem(at: target)
+                    }
+                }
+
+                if !targetIsDirectory {
+                    try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+                }
+
+                copiedItemCount += try mergeDirectoryContents(of: target, withContentsOf: item)
+                copiedItemCount += 1
+                continue
+            }
+
+            if fileManager.fileExists(atPath: target.path) {
+                try fileManager.removeItem(at: target)
+            }
+            try fileManager.copyItem(at: item, to: target)
+            copiedItemCount += 1
+        }
+
+        return copiedItemCount
     }
 
     private func replaceDirectoryContents(of destination: URL, withContentsOf source: URL) throws -> Int {

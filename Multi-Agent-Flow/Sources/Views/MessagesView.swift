@@ -361,91 +361,175 @@ struct WorkbenchConversationView: View {
     }
 
     private var content: some View {
-        VStack(spacing: 0) {
-            header
+        GeometryReader { geometry in
+            let availableWidth = max(geometry.size.width, 0)
 
-            Divider()
+            VStack(spacing: 0) {
+                header(availableWidth: availableWidth)
 
-            if !hasOpenClawConfiguration {
-                openClawBanner
                 Divider()
+
+                if !hasOpenClawConfiguration {
+                    openClawBanner
+                    Divider()
+                }
+
+                runtimeConfigurationPanel
+
+                Divider()
+
+                workbenchAndDashboardPane(availableWidth: availableWidth)
             }
-
-            runtimeConfigurationPanel
-
-            Divider()
-
-            workbenchAndDashboardPane
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(LocalizedString.text("workbench_title"))
-                        .font(.title2)
-                    Text(LocalizedString.text("workbench_subtitle"))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+    private func header(availableWidth: CGFloat) -> some View {
+        let usesCompactHeader = availableWidth < 1_040
 
-                Spacer()
+        return VStack(alignment: .leading, spacing: 12) {
+            if usesCompactHeader {
+                compactHeaderContent
+            } else {
+                regularHeaderContent
+            }
 
-                Picker(LocalizedString.text("workflow_picker_label"), selection: $selectedWorkflowID) {
-                    ForEach(workflows) { workflow in
-                        Text(workflow.name).tag(workflow.id as UUID?)
-                    }
-                }
+            if let workflow = selectedWorkflow {
+                workflowSummaryBadges(for: workflow, compact: usesCompactHeader)
+            }
+        }
+        .padding()
+    }
+
+    private var regularHeaderContent: some View {
+        HStack {
+            workbenchTitleBlock
+
+            Spacer()
+
+            workflowPicker
                 .frame(width: 220)
 
-                Picker(LocalizedString.text("layout_picker_label"), selection: $dashboardLayout) {
-                    ForEach(WorkbenchDashboardLayout.allCases) { layout in
-                        Text(layout.title).tag(layout)
-                    }
-                }
-                .pickerStyle(.segmented)
+            layoutPicker
                 .frame(width: 170)
 
-                HStack(spacing: 4) {
-                    Button(action: shrinkDashboard) {
-                        Image(systemName: "minus.magnifyingglass")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(LocalizedString.text("dashboard_with_workbench"))
-                    .disabled(dashboardLayout != .dashboardOnly)
+            dashboardLayoutButtons
 
-                    Button(action: expandDashboard) {
-                        Image(systemName: "plus.magnifyingglass")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(LocalizedString.text("dashboard_only"))
-                    .disabled(dashboardLayout == .dashboardOnly)
-                }
+            runtimeStatusBadges
 
-                statusBadge(title: openClawRuntimeBadgeTitle, color: openClawRuntimeBadgeColor)
-                statusBadge(
-                    title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
-                    color: appState.openClawService.isExecuting ? .orange : .secondary
-                )
+            Button(LocalizedString.saveProject) {
+                appState.saveProject()
+            }
+            .buttonStyle(.bordered)
+        }
+    }
 
+    private var compactHeaderContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                workbenchTitleBlock
+                Spacer(minLength: 12)
                 Button(LocalizedString.saveProject) {
                     appState.saveProject()
                 }
                 .buttonStyle(.bordered)
             }
 
-            if let workflow = selectedWorkflow {
-                HStack(spacing: 8) {
-                    statusBadge(title: LocalizedString.format("execution_nodes_count", workflow.nodes.filter { $0.type == .agent }.count), color: .blue)
-                    statusBadge(title: LocalizedString.format("communication_links_count", workflow.edges.count), color: .purple)
-                    statusBadge(title: LocalizedString.format("file_boundaries_count", workflow.boundaries.count), color: .orange)
-                }
+            HStack(spacing: 10) {
+                workflowPicker
+                    .frame(maxWidth: .infinity)
+
+                layoutPicker
+                    .frame(width: 170)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                dashboardLayoutButtons
+                runtimeStatusBadges
             }
         }
-        .padding()
+    }
+
+    private var workbenchTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(LocalizedString.text("workbench_title"))
+                .font(.title2)
+            Text(LocalizedString.text("workbench_subtitle"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var workflowPicker: some View {
+        Picker(LocalizedString.text("workflow_picker_label"), selection: $selectedWorkflowID) {
+            ForEach(workflows) { workflow in
+                Text(workflow.name).tag(workflow.id as UUID?)
+            }
+        }
+    }
+
+    private var layoutPicker: some View {
+        Picker(LocalizedString.text("layout_picker_label"), selection: $dashboardLayout) {
+            ForEach(WorkbenchDashboardLayout.allCases) { layout in
+                Text(layout.title).tag(layout)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private var dashboardLayoutButtons: some View {
+        HStack(spacing: 4) {
+            Button(action: shrinkDashboard) {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(LocalizedString.text("dashboard_with_workbench"))
+            .disabled(dashboardLayout != .dashboardOnly)
+
+            Button(action: expandDashboard) {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(LocalizedString.text("dashboard_only"))
+            .disabled(dashboardLayout == .dashboardOnly)
+        }
+    }
+
+    private var runtimeStatusBadges: some View {
+        HStack(spacing: 8) {
+            statusBadge(title: openClawRuntimeBadgeTitle, color: openClawRuntimeBadgeColor)
+            statusBadge(
+                title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
+                color: appState.openClawService.isExecuting ? .orange : .secondary
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func workflowSummaryBadges(for workflow: Workflow, compact: Bool) -> some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    statusBadge(
+                        title: LocalizedString.format("execution_nodes_count", workflow.nodes.filter { $0.type == .agent }.count),
+                        color: .blue
+                    )
+                    statusBadge(title: LocalizedString.format("communication_links_count", workflow.edges.count), color: .purple)
+                }
+                statusBadge(title: LocalizedString.format("file_boundaries_count", workflow.boundaries.count), color: .orange)
+            }
+        } else {
+            HStack(spacing: 8) {
+                statusBadge(
+                    title: LocalizedString.format("execution_nodes_count", workflow.nodes.filter { $0.type == .agent }.count),
+                    color: .blue
+                )
+                statusBadge(title: LocalizedString.format("communication_links_count", workflow.edges.count), color: .purple)
+                statusBadge(title: LocalizedString.format("file_boundaries_count", workflow.boundaries.count), color: .orange)
+            }
+        }
     }
 
     private var openClawBanner: some View {
@@ -767,21 +851,21 @@ struct WorkbenchConversationView: View {
     }
 
     @ViewBuilder
-    private var workbenchAndDashboardPane: some View {
-        switch dashboardLayout {
+    private func workbenchAndDashboardPane(availableWidth: CGFloat) -> some View {
+        switch effectiveDashboardLayout(for: availableWidth) {
         case .sideBySide:
             HSplitView {
-                dialogueAndReceiptsPane
-                    .frame(minWidth: 500, idealWidth: 560)
+                dialogueAndReceiptsPane(availableWidth: max(availableWidth * 0.44, 420))
+                    .frame(minWidth: 420, idealWidth: 520, maxWidth: 640)
                 OpsCenterDashboardView(
                     displayMode: .embedded,
                     preferredWorkflowID: selectedWorkflow?.id
                 )
-                    .frame(minWidth: 360, idealWidth: 780, maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: 320, idealWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
             }
         case .topBottom:
             VSplitView {
-                dialogueAndReceiptsPane
+                dialogueAndReceiptsPane(availableWidth: availableWidth)
                     .frame(minHeight: 280, idealHeight: 360)
                 OpsCenterDashboardView(
                     displayMode: .embedded,
@@ -799,18 +883,43 @@ struct WorkbenchConversationView: View {
         }
     }
 
-    private var dialogueAndReceiptsPane: some View {
-        HStack(spacing: 0) {
-            conversationPane
-                .frame(minWidth: 300, idealWidth: 340, maxWidth: .infinity)
+    private func effectiveDashboardLayout(for availableWidth: CGFloat) -> WorkbenchDashboardLayout {
+        guard dashboardLayout != .dashboardOnly else { return .dashboardOnly }
+        if dashboardLayout == .topBottom {
+            return .topBottom
+        }
+        return availableWidth < 1_280 ? .topBottom : .sideBySide
+    }
 
-            Divider()
+    @ViewBuilder
+    private func dialogueAndReceiptsPane(availableWidth: CGFloat) -> some View {
+        Group {
+            if availableWidth < 760 {
+                VSplitView {
+                    conversationPane
+                        .frame(minHeight: 260, idealHeight: 360)
 
-            taskPane
-                .frame(minWidth: 220, idealWidth: 280, maxWidth: 360)
-                .background(Color(.controlBackgroundColor))
+                    taskPanePanel
+                        .frame(minHeight: 180, idealHeight: 230, maxHeight: 320)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    conversationPane
+                        .frame(minWidth: 240, idealWidth: 320, maxWidth: .infinity)
+
+                    Divider()
+
+                    taskPanePanel
+                        .frame(minWidth: 180, idealWidth: 220, maxWidth: 320)
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var taskPanePanel: some View {
+        taskPane
+            .background(Color(.controlBackgroundColor))
     }
 
     private var conversationPane: some View {
@@ -1266,7 +1375,10 @@ struct WorkbenchConversationView: View {
 
     private func syncCurrentSessionForRuntimeConfiguration() {
         performRuntimePreparationAction(.syncSession) { completion in
-            appState.syncOpenClawActiveSession(completion: completion)
+            appState.syncOpenClawActiveSession(
+                workflowID: selectedWorkflowID ?? workflows.first?.id,
+                completion: completion
+            )
         }
     }
 

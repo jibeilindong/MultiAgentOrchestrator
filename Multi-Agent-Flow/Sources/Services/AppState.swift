@@ -949,6 +949,10 @@ class AppState: ObservableObject {
     }
 
     private func bindProjectState() {
+        openClawService.currentProjectProvider = { [weak self] in
+            self?.currentProject
+        }
+
         localizationManager.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -1831,7 +1835,10 @@ class AppState: ObservableObject {
         }
     }
 
-    func syncOpenClawActiveSession(completion: ((Bool, String) -> Void)? = nil) {
+    func syncOpenClawActiveSession(
+        workflowID: UUID? = nil,
+        completion: ((Bool, String) -> Void)? = nil
+    ) {
         guard !isSyncingOpenClawSession else {
             completion?(false, "当前 OpenClaw 会话正在同步中，请稍候。")
             return
@@ -1856,6 +1863,10 @@ class AppState: ObservableObject {
             return
         }
 
+        let effectiveWorkflowID = workflowID.flatMap { candidateID in
+            project.workflows.contains(where: { $0.id == candidateID }) ? candidateID : nil
+        } ?? project.workflows.first?.id
+
         if !openClawManager.hasAttachedProjectSession || openClawManager.attachedProjectID != project.id {
             attachCurrentProjectToOpenClaw { [weak self] success, message in
                 guard let self else { return }
@@ -1866,6 +1877,7 @@ class AppState: ObservableObject {
 
                 self.performOpenClawSessionSync(
                     for: project,
+                    workflowID: effectiveWorkflowID,
                     attachmentMessage: message,
                     completion: completion
                 )
@@ -1873,7 +1885,11 @@ class AppState: ObservableObject {
             return
         }
 
-        performOpenClawSessionSync(for: project, completion: completion)
+        performOpenClawSessionSync(
+            for: project,
+            workflowID: effectiveWorkflowID,
+            completion: completion
+        )
     }
 
     func disconnectOpenClaw(completion: ((Bool, String) -> Void)? = nil) {
@@ -1887,6 +1903,7 @@ class AppState: ObservableObject {
 
     private func performOpenClawSessionSync(
         for project: MAProject,
+        workflowID: UUID? = nil,
         attachmentMessage: String? = nil,
         completion: ((Bool, String) -> Void)? = nil
     ) {
@@ -1895,9 +1912,37 @@ class AppState: ObservableObject {
         let requestedMirrorRevision = project.runtimeState.appliedToMirrorConfigurationRevision
         let syncStartedAt = Date()
 
-        openClawManager.syncProjectAgentsToActiveSession(project) { [weak self] syncResult in
+        openClawManager.syncProjectAgentsToActiveSession(project, workflowID: workflowID) { [weak self] syncResult in
             guard let self else { return }
             DispatchQueue.main.async {
+                if !syncResult.workspacePathRequirements.isEmpty {
+                    self.promptForOpenClawWorkspaceDirectory(
+                        for: project,
+                        workflowID: workflowID,
+                        syncResult: syncResult,
+                        requestedMirrorRevision: requestedMirrorRevision,
+                        syncStartedAt: syncStartedAt,
+                        attachmentMessage: attachmentMessage,
+                        completion: completion,
+                        requirements: syncResult.workspacePathRequirements
+                    )
+                    return
+                }
+
+                if !syncResult.bootstrapPathRequiredAgentNames.isEmpty {
+                    self.promptForOpenClawBootstrapDirectory(
+                        for: project,
+                        workflowID: workflowID,
+                        syncResult: syncResult,
+                        requestedMirrorRevision: requestedMirrorRevision,
+                        syncStartedAt: syncStartedAt,
+                        attachmentMessage: attachmentMessage,
+                        completion: completion,
+                        agentNames: syncResult.bootstrapPathRequiredAgentNames
+                    )
+                    return
+                }
+
                 self.syncCurrentProjectFromManagers()
                 let baseSteps = self.openClawRuntimeSyncSteps(
                     from: syncResult,
@@ -1993,6 +2038,229 @@ class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    private func promptForOpenClawWorkspaceDirectory(
+        for project: MAProject,
+        workflowID: UUID?,
+        syncResult: OpenClawManager.ActiveSessionProjectSyncResult,
+        requestedMirrorRevision: Int,
+        syncStartedAt: Date,
+        attachmentMessage: String?,
+        completion: ((Bool, String) -> Void)?,
+        requirements: [OpenClawManager.LocalRuntimeWorkspaceRequirement]
+    ) {
+        guard let currentRequirement = requirements.first else {
+            let base = "未找到需要手动补充 workspace 的 agent。"
+            self.failOpenClawSessionSync(
+                for: project,
+                syncResult: syncResult,
+                requestedMirrorRevision: requestedMirrorRevision,
+                syncStartedAt: syncStartedAt,
+                attachmentMessage: attachmentMessage,
+                completion: completion,
+                failureMessage: base
+            )
+            return
+        }
+
+        let remainingRequirements = Array(requirements.dropFirst())
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        let diagnosticSuffix = currentRequirement.diagnosticMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        panel.message = [
+            "未找到 agent \(currentRequirement.agentName) 的 workspace 路径。请选择该节点对应的工作目录。",
+            diagnosticSuffix
+        ]
+        .compactMap { $0 }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
+        panel.prompt = "使用该目录"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else {
+                let base = "未选择 \(currentRequirement.agentName) 的 workspace 路径，已取消本次自动注册。"
+                self.failOpenClawSessionSync(
+                    for: project,
+                    syncResult: syncResult,
+                    requestedMirrorRevision: requestedMirrorRevision,
+                    syncStartedAt: syncStartedAt,
+                    attachmentMessage: attachmentMessage,
+                    completion: completion,
+                    failureMessage: base
+                )
+                return
+            }
+
+            let registration = self.openClawManager.registerUserProvidedLocalWorkspaceDirectory(
+                url,
+                for: currentRequirement
+            )
+            guard registration.success else {
+                self.failOpenClawSessionSync(
+                    for: project,
+                    syncResult: syncResult,
+                    requestedMirrorRevision: requestedMirrorRevision,
+                    syncStartedAt: syncStartedAt,
+                    attachmentMessage: attachmentMessage,
+                    completion: completion,
+                    failureMessage: registration.message
+                )
+                return
+            }
+
+            self.syncCurrentProjectFromManagers()
+            self.persistCurrentProjectSilently()
+
+            if !remainingRequirements.isEmpty {
+                self.promptForOpenClawWorkspaceDirectory(
+                    for: project,
+                    workflowID: workflowID,
+                    syncResult: syncResult,
+                    requestedMirrorRevision: requestedMirrorRevision,
+                    syncStartedAt: syncStartedAt,
+                    attachmentMessage: attachmentMessage,
+                    completion: completion,
+                    requirements: remainingRequirements
+                )
+                return
+            }
+
+            self.performOpenClawSessionSync(
+                for: project,
+                workflowID: workflowID,
+                attachmentMessage: attachmentMessage,
+                completion: completion
+            )
+        }
+    }
+
+    private func promptForOpenClawBootstrapDirectory(
+        for project: MAProject,
+        workflowID: UUID?,
+        syncResult: OpenClawManager.ActiveSessionProjectSyncResult,
+        requestedMirrorRevision: Int,
+        syncStartedAt: Date,
+        attachmentMessage: String?,
+        completion: ((Bool, String) -> Void)?,
+        agentNames: [String]
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "未找到这些 agent 的鉴权 bootstrap 路径：\(agentNames.joined(separator: "、"))。请选择包含 auth-profiles.json / models.json 的 agent 目录，或其上级 agents 目录。"
+        panel.prompt = "使用该路径"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else {
+                let base = "未选择 OpenClaw bootstrap 路径，已取消本次自动注册。"
+                self.failOpenClawSessionSync(
+                    for: project,
+                    syncResult: syncResult,
+                    requestedMirrorRevision: requestedMirrorRevision,
+                    syncStartedAt: syncStartedAt,
+                    attachmentMessage: attachmentMessage,
+                    completion: completion,
+                    failureMessage: base
+                )
+                return
+            }
+
+            let registration = self.openClawManager.registerUserProvidedLocalBootstrapDirectory(url)
+            guard registration.success else {
+                self.failOpenClawSessionSync(
+                    for: project,
+                    syncResult: syncResult,
+                    requestedMirrorRevision: requestedMirrorRevision,
+                    syncStartedAt: syncStartedAt,
+                    attachmentMessage: attachmentMessage,
+                    completion: completion,
+                    failureMessage: registration.message
+                )
+                return
+            }
+
+            self.syncCurrentProjectFromManagers()
+            self.persistCurrentProjectSilently()
+
+            self.performOpenClawSessionSync(
+                for: project,
+                workflowID: workflowID,
+                attachmentMessage: attachmentMessage,
+                completion: completion
+            )
+        }
+    }
+
+    private func failOpenClawSessionSync(
+        for project: MAProject,
+        syncResult: OpenClawManager.ActiveSessionProjectSyncResult,
+        requestedMirrorRevision: Int,
+        syncStartedAt: Date,
+        attachmentMessage: String?,
+        completion: ((Bool, String) -> Void)?,
+        failureMessage: String
+    ) {
+        syncCurrentProjectFromManagers()
+        let completedAt = Date()
+        let baseWarnings = openClawRuntimeSyncWarnings(from: syncResult)
+        let runtimeWriteDiagnostic = [failureMessage, syncResult.errorMessage ?? syncResult.message]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .reduce(into: [String]()) { partial, item in
+                guard !partial.contains(item) else { return }
+                partial.append(item)
+            }
+            .joined(separator: " ")
+        let baseSteps = openClawRuntimeSyncSteps(
+            from: syncResult,
+            startedAt: syncStartedAt,
+            completedAt: completedAt
+        )
+        let adjustedSteps = baseSteps.map { step in
+            guard step.step == .writeRuntimeSession else { return step }
+            return OpenClawRuntimeSyncStepReceipt(
+                step: step.step,
+                status: .failed,
+                message: runtimeWriteDiagnostic.isEmpty ? step.message : runtimeWriteDiagnostic,
+                startedAt: step.startedAt,
+                completedAt: step.completedAt
+            )
+        }
+        let appliedRuntimeRevision = currentProject?.runtimeState.syncedToRuntimeConfigurationRevision ?? 0
+        let receipt = OpenClawRuntimeSyncReceipt(
+            projectID: project.id,
+            attachmentProjectID: openClawManager.attachedProjectID,
+            requestedMirrorRevision: requestedMirrorRevision,
+            appliedRuntimeRevision: appliedRuntimeRevision,
+            startedAt: syncStartedAt,
+            completedAt: completedAt,
+            status: .failed,
+            steps: adjustedSteps + [
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .syncCommunicationAllowList,
+                    status: .skipped,
+                    message: "运行时写回未完成，已跳过通信 allow list 同步。",
+                    startedAt: syncStartedAt,
+                    completedAt: completedAt
+                )
+            ],
+            warnings: baseWarnings,
+            errorMessage: runtimeWriteDiagnostic.isEmpty ? failureMessage : runtimeWriteDiagnostic
+        )
+
+        recordOpenClawRuntimeSyncReceipt(receipt, syncedRuntimeRevision: nil)
+        isSyncingOpenClawSession = false
+        persistCurrentProjectSilently()
+
+        let combinedMessage = [attachmentMessage, runtimeWriteDiagnostic]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        completion?(false, combinedMessage.isEmpty ? failureMessage : combinedMessage)
     }
 
     @discardableResult
@@ -3963,9 +4231,12 @@ class AppState: ObservableObject {
     private func openClawRuntimeSyncWarnings(
         from result: OpenClawManager.ActiveSessionProjectSyncResult
     ) -> [String] {
-        guard !result.unresolvedAgentNames.isEmpty else { return [] }
-        let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
-        return ["以下 agent 的 SOUL 路径未能解析，运行时未接受本次完整写回：\(names)"]
+        var warnings = result.runtimeWarnings
+        if !result.unresolvedAgentNames.isEmpty {
+            let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
+            warnings.append("以下 agent 的 SOUL 路径未能解析，运行时未接受本次完整写回：\(names)")
+        }
+        return warnings
     }
 
     private func openClawRuntimeSyncReceiptStatus(
@@ -5172,16 +5443,22 @@ class AppState: ObservableObject {
 
     func deleteAgent(_ agentID: UUID) {
         guard var project = currentProject else { return }
+        var removedNodeIDs = Set<UUID>()
 
         project.agents.removeAll { $0.id == agentID }
         project.permissions.removeAll { $0.fromAgentID == agentID || $0.toAgentID == agentID }
 
         for index in project.workflows.indices {
+            removedNodeIDs.formUnion(project.workflows[index].nodes.filter { $0.agentID == agentID }.map(\.id))
             project.workflows[index].nodes.removeAll { $0.agentID == agentID }
             let remainingNodeIDs = Set(project.workflows[index].nodes.map(\.id))
             project.workflows[index].edges.removeAll { edge in
                 !remainingNodeIDs.contains(edge.fromNodeID) || !remainingNodeIDs.contains(edge.toNodeID)
             }
+        }
+
+        if let selectedNodeID, removedNodeIDs.contains(selectedNodeID) {
+            self.selectedNodeID = nil
         }
 
         markWorkflowConfigurationPending(in: &project)

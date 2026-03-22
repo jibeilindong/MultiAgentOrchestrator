@@ -1,9 +1,16 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @Binding var selectedTab: Int
     @Binding var zoomScale: CGFloat
+    @State private var sidebarWidth: CGFloat = SettingsManager.shared.sidebarWidth
+    @State private var realtimePanelWidth: CGFloat = SettingsManager.shared.realtimePanelWidth
+    @State private var sidebarDragOriginWidth: CGFloat?
+    @State private var realtimePanelDragOriginWidth: CGFloat?
+    @State private var hoveredPanelHandle: PanelHandleKind?
+    @StateObject private var workflowEditorSessionState = WorkflowEditorSessionState()
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
     @State private var isPresentingOpenClawImportSheet = false
@@ -55,90 +62,120 @@ struct ContentView: View {
             return .secondary
         }
     }
+
+    private let sidebarWidthRange: ClosedRange<CGFloat> = 180...320
+    private let realtimePanelWidthRange: ClosedRange<CGFloat> = 220...360
+    private let minimumCenterWidth: CGFloat = 320
+    private let defaultSidebarWidth: CGFloat = 250
+    private let defaultRealtimePanelWidth: CGFloat = 280
     
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                // 左侧：导航栏
-                SidebarView(selectedTab: $selectedTab)
-                    .frame(width: 280)
+        GeometryReader { geometry in
+            let layout = shellLayout(
+                for: geometry.size.width,
+                preferredSidebarWidth: sidebarWidth,
+                preferredRealtimePanelWidth: realtimePanelWidth
+            )
 
-                Divider()
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    // 左侧：导航栏
+                    SidebarView(
+                        selectedTab: $selectedTab,
+                        sessionState: workflowEditorSessionState
+                    )
+                        .frame(width: layout.sidebarWidth)
 
-                // 中间：主内容区
-                VStack(spacing: 0) {
-                    HStack(spacing: 12) {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                ForEach(appState.toolbarItemsInDisplayOrder) { item in
-                                    toolbarContent(for: item)
+                    panelResizeHandle(for: .sidebar, totalWidth: geometry.size.width)
+                        .gesture(sidebarResizeGesture(totalWidth: geometry.size.width))
+
+                    // 中间：主内容区
+                    VStack(spacing: 0) {
+                        HStack(spacing: 12) {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(appState.toolbarItemsInDisplayOrder) { item in
+                                        toolbarContent(for: item)
+                                    }
+                                }
+                                .padding(.vertical, 1)
+                            }
+                            .scrollBounceBehavior(.basedOnSize)
+
+                            Spacer(minLength: 12)
+
+                            if selectedTab == 2 || selectedTab == 3 {
+                                HStack(spacing: 8) {
+                                    Label(
+                                        selectedTab == 2
+                                            ? LocalizedString.text("dashboard_via_sidebar")
+                                            : LocalizedString.text("template_library_via_sidebar"),
+                                        systemImage: selectedTab == 2 ? "gauge.with.dots.needle.33percent" : "shippingbox"
+                                    )
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Button(LocalizedString.text("switch_to_workbench")) {
+                                        selectedTab = 1
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            } else {
+                                Picker("", selection: toolbarTabSelection) {
+                                    Label(LocalizedString.text("editor_tab"), systemImage: "square.grid.2x2").tag(0)
+                                    Label(LocalizedString.text("workbench_tab"), systemImage: "message.badge.waveform").tag(1)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 230)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.8))
+
+                        Divider()
+
+                        // 主内容
+                        Group {
+                            if appState.currentProject == nil && selectedTab != 3 {
+                                ProjectOnboardingView(selectedTab: $selectedTab)
+                                    .environmentObject(appState)
+                            } else {
+                                switch selectedTab {
+                                case 0:
+                                    WorkflowEditorView(
+                                        zoomScale: $zoomScale,
+                                        sessionState: workflowEditorSessionState
+                                    )
+                                case 1:
+                                    WorkbenchConversationView(messageManager: appState.messageManager)
+                                case 2:
+                                    OpsCenterDashboardView(displayMode: .fullScreen)
+                                case 3:
+                                    TemplateLibraryManagerSheet(selectedTemplateID: $selectedTemplateLibraryID, showsCloseButton: false)
+                                default:
+                                    WorkflowEditorView(
+                                        zoomScale: $zoomScale,
+                                        sessionState: workflowEditorSessionState
+                                    )
                                 }
                             }
-                            .padding(.vertical, 1)
                         }
-                        .scrollBounceBehavior(.basedOnSize)
-
-                        Spacer(minLength: 12)
-
-                        if selectedTab == 2 || selectedTab == 3 {
-                            HStack(spacing: 8) {
-                                Label(
-                                    selectedTab == 2
-                                        ? LocalizedString.text("dashboard_via_sidebar")
-                                        : LocalizedString.text("template_library_via_sidebar"),
-                                    systemImage: selectedTab == 2 ? "gauge.with.dots.needle.33percent" : "shippingbox"
-                                )
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Button(LocalizedString.text("switch_to_workbench")) {
-                                    selectedTab = 1
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                        } else {
-                            Picker("", selection: toolbarTabSelection) {
-                                Label(LocalizedString.text("editor_tab"), systemImage: "square.grid.2x2").tag(0)
-                                Label(LocalizedString.text("workbench_tab"), systemImage: "message.badge.waveform").tag(1)
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 230)
-                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.8))
 
-                    Divider()
+                    panelResizeHandle(for: .realtimePanel, totalWidth: geometry.size.width)
+                        .gesture(realtimePanelResizeGesture(totalWidth: geometry.size.width))
 
-                    // 主内容
-                    Group {
-                        if appState.currentProject == nil && selectedTab != 3 {
-                            ProjectOnboardingView(selectedTab: $selectedTab)
-                                .environmentObject(appState)
-                        } else {
-                            switch selectedTab {
-                            case 0: WorkflowEditorView(zoomScale: $zoomScale)
-                            case 1: WorkbenchConversationView(messageManager: appState.messageManager)
-                            case 2: OpsCenterDashboardView(displayMode: .fullScreen)
-                            case 3: TemplateLibraryManagerSheet(selectedTemplateID: $selectedTemplateLibraryID, showsCloseButton: false)
-                            default: WorkflowEditorView(zoomScale: $zoomScale)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // 右侧：实时信息面板
+                    RealtimeInfoPanel()
+                        .frame(width: layout.realtimePanelWidth)
                 }
 
                 Divider()
 
-                // 右侧：实时信息面板
-                RealtimeInfoPanel()
-                    .frame(width: 320)
+                bottomStatusBar
             }
-
-            Divider()
-
-            bottomStatusBar
         }
         .overlay(alignment: .bottom) {
             if isConnectingOpenClaw {
@@ -364,6 +401,167 @@ struct ContentView: View {
         )
     }
 
+    private func shellLayout(
+        for totalWidth: CGFloat,
+        preferredSidebarWidth: CGFloat,
+        preferredRealtimePanelWidth: CGFloat
+    ) -> ContentShellLayout {
+        let clampedWidth = max(totalWidth, 720)
+        let sidebarWidth = clampSidebarWidth(preferredSidebarWidth, totalWidth: clampedWidth)
+        let realtimePanelWidth = clampRealtimePanelWidth(
+            preferredRealtimePanelWidth,
+            totalWidth: clampedWidth,
+            sidebarWidth: sidebarWidth
+        )
+        return ContentShellLayout(
+            sidebarWidth: sidebarWidth.rounded(),
+            realtimePanelWidth: realtimePanelWidth.rounded()
+        )
+    }
+
+    private func panelResizeHandle(for kind: PanelHandleKind, totalWidth: CGFloat) -> some View {
+        let isHighlighted = hoveredPanelHandle == kind || isHandleDragging(kind)
+
+        return ZStack {
+            Rectangle()
+                .fill(isHighlighted ? Color.accentColor.opacity(0.08) : Color.clear)
+
+            Divider()
+                .opacity(isHighlighted ? 0.35 : 1)
+
+            Capsule()
+                .fill(isHighlighted ? Color.accentColor.opacity(0.88) : Color.secondary.opacity(0.28))
+                .frame(width: isHighlighted ? 4 : 3, height: isHighlighted ? 36 : 28)
+        }
+        .frame(width: 12)
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            if isHovering {
+                hoveredPanelHandle = kind
+            } else if hoveredPanelHandle == kind {
+                hoveredPanelHandle = nil
+            }
+            refreshPanelHandleCursor()
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                resetPanelWidth(kind, totalWidth: totalWidth)
+            }
+        )
+    }
+
+    private func sidebarResizeGesture(totalWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let originWidth = sidebarDragOriginWidth ?? sidebarWidth
+                if sidebarDragOriginWidth == nil {
+                    sidebarDragOriginWidth = originWidth
+                }
+                sidebarWidth = clampSidebarWidth(originWidth + value.translation.width, totalWidth: totalWidth)
+                refreshPanelHandleCursor()
+            }
+            .onEnded { value in
+                let originWidth = sidebarDragOriginWidth ?? sidebarWidth
+                let resolvedWidth = clampSidebarWidth(originWidth + value.translation.width, totalWidth: totalWidth)
+                sidebarWidth = resolvedWidth
+                sidebarDragOriginWidth = nil
+                SettingsManager.shared.sidebarWidth = resolvedWidth
+                refreshPanelHandleCursor()
+            }
+    }
+
+    private func realtimePanelResizeGesture(totalWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let originWidth = realtimePanelDragOriginWidth ?? realtimePanelWidth
+                if realtimePanelDragOriginWidth == nil {
+                    realtimePanelDragOriginWidth = originWidth
+                }
+                realtimePanelWidth = clampRealtimePanelWidth(
+                    originWidth - value.translation.width,
+                    totalWidth: totalWidth,
+                    sidebarWidth: sidebarWidth
+                )
+                refreshPanelHandleCursor()
+            }
+            .onEnded { value in
+                let originWidth = realtimePanelDragOriginWidth ?? realtimePanelWidth
+                let resolvedWidth = clampRealtimePanelWidth(
+                    originWidth - value.translation.width,
+                    totalWidth: totalWidth,
+                    sidebarWidth: sidebarWidth
+                )
+                realtimePanelWidth = resolvedWidth
+                realtimePanelDragOriginWidth = nil
+                SettingsManager.shared.realtimePanelWidth = resolvedWidth
+                refreshPanelHandleCursor()
+            }
+    }
+
+    private func clampSidebarWidth(_ proposedWidth: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        let maxAllowed = min(sidebarWidthRange.upperBound, totalWidth - realtimePanelWidthRange.lowerBound - minimumCenterWidth)
+        let effectiveUpperBound = max(sidebarWidthRange.lowerBound, maxAllowed)
+        return min(max(proposedWidth, sidebarWidthRange.lowerBound), effectiveUpperBound)
+    }
+
+    private func clampRealtimePanelWidth(_ proposedWidth: CGFloat, totalWidth: CGFloat, sidebarWidth: CGFloat) -> CGFloat {
+        let maxAllowed = min(realtimePanelWidthRange.upperBound, totalWidth - sidebarWidth - minimumCenterWidth)
+        let effectiveUpperBound = max(realtimePanelWidthRange.lowerBound, maxAllowed)
+        return min(max(proposedWidth, realtimePanelWidthRange.lowerBound), effectiveUpperBound)
+    }
+
+    private func isHandleDragging(_ kind: PanelHandleKind) -> Bool {
+        switch kind {
+        case .sidebar:
+            return sidebarDragOriginWidth != nil
+        case .realtimePanel:
+            return realtimePanelDragOriginWidth != nil
+        }
+    }
+
+    private var isAnyPanelHandleActive: Bool {
+        hoveredPanelHandle != nil || sidebarDragOriginWidth != nil || realtimePanelDragOriginWidth != nil
+    }
+
+    private func refreshPanelHandleCursor() {
+        if isAnyPanelHandleActive {
+            NSCursor.resizeLeftRight.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    private func resetPanelWidth(_ kind: PanelHandleKind, totalWidth: CGFloat) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            switch kind {
+            case .sidebar:
+                let resolvedWidth = clampSidebarWidth(defaultSidebarWidth, totalWidth: totalWidth)
+                sidebarWidth = resolvedWidth
+                sidebarDragOriginWidth = nil
+                SettingsManager.shared.sidebarWidth = resolvedWidth
+            case .realtimePanel:
+                let resolvedWidth = clampRealtimePanelWidth(
+                    defaultRealtimePanelWidth,
+                    totalWidth: totalWidth,
+                    sidebarWidth: sidebarWidth
+                )
+                realtimePanelWidth = resolvedWidth
+                realtimePanelDragOriginWidth = nil
+                SettingsManager.shared.realtimePanelWidth = resolvedWidth
+            }
+        }
+    }
+
+}
+
+private struct ContentShellLayout {
+    let sidebarWidth: CGFloat
+    let realtimePanelWidth: CGFloat
+}
+
+private enum PanelHandleKind {
+    case sidebar
+    case realtimePanel
 }
 
 private struct ProjectOnboardingView: View {

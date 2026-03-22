@@ -197,6 +197,8 @@ struct LocalizedString {
             "toggleSidebar": "Toggle Sidebar",
             "generateFromWorkflow": "Generate from Workflow",
             "zoom": "Zoom",
+            "toggle_full_screen": "Toggle Full Screen",
+            "reset_window_size": "Reset Window Size",
             "bringAllToFront": "Bring All to Front",
             "reportIssue": "Report Issue...",
             "viewOnGitHub": "View on GitHub",
@@ -408,6 +410,8 @@ struct LocalizedString {
             "toggleSidebar": "切换侧边栏",
             "generateFromWorkflow": "从工作流生成",
             "zoom": "缩放",
+            "toggle_full_screen": "切换全屏",
+            "reset_window_size": "恢复窗口大小",
             "bringAllToFront": "全部前置",
             "reportIssue": "报告问题...",
             "viewOnGitHub": "在 GitHub 上查看",
@@ -599,6 +603,8 @@ struct LocalizedString {
             "toggleSidebar": "切換側邊欄",
             "generateFromWorkflow": "從工作流生成",
             "zoom": "縮放",
+            "toggle_full_screen": "切換全螢幕",
+            "reset_window_size": "重設視窗大小",
             "bringAllToFront": "全部前置",
             "reportIssue": "報告問題...",
             "viewOnGitHub": "在 GitHub 上查看",
@@ -5455,6 +5461,8 @@ struct LocalizedString {
     static var toggleSidebar: String { localized("toggleSidebar") }
     static var generateFromWorkflow: String { localized("generateFromWorkflow") }
     static var zoom: String { localized("zoom") }
+    static var toggleFullScreen: String { localized("toggle_full_screen") }
+    static var resetWindowSize: String { localized("reset_window_size") }
     static var bringAllToFront: String { localized("bringAllToFront") }
     static var reportIssue: String { localized("reportIssue") }
     static var viewOnGitHub: String { localized("viewOnGitHub") }

@@ -67,6 +67,181 @@ final class AppRuntimeContext: ObservableObject {
     }
 }
 
+@MainActor
+final class AppWindowManager {
+    static let shared = AppWindowManager()
+
+    private let settings = SettingsManager.shared
+    private let minimumWindowSize = NSSize(width: 720, height: 560)
+    private weak var mainWindow: NSWindow?
+    private var observerTokens: [NSObjectProtocol] = []
+
+    private init() {}
+
+    func bindMainWindow(_ window: NSWindow) {
+        let isNewWindow = mainWindow !== window
+        mainWindow = window
+
+        configure(window)
+
+        guard isNewWindow else { return }
+
+        tearDownObservers()
+        restoreFrame(for: window)
+        installObservers(for: window)
+    }
+
+    func minimizeMainWindow() {
+        activeWindow?.miniaturize(nil)
+    }
+
+    func zoomMainWindow() {
+        activeWindow?.zoom(nil)
+    }
+
+    func toggleFullScreen() {
+        activeWindow?.toggleFullScreen(nil)
+    }
+
+    func resetMainWindowFrame() {
+        guard let window = activeWindow else { return }
+
+        let targetFrame = defaultFrame(for: window.screen)
+        if window.styleMask.contains(.fullScreen) {
+            window.toggleFullScreen(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.apply(frame: targetFrame, to: window, animate: true)
+            }
+            return
+        }
+
+        apply(frame: targetFrame, to: window, animate: true)
+    }
+
+    private var activeWindow: NSWindow? {
+        NSApp.keyWindow ?? NSApp.mainWindow ?? mainWindow
+    }
+
+    private func configure(_ window: NSWindow) {
+        window.styleMask.insert(.resizable)
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.minSize = minimumWindowSize
+        window.setFrameAutosaveName("MultiAgentFlowMainWindow")
+    }
+
+    private func restoreFrame(for window: NSWindow) {
+        let restoredFrame = settings.windowFrame.map { sanitizedFrame($0, on: window.screen) }
+            ?? defaultFrame(for: window.screen)
+        apply(frame: restoredFrame, to: window, animate: false)
+    }
+
+    private func apply(frame: NSRect, to window: NSWindow, animate: Bool) {
+        window.setFrame(frame, display: true, animate: animate)
+        persistFrame(for: window)
+    }
+
+    private func persistFrame(for window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen) else { return }
+        settings.windowFrame = sanitizedFrame(window.frame, on: window.screen)
+    }
+
+    private func installObservers(for window: NSWindow) {
+        let center = NotificationCenter.default
+
+        observerTokens = [
+            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self, weak window] _ in
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.persistFrame(for: window)
+                }
+            },
+            center.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self, weak window] _ in
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.persistFrame(for: window)
+                }
+            },
+            center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self, weak window] _ in
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self else { return }
+                    if let window {
+                        self.persistFrame(for: window)
+                    }
+                    self.mainWindow = nil
+                    self.tearDownObservers()
+                }
+            }
+        ]
+    }
+
+    private func tearDownObservers() {
+        let center = NotificationCenter.default
+        observerTokens.forEach(center.removeObserver)
+        observerTokens.removeAll()
+    }
+
+    private func defaultFrame(for screen: NSScreen?) -> NSRect {
+        let visibleFrame = visibleFrame(for: screen)
+        let width = min(max(visibleFrame.width * 0.78, minimumWindowSize.width), 1480)
+        let height = min(max(visibleFrame.height * 0.82, minimumWindowSize.height), 980)
+        let origin = NSPoint(
+            x: visibleFrame.midX - width / 2,
+            y: visibleFrame.midY - height / 2
+        )
+        return NSRect(origin: origin, size: NSSize(width: width, height: height)).integral
+    }
+
+    private func sanitizedFrame(_ frame: NSRect, on screen: NSScreen?) -> NSRect {
+        let visibleFrame = visibleFrame(for: screen)
+        let width = min(max(frame.width, minimumWindowSize.width), visibleFrame.width)
+        let height = min(max(frame.height, minimumWindowSize.height), visibleFrame.height)
+
+        var originX = frame.origin.x
+        var originY = frame.origin.y
+
+        if originX < visibleFrame.minX || originX + width > visibleFrame.maxX {
+            originX = visibleFrame.midX - width / 2
+        }
+        if originY < visibleFrame.minY || originY + height > visibleFrame.maxY {
+            originY = visibleFrame.midY - height / 2
+        }
+
+        return NSRect(
+            x: round(originX),
+            y: round(originY),
+            width: round(width),
+            height: round(height)
+        )
+    }
+
+    private func visibleFrame(for screen: NSScreen?) -> NSRect {
+        screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+}
+
+private struct MainWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                AppWindowManager.shared.bindMainWindow(window)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = nsView.window {
+                AppWindowManager.shared.bindMainWindow(window)
+            }
+        }
+    }
+}
+
 @main
 struct MultiAgentFlowApp: App {
     @StateObject private var runtimeContext = AppRuntimeContext()
@@ -81,6 +256,7 @@ struct MultiAgentFlowApp: App {
             if let appState = runtimeContext.appState {
                 ContentView(selectedTab: $selectedTab, zoomScale: $zoomScale)
                     .environmentObject(appState)
+                    .background(MainWindowAccessor())
                     .sheet(isPresented: $showingSettings) {
                         SettingsView()
                             .environmentObject(appState)
@@ -246,14 +422,24 @@ struct MultiAgentFlowApp: App {
 
                 CommandMenu(LocalizedString.window) {
                     Button(LocalizedString.minimize) {
-                        NSApp.keyWindow?.miniaturize(nil)
+                        AppWindowManager.shared.minimizeMainWindow()
                     }
                     .keyboardShortcut("m", modifiers: .command)
 
                     Button(LocalizedString.zoom) {
-                        NSApp.keyWindow?.zoom(nil)
+                        AppWindowManager.shared.zoomMainWindow()
                     }
                     .keyboardShortcut("m", modifiers: [.command, .control])
+
+                    Button(LocalizedString.toggleFullScreen) {
+                        AppWindowManager.shared.toggleFullScreen()
+                    }
+                    .keyboardShortcut("f", modifiers: [.command, .control])
+
+                    Button(LocalizedString.resetWindowSize) {
+                        AppWindowManager.shared.resetMainWindowFrame()
+                    }
+                    .keyboardShortcut("0", modifiers: [.command, .option])
 
                     Divider()
 

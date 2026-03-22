@@ -27,6 +27,7 @@ class SettingsManager {
         static let windowFrame = "windowFrame"
         static let sidebarWidth = "sidebarWidth"
         static let propertiesPanelWidth = "propertiesPanelWidth"
+        static let realtimePanelWidth = "realtimePanelWidth"
     }
     
     // 当前应用版本（用于迁移）
@@ -204,6 +205,14 @@ class SettingsManager {
             return value > 0 ? value : 250
         }
         set { defaults.set(newValue, forKey: Keys.propertiesPanelWidth) }
+    }
+
+    var realtimePanelWidth: CGFloat {
+        get {
+            let value = defaults.double(forKey: Keys.realtimePanelWidth)
+            return value > 0 ? value : 280
+        }
+        set { defaults.set(newValue, forKey: Keys.realtimePanelWidth) }
     }
     
     // MARK: - 数据校验

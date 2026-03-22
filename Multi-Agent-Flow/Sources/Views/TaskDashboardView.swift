@@ -3040,7 +3040,9 @@ struct MonitoringDashboardView: View {
                    appState.openClawManager.config.deploymentKind != .remoteServer,
                    appState.isCurrentProjectAttachedToOpenClaw {
                     Button("同步当前会话") {
-                        appState.syncOpenClawActiveSession()
+                        appState.syncOpenClawActiveSession(
+                            workflowID: appState.currentProject?.workflows.first?.id
+                        )
                     }
                     .buttonStyle(.bordered)
                 }

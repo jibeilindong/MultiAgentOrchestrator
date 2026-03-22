@@ -70,6 +70,29 @@ final class TemplateNodeCreationTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testDeleteAgentClearsSelectedNodeAndRemovesBoundWorkflowNode() throws {
+        let appState = AppState()
+        appState.currentProject = MAProject(name: "Delete Agent Selection Test")
+
+        let agent = try XCTUnwrap(appState.addNewAgent(named: "待删除智能体"))
+        let nodeID = try XCTUnwrap(
+            appState.focusAgentNode(
+                agentID: agent.id,
+                createIfMissing: true,
+                suggestedPosition: CGPoint(x: 200, y: 160)
+            )
+        )
+
+        XCTAssertEqual(appState.selectedNodeID, nodeID)
+
+        appState.deleteAgent(agent.id)
+
+        XCTAssertNil(appState.selectedNodeID)
+        XCTAssertFalse(appState.currentProject?.agents.contains(where: { $0.id == agent.id }) ?? true)
+        XCTAssertFalse(appState.currentProject?.workflows.first?.nodes.contains(where: { $0.id == nodeID }) ?? true)
+    }
+
     func testResolvedNewAgentNameUsesTemplateNameForDefaultCreation() throws {
         let template = try XCTUnwrap(AgentTemplateCatalog.templates.first)
         XCTAssertEqual(

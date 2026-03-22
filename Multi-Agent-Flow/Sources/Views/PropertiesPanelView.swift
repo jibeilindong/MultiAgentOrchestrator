@@ -1730,18 +1730,25 @@ struct TemplateLibraryManagerSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerBar
+        GeometryReader { geometry in
+            let availableWidth = max(geometry.size.width, 0)
+            let usesCompactHeader = availableWidth < 920
+            let usesStackedLayout = availableWidth < 1_080
 
-            Divider()
+            VStack(spacing: 0) {
+                headerBar(compact: usesCompactHeader)
 
-            mainContent
+                Divider()
 
-            if let feedbackMessage {
-                feedbackBar(message: feedbackMessage)
+                mainContent(stacked: usesStackedLayout)
+
+                if let feedbackMessage {
+                    feedbackBar(message: feedbackMessage)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(minWidth: 980, minHeight: 680)
+        .frame(minWidth: 720, minHeight: 560)
         .onAppear {
             let initial = templateLibrary.template(withID: selectedTemplateID)?.id
                 ?? sortedTemplates.first?.id
@@ -1793,20 +1800,42 @@ struct TemplateLibraryManagerSheet: View {
     }
 
     @ViewBuilder
-    private var headerBar: some View {
-        HStack {
-            Text("模板资产库管理")
-                .font(.headline)
-            Spacer()
-            exportAssetMenu
-            exportExchangeJSONMenu
-            exportSoulMenu
-            modePicker
-            if showsCloseButton {
-                Button("关闭") { dismiss() }
+    private func headerBar(compact: Bool) -> some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("模板资产库管理")
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        exportAssetMenu
+                        exportExchangeJSONMenu
+                        exportSoulMenu
+                    }
+                    HStack(spacing: 8) {
+                        modePicker(compact: true)
+                        if showsCloseButton {
+                            Button("关闭") { dismiss() }
+                        }
+                    }
+                }
             }
+            .padding()
+        } else {
+            HStack {
+                Text("模板资产库管理")
+                    .font(.headline)
+                Spacer()
+                exportAssetMenu
+                exportExchangeJSONMenu
+                exportSoulMenu
+                modePicker(compact: false)
+                if showsCloseButton {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .padding()
         }
-        .padding()
     }
 
     @ViewBuilder
@@ -1870,22 +1899,31 @@ struct TemplateLibraryManagerSheet: View {
     }
 
     @ViewBuilder
-    private var modePicker: some View {
+    private func modePicker(compact: Bool) -> some View {
         Picker("", selection: $mode) {
             ForEach(TemplateManagerMode.allCases) { item in
                 Text(item.rawValue).tag(item)
             }
         }
         .pickerStyle(.segmented)
-        .frame(width: 220)
+        .frame(width: compact ? nil : 220)
     }
 
     @ViewBuilder
-    private var mainContent: some View {
-        HStack(spacing: 0) {
-            templateListPane
-            Divider()
-            contentPane
+    private func mainContent(stacked: Bool) -> some View {
+        if stacked {
+            VSplitView {
+                templateListPane
+                    .frame(minHeight: 240, idealHeight: 300, maxHeight: 360)
+                contentPane
+            }
+        } else {
+            HStack(spacing: 0) {
+                templateListPane
+                    .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+                Divider()
+                contentPane
+            }
         }
     }
 
@@ -2022,7 +2060,7 @@ struct TemplateLibraryManagerSheet: View {
             }
         }
         .padding()
-        .frame(width: 280)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -2059,86 +2097,94 @@ struct TemplateLibraryManagerSheet: View {
         if let template = selectedTemplate, let draft {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(templateLibrary.isBuiltInTemplate(template.id) ? "系统模板" : "模板资产")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text(template.id)
-                                .font(.caption.monospaced())
-                                .textSelection(.enabled)
-                        }
-                        Spacer()
-                        Button("导出模板资产") {
-                            exportTemplateAsset(templateID: template.id)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("打开资产目录") {
-                            openTemplateAssetDirectory(for: template)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(templateLibrary.templateAssetDirectoryURL(for: template.id) == nil)
-
-                        Button("载入 SOUL.md") {
-                            importSoulIntoDraft(template: template)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("导出 SOUL.md") {
-                            exportSoulDocument(for: template)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button(templateLibrary.isFavorite(template.id) ? "取消收藏" : "加入收藏") {
-                            templateLibrary.toggleFavorite(template.id)
-                            feedbackMessage = templateLibrary.isFavorite(template.id) ? "已加入收藏模板。" : "已取消收藏模板。"
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("上移") {
-                            templateLibrary.moveTemplate(template.id, direction: .up)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled((selectedTemplateSortIndex ?? 0) == 0)
-
-                        Button("下移") {
-                            templateLibrary.moveTemplate(template.id, direction: .down)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled((selectedTemplateSortIndex ?? (sortedTemplates.count - 1)) >= sortedTemplates.count - 1)
-
-                        if !templateLibrary.isBuiltInTemplate(template.id) {
-                            Button("删除自定义模板", role: .destructive) {
-                                promptDeleteTemplate(template)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(templateLibrary.isBuiltInTemplate(template.id) ? "系统模板" : "模板资产")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(template.id)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
                             }
-                            .buttonStyle(.bordered)
+                            Spacer()
                         }
 
-                        Button("另存为副本") {
-                            if let copy = templateLibrary.duplicateTemplate(from: template.id) {
-                                selectedTemplateManagerID = copy.id
-                                selectedTemplateID = copy.id
-                                self.draft = TemplateEditorDraft(template: copy)
-                                feedbackMessage = "已复制模板：\(copy.name)"
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack {
+                                Button("导出模板资产") {
+                                    exportTemplateAsset(templateID: template.id)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("打开资产目录") {
+                                    openTemplateAssetDirectory(for: template)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(templateLibrary.templateAssetDirectoryURL(for: template.id) == nil)
+
+                                Button("载入 SOUL.md") {
+                                    importSoulIntoDraft(template: template)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("导出 SOUL.md") {
+                                    exportSoulDocument(for: template)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button(templateLibrary.isFavorite(template.id) ? "取消收藏" : "加入收藏") {
+                                    templateLibrary.toggleFavorite(template.id)
+                                    feedbackMessage = templateLibrary.isFavorite(template.id) ? "已加入收藏模板。" : "已取消收藏模板。"
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("上移") {
+                                    templateLibrary.moveTemplate(template.id, direction: .up)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled((selectedTemplateSortIndex ?? 0) == 0)
+
+                                Button("下移") {
+                                    templateLibrary.moveTemplate(template.id, direction: .down)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled((selectedTemplateSortIndex ?? (sortedTemplates.count - 1)) >= sortedTemplates.count - 1)
+
+                                if !templateLibrary.isBuiltInTemplate(template.id) {
+                                    Button("删除自定义模板", role: .destructive) {
+                                        promptDeleteTemplate(template)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+
+                                Button("另存为副本") {
+                                    if let copy = templateLibrary.duplicateTemplate(from: template.id) {
+                                        selectedTemplateManagerID = copy.id
+                                        selectedTemplateID = copy.id
+                                        self.draft = TemplateEditorDraft(template: copy)
+                                        feedbackMessage = "已复制模板：\(copy.name)"
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("自动补齐缺失项") {
+                                    autofillMissingFields(for: template, draft: draft)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("清理管理信息") {
+                                    cleanupManagementLeaks(for: template, draft: draft)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button(templateLibrary.isBuiltInTemplate(template.id) ? "保存为新模板" : "保存修改") {
+                                    saveDraft(baseTemplate: template, draft: draft)
+                                }
+                                .buttonStyle(.borderedProminent)
                             }
+                            .padding(.vertical, 2)
                         }
-                        .buttonStyle(.bordered)
-
-                        Button("自动补齐缺失项") {
-                            autofillMissingFields(for: template, draft: draft)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("清理管理信息") {
-                            cleanupManagementLeaks(for: template, draft: draft)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button(templateLibrary.isBuiltInTemplate(template.id) ? "保存为新模板" : "保存修改") {
-                            saveDraft(baseTemplate: template, draft: draft)
-                        }
-                        .buttonStyle(.borderedProminent)
                     }
 
                     if templateLibrary.isBuiltInTemplate(template.id) {
