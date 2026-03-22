@@ -203,10 +203,6 @@ struct AgentPropertiesView: View {
     @State private var dirtyManagedConfigPaths: Set<String> = []
     @State private var capabilities: [String] = ["Basic"]
     @State private var colorHex: String = ""
-    @State private var openClawAgentIdentifier: String = ""
-    @State private var openClawModelIdentifier: String = "MiniMax-M2.5"
-    @State private var openClawRuntimeProfile: String = "default"
-    @State private var openClawMemoryBackupPath: String = ""
     @State private var selectedTemplateID: String = AgentTemplateCatalog.defaultTemplateID
     @State private var showingTemplateManager = false
     @State private var saveStatusMessage: String?
@@ -367,24 +363,6 @@ struct AgentPropertiesView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
             TextField(LocalizedString.text("agent_description_label"), text: agentDescriptionBinding)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-        }
-    }
-
-    @ViewBuilder
-    private var openClawDefinitionSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(LocalizedString.text("openclaw_definition"))
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            TextField(LocalizedString.text("openclaw_agent_id"), text: openClawAgentIdentifierBinding)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-            TextField(LocalizedString.text("model_identifier"), text: openClawModelIdentifierBinding)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-            TextField(LocalizedString.text("runtime_profile"), text: openClawRuntimeProfileBinding)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-            TextField(LocalizedString.text("memory_backup_path"), text: openClawMemoryBackupPathBinding)
                 .textFieldStyle(RoundedBorderTextFieldStyle())
         }
     }
@@ -575,46 +553,6 @@ struct AgentPropertiesView: View {
         )
     }
 
-    private var openClawAgentIdentifierBinding: Binding<String> {
-        Binding(
-            get: { openClawAgentIdentifier },
-            set: { newValue in
-                clearSaveStatus()
-                openClawAgentIdentifier = newValue
-            }
-        )
-    }
-
-    private var openClawModelIdentifierBinding: Binding<String> {
-        Binding(
-            get: { openClawModelIdentifier },
-            set: { newValue in
-                clearSaveStatus()
-                openClawModelIdentifier = newValue
-            }
-        )
-    }
-
-    private var openClawRuntimeProfileBinding: Binding<String> {
-        Binding(
-            get: { openClawRuntimeProfile },
-            set: { newValue in
-                clearSaveStatus()
-                openClawRuntimeProfile = newValue
-            }
-        )
-    }
-
-    private var openClawMemoryBackupPathBinding: Binding<String> {
-        Binding(
-            get: { openClawMemoryBackupPath },
-            set: { newValue in
-                clearSaveStatus()
-                openClawMemoryBackupPath = newValue
-            }
-        )
-    }
-    
     private var hasChanges: Bool {
         guard let agent = selectedAgent else { return false }
         return agent.name != agentName ||
@@ -622,10 +560,6 @@ struct AgentPropertiesView: View {
                agent.description != agentDescription ||
                agent.capabilities != capabilities ||
                (agent.colorHex ?? "") != colorHex ||
-               agent.openClawDefinition.agentIdentifier != openClawAgentIdentifier ||
-               agent.openClawDefinition.modelIdentifier != openClawModelIdentifier ||
-               agent.openClawDefinition.runtimeProfile != openClawRuntimeProfile ||
-               (agent.openClawDefinition.memoryBackupPath ?? "") != openClawMemoryBackupPath ||
                !dirtyManagedConfigPaths.isEmpty
     }
     
@@ -671,10 +605,6 @@ struct AgentPropertiesView: View {
         }
         updatedAgent.capabilities = capabilities
         updatedAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
-        updatedAgent.openClawDefinition.agentIdentifier = openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? updatedAgent.name : openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        updatedAgent.openClawDefinition.modelIdentifier = openClawModelIdentifier
-        updatedAgent.openClawDefinition.runtimeProfile = openClawRuntimeProfile
-        updatedAgent.openClawDefinition.memoryBackupPath = openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines)
         updatedAgent.updatedAt = Date()
 
         if !dirtyManagedConfigPaths.isEmpty {
@@ -738,10 +668,6 @@ struct AgentPropertiesView: View {
         soulMD = newAgent.soulMD
         capabilities = newAgent.capabilities
         colorHex = newAgent.colorHex ?? ""
-        openClawAgentIdentifier = newAgent.openClawDefinition.agentIdentifier
-        openClawModelIdentifier = newAgent.openClawDefinition.modelIdentifier
-        openClawRuntimeProfile = newAgent.openClawDefinition.runtimeProfile
-        openClawMemoryBackupPath = newAgent.openClawDefinition.memoryBackupPath ?? ""
     }
 
     private func matchingTemplateID(for agent: Agent) -> String {
@@ -844,10 +770,6 @@ struct AgentPropertiesView: View {
         dirtyManagedConfigPaths = []
         capabilities = ["Basic"]
         colorHex = ""
-        openClawAgentIdentifier = ""
-        openClawModelIdentifier = "MiniMax-M2.5"
-        openClawRuntimeProfile = "default"
-        openClawMemoryBackupPath = ""
         selectedTemplateID = AgentTemplateCatalog.defaultTemplateID
         saveStatusMessage = nil
         saveStatusIsError = false
@@ -869,14 +791,6 @@ struct AgentPropertiesView: View {
         draftAgent.colorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
-        draftAgent.openClawDefinition.agentIdentifier = openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? draftAgent.name
-            : openClawAgentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
-        draftAgent.openClawDefinition.modelIdentifier = openClawModelIdentifier
-        draftAgent.openClawDefinition.runtimeProfile = openClawRuntimeProfile
-        draftAgent.openClawDefinition.memoryBackupPath = openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? nil
-            : openClawMemoryBackupPath.trimmingCharacters(in: .whitespacesAndNewlines)
         draftAgent.updatedAt = Date()
         return draftAgent
     }
@@ -912,10 +826,6 @@ struct AgentPropertiesView: View {
         soulMD = agent.soulMD
         capabilities = agent.capabilities
         colorHex = agent.colorHex ?? ""
-        openClawAgentIdentifier = agent.openClawDefinition.agentIdentifier
-        openClawModelIdentifier = agent.openClawDefinition.modelIdentifier
-        openClawRuntimeProfile = agent.openClawDefinition.runtimeProfile
-        openClawMemoryBackupPath = agent.openClawDefinition.memoryBackupPath ?? ""
         selectedTemplateID = matchingTemplateID(for: agent)
         saveStatusMessage = nil
         saveStatusIsError = false
@@ -1361,7 +1271,11 @@ struct TemplatePickerPopover: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text(group.category.rawValue)
                                         .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(CanvasStylePalette.color(from: group.category.defaultColorHex) ?? .secondary)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background((CanvasStylePalette.color(from: group.category.defaultColorHex) ?? .secondary).opacity(0.12))
+                                        .clipShape(Capsule())
 
                                     ForEach(group.templates) { template in
                                         templateSelectionButton(template)
@@ -1455,6 +1369,8 @@ struct TemplatePickerPopover: View {
         _ template: AgentTemplate,
         recommendationReasons: [String] = []
     ) -> some View {
+        let categoryColor = CanvasStylePalette.color(from: template.category.defaultColorHex) ?? .accentColor
+
         Button {
             if marksTemplateUsedOnPick {
                 templateLibrary.markUsed(template.id)
@@ -1469,6 +1385,13 @@ struct TemplatePickerPopover: View {
                 HStack {
                     Text(template.name)
                         .font(.body)
+                    Text(template.category.rawValue)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(categoryColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(categoryColor.opacity(0.12))
+                        .clipShape(Capsule())
                     if templateLibrary.isFavorite(template.id) {
                         Image(systemName: "star.fill")
                             .font(.caption2)
@@ -1506,7 +1429,12 @@ struct TemplatePickerPopover: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(template.id == selectedTemplateID ? Color.accentColor.opacity(0.12) : Color.clear)
+            .background(template.id == selectedTemplateID ? categoryColor.opacity(0.12) : categoryColor.opacity(0.05))
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(categoryColor)
+                    .frame(width: 4)
+            }
             .cornerRadius(8)
         }
         .buttonStyle(.plain)
@@ -1544,6 +1472,8 @@ struct TemplateSummaryCard: View {
     }
 
     var body: some View {
+        let categoryColor = CanvasStylePalette.color(from: template.category.defaultColorHex) ?? .accentColor
+
         VStack(alignment: .leading, spacing: 6) {
             Text("模板管理信息")
                 .font(.caption)
@@ -1560,8 +1490,17 @@ struct TemplateSummaryCard: View {
                     .padding(.top, 4)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(template.name)
-                        .font(.subheadline.weight(.semibold))
+                    HStack(spacing: 8) {
+                        Text(template.name)
+                            .font(.subheadline.weight(.semibold))
+                        Text(template.category.rawValue)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(categoryColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(categoryColor.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
                     Text(template.taxonomyPath)
                         .font(.caption2)
                         .foregroundColor(.secondary)
@@ -1583,7 +1522,12 @@ struct TemplateSummaryCard: View {
                 }
             }
             .padding(10)
-            .background(Color.primary.opacity(0.04))
+            .background(categoryColor.opacity(0.06))
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(categoryColor)
+                    .frame(width: 4)
+            }
             .cornerRadius(8)
         }
     }
@@ -1703,6 +1647,7 @@ struct TemplateLibraryManagerSheet: View {
     @State private var familyFilter: AgentTemplateFamily?
     @State private var tagFilter: String?
     @State private var importPreviewReport: TemplateAssetImportPreviewReport?
+    @State private var deleteCandidate: AgentTemplate?
 
     init(selectedTemplateID: Binding<String>, showsCloseButton: Bool = true) {
         self._selectedTemplateID = selectedTemplateID
@@ -1832,6 +1777,18 @@ struct TemplateLibraryManagerSheet: View {
                     performTemplateAssetImport(report)
                 }
             )
+        }
+        .alert("删除模板资产", isPresented: deleteConfirmationBinding) {
+            Button("删除", role: .destructive) {
+                deletePendingTemplate()
+            }
+            Button("取消", role: .cancel) {
+                deleteCandidate = nil
+            }
+        } message: {
+            Text(deleteCandidate.map {
+                "删除后会移除“\($0.name)”的模板资产目录、草稿目录和相关收藏/最近使用记录，此操作不可撤销。"
+            } ?? "")
         }
     }
 
@@ -1972,6 +1929,13 @@ struct TemplateLibraryManagerSheet: View {
                     }
                 }
                 .menuStyle(.borderlessButton)
+
+                Button("删除当前模板", role: .destructive) {
+                    guard let selectedTemplate else { return }
+                    promptDeleteTemplate(selectedTemplate)
+                }
+                .buttonStyle(.bordered)
+                .disabled(selectedTemplate.map { templateLibrary.isBuiltInTemplate($0.id) } ?? true)
             }
 
             TextField("搜索模板", text: $searchText)
@@ -2146,10 +2110,7 @@ struct TemplateLibraryManagerSheet: View {
 
                         if !templateLibrary.isBuiltInTemplate(template.id) {
                             Button("删除自定义模板", role: .destructive) {
-                                let fallbackID = AgentTemplateCatalog.defaultTemplateID
-                                templateLibrary.deleteCustomTemplate(template.id)
-                                selectedTemplateManagerID = templateLibrary.template(withID: fallbackID)?.id ?? templateLibrary.templates.first?.id
-                                feedbackMessage = "已删除自定义模板。"
+                                promptDeleteTemplate(template)
                             }
                             .buttonStyle(.bordered)
                         }
@@ -2205,6 +2166,9 @@ struct TemplateLibraryManagerSheet: View {
                             selectedTemplateManagerID = persisted.id
                             selectedTemplateID = persisted.id
                             self.draft = TemplateEditorDraft(template: persisted)
+                        },
+                        onDeleted: { deletedTemplateID in
+                            updateSelectionAfterDeletingTemplate(deletedTemplateID)
                         }
                     )
                 }
@@ -2582,6 +2546,61 @@ struct TemplateLibraryManagerSheet: View {
             }
         }
         .tag(template.id)
+        .contextMenu {
+            if templateLibrary.isBuiltInTemplate(template.id) == false {
+                Button("删除模板", role: .destructive) {
+                    promptDeleteTemplate(template)
+                }
+            }
+        }
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { deleteCandidate != nil },
+            set: { if !$0 { deleteCandidate = nil } }
+        )
+    }
+
+    private func promptDeleteTemplate(_ template: AgentTemplate) {
+        guard templateLibrary.isBuiltInTemplate(template.id) == false else {
+            feedbackMessage = "系统模板不支持删除。"
+            return
+        }
+        deleteCandidate = template
+    }
+
+    private func deletePendingTemplate() {
+        guard let candidate = deleteCandidate else { return }
+        let deletedTemplateID = candidate.id
+        let deletedTemplateName = candidate.name
+
+        templateLibrary.deleteCustomTemplate(deletedTemplateID)
+        updateSelectionAfterDeletingTemplate(deletedTemplateID)
+        feedbackMessage = "已删除自定义模板：\(deletedTemplateName)"
+        deleteCandidate = nil
+    }
+
+    private func updateSelectionAfterDeletingTemplate(_ deletedTemplateID: String) {
+        let fallbackID = templateLibrary.template(withID: AgentTemplateCatalog.defaultTemplateID)?.id
+            ?? templateLibrary.templates.first?.id
+
+        if selectedTemplateManagerID == deletedTemplateID {
+            selectedTemplateManagerID = fallbackID
+        }
+
+        if selectedTemplateID == deletedTemplateID, let fallbackID {
+            selectedTemplateID = fallbackID
+        }
+
+        if let fallbackID,
+           let fallbackTemplate = templateLibrary.template(withID: fallbackID),
+           selectedTemplateManagerID == fallbackID {
+            draft = TemplateEditorDraft(template: fallbackTemplate)
+        } else if templateLibrary.template(withID: deletedTemplateID) == nil,
+                  selectedTemplateManagerID == nil {
+            draft = nil
+        }
     }
 
     private func exportAllTemplates() {

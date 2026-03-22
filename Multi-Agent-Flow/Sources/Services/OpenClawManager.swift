@@ -3944,6 +3944,10 @@ class OpenClawManager: ObservableObject {
         }
 
         var records: [OpenClawChannelAccountRecord] = []
+        let reservedContainerKeys: Set<String> = [
+            "accounts", "auth", "channels", "chat", "data", "items",
+            "providers", "results", "usage", "windows"
+        ]
 
         func appendAccount(channelID: String?, accountID: String?, displayName: String?, isDefault: Bool) {
             guard
@@ -3965,6 +3969,13 @@ class OpenClawManager: ObservableObject {
                     isDefaultAccount: isDefault || normalizedAccountID == "default"
                 )
             )
+        }
+
+        func shouldTreatAsChannelMapKey(_ key: String, value: Any) -> Bool {
+            guard !reservedContainerKeys.contains(key.lowercased()) else {
+                return false
+            }
+            return value is [String: Any] || value is [Any]
         }
 
         func walk(_ value: Any, inheritedChannelID: String?) {
@@ -4031,7 +4042,15 @@ class OpenClawManager: ObservableObject {
                             }
                         }
                     } else {
-                        walk(child, inheritedChannelID: childChannelID)
+                        let nextInheritedChannelID: String?
+                        if let childChannelID {
+                            nextInheritedChannelID = childChannelID
+                        } else if shouldTreatAsChannelMapKey(key, value: child) {
+                            nextInheritedChannelID = key
+                        } else {
+                            nextInheritedChannelID = inheritedChannelID
+                        }
+                        walk(child, inheritedChannelID: nextInheritedChannelID)
                     }
                 }
             } else if let array = value as? [Any] {
@@ -4066,6 +4085,17 @@ class OpenClawManager: ObservableObject {
         }
 
         var records: [ManagedAgentBindingRecord] = []
+        let reservedContainerKeys: Set<String> = [
+            "accounts", "bindings", "channels", "chat", "data",
+            "items", "results", "routes"
+        ]
+
+        func shouldTreatAsAgentMapKey(_ key: String, value: Any) -> Bool {
+            guard !reservedContainerKeys.contains(key.lowercased()) else {
+                return false
+            }
+            return value is [String: Any] || value is [Any] || value is String
+        }
 
         func walk(_ value: Any, inheritedAgentIdentifier: String?) {
             if let dictionary = value as? [String: Any] {
@@ -4084,8 +4114,16 @@ class OpenClawManager: ObservableObject {
                     )
                 }
 
-                for child in dictionary.values {
-                    walk(child, inheritedAgentIdentifier: agentIdentifier)
+                for (key, child) in dictionary {
+                    let nextInheritedAgentIdentifier: String?
+                    if let agentIdentifier {
+                        nextInheritedAgentIdentifier = agentIdentifier
+                    } else if shouldTreatAsAgentMapKey(key, value: child) {
+                        nextInheritedAgentIdentifier = key
+                    } else {
+                        nextInheritedAgentIdentifier = inheritedAgentIdentifier
+                    }
+                    walk(child, inheritedAgentIdentifier: nextInheritedAgentIdentifier)
                 }
             } else if let array = value as? [Any] {
                 for child in array {

@@ -1580,29 +1580,37 @@ final class AgentTemplateLibraryStore: ObservableObject {
             || searchText.contains("代码") {
             return .productionCode
         }
-        if searchText.contains("memory") || searchText.contains("记忆") {
-            return .functionalMemoryOptimization
-        }
-        if searchText.contains("log") || searchText.contains("日志") {
-            return .functionalLogAnalysis
+        if searchText.contains("log")
+            || searchText.contains("日志")
+            || searchText.contains("memory")
+            || searchText.contains("记忆")
+            || searchText.contains("dispatch")
+            || searchText.contains("decomposition")
+            || searchText.contains("运维")
+            || searchText.contains("秘书") {
+            return .functionalOpsManagement
         }
         if searchText.contains("review")
             || searchText.contains("qa")
+            || searchText.contains("审查")
             || searchText.contains("监督")
+            || searchText.contains("督查")
             || searchText.contains("评估") {
-            return .functionalSupervisionAssessment
+            return .functionalSupervision
         }
         if searchText.contains("workflow")
             || searchText.contains("hr")
             || searchText.contains("招聘")
-            || searchText.contains("调度") {
-            return .functionalHRWorkflow
+            || searchText.contains("人力") {
+            return .functionalHumanResources
         }
         if searchText.contains("learn")
             || searchText.contains("test")
+            || searchText.contains("skill")
             || searchText.contains("训练")
-            || searchText.contains("学习") {
-            return .functionalLearningTrainingTesting
+            || searchText.contains("学习")
+            || searchText.contains("知识") {
+            return .functionalLearning
         }
         return .productionDocument
     }
@@ -1610,16 +1618,14 @@ final class AgentTemplateLibraryStore: ObservableObject {
     private func inferredTags(for category: AgentTemplateCategory, agent: Agent) -> [String] {
         let categoryTag: String
         switch category {
-        case .functionalLearningTrainingTesting:
+        case .functionalLearning:
             categoryTag = "训练测试"
-        case .functionalSupervisionAssessment:
-            categoryTag = "监督评估"
-        case .functionalLogAnalysis:
-            categoryTag = "日志分析"
-        case .functionalMemoryOptimization:
-            categoryTag = "记忆整理"
-        case .functionalHRWorkflow:
-            categoryTag = "工作流设计"
+        case .functionalSupervision:
+            categoryTag = "督查审查"
+        case .functionalOpsManagement:
+            categoryTag = "运维管理"
+        case .functionalHumanResources:
+            categoryTag = "人力资源"
         case .productionDocument:
             categoryTag = "文档交付"
         case .productionVideo:

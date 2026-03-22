@@ -1432,25 +1432,19 @@ struct TemplateFileSystem {
                 "Keep labels, legends, and hierarchy explicit.",
                 "Check that visual proposals stay consistent with data or factual inputs."
             ]
-        case .functionalLogAnalysis:
+        case .functionalOpsManagement:
             return [
-                "Base conclusions on evidence that can be traced back to logs or artifacts.",
-                "Separate anomaly description, suspected cause, and confirmed cause.",
-                "Avoid over-generalizing from one-off failures."
+                "Keep task ownership, handoff rules, and operating context explicit.",
+                "Base conclusions on traceable evidence such as logs, records, or execution history.",
+                "Record why work was dispatched, merged, archived, or escalated."
             ]
-        case .functionalLearningTrainingTesting:
+        case .functionalLearning:
             return [
                 "Make capability growth measurable and repeatable.",
                 "Prefer exercises, rubrics, and checkpoints over vague advice.",
                 "Distinguish baseline, target level, and evaluation result."
             ]
-        case .functionalMemoryOptimization:
-            return [
-                "Preserve critical context while reducing redundancy.",
-                "Record the reason for deletion, compression, or merge decisions.",
-                "Keep summaries traceable to the original memory source."
-            ]
-        case .functionalHRWorkflow, .functionalSupervisionAssessment:
+        case .functionalHumanResources, .functionalSupervision:
             return [
                 "Make ownership, pacing, and review points explicit.",
                 "Escalate uncertainty or blocking dependencies instead of hiding them.",

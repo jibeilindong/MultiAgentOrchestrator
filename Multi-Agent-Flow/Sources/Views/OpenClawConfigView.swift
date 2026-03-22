@@ -595,9 +595,7 @@ struct OpenClawConfigView: View {
 struct OpenClawAgentManagementView: View {
     @EnvironmentObject var appState: AppState
     @State private var managedAgents: [OpenClawManager.ManagedAgentRecord] = []
-    @State private var availableModels: [String] = []
     @State private var selectedManagedAgentID: String?
-    @State private var managedAgentModelDraft: String = ""
     @State private var managedSkillSlug: String = ""
     @State private var searchKeyword: String = ""
     @State private var searchResults: [OpenClawManager.ClawHubSkillRecord] = []
@@ -688,40 +686,13 @@ struct OpenClawAgentManagementView: View {
                                     infoRow(label: LocalizedString.text("current_model"), value: selectedManagedAgent.modelIdentifier.isEmpty ? LocalizedString.text("not_set") : selectedManagedAgent.modelIdentifier)
 
                                     VStack(alignment: .leading, spacing: 6) {
-                                        Text(LocalizedString.text("model_switch"))
+                                        Text(LocalizedString.text("runtime_model_config_scope"))
                                             .font(.caption)
                                             .foregroundColor(.secondary)
 
-                                        HStack(spacing: 10) {
-                                            TextField("provider/model", text: $managedAgentModelDraft)
-                                                .textFieldStyle(.roundedBorder)
-
-                                            Menu(LocalizedString.text("model_candidates")) {
-                                                if availableModels.isEmpty {
-                                                    Text(LocalizedString.text("no_models_available"))
-                                                } else {
-                                                    ForEach(availableModels, id: \.self) { model in
-                                                        Button(model) {
-                                                            managedAgentModelDraft = model
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            Button {
-                                                applyManagedAgentModel()
-                                            } label: {
-                                                HStack(spacing: 8) {
-                                                    if isMutatingManagedAgent {
-                                                        ProgressView()
-                                                            .controlSize(.small)
-                                                    }
-                                                    Text(isMutatingManagedAgent ? LocalizedString.text("applying") : LocalizedString.text("apply_model"))
-                                                }
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            .disabled(isMutatingManagedAgent || managedAgentModelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                        }
+                                        Text(LocalizedString.text("runtime_model_config_scope_hint"))
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
                                     }
 
                                     Divider()
@@ -892,9 +863,7 @@ struct OpenClawAgentManagementView: View {
     private func refreshManagedAgentDataIfNeeded() {
         guard canManageOpenClawAgents else {
             managedAgents = []
-            availableModels = []
             selectedManagedAgentID = nil
-            managedAgentModelDraft = ""
             managedSkillSlug = ""
             searchResults = []
             managedAgentMessage = nil
@@ -921,7 +890,6 @@ struct OpenClawAgentManagementView: View {
             } else {
                 managedAgents = []
                 selectedManagedAgentID = nil
-                managedAgentModelDraft = ""
                 managedSkillSlug = ""
                 searchResults = []
                 managedAgentMessage = message
@@ -929,59 +897,16 @@ struct OpenClawAgentManagementView: View {
             }
         }
 
-        appState.openClawManager.loadAvailableModels(using: config) { success, _, models in
-            availableModels = success ? models : []
-        }
     }
 
     private func syncManagedAgentDrafts() {
-        guard let selectedManagedAgent else {
-            managedAgentModelDraft = ""
+        guard selectedManagedAgent != nil else {
             managedSkillSlug = ""
             searchResults = []
             return
         }
 
-        managedAgentModelDraft = selectedManagedAgent.modelIdentifier
         managedSkillSlug = ""
-    }
-
-    private func applyManagedAgentModel() {
-        guard let selectedManagedAgent else { return }
-
-        let trimmedModel = managedAgentModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedModel.isEmpty else { return }
-
-        guard let projectAgentID = selectedManagedAgent.projectAgentID else {
-            managedAgentMessage = "未定位到对应的项目 Agent。"
-            managedAgentTone = .error
-            return
-        }
-
-        if selectedManagedAgent.configIndex == nil {
-            appState.updateAgentOpenClawDefinition(for: projectAgentID) { definition in
-                definition.modelIdentifier = trimmedModel
-            }
-            managedAgentMessage = "\(selectedManagedAgent.name) 的项目 model 已更新为 \(trimmedModel)，但当前未匹配到可写回的 OpenClaw 运行时配置。"
-            managedAgentTone = .success
-            refreshManagedAgentDataIfNeeded()
-            return
-        }
-
-        isMutatingManagedAgent = true
-        appState.openClawManager.updateManagedAgentModel(selectedManagedAgent, model: trimmedModel, using: config) { success, message in
-            isMutatingManagedAgent = false
-            if success {
-                appState.updateAgentOpenClawDefinition(for: projectAgentID) { definition in
-                    definition.modelIdentifier = trimmedModel
-                }
-            }
-            managedAgentMessage = message
-            managedAgentTone = success ? .success : .error
-            if success {
-                refreshManagedAgentDataIfNeeded()
-            }
-        }
     }
 
     private func installManagedSkill() {

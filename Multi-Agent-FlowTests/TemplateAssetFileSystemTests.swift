@@ -186,6 +186,37 @@ final class TemplateAssetFileSystemTests: XCTestCase {
         XCTAssertTrue(fileSystem.isTemplateAssetDirectory(templateRootURL))
     }
 
+    func testRemoveTemplateAssetDeletesWrittenAssetDirectory() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 1,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test asset directory removal."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        let assetRootURL = fileSystem.templateRootDirectory(for: template.id, under: rootURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: assetRootURL.path))
+
+        try fileSystem.removeTemplateAsset(for: template.id, under: rootURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: assetRootURL.path))
+        XCTAssertFalse(fileSystem.listTemplateAssetIDs(under: rootURL).contains(template.id))
+    }
+
     func testExportTemplateAssetDirectoryCopiesAssetAndAvoidsNameCollisions() throws {
         let rootURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -606,6 +637,44 @@ final class TemplateAssetFileSystemTests: XCTestCase {
                 )
             )
         }
+    }
+
+    func testRemoveTemplateDraftDeletesDraftDirectory() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let fileSystem = TemplateFileSystem()
+        let template = try XCTUnwrap(AgentTemplateCatalog.builtInTemplates.first)
+        let document = TemplateAssetDocument(
+            template: template,
+            revision: 1,
+            status: .published
+        )
+        let lineage = TemplateLineage(
+            sourceScope: .manualCreation,
+            createdReason: "Test draft directory removal."
+        )
+
+        try fileSystem.writeTemplateAsset(
+            document: document,
+            lineage: lineage,
+            under: rootURL
+        )
+
+        _ = try fileSystem.createTemplateDraftDirectory(
+            for: template.id,
+            from: fileSystem.templateRootDirectory(for: template.id, under: rootURL),
+            under: rootURL
+        )
+
+        let draftRootURL = fileSystem.templateDraftRootDirectory(for: template.id, under: rootURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: draftRootURL.path))
+        XCTAssertTrue(fileSystem.hasTemplateDraft(for: template.id, under: rootURL))
+
+        try fileSystem.removeTemplateDraft(for: template.id, under: rootURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: draftRootURL.path))
+        XCTAssertFalse(fileSystem.hasTemplateDraft(for: template.id, under: rootURL))
     }
 
     private func makeTemporaryDirectory() throws -> URL {

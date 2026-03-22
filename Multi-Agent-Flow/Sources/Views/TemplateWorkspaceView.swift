@@ -29,6 +29,7 @@ struct TemplateWorkspaceView: View {
     let template: AgentTemplate
     var onFeedback: (String) -> Void = { _ in }
     var onPersisted: (AgentTemplate) -> Void = { _ in }
+    var onDeleted: (String) -> Void = { _ in }
 
     @ObservedObject private var templateLibrary = AgentTemplateLibraryStore.shared
 
@@ -48,6 +49,7 @@ struct TemplateWorkspaceView: View {
     @State private var importPreviewReport: TemplateAssetImportPreviewReport?
     @State private var soulStructuredErrorMessage: String?
     @State private var documentStructuredErrorMessage: String?
+    @State private var showingDeleteTemplateAlert = false
 
     private var draftSession: TemplateDraftSession? {
         templateLibrary.draftSession(for: template.id)
@@ -205,6 +207,14 @@ struct TemplateWorkspaceView: View {
                     performTemplateAssetImport(report)
                 }
             )
+        }
+        .alert("删除模板资产", isPresented: $showingDeleteTemplateAlert) {
+            Button("删除", role: .destructive) {
+                deleteCurrentTemplate()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("删除后会移除“\(template.name)”的模板资产目录、草稿目录和相关收藏/最近使用记录，此操作不可撤销。")
         }
         .onAppear {
             bootstrapWorkspace()
@@ -656,6 +666,21 @@ struct TemplateWorkspaceView: View {
                             importSoulAsTemplate()
                         }
                         .buttonStyle(.bordered)
+                    }
+                }
+            }
+
+            if templateLibrary.isBuiltInTemplate(template.id) == false {
+                GroupBox("删除") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("删除会同时清理当前模板资产目录和工作区草稿目录，不影响系统模板。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Button("删除当前模板资产", role: .destructive) {
+                            showingDeleteTemplateAlert = true
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
             }
@@ -1190,6 +1215,19 @@ struct TemplateWorkspaceView: View {
         onFeedback("已打开模板资产目录：\(assetURL.lastPathComponent)。")
     }
 
+    private func deleteCurrentTemplate() {
+        guard templateLibrary.isBuiltInTemplate(template.id) == false else {
+            onFeedback("系统模板不支持删除。")
+            return
+        }
+
+        let deletedTemplateID = template.id
+        let deletedTemplateName = template.name
+        templateLibrary.deleteCustomTemplate(deletedTemplateID)
+        onFeedback("已删除自定义模板：\(deletedTemplateName)")
+        onDeleted(deletedTemplateID)
+    }
+
     private func exportFileBaseName(for template: AgentTemplate) -> String {
         let preferredName = template.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = preferredName.isEmpty ? template.id : preferredName
@@ -1664,6 +1702,19 @@ private struct TemplateWorkspaceMetadataStructuredEditor: View {
                     }
                 }
                 .pickerStyle(.menu)
+
+                HStack(spacing: 8) {
+                    Text(draft.category.rawValue)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(CanvasStylePalette.color(from: draft.category.defaultColorHex) ?? .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background((CanvasStylePalette.color(from: draft.category.defaultColorHex) ?? .secondary).opacity(0.12))
+                        .clipShape(Capsule())
+                    Text("分类默认色 #\(draft.category.defaultColorHex)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
 
                 templateEditorField("identity", text: $draft.identity)
                 templateEditorField("颜色 HEX", text: $draft.colorHex)

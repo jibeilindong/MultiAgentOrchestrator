@@ -2083,7 +2083,6 @@ private struct WorkflowToolbarGroup<Content: View>: View {
 private enum AgentCollectionSort: String, CaseIterable, Identifiable {
     case updated = "Recently Updated"
     case name = "Name"
-    case model = "Model"
     case connections = "Connections"
 
     var id: String { rawValue }
@@ -2092,7 +2091,6 @@ private enum AgentCollectionSort: String, CaseIterable, Identifiable {
         switch self {
         case .updated: return LocalizedString.text("sort_recently_updated")
         case .name: return LocalizedString.text("sort_name")
-        case .model: return LocalizedString.text("sort_model")
         case .connections: return LocalizedString.text("sort_connections")
         }
     }
@@ -2337,8 +2335,6 @@ private func filterAgentItems(
             item.agent.name,
             item.agent.identity,
             item.agent.description,
-            item.agent.openClawDefinition.modelIdentifier,
-            item.agent.openClawDefinition.runtimeProfile,
             item.soulSourcePath,
             item.agent.capabilities.joined(separator: " ")
         ]
@@ -2356,13 +2352,6 @@ private func filterAgentItems(
             }
             return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
         case .name:
-            return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
-        case .model:
-            let lhsModel = lhs.agent.openClawDefinition.modelIdentifier
-            let rhsModel = rhs.agent.openClawDefinition.modelIdentifier
-            if lhsModel != rhsModel {
-                return lhsModel.localizedCaseInsensitiveCompare(rhsModel) == .orderedAscending
-            }
             return lhs.agent.name.localizedCaseInsensitiveCompare(rhs.agent.name) == .orderedAscending
         case .connections:
             if lhs.totalConnections != rhs.totalConnections {
@@ -2890,17 +2879,6 @@ private struct AgentListRow: View {
                 .frame(minWidth: 220, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.agent.openClawDefinition.modelIdentifier)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Text(item.agent.openClawDefinition.runtimeProfile)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(minWidth: 170, alignment: .leading)
-
-                VStack(alignment: .leading, spacing: 4) {
                     Text(LocalizedString.format("in_out_connections", item.incomingConnections, item.outgoingConnections))
                         .font(.caption)
                     Text(LocalizedString.format("skill_count_small", item.agent.capabilities.count))
@@ -3294,8 +3272,6 @@ private struct AgentGridCard: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Label(item.agent.openClawDefinition.modelIdentifier, systemImage: "cpu")
-                    Label(item.agent.openClawDefinition.runtimeProfile, systemImage: "dial.high")
                     Label(LocalizedString.format("skill_count_small", item.agent.capabilities.count), systemImage: "star")
                     Label(LocalizedString.format("in_out_connections", item.incomingConnections, item.outgoingConnections), systemImage: "arrow.left.arrow.right")
                     Label(item.hasSoulFile ? item.soulDisplayName : LocalizedString.text("project_cache_only"), systemImage: item.hasSoulFile ? "doc.text" : "exclamationmark.triangle")
@@ -3684,7 +3660,11 @@ struct AgentLibrarySidebar: View {
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text(group.category.rawValue)
                                             .font(.caption2)
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(CanvasStylePalette.color(from: group.category.defaultColorHex) ?? .secondary)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background((CanvasStylePalette.color(from: group.category.defaultColorHex) ?? .secondary).opacity(0.12))
+                                            .clipShape(Capsule())
                                             .padding(.horizontal, 4)
 
                                         ForEach(group.templates) { template in
@@ -3899,15 +3879,26 @@ private struct TemplateLibraryItem: View {
     let onAdd: () -> Void
 
     var body: some View {
+        let categoryColor = CanvasStylePalette.color(from: template.category.defaultColorHex) ?? .accentColor
+
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "shippingbox.fill")
-                .foregroundColor(.accentColor)
+                .foregroundColor(categoryColor)
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(template.name)
-                    .font(.subheadline)
-                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Text(template.name)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Text(template.category.rawValue)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(categoryColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(categoryColor.opacity(0.12))
+                        .clipShape(Capsule())
+                }
                 Text(template.taxonomyPath)
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -3922,13 +3913,18 @@ private struct TemplateLibraryItem: View {
 
             Button(action: onAdd) {
                 Image(systemName: "plus.circle")
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(categoryColor)
             }
             .buttonStyle(.plain)
             .help("基于该模板创建节点")
         }
         .padding(8)
-        .background(Color(.controlBackgroundColor))
+        .background(categoryColor.opacity(0.06))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(categoryColor)
+                .frame(width: 4)
+        }
         .cornerRadius(6)
         .help("拖拽到画布可直接创建模板节点")
         .onDrag { NSItemProvider(object: "template:\(template.id)" as NSString) }

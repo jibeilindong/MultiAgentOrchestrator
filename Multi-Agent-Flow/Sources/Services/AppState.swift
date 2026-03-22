@@ -675,8 +675,34 @@ class AppState: ObservableObject {
         currentProject?.runtimeState.appliedToMirrorConfigurationRevision ?? 0
     }
 
+    var isProjectMirrorPrepared: Bool {
+        guard let runtimeState = currentProject?.runtimeState else { return false }
+
+        if openClawManager.sessionLifecycle.stage != .inactive {
+            return true
+        }
+
+        return runtimeState.appliedToMirrorConfigurationRevision > 0
+            && runtimeState.appliedToMirrorConfigurationRevision >= runtimeState.workflowConfigurationRevision
+    }
+
     var syncedOpenClawRuntimeConfigurationRevision: Int {
         currentProject?.runtimeState.syncedToRuntimeConfigurationRevision ?? 0
+    }
+
+    var isCurrentProjectRuntimeSessionSynchronized: Bool {
+        guard isCurrentProjectAttachedToOpenClaw,
+              let runtimeState = currentProject?.runtimeState else {
+            return false
+        }
+
+        if openClawManager.sessionLifecycle.stage == .synced {
+            return true
+        }
+
+        return runtimeState.syncedToRuntimeConfigurationRevision > 0
+            && runtimeState.syncedToRuntimeConfigurationRevision >= runtimeState.appliedToMirrorConfigurationRevision
+            && runtimeState.appliedToMirrorConfigurationRevision > 0
     }
 
     var pendingOpenClawRuntimeSyncRevisionDelta: Int {
@@ -830,18 +856,13 @@ class AppState: ObservableObject {
             if pendingOpenClawRuntimeSyncRevisionDelta > 0 {
                 return "当前项目镜像存在待同步变更。确认连接无误后，请执行“同步当前会话”。"
             }
-            if mirroredWorkflowConfigurationRevision > 0,
-               syncedOpenClawRuntimeConfigurationRevision >= mirroredWorkflowConfigurationRevision {
+            if isCurrentProjectRuntimeSessionSynchronized {
                 return "当前项目镜像已写回本次 OpenClaw 会话。"
             }
-            switch openClawManager.sessionLifecycle.stage {
-            case .inactive:
-                return LocalizedString.text("project_not_attached_hint")
-            case .prepared, .pendingSync:
+            if isProjectMirrorPrepared {
                 return "当前项目镜像已准备完成，但尚未写回当前 OpenClaw 会话。"
-            case .synced:
-                return "当前项目镜像已写回本次 OpenClaw 会话。"
             }
+            return LocalizedString.text("project_not_attached_hint")
         }
     }
 
@@ -1459,6 +1480,13 @@ class AppState: ObservableObject {
         }
 
         return (true, LocalizedString.text("workflow_apply_pending"))
+    }
+
+    private func projectHasUnresolvedManagedPaths(_ project: MAProject) -> Bool {
+        project.agents.contains { agent in
+            guard nodeBinding(for: agent.id, in: project) != nil else { return false }
+            return managedNodeOpenClawWorkspaceURL(for: agent, in: project) == nil
+        }
     }
     
     // 关闭当前项目
@@ -3609,8 +3637,8 @@ class AppState: ObservableObject {
             nodeID: nodeID,
             isConnected: openClawManager.isConnected,
             isAttachedToCurrentProject: isCurrentProjectAttachedToOpenClaw,
-            isMirrorPrepared: openClawManager.sessionLifecycle.stage != .inactive,
-            isMirrorSynchronized: openClawManager.sessionLifecycle.stage == .synced,
+            isMirrorPrepared: isProjectMirrorPrepared,
+            isMirrorSynchronized: isCurrentProjectRuntimeSessionSynchronized,
             managedPath: managedPath
         )
     }
@@ -3794,7 +3822,8 @@ class AppState: ObservableObject {
         }
 
         let requestedRevision = project.runtimeState.workflowConfigurationRevision
-        guard requestedRevision != project.runtimeState.appliedToMirrorConfigurationRevision else {
+        let shouldRematerializeMirror = !isProjectMirrorPrepared || projectHasUnresolvedManagedPaths(project)
+        guard requestedRevision != project.runtimeState.appliedToMirrorConfigurationRevision || shouldRematerializeMirror else {
             completion?(true, LocalizedString.text("workflow_apply_no_pending"))
             return
         }
