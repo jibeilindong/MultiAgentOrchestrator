@@ -454,6 +454,12 @@ class OpenClawManager: ObservableObject {
         var unresolvedAgentNames: [String] = []
     }
 
+    private enum ManagedWorkspaceStageOutcome {
+        case noManagedWorkspace
+        case unchanged
+        case changed
+    }
+
     private enum LocalRuntimeRegistrationStage: String {
         case workspaceResolution
         case canonicalConfig
@@ -828,6 +834,7 @@ class OpenClawManager: ObservableObject {
     private var agentRuntimeChannels: [String: AgentRuntimeChannel] = [:]
     private let agentRuntimeChannelLock = NSLock()
     private var sessionDeploymentModified = false
+    private var sessionDeploymentBackupPrepared = false
     private var userProvidedLocalBootstrapDirectory: URL?
     private var userProvidedLocalWorkspaceDirectoriesByNodeID: [UUID: URL] = [:]
     private var userProvidedLocalWorkspaceDirectoriesByAgentID: [UUID: URL] = [:]
@@ -891,7 +898,6 @@ class OpenClawManager: ObservableObject {
         status = .connecting
         config.save()
         pendingSoulReconcileResult = nil
-        let previousSessionLifecycle = sessionLifecycle
         updateConnectionState(
             phase: .discovering,
             deploymentKind: config.deploymentKind,
@@ -910,35 +916,10 @@ class OpenClawManager: ObservableObject {
                 return
             }
 
-            var stageNote: String?
-            var reconcileNote: String?
-            if let projectID, config.deploymentKind != .remoteServer {
-                do {
-                    let preparationResult = try self.prepareConnectedSession(
-                        for: projectID,
-                        project: project
-                    )
-                    stageNote = preparationResult.stageNote
-                    reconcileNote = preparationResult.reconcileNote
-                } catch {
-                    if self.sessionContext != nil {
-                        self.endSession(restoreOriginalState: true)
-                    }
-                    self.pendingSoulReconcileResult = nil
-                    self.sessionLifecycle = previousSessionLifecycle
-                    let failureMessage = "OpenClaw 连接预检成功，但项目会话准备失败：\(error.localizedDescription)"
-                    self.failConnectionPreparation(using: config, message: failureMessage)
-                    completion?(false, self.connectionCompletionMessage(baseMessage: failureMessage, cleanupNote: cleanupNote))
-                    return
-                }
-            }
-
             completion?(
                 true,
                 self.connectionCompletionMessage(
                     baseMessage: message,
-                    stageNote: stageNote,
-                    reconcileNote: reconcileNote,
                     cleanupNote: cleanupNote
                 )
             )
@@ -1213,15 +1194,13 @@ class OpenClawManager: ObservableObject {
         try FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: importedAgentsURL, withIntermediateDirectories: true)
 
+        sessionDeploymentBackupPrepared = false
         switch sessionDeployment.deploymentKind {
         case .local:
-            guard let openClawRoot = sessionDeployment.localRootURL else {
+            guard sessionDeployment.localRootURL != nil else {
                 throw NSError(domain: "OpenClawManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法解析本地 OpenClaw 路径"])
             }
-            _ = try replaceDirectoryContents(of: backupURL, withContentsOf: openClawRoot)
-            if !directoryHasContent(mirrorURL) {
-                _ = try replaceDirectoryContents(of: mirrorURL, withContentsOf: openClawRoot)
-            }
+            try removeDirectoryContents(at: backupURL)
         case .container:
             guard let deploymentRootPath = sessionDeployment.deploymentRootPath else {
                 throw NSError(domain: "OpenClawManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"])
@@ -1232,6 +1211,7 @@ class OpenClawManager: ObservableObject {
                 deploymentRootPath: deploymentRootPath,
                 using: sessionDeployment.config
             )
+            sessionDeploymentBackupPrepared = true
             if !directoryHasContent(mirrorURL) {
                 _ = try copyDeploymentContentsToLocal(
                     mirrorURL,
@@ -1271,7 +1251,7 @@ class OpenClawManager: ObservableObject {
                     _ = try replaceDirectoryContents(of: context.mirrorURL, withContentsOf: openClawRoot)
                 }
 
-                if restoreOriginalState && sessionDeploymentModified {
+                if restoreOriginalState && sessionDeploymentModified && sessionDeploymentBackupPrepared {
                     _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: context.backupURL)
                 }
             case .container:
@@ -1287,7 +1267,7 @@ class OpenClawManager: ObservableObject {
                     )
                 }
 
-                if restoreOriginalState && sessionDeploymentModified {
+                if restoreOriginalState && sessionDeploymentModified && sessionDeploymentBackupPrepared {
                     try copyLocalContentsToDeployment(
                         context.backupURL,
                         deploymentRootPath: deploymentRootPath,
@@ -1303,6 +1283,7 @@ class OpenClawManager: ObservableObject {
 
         sessionContext = nil
         sessionDeploymentModified = false
+        sessionDeploymentBackupPrepared = false
         markProjectDetached()
         finalizeDetachedSessionLifecycle()
     }
@@ -2414,6 +2395,23 @@ class OpenClawManager: ObservableObject {
                             unresolvedAgentNames: stageResult.unresolvedAgentNames,
                             deploymentStatus: .deferredNoActiveSession,
                             message: note,
+                            errorMessage: nil
+                        )
+                    )
+                }
+                return
+            }
+
+            if stageResult.updatedAgentCount == 0,
+               !self.sessionLifecycle.hasPendingMirrorChanges,
+               self.sessionLifecycle.stage == .synced {
+                DispatchQueue.main.async {
+                    completion(
+                        ActiveSessionProjectSyncResult(
+                            updatedAgentCount: 0,
+                            unresolvedAgentNames: stageResult.unresolvedAgentNames,
+                            deploymentStatus: .skippedNoPendingChanges,
+                            message: "项目镜像与当前 OpenClaw 会话均已是最新，无需重复同步。",
                             errorMessage: nil
                         )
                     )
@@ -5916,10 +5914,26 @@ class OpenClawManager: ObservableObject {
                FileManager.default.fileExists(atPath: translated.path) {
                 return translated
             }
+
+            if let translated = lazilyCacheCurrentLocalSoulBaseline(
+                from: sourceURL,
+                for: project,
+                backupURL: backupURL
+            ) {
+                return translated
+            }
         }
 
         if let backupMatch = findMatchingSoulURL(in: backupURL, matching: candidateNames) {
             return backupMatch
+        }
+
+        if let translated = lazilyCacheCurrentLocalSoulBaseline(
+            matching: candidateNames,
+            for: project,
+            backupURL: backupURL
+        ) {
+            return translated
         }
 
         return nil
@@ -5979,14 +5993,19 @@ class OpenClawManager: ObservableObject {
             }
 
             do {
-                if try stageManagedWorkspaceDocuments(
+                switch try stageManagedWorkspaceDocuments(
                     for: agent,
                     in: project,
                     workflowID: workflowID,
                     mirrorSoulURL: soulURL
                 ) {
+                case .changed:
                     result.updatedAgentCount += 1
                     continue
+                case .unchanged:
+                    continue
+                case .noManagedWorkspace:
+                    break
                 }
             } catch {
                 result.unresolvedAgentNames.append(agent.name)
@@ -6012,9 +6031,9 @@ class OpenClawManager: ObservableObject {
             }
 
             do {
-                try FileManager.default.createDirectory(at: soulURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try contentToStage.write(to: soulURL, atomically: true, encoding: .utf8)
-                result.updatedAgentCount += 1
+                if try writeTextIfNeeded(contentToStage, to: soulURL) {
+                    result.updatedAgentCount += 1
+                }
             } catch {
                 result.unresolvedAgentNames.append(agent.name)
             }
@@ -6028,21 +6047,23 @@ class OpenClawManager: ObservableObject {
         in project: MAProject,
         workflowID: UUID? = nil,
         mirrorSoulURL: URL
-    ) throws -> Bool {
+    ) throws -> ManagedWorkspaceStageOutcome {
         guard let workspaceURL = managedNodeOpenClawWorkspaceURL(for: agent, in: project, workflowID: workflowID),
               FileManager.default.fileExists(atPath: workspaceURL.path) else {
-            return false
+            return .noManagedWorkspace
         }
 
         let agentRootURL = mirrorSoulURL.deletingLastPathComponent()
         let workspaceMirrorURL = agentRootURL.appendingPathComponent("workspace", isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceMirrorURL, withIntermediateDirectories: true)
 
-        var stagedAny = false
+        var sawManagedDocument = false
+        var wroteAny = false
         for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles {
             let sourceURL = workspaceURL.appendingPathComponent(fileName, isDirectory: false)
             guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
 
+            sawManagedDocument = true
             let content = try String(contentsOf: sourceURL, encoding: .utf8)
             let targetURLs: [URL]
             if fileName == "SOUL.md" {
@@ -6055,16 +6076,17 @@ class OpenClawManager: ObservableObject {
             }
 
             for targetURL in targetURLs {
-                try FileManager.default.createDirectory(
-                    at: targetURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try content.write(to: targetURL, atomically: true, encoding: .utf8)
+                if try writeTextIfNeeded(content, to: targetURL) {
+                    wroteAny = true
+                }
             }
-            stagedAny = true
         }
 
-        return stagedAny
+        guard sawManagedDocument else {
+            return .noManagedWorkspace
+        }
+
+        return wroteAny ? .changed : .unchanged
     }
 
     private func managedNodeOpenClawWorkspaceURL(
@@ -6109,6 +6131,7 @@ class OpenClawManager: ObservableObject {
 
     private func applySessionMirrorToDeployment() throws {
         guard let sessionContext else { return }
+        try ensureSessionDeploymentBackup()
 
         switch sessionContext.deployment.deploymentKind {
         case .local:
@@ -6141,6 +6164,42 @@ class OpenClawManager: ObservableObject {
         markSessionSynchronized()
     }
 
+    private func ensureSessionDeploymentBackup() throws {
+        guard let sessionContext else { return }
+        guard !sessionDeploymentBackupPrepared else { return }
+
+        try FileManager.default.createDirectory(at: sessionContext.backupURL, withIntermediateDirectories: true)
+
+        switch sessionContext.deployment.deploymentKind {
+        case .local:
+            guard let openClawRoot = sessionContext.deployment.localRootURL else {
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: 16,
+                    userInfo: [NSLocalizedDescriptionKey: "无法解析本地 OpenClaw 路径"]
+                )
+            }
+            _ = try replaceDirectoryContents(of: sessionContext.backupURL, withContentsOf: openClawRoot)
+        case .container:
+            guard let deploymentRootPath = sessionContext.deployment.deploymentRootPath else {
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: 16,
+                    userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"]
+                )
+            }
+            _ = try copyDeploymentContentsToLocal(
+                sessionContext.backupURL,
+                deploymentRootPath: deploymentRootPath,
+                using: sessionContext.deployment.config
+            )
+        case .remoteServer:
+            break
+        }
+
+        sessionDeploymentBackupPrepared = true
+    }
+
     private func ensureSessionPrepared() {
         if sessionLifecycle.preparedAt == nil {
             sessionLifecycle.preparedAt = Date()
@@ -6166,6 +6225,24 @@ class OpenClawManager: ObservableObject {
         sessionLifecycle.stage = .synced
         sessionLifecycle.hasPendingMirrorChanges = false
         sessionLifecycle.lastAppliedAt = Date()
+    }
+
+    @discardableResult
+    private func writeTextIfNeeded(_ content: String, to targetURL: URL) throws -> Bool {
+        try FileManager.default.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        if FileManager.default.fileExists(atPath: targetURL.path) {
+            let existing = try String(contentsOf: targetURL, encoding: .utf8)
+            if existing == content {
+                return false
+            }
+        }
+
+        try content.write(to: targetURL, atomically: true, encoding: .utf8)
+        return true
     }
 
     private func finalizeDetachedSessionLifecycle() {
@@ -6220,6 +6297,8 @@ class OpenClawManager: ObservableObject {
         var parts: [String] = []
         if result.updatedAgentCount > 0 {
             parts.append("已更新 \(result.updatedAgentCount) 个 agent 的项目镜像")
+        } else if result.unresolvedAgentNames.isEmpty {
+            parts.append("项目镜像已是最新")
         }
         if !result.unresolvedAgentNames.isEmpty {
             let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
@@ -6232,6 +6311,8 @@ class OpenClawManager: ObservableObject {
         var parts: [String] = []
         if result.updatedAgentCount > 0 {
             parts.append("已准备 \(result.updatedAgentCount) 个 agent 的项目镜像，尚未写回当前 OpenClaw 会话")
+        } else if result.unresolvedAgentNames.isEmpty {
+            parts.append("项目镜像已是最新，当前无需重新准备会话副本")
         }
         if !result.unresolvedAgentNames.isEmpty {
             let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
@@ -6395,6 +6476,66 @@ class OpenClawManager: ObservableObject {
         }
 
         return nil
+    }
+
+    private func currentLocalDeploymentBaselineRoot(for project: MAProject) -> URL? {
+        guard let sessionContext,
+              sessionContext.projectID == project.id,
+              sessionContext.deployment.deploymentKind == .local,
+              !sessionDeploymentModified,
+              !sessionDeploymentBackupPrepared,
+              let localRootURL = sessionContext.deployment.localRootURL else {
+            return nil
+        }
+
+        return localRootURL
+    }
+
+    private func lazilyCacheCurrentLocalSoulBaseline(
+        from sourceURL: URL,
+        for project: MAProject,
+        backupURL: URL
+    ) -> URL? {
+        guard let localRootURL = currentLocalDeploymentBaselineRoot(for: project),
+              let translated = translateRelativeURL(sourceURL, from: localRootURL, to: backupURL) else {
+            return nil
+        }
+
+        return cacheSessionBackupFileIfNeeded(from: sourceURL, to: translated)
+    }
+
+    private func lazilyCacheCurrentLocalSoulBaseline(
+        matching candidateNames: [String],
+        for project: MAProject,
+        backupURL: URL
+    ) -> URL? {
+        guard let localRootURL = currentLocalDeploymentBaselineRoot(for: project),
+              let sourceURL = findMatchingSoulURL(in: localRootURL, matching: candidateNames),
+              let translated = translateRelativeURL(sourceURL, from: localRootURL, to: backupURL) else {
+            return nil
+        }
+
+        return cacheSessionBackupFileIfNeeded(from: sourceURL, to: translated)
+    }
+
+    private func cacheSessionBackupFileIfNeeded(from sourceURL: URL, to targetURL: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return nil }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: targetURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+
+            if !FileManager.default.fileExists(atPath: targetURL.path) {
+                let data = try Data(contentsOf: sourceURL)
+                try data.write(to: targetURL, options: .atomic)
+            }
+
+            return targetURL
+        } catch {
+            return nil
+        }
     }
 
     private func backupSoulContent(

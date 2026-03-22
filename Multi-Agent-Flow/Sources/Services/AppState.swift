@@ -1431,9 +1431,9 @@ class AppState: ObservableObject {
     private func writeAgentSoulToProjectMirror(
         agent: Agent,
         project: MAProject
-    ) -> (success: Bool, message: String, path: String?, privateRootPath: String?, metadataPath: String?) {
+    ) -> (success: Bool, changed: Bool, message: String, path: String?, privateRootPath: String?, metadataPath: String?) {
         guard let soulURL = openClawManager.projectMirrorSoulURL(for: agent, in: project) else {
-            return (false, LocalizedString.text("soul_mirror_path_not_found"), nil, nil, nil)
+            return (false, false, LocalizedString.text("soul_mirror_path_not_found"), nil, nil, nil)
         }
 
         do {
@@ -1450,22 +1450,27 @@ class AppState: ObservableObject {
 
             try FileManager.default.createDirectory(at: agentRootURL, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: privateRootURL, withIntermediateDirectories: true)
-            try mirroredAgent.soulMD.write(to: soulURL, atomically: true, encoding: .utf8)
+            let soulChanged = try writeProjectMirrorTextIfNeeded(mirroredAgent.soulMD, to: soulURL)
 
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let metadata = try encoder.encode(mirroredAgent)
-            try metadata.write(to: metadataURL, options: .atomic)
+            let metadataChanged = try writeProjectMirrorDataIfNeeded(metadata, to: metadataURL)
+            let changed = soulChanged || metadataChanged
 
             return (
                 true,
-                LocalizedString.format("wrote_to_path", soulURL.path),
+                changed,
+                changed
+                    ? LocalizedString.format("wrote_to_path", soulURL.path)
+                    : "项目镜像已是最新：\(soulURL.path)",
                 soulURL.path,
                 privateRootURL.path,
                 metadataURL.path
             )
         } catch {
             return (
+                false,
                 false,
                 LocalizedString.format("write_project_mirror_failed", error.localizedDescription),
                 nil,
@@ -1476,14 +1481,23 @@ class AppState: ObservableObject {
     }
 
     private func materializeProjectAgentMirrors(in project: inout MAProject) -> (success: Bool, message: String) {
+        var changedCount = 0
         for agent in project.agents {
             let mirrorWrite = writeAgentSoulToProjectMirror(agent: agent, project: project)
             guard mirrorWrite.success else {
                 return (false, mirrorWrite.message)
             }
+
+            if mirrorWrite.changed {
+                changedCount += 1
+            }
         }
 
-        return (true, LocalizedString.text("workflow_apply_pending"))
+        if changedCount > 0 {
+            return (true, "已更新 \(changedCount) 个 agent 的项目镜像。")
+        }
+
+        return (true, "项目镜像已是最新。")
     }
 
     private func projectHasUnresolvedManagedPaths(_ project: MAProject) -> Bool {
@@ -1866,6 +1880,15 @@ class AppState: ObservableObject {
         let effectiveWorkflowID = workflowID.flatMap { candidateID in
             project.workflows.contains(where: { $0.id == candidateID }) ? candidateID : nil
         } ?? project.workflows.first?.id
+
+        if openClawManager.hasAttachedProjectSession,
+           openClawManager.attachedProjectID == project.id,
+           isCurrentProjectRuntimeSessionSynchronized,
+           pendingOpenClawRuntimeSyncRevisionDelta == 0,
+           !openClawManager.sessionLifecycle.hasPendingMirrorChanges {
+            completion?(true, "当前 OpenClaw 会话已同步到最新项目镜像，无需重复同步。")
+            return
+        }
 
         if !openClawManager.hasAttachedProjectSession || openClawManager.attachedProjectID != project.id {
             attachCurrentProjectToOpenClaw { [weak self] success, message in
@@ -4148,6 +4171,30 @@ class AppState: ObservableObject {
         case .inactive:
             return "\(baseMessage) \(localOnlyHint)".trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    @discardableResult
+    private func writeProjectMirrorTextIfNeeded(_ content: String, to targetURL: URL) throws -> Bool {
+        let data = Data(content.utf8)
+        return try writeProjectMirrorDataIfNeeded(data, to: targetURL)
+    }
+
+    @discardableResult
+    private func writeProjectMirrorDataIfNeeded(_ data: Data, to targetURL: URL) throws -> Bool {
+        try FileManager.default.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        if FileManager.default.fileExists(atPath: targetURL.path) {
+            let existing = try Data(contentsOf: targetURL)
+            if existing == data {
+                return false
+            }
+        }
+
+        try data.write(to: targetURL, options: .atomic)
+        return true
     }
 
     private func syncOpenClawCommunicationAllowListIfNeeded(

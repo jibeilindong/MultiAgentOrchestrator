@@ -983,6 +983,205 @@ final class OpenClawConnectionStateTests: XCTestCase {
         XCTAssertEqual(manager.projectAttachment.state, .detached)
     }
 
+    func testAttachUsesLiveLocalSoulBaselineWithoutEagerFullBackup() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        let runtimeAgentDirectory = runtimeRootURL
+            .appendingPathComponent("agents/任务中心-任务领域-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeAgentDirectory, withIntermediateDirectories: true)
+        let runtimeSoulURL = runtimeAgentDirectory.appendingPathComponent("SOUL.md", isDirectory: false)
+        try "# runtime baseline\n".write(to: runtimeSoulURL, atomically: true, encoding: .utf8)
+
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try "{}".write(to: configFileURL, atomically: true, encoding: .utf8)
+
+        let executableURL = try makeExecutableScript(
+            in: tempDirectory,
+            contents: """
+            #!/bin/sh
+            if [ "$1" = "config" ] && [ "$2" = "file" ]; then
+              printf '%s\\n' "\(configFileURL.path)"
+              exit 0
+            fi
+            exit 0
+            """
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.autoConnect = false
+        manager.config = config
+
+        let project = MAProject(name: "Attach Lazy Baseline")
+        defer {
+            try? FileManager.default.removeItem(at: ProjectManager.shared.openClawProjectRoot(for: project.id))
+        }
+
+        var agent = Agent(name: "任务中心-任务领域-1")
+        agent.soulMD = "# 新智能体\n这是我的配置..."
+        agent.openClawDefinition.agentIdentifier = agent.name
+
+        var mutableProject = project
+        mutableProject.agents = [agent]
+
+        manager.isConnected = true
+        manager.status = .connected
+        manager.connectionState = OpenClawConnectionStateSnapshot(
+            phase: .ready,
+            deploymentKind: .local,
+            capabilities: OpenClawConnectionCapabilitiesSnapshot(
+                cliAvailable: true,
+                gatewayReachable: false,
+                gatewayAuthenticated: false,
+                agentListingAvailable: true,
+                sessionHistoryAvailable: false,
+                gatewayAgentAvailable: false,
+                gatewayChatAvailable: false,
+                projectAttachmentSupported: true
+            ),
+            health: OpenClawConnectionHealthSnapshot(
+                lastProbeAt: Date(),
+                lastHeartbeatAt: Date(),
+                latencyMs: 5,
+                degradationReason: nil,
+                lastMessage: "cli-only"
+            )
+        )
+
+        let attachCompletion = expectation(description: "attach completed")
+        manager.attachProjectSession(for: mutableProject) { success, message in
+            XCTAssertTrue(success, message)
+            attachCompletion.fulfill()
+        }
+        wait(for: [attachCompletion], timeout: 5.0)
+        drainMainQueue()
+
+        let backupURL = ProjectManager.shared.openClawBackupDirectory(for: mutableProject.id)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: backupURL.appendingPathComponent("openclaw.json", isDirectory: false).path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: backupURL
+                    .appendingPathComponent("agents/任务中心-任务领域-1/SOUL.md", isDirectory: false)
+                    .path
+            )
+        )
+
+        var reconciledProject = mutableProject
+        let report = manager.applyPendingSoulReconcileResult(to: &reconciledProject)
+        XCTAssertEqual(report?.overwrittenCount, 1)
+        XCTAssertEqual(reconciledProject.agents.first?.soulMD, "# runtime baseline\n")
+
+        manager.disconnect()
+    }
+
+    func testFirstLocalSyncCreatesBackupOnDemandAndDisconnectRestoresRuntime() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try """
+        {
+          "agents": {
+            "list": [
+              {
+                "id": "main",
+                "name": "main",
+                "workspace": "\(runtimeRootURL.appendingPathComponent("workspace", isDirectory: true).path)",
+                "agentDir": "\(mainAgentDirectory.path)"
+              }
+            ]
+          }
+        }
+        """.write(to: configFileURL, atomically: true, encoding: .utf8)
+        try #"{"profiles":{"minimax:cn":{"provider":"minimax"}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"providers":{"minimax":{"models":[{"id":"MiniMax-M2.5"}]}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let executableURL = try makeMutableOpenClawScript(in: tempDirectory, configFileURL: configFileURL)
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.autoConnect = false
+        manager.config = config
+
+        let project = MAProject(name: "Lazy Backup Sync Restore")
+        defer {
+            try? FileManager.default.removeItem(at: ProjectManager.shared.openClawProjectRoot(for: project.id))
+        }
+
+        let agent = makeDeferredProjectAgent(name: "任务中心-任务领域-1")
+        var workflow = Workflow(name: "Main Workflow")
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = agent.name
+        workflow.nodes = [node]
+
+        var mutableProject = project
+        mutableProject.agents = [agent]
+        mutableProject.workflows = [workflow]
+
+        try manager.beginSession(for: mutableProject.id)
+        manager.isConnected = true
+
+        let backupURL = ProjectManager.shared.openClawBackupDirectory(for: mutableProject.id)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: backupURL.appendingPathComponent("openclaw.json", isDirectory: false).path
+            )
+        )
+
+        let completion = expectation(description: "lazy backup sync completed")
+        manager.syncProjectAgentsToActiveSession(mutableProject) { result in
+            XCTAssertEqual(result.deploymentStatus, .appliedToRuntime)
+            XCTAssertNil(result.errorMessage)
+            completion.fulfill()
+        }
+
+        wait(for: [completion], timeout: 5.0)
+        drainMainQueue()
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: backupURL.appendingPathComponent("openclaw.json", isDirectory: false).path
+            )
+        )
+
+        let syncedConfigData = try Data(contentsOf: configFileURL)
+        let syncedConfigObject = try XCTUnwrap(JSONSerialization.jsonObject(with: syncedConfigData) as? [String: Any])
+        let syncedAgentsObject = try XCTUnwrap(syncedConfigObject["agents"] as? [String: Any])
+        let syncedList = try XCTUnwrap(syncedAgentsObject["list"] as? [[String: Any]])
+        XCTAssertTrue(syncedList.contains { ($0["id"] as? String) == "任务中心-任务领域-1" })
+
+        manager.disconnect()
+
+        let restoredConfigData = try Data(contentsOf: configFileURL)
+        let restoredConfigObject = try XCTUnwrap(JSONSerialization.jsonObject(with: restoredConfigData) as? [String: Any])
+        let restoredAgentsObject = try XCTUnwrap(restoredConfigObject["agents"] as? [String: Any])
+        let restoredList = try XCTUnwrap(restoredAgentsObject["list"] as? [[String: Any]])
+        XCTAssertFalse(restoredList.contains { ($0["id"] as? String) == "任务中心-任务领域-1" })
+        XCTAssertEqual(restoredList.count, 1)
+    }
+
     func testSyncRegistersLocalRuntimeAgentUsingUserProvidedBootstrapDirectory() throws {
         let manager = OpenClawManager(notificationCenter: NotificationCenter())
         let tempDirectory = try makeTemporaryDirectory()
@@ -1160,6 +1359,91 @@ final class OpenClawConnectionStateTests: XCTestCase {
         let list = try XCTUnwrap(agentsObject["list"] as? [[String: Any]])
         let registered = try XCTUnwrap(list.first { ($0["id"] as? String) == "任务中心-任务领域-1" })
         XCTAssertEqual(registered["workspace"] as? String, expectedWorkspacePath)
+    }
+
+    func testRepeatedSyncSkipsWhenRuntimeAlreadyMatchesCurrentMirror() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try """
+        {
+          "agents": {
+            "list": [
+              {
+                "id": "main",
+                "name": "main",
+                "workspace": "\(runtimeRootURL.appendingPathComponent("workspace", isDirectory: true).path)",
+                "agentDir": "\(mainAgentDirectory.path)"
+              }
+            ]
+          }
+        }
+        """.write(to: configFileURL, atomically: true, encoding: .utf8)
+        try #"{"profiles":{"minimax:cn":{"provider":"minimax"}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"providers":{"minimax":{"models":[{"id":"MiniMax-M2.5"}]}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let executableURL = try makeMutableOpenClawScript(in: tempDirectory, configFileURL: configFileURL)
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.autoConnect = false
+        manager.config = config
+
+        let project = MAProject(name: "Repeated Sync Noop")
+        defer {
+            try? FileManager.default.removeItem(at: ProjectManager.shared.openClawProjectRoot(for: project.id))
+        }
+
+        let workspaceRootURL = tempDirectory.appendingPathComponent("repeat-workspace", isDirectory: true)
+        let agent = try makeProjectAgent(name: "任务中心-任务领域-1", workspaceRootURL: workspaceRootURL)
+        var workflow = Workflow(name: "Main Workflow")
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = agent.name
+        workflow.nodes = [node]
+
+        var mutableProject = project
+        mutableProject.agents = [agent]
+        mutableProject.workflows = [workflow]
+
+        try manager.beginSession(for: mutableProject.id)
+        manager.isConnected = true
+
+        let firstSync = expectation(description: "first sync completed")
+        manager.syncProjectAgentsToActiveSession(mutableProject) { result in
+            XCTAssertEqual(result.deploymentStatus, .appliedToRuntime)
+            XCTAssertNil(result.errorMessage)
+            firstSync.fulfill()
+        }
+
+        wait(for: [firstSync], timeout: 5.0)
+        drainMainQueue()
+
+        let secondSync = expectation(description: "second sync skipped")
+        manager.syncProjectAgentsToActiveSession(mutableProject) { result in
+            XCTAssertEqual(result.deploymentStatus, .skippedNoPendingChanges)
+            XCTAssertEqual(result.updatedAgentCount, 0)
+            XCTAssertNil(result.errorMessage)
+            XCTAssertTrue(result.message.contains("无需重复同步"))
+            secondSync.fulfill()
+        }
+
+        wait(for: [secondSync], timeout: 5.0)
+        drainMainQueue()
     }
 
     func testSyncMergePreservesExistingMainAuthFilesWhenProjectMirrorDoesNotContainThem() throws {
