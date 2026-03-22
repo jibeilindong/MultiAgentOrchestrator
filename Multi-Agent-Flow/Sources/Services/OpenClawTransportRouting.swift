@@ -3,7 +3,8 @@ import Foundation
 enum OpenClawTransportRouting {
     static func prefersGatewayChatTransport(
         sessionID: String?,
-        outputMode: AgentOutputMode
+        outputMode: AgentOutputMode,
+        executionIntent: OpenClawRuntimeExecutionIntent
     ) -> Bool {
         let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         guard !normalizedSessionID.isEmpty else { return false }
@@ -13,6 +14,10 @@ enum OpenClawTransportRouting {
         }
 
         if normalizedSessionID.hasPrefix("workbench-") || normalizedSessionID.hasPrefix("benchmark-") {
+            return true
+        }
+
+        if executionIntent == .conversationAutonomous && normalizedSessionID.hasPrefix("conversation-") {
             return true
         }
 
@@ -27,11 +32,16 @@ enum OpenClawTransportRouting {
     static func runtimeTransportKind(
         deploymentKind: OpenClawDeploymentKind,
         outputMode: AgentOutputMode,
-        sessionID: String?
+        sessionID: String?,
+        executionIntent: OpenClawRuntimeExecutionIntent
     ) -> OpenClawRuntimeTransportKind {
         switch deploymentKind {
         case .remoteServer:
-            return prefersGatewayChatTransport(sessionID: sessionID, outputMode: outputMode)
+            return prefersGatewayChatTransport(
+                sessionID: sessionID,
+                outputMode: outputMode,
+                executionIntent: executionIntent
+            )
                 ? .gatewayChat
                 : .gatewayAgent
         case .local, .container:

@@ -47,6 +47,39 @@ enum AgentThinkingLevel: String, Sendable {
     case xhigh
 }
 
+enum OpenClawRuntimeExecutionIntent: String, Sendable {
+    case conversationAutonomous = "conversation_autonomous"
+    case workflowControlled = "workflow_controlled"
+    case inspectionReadonly = "inspection_readonly"
+    case benchmark = "benchmark"
+
+    var requiresPersistentPublish: Bool {
+        switch self {
+        case .workflowControlled:
+            return true
+        case .conversationAutonomous, .inspectionReadonly, .benchmark:
+            return false
+        }
+    }
+
+    var allowsEphemeralPublish: Bool {
+        !requiresPersistentPublish
+    }
+
+    var displayName: String {
+        switch self {
+        case .conversationAutonomous:
+            return "conversation.autonomous"
+        case .workflowControlled:
+            return "run.controlled"
+        case .inspectionReadonly:
+            return "inspection.readonly"
+        case .benchmark:
+            return "benchmark"
+        }
+    }
+}
+
 private enum WorkflowInstructionStyle {
     case standard
     case fastWorkbenchEntry
@@ -82,6 +115,7 @@ struct ExecutionResult: Codable, Identifiable {
     let output: String
     let outputType: ExecutionOutputType
     let sessionID: String?
+    let executionIntent: String?
     let transportKind: String?
     let firstChunkLatencyMs: Int?
     let completionLatencyMs: Int?
@@ -108,6 +142,7 @@ struct ExecutionResult: Codable, Identifiable {
         case output
         case outputType
         case sessionID
+        case executionIntent
         case transportKind
         case firstChunkLatencyMs
         case completionLatencyMs
@@ -134,6 +169,7 @@ struct ExecutionResult: Codable, Identifiable {
         output: String = "",
         outputType: ExecutionOutputType = .empty,
         sessionID: String? = nil,
+        executionIntent: String? = nil,
         transportKind: String? = nil,
         firstChunkLatencyMs: Int? = nil,
         completionLatencyMs: Int? = nil,
@@ -158,6 +194,7 @@ struct ExecutionResult: Codable, Identifiable {
         self.output = output
         self.outputType = outputType
         self.sessionID = sessionID
+        self.executionIntent = executionIntent
         self.transportKind = transportKind
         self.firstChunkLatencyMs = firstChunkLatencyMs
         self.completionLatencyMs = completionLatencyMs
@@ -187,6 +224,7 @@ struct ExecutionResult: Codable, Identifiable {
         output = try container.decodeIfPresent(String.self, forKey: .output) ?? ""
         outputType = try container.decodeIfPresent(ExecutionOutputType.self, forKey: .outputType) ?? .runtimeLog
         sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        executionIntent = try container.decodeIfPresent(String.self, forKey: .executionIntent)
         transportKind = try container.decodeIfPresent(String.self, forKey: .transportKind)
         firstChunkLatencyMs = try container.decodeIfPresent(Int.self, forKey: .firstChunkLatencyMs)
         completionLatencyMs = try container.decodeIfPresent(Int.self, forKey: .completionLatencyMs)
@@ -215,6 +253,7 @@ struct ExecutionResult: Codable, Identifiable {
         try container.encode(output, forKey: .output)
         try container.encode(outputType, forKey: .outputType)
         try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(executionIntent, forKey: .executionIntent)
         try container.encodeIfPresent(transportKind, forKey: .transportKind)
         try container.encodeIfPresent(firstChunkLatencyMs, forKey: .firstChunkLatencyMs)
         try container.encodeIfPresent(completionLatencyMs, forKey: .completionLatencyMs)
@@ -671,6 +710,12 @@ class OpenClawService: ObservableObject {
         let project: MAProject
         let workflowID: UUID?
     }
+
+    private struct RuntimeExecutionAdmission {
+        let allowed: Bool
+        let note: String?
+        let blockingMessage: String?
+    }
     
     // 初始化时检测连接状态
     init() {
@@ -946,6 +991,7 @@ class OpenClawService: ObservableObject {
         prompt: String? = nil,
         projectID: UUID? = nil,
         projectRuntimeSessionID: String? = nil,
+        executionIntent: OpenClawRuntimeExecutionIntent = .workflowControlled,
         startingNodes: [WorkflowNode]? = nil,
         entryNodeIDsOverride: Set<UUID>? = nil,
         preloadedResults: [ExecutionResult] = [],
@@ -966,6 +1012,21 @@ class OpenClawService: ObservableObject {
                 : "OpenClaw runtime is not runnable under the current capability state."
             lastError = failureMessage
             addLog(.error, "Cannot execute workflow: \(failureMessage)")
+            completion([])
+            return
+        }
+
+        let executionAdmission = runtimeExecutionAdmission(
+            for: executionIntent,
+            projectID: projectID
+        )
+        if let note = executionAdmission.note {
+            addLog(.info, note)
+        }
+        guard executionAdmission.allowed else {
+            let failureMessage = executionAdmission.blockingMessage ?? "OpenClaw runtime admission check failed."
+            lastError = failureMessage
+            addLog(.error, failureMessage)
             completion([])
             return
         }
@@ -1019,6 +1080,7 @@ class OpenClawService: ObservableObject {
             prompt: prompt,
             projectID: projectID,
             projectRuntimeSessionID: projectRuntimeSessionID,
+            executionIntent: executionIntent,
             entryNodeIDs: effectiveEntryNodeIDs,
             seedResults: preloadedResults,
             agentOutputMode: agentOutputMode,
@@ -1071,7 +1133,8 @@ class OpenClawService: ObservableObject {
                 agentID: UUID(),
                 status: .failed,
                 output: "Agent not found for node",
-                outputType: .errorSummary
+                outputType: .errorSummary,
+                executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue
             )
             completion(WorkbenchEntryExecution(result: failedResult, downstreamNodes: []))
             return
@@ -1113,6 +1176,7 @@ class OpenClawService: ObservableObject {
             agent: agent,
             workflowID: workflow.id,
             prompt: prompt,
+            executionIntent: .conversationAutonomous,
             isEntryNode: true,
             downstreamTargets: downstreamTargets,
             guardrails: guardrails,
@@ -1271,6 +1335,7 @@ class OpenClawService: ObservableObject {
         prompt: String?,
         projectID: UUID?,
         projectRuntimeSessionID: String?,
+        executionIntent: OpenClawRuntimeExecutionIntent,
         entryNodeIDs: Set<UUID>,
         seedResults: [ExecutionResult] = [],
         agentOutputMode: AgentOutputMode,
@@ -1363,7 +1428,8 @@ class OpenClawService: ObservableObject {
                     agentID: UUID(),
                     status: .failed,
                     output: "Agent not found for node",
-                    outputType: .errorSummary
+                    outputType: .errorSummary,
+                    executionIntent: executionIntent.rawValue
                 )
                 results.append(result)
                 executionState?.failedNodes.append(node.id)
@@ -1400,6 +1466,7 @@ class OpenClawService: ObservableObject {
                 agent: agent,
                 workflowID: workflow.id,
                 prompt: prompt,
+                executionIntent: executionIntent,
                 isEntryNode: entryNodeIDs.contains(node.id),
                 downstreamTargets: guardrails.directTargets,
                 guardrails: guardrails,
@@ -1472,6 +1539,7 @@ class OpenClawService: ObservableObject {
         agent: Agent,
         workflowID: UUID? = nil,
         prompt: String?,
+        executionIntent: OpenClawRuntimeExecutionIntent = .workflowControlled,
         isEntryNode: Bool = false,
         downstreamTargets: [RoutingTargetDescriptor] = [],
         guardrails: RuntimeDispatchGuardrails? = nil,
@@ -1491,7 +1559,11 @@ class OpenClawService: ObservableObject {
         let nodeStartedAt = Date()
         let targetAgentID = resolvedAgentIdentifier(for: agent)
         let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedTransportKind = runtimeTransportKind(for: outputMode, sessionID: normalizedSessionID)
+        let resolvedTransportKind = runtimeTransportKind(
+            for: outputMode,
+            sessionID: normalizedSessionID,
+            executionIntent: executionIntent
+        )
         let retryPolicy = runtimeRetryPolicy(isEntryNode: isEntryNode)
         let runtimeIdempotencyKey = dispatchIdempotencyKey ?? UUID().uuidString
         let effectiveGuardrails = guardrails ?? RuntimeDispatchGuardrails(
@@ -1520,8 +1592,10 @@ class OpenClawService: ObservableObject {
             target: runtimeAgentActor(id: targetAgentID, name: agent.name),
             transportKind: resolvedTransportKind,
             deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+            workflowID: workflowID,
             node: node,
             sessionKey: normalizedSessionID,
+            executionIntent: executionIntent,
             idempotencyKey: runtimeIdempotencyKey,
             attempt: dispatchAttempt,
             payload: [
@@ -1575,8 +1649,10 @@ class OpenClawService: ObservableObject {
             target: runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
             transportKind: resolvedTransportKind,
             deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+            workflowID: workflowID,
             node: node,
             sessionKey: normalizedSessionID,
+            executionIntent: executionIntent,
             parentEventId: dispatchEvent.id,
             idempotencyKey: runtimeIdempotencyKey,
             attempt: dispatchAttempt,
@@ -1601,8 +1677,10 @@ class OpenClawService: ObservableObject {
                 target: runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
                 transportKind: resolvedTransportKind,
                 deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                workflowID: workflowID,
                 node: node,
                 sessionKey: normalizedSessionID,
+                executionIntent: executionIntent,
                 parentEventId: acceptedEvent.id,
                 idempotencyKey: runtimeIdempotencyKey,
                 attempt: dispatchAttempt,
@@ -1622,6 +1700,7 @@ class OpenClawService: ObservableObject {
             runtimeAgent: agent,
             workflowID: workflowID,
             sessionID: sessionID,
+            executionIntent: executionIntent,
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: trackActiveRemoteRun,
             outputMode: outputMode,
@@ -1651,6 +1730,7 @@ class OpenClawService: ObservableObject {
                         agent: agent,
                         workflowID: workflowID,
                         prompt: prompt,
+                        executionIntent: executionIntent,
                         isEntryNode: isEntryNode,
                         downstreamTargets: downstreamTargets,
                         guardrails: effectiveGuardrails,
@@ -1689,8 +1769,10 @@ class OpenClawService: ObservableObject {
                 target: self.runtimeSystemActor(kind: .orchestrator, id: "workflow.executor"),
                 transportKind: resolvedTransportKind,
                 deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                workflowID: workflowID,
                 node: node,
                 sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
+                executionIntent: executionIntent,
                 parentEventId: acceptedEvent.id,
                 idempotencyKey: runtimeIdempotencyKey,
                 attempt: dispatchAttempt,
@@ -1721,8 +1803,10 @@ class OpenClawService: ObservableObject {
                     target: self.runtimeSystemActor(kind: .orchestrator, id: "workflow.router"),
                     transportKind: resolvedTransportKind,
                     deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                    workflowID: workflowID,
                     node: node,
                     sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
+                    executionIntent: executionIntent,
                     parentEventId: resultEvent.id,
                     payload: [
                         "action": decision.action.rawValue,
@@ -1738,8 +1822,10 @@ class OpenClawService: ObservableObject {
                     target: self.runtimeSystemActor(kind: .orchestrator, id: "workflow.router"),
                     transportKind: resolvedTransportKind,
                     deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue,
+                    workflowID: workflowID,
                     node: node,
                     sessionKey: parsedOutput.sessionID ?? normalizedSessionID,
+                    executionIntent: executionIntent,
                     parentEventId: routeEvent?.id ?? resultEvent.id,
                     payload: [
                         "approvalScope": "edge",
@@ -1763,6 +1849,7 @@ class OpenClawService: ObservableObject {
                 output: parsedOutput.text,
                 outputType: parsedOutput.type,
                 sessionID: parsedOutput.sessionID,
+                executionIntent: executionIntent.rawValue,
                 transportKind: parsedOutput.transportKind,
                 firstChunkLatencyMs: parsedOutput.firstChunkLatencyMs,
                 completionLatencyMs: parsedOutput.completionLatencyMs,
@@ -1792,13 +1879,111 @@ class OpenClawService: ObservableObject {
         OpenClawRuntimeActor(kind: kind, agentId: id, agentName: id)
     }
 
-    private func runtimeTransportKind(for outputMode: AgentOutputMode, sessionID: String?) -> String {
+    private func runtimeTransportKind(
+        for outputMode: AgentOutputMode,
+        sessionID: String?,
+        executionIntent: OpenClawRuntimeExecutionIntent
+    ) -> String {
         let deploymentKind = OpenClawManager.shared.config.deploymentKind
         return OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: deploymentKind,
             outputMode: outputMode,
-            sessionID: sessionID
+            sessionID: sessionID,
+            executionIntent: executionIntent
         ).rawValue
+    }
+
+    private func runtimeExecutionAdmission(
+        for executionIntent: OpenClawRuntimeExecutionIntent,
+        projectID: UUID?
+    ) -> RuntimeExecutionAdmission {
+        let manager = OpenClawManager.shared
+        let config = manager.config
+
+        guard executionIntent.requiresPersistentPublish else {
+            if executionIntent == .conversationAutonomous || executionIntent == .inspectionReadonly,
+               config.deploymentKind != .remoteServer,
+               let projectID,
+               let project = currentProjectProvider?(),
+               project.id == projectID {
+                if !manager.hasAttachedProjectSession || manager.attachedProjectID != project.id {
+                    return RuntimeExecutionAdmission(
+                        allowed: true,
+                        note: "当前 \(executionIntent.displayName) 将以轻绑定方式继续运行；当前项目尚未强绑定到 OpenClaw 会话，因此不会要求 persistent publish。",
+                        blockingMessage: nil
+                    )
+                }
+
+                if project.runtimeState.workflowConfigurationRevision > project.runtimeState.appliedToMirrorConfigurationRevision {
+                    return RuntimeExecutionAdmission(
+                        allowed: true,
+                        note: "当前 \(executionIntent.displayName) 检测到项目镜像仍有待准备变更，将按 ephemeral publish 语义继续运行，不写入正式 runtime published revision。",
+                        blockingMessage: nil
+                    )
+                }
+
+                if project.runtimeState.appliedToMirrorConfigurationRevision > project.runtimeState.syncedToRuntimeConfigurationRevision
+                    || manager.sessionLifecycle.hasPendingMirrorChanges {
+                    return RuntimeExecutionAdmission(
+                        allowed: true,
+                        note: "当前 \(executionIntent.displayName) 检测到 runtime published revision 落后于项目镜像，将按 ephemeral publish 语义继续运行。",
+                        blockingMessage: nil
+                    )
+                }
+            }
+
+            return RuntimeExecutionAdmission(allowed: true, note: nil, blockingMessage: nil)
+        }
+
+        guard config.deploymentKind != .remoteServer else {
+            return RuntimeExecutionAdmission(
+                allowed: true,
+                note: "当前 run.controlled 运行在 remoteServer 模式，项目级 persistent publish 门槛暂不强制阻塞。",
+                blockingMessage: nil
+            )
+        }
+
+        guard let projectID,
+              let project = currentProjectProvider?(),
+              project.id == projectID else {
+            return RuntimeExecutionAdmission(
+                allowed: true,
+                note: "当前 run.controlled 缺少可验证的项目快照上下文，已跳过 persistent publish 准入校验。",
+                blockingMessage: nil
+            )
+        }
+
+        guard manager.hasAttachedProjectSession, manager.attachedProjectID == project.id else {
+            return RuntimeExecutionAdmission(
+                allowed: false,
+                note: nil,
+                blockingMessage: "当前 run.controlled 需要先完成 Bind：请先附着当前项目到 OpenClaw 会话。"
+            )
+        }
+
+        guard project.runtimeState.workflowConfigurationRevision <= project.runtimeState.appliedToMirrorConfigurationRevision else {
+            return RuntimeExecutionAdmission(
+                allowed: false,
+                note: nil,
+                blockingMessage: "当前 run.controlled 需要先完成 Publish：项目镜像仍有待准备变更，请先应用工作流配置。"
+            )
+        }
+
+        let runtimePublished =
+            project.runtimeState.appliedToMirrorConfigurationRevision > 0
+            && project.runtimeState.syncedToRuntimeConfigurationRevision >= project.runtimeState.appliedToMirrorConfigurationRevision
+            && manager.sessionLifecycle.stage == .synced
+            && !manager.sessionLifecycle.hasPendingMirrorChanges
+
+        guard runtimePublished else {
+            return RuntimeExecutionAdmission(
+                allowed: false,
+                note: nil,
+                blockingMessage: "当前 run.controlled 需要先完成 persistent publish：请先执行“同步当前会话”，把最新项目镜像写入运行时会话。"
+            )
+        }
+
+        return RuntimeExecutionAdmission(allowed: true, note: nil, blockingMessage: nil)
     }
 
     private func makeRuntimeEvent(
@@ -1807,8 +1992,10 @@ class OpenClawService: ObservableObject {
         target: OpenClawRuntimeActor,
         transportKind: String,
         deploymentKind: String,
+        workflowID: UUID?,
         node: WorkflowNode,
         sessionKey: String?,
+        executionIntent: OpenClawRuntimeExecutionIntent? = nil,
         parentEventId: String? = nil,
         idempotencyKey: String? = nil,
         attempt: Int? = 1,
@@ -1817,9 +2004,13 @@ class OpenClawService: ObservableObject {
         control: [String: String] = [:]
     ) -> OpenClawRuntimeEvent {
         let resolvedTransport = OpenClawRuntimeTransportKind(rawValue: transportKind) ?? .unknown
+        var resolvedControl = control
+        if let executionIntent {
+            resolvedControl["executionIntent"] = executionIntent.rawValue
+        }
         return OpenClawRuntimeEvent(
             eventType: eventType,
-            workflowId: node.id.uuidString,
+            workflowId: workflowID?.uuidString,
             nodeId: node.id.uuidString,
             sessionKey: sessionKey,
             parentEventId: parentEventId,
@@ -1831,7 +2022,7 @@ class OpenClawService: ObservableObject {
             payload: payload,
             refs: [],
             constraints: constraints,
-            control: control
+            control: resolvedControl
         )
     }
 
@@ -2571,6 +2762,7 @@ class OpenClawService: ObservableObject {
         runtimeAgent: Agent? = nil,
         workflowID: UUID? = nil,
         sessionID: String? = nil,
+        executionIntent: OpenClawRuntimeExecutionIntent = .conversationAutonomous,
         thinkingLevel: AgentThinkingLevel? = nil,
         trackActiveRemoteRun: Bool = false,
         transportPreference: AgentTransportPreference = .automatic,
@@ -2666,6 +2858,31 @@ class OpenClawService: ObservableObject {
                 self.addLog(.warning, message)
             }
             let gatewayConfig = manager.preferredGatewayConfig(using: connectionConfig)
+            let executionAdmission = self.runtimeExecutionAdmission(
+                for: executionIntent,
+                projectID: self.currentProjectProvider?()?.id
+            )
+            if let note = executionAdmission.note {
+                self.addLog(.info, note, sessionID: sessionID, agentID: runtimeAgent?.id)
+            }
+            guard executionAdmission.allowed else {
+                let failureMessage = executionAdmission.blockingMessage ?? "OpenClaw runtime admission check failed."
+                let completionLatencyMs = durationMs(since: executionStartedAt)
+                DispatchQueue.main.async {
+                    completion(
+                        false,
+                        buildParsedOutput(
+                            text: failureMessage,
+                            type: .errorSummary,
+                            sessionID: sessionID,
+                            transportKind: nil,
+                            completionLatencyMs: completionLatencyMs,
+                            routingDecision: nil
+                        )
+                    )
+                }
+                return
+            }
 
             func runCLITransport() {
                 var args = ["agent"]
@@ -2831,7 +3048,8 @@ class OpenClawService: ObservableObject {
                 )
                 let useGatewayChatTransport = self.prefersGatewayChatTransport(
                     sessionID: sessionID,
-                    outputMode: outputMode
+                    outputMode: outputMode,
+                    executionIntent: executionIntent
                 )
                 let transportKind = useGatewayChatTransport ? "gateway_chat" : "gateway_agent"
                 let shouldStreamPlainOutput: Bool
@@ -3007,7 +3225,8 @@ class OpenClawService: ObservableObject {
                 let completionLatencyMs = durationMs(since: executionStartedAt)
                 let preferredTransportKind = self.prefersGatewayChatTransport(
                     sessionID: sessionID,
-                    outputMode: outputMode
+                    outputMode: outputMode,
+                    executionIntent: executionIntent
                 ) ? "gateway_chat" : "gateway_agent"
                 DispatchQueue.main.async {
                     completion(
@@ -3289,11 +3508,13 @@ class OpenClawService: ObservableObject {
 
     private func prefersGatewayChatTransport(
         sessionID: String?,
-        outputMode: AgentOutputMode
+        outputMode: AgentOutputMode,
+        executionIntent: OpenClawRuntimeExecutionIntent
     ) -> Bool {
         OpenClawTransportRouting.prefersGatewayChatTransport(
             sessionID: sessionID,
-            outputMode: outputMode
+            outputMode: outputMode,
+            executionIntent: executionIntent
         )
     }
 
@@ -4403,6 +4624,7 @@ class OpenClawService: ObservableObject {
                 instruction: instruction,
                 agentIdentifier: preferredAgentIdentifier,
                 sessionID: benchmarkSessionID,
+                executionIntent: .benchmark,
                 thinkingLevel: .off,
                 transportPreference: transportPreference,
                 outputMode: .plainStreaming

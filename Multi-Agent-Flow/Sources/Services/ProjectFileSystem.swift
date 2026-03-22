@@ -303,7 +303,11 @@ private struct AnalyticsLiveRunProjectionDocument: Codable, Equatable {
 
 private struct AnalyticsSessionProjectionEntry: Codable, Equatable {
     var sessionID: String
+    var sessionType: String
+    var threadID: String?
     var workflowIDs: [String]
+    var plannedTransport: String?
+    var actualTransport: String?
     var messageCount: Int
     var taskCount: Int
     var eventCount: Int
@@ -448,9 +452,58 @@ private struct WorkflowLaunchReportDocument: Codable, Equatable {
     var report: WorkflowLaunchVerificationReport?
 }
 
+private enum ArchivedWorkbenchThreadMode: String, Codable {
+    case autonomousConversation = "autonomous_conversation"
+    case controlledRun = "controlled_run"
+    case conversationToRun = "conversation_to_run"
+}
+
+private enum ArchivedRuntimeSessionType: String, Codable {
+    case conversationAutonomous = "conversation.autonomous"
+    case conversationAssisted = "conversation.assisted"
+    case workflowControlled = "run.controlled"
+    case inspectionReadonly = "inspection.readonly"
+    case benchmark = "benchmark"
+    case unknown
+}
+
+private struct WorkbenchThreadLinkSnapshot {
+    var threadID: String
+    var workflowID: UUID?
+    var entryAgentID: UUID?
+    var entryAgentName: String?
+    var gatewaySessionKey: String?
+}
+
+private struct RuntimeSessionArchiveClassification {
+    var sessionType: ArchivedRuntimeSessionType
+    var threadID: String?
+    var workflowID: UUID?
+    var entryAgentID: UUID?
+    var entryAgentName: String?
+}
+
+private struct RuntimeTransportPlanDocument: Codable {
+    var sessionID: String
+    var sessionType: String
+    var threadID: String?
+    var requestedMode: String
+    var resolvedMode: String
+    var preferredTransport: String?
+    var actualTransport: String?
+    var actualTransportKinds: [String]
+    var capabilitySnapshot: [String: String]
+    var fallbackReason: String?
+    var degradationReason: String?
+    var generatedAt: Date
+}
+
 private struct WorkbenchThreadDocument: Codable {
     var threadID: String
+    var threadType: String
+    var mode: String
     var sessionID: String
+    var linkedSessionIDs: [String]
     var workflowID: UUID?
     var workflowName: String?
     var entryAgentID: UUID?
@@ -515,9 +568,19 @@ private struct RuntimeDispatchEnvelopeDocument: Codable {
 
 private struct RuntimeSessionDocument: Codable {
     var sessionID: String
+    var sessionType: String
+    var threadID: String?
     var storageDirectoryName: String
     var generatedAt: Date
+    var workflowID: UUID?
+    var entryAgentID: UUID?
+    var entryAgentName: String?
     var workflowIDs: [String]
+    var plannedTransport: String?
+    var actualTransport: String?
+    var actualTransportKinds: [String]
+    var fallbackReason: String?
+    var degradationReason: String?
     var eventCount: Int
     var dispatchCount: Int
     var receiptCount: Int
@@ -553,6 +616,8 @@ private struct NodeIndexEntryDocument: Codable {
 
 private struct ThreadIndexEntryDocument: Codable {
     var threadID: String
+    var threadType: String
+    var mode: String
     var sessionID: String
     var workflowID: UUID?
     var entryAgentID: UUID?
@@ -565,7 +630,11 @@ private struct ThreadIndexEntryDocument: Codable {
 
 private struct RuntimeSessionIndexEntryDocument: Codable {
     var sessionID: String
+    var sessionType: String
+    var threadID: String?
     var storageDirectoryName: String
+    var plannedTransport: String?
+    var actualTransport: String?
     var eventCount: Int
     var dispatchCount: Int
     var receiptCount: Int

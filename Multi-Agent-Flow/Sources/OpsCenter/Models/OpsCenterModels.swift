@@ -259,6 +259,36 @@ struct OpsCenterNodeInvestigation: Identifiable {
     let tasks: [OpsCenterTaskDigest]
 }
 
+struct OpsCenterAgentInvestigation: Identifiable {
+    var id: UUID { agentID }
+    let agentID: UUID
+    let agentName: String
+    let scopeTitle: String
+    let status: OpsHealthStatus
+    let completedCount: Int
+    let failedCount: Int
+    let warningCount: Int
+    let errorCount: Int
+    let activeTaskCount: Int
+    let averageDuration: TimeInterval?
+    let lastActivityAt: Date?
+    let hasTrackedMemory: Bool
+    let isActive: Bool
+    let costPressureScore: Double
+    let attentionText: String
+    let relatedNodes: [OpsCenterNodeSummary]
+    let relatedSessions: [OpsCenterSessionSummary]
+    let events: [OpsCenterEventDigest]
+    let dispatches: [OpsCenterDispatchDigest]
+    let receipts: [OpsCenterReceiptDigest]
+    let messages: [OpsCenterMessageDigest]
+    let tasks: [OpsCenterTaskDigest]
+
+    var costPressureText: String {
+        String(format: "%.1f", costPressureScore)
+    }
+}
+
 struct OpsCenterRouteInvestigation: Identifiable {
     var id: UUID { edge.id }
     let workflowName: String
@@ -338,6 +368,7 @@ struct OpsCenterArchiveProjectionInvestigation: Identifiable {
 }
 
 enum OpsCenterInvestigationTarget: Identifiable {
+    case agent(OpsCenterAgentInvestigation)
     case session(OpsCenterSessionInvestigation)
     case node(OpsCenterNodeInvestigation)
     case route(OpsCenterRouteInvestigation)
@@ -348,6 +379,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
 
     var id: String {
         switch self {
+        case let .agent(investigation):
+            return "agent-\(investigation.id.uuidString)"
         case let .session(investigation):
             return "session-\(investigation.id)"
         case let .node(investigation):
@@ -367,6 +400,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
 
     var title: String {
         switch self {
+        case let .agent(investigation):
+            return investigation.agentName
         case let .session(investigation):
             return investigation.session.sessionID
         case let .node(investigation):
@@ -386,6 +421,8 @@ enum OpsCenterInvestigationTarget: Identifiable {
 
     var subtitle: String {
         switch self {
+        case let .agent(investigation):
+            return "\(investigation.scopeTitle) • \(LocalizedString.text("agent_investigation"))"
         case .session:
             return LocalizedString.text("session_investigation")
         case let .node(investigation):
@@ -759,6 +796,233 @@ enum OpsCenterSnapshotBuilder {
             ),
             messages: buildMessageDigests(relatedMessages, agentNamesByID: agentNamesByID),
             tasks: buildTaskDigests(relatedTasks, agentNamesByID: agentNamesByID)
+        )
+    }
+
+    static func buildAgentInvestigation(
+        project: MAProject?,
+        workflow: Workflow?,
+        agentID: UUID,
+        tasks: [Task],
+        messages: [Message],
+        executionResults: [ExecutionResult],
+        executionLogs: [ExecutionLogEntry],
+        activeAgentIDs: Set<UUID>
+    ) -> OpsCenterAgentInvestigation? {
+        guard let project,
+              let agent = project.agents.first(where: { $0.id == agentID }) else {
+            return nil
+        }
+
+        let scopedWorkflows = workflow.map { [$0] } ?? project.workflows
+        let scopedNodes = scopedWorkflows.flatMap { $0.nodes }
+        let scopedNodeIDs = Set(scopedNodes.map(\.id))
+        let scopedNodeAgentPairs: [(UUID, UUID)] = scopedNodes.compactMap { node in
+            guard let nodeAgentID = node.agentID else { return nil }
+            return (node.id, nodeAgentID)
+        }
+        let scopedNodeAgentIDs: [UUID: UUID] = Dictionary(uniqueKeysWithValues: scopedNodeAgentPairs)
+        let trackedMemoryAgentIDs = Set(project.memoryData.agentMemories.map(\.agentID))
+        let visibleAgents = workflow.map { selectedWorkflow in
+            let workflowAgentIDs = Set(selectedWorkflow.nodes.compactMap(\.agentID))
+            return project.agents.filter { workflowAgentIDs.contains($0.id) || $0.id == agentID }
+        } ?? project.agents
+
+        let scopeMatchesDispatch: (RuntimeDispatchRecord) -> Bool = { dispatch in
+            guard let workflow else { return true }
+            if normalizedWorkflowID(dispatch.workflowID) == workflow.id.uuidString {
+                return true
+            }
+            if let nodeID = uuid(from: dispatch.nodeID) {
+                return scopedNodeIDs.contains(nodeID)
+            }
+            return false
+        }
+
+        let scopeMatchesReceipt: (ExecutionResult) -> Bool = { receipt in
+            guard workflow != nil else { return true }
+            return scopedNodeIDs.contains(receipt.nodeID)
+        }
+
+        let scopeMatchesEvent: (OpenClawRuntimeEvent) -> Bool = { event in
+            guard let workflow else { return true }
+            if normalizedWorkflowID(event.workflowId) == workflow.id.uuidString {
+                return true
+            }
+            if let nodeID = uuid(from: event.nodeId) {
+                return scopedNodeIDs.contains(nodeID)
+            }
+            return false
+        }
+
+        let scopedTasks = tasks.filter { task in
+            if task.assignedAgentID == agentID {
+                if task.workflowNodeID.map(scopedNodeIDs.contains) == true {
+                    return true
+                }
+                return matchesWorkflow(task.metadata, workflowID: workflow?.id)
+            }
+
+            guard let workflowNodeID = task.workflowNodeID else { return false }
+            return scopedNodeAgentIDs[workflowNodeID] == agentID
+        }
+
+        let scopedMessages = messages.filter { message in
+            let touchesAgent = message.fromAgentID == agentID || message.toAgentID == agentID
+            guard touchesAgent else { return false }
+            return matchesWorkflow(message.metadata, workflowID: workflow?.id)
+        }
+
+        let allRuntimeDispatches = allDispatches(from: project.runtimeState)
+        let scopedDispatches = allRuntimeDispatches.filter(scopeMatchesDispatch)
+        let agentDispatches = scopedDispatches.filter { dispatch in
+            normalizedUUIDString(dispatch.sourceAgentID) == agentID.uuidString.lowercased()
+                || normalizedUUIDString(dispatch.targetAgentID) == agentID.uuidString.lowercased()
+                || uuid(from: dispatch.nodeID).map { scopedNodeAgentIDs[$0] == agentID } == true
+        }
+
+        let relatedReceipts = executionResults.filter { receipt in
+            receipt.agentID == agentID && scopeMatchesReceipt(receipt)
+        }
+
+        let dispatchSessionIDs = agentDispatches.compactMap { normalizedSessionID($0.sessionKey) }
+        let receiptSessionIDs = relatedReceipts.compactMap { normalizedSessionID($0.sessionID) }
+        let taskSessionIDs = scopedTasks.compactMap { normalizedSessionID($0.metadata["workbenchSessionID"]) }
+        let messageSessionIDs = scopedMessages.compactMap { normalizedSessionID($0.metadata["workbenchSessionID"]) }
+        var relatedSessionIDs = Set(dispatchSessionIDs + receiptSessionIDs + taskSessionIDs + messageSessionIDs)
+
+        let relatedEvents = project.runtimeState.runtimeEvents.filter { event in
+            let touchesAgent = normalizedUUIDString(event.source.agentId) == agentID.uuidString.lowercased()
+                || normalizedUUIDString(event.target.agentId) == agentID.uuidString.lowercased()
+            let touchesNode = uuid(from: event.nodeId).map { scopedNodeAgentIDs[$0] == agentID } == true
+            let touchesSession = normalizedSessionID(event.sessionKey).map(relatedSessionIDs.contains) ?? false
+            return scopeMatchesEvent(event) && (touchesAgent || touchesNode || touchesSession)
+        }
+
+        relatedSessionIDs.formUnion(relatedEvents.compactMap { normalizedSessionID($0.sessionKey) })
+
+        let agentNamesByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0.name) })
+        let nodeTitlesByID = Dictionary(uniqueKeysWithValues: scopedNodes.map { ($0.id, $0.title) })
+
+        let relatedSessions = buildSessionSummaries(
+            project: project,
+            workflow: workflow,
+            tasks: tasks,
+            messages: messages,
+            executionResults: executionResults
+        )
+        .filter { relatedSessionIDs.contains($0.sessionID) }
+
+        let relatedNodes = scopedWorkflows
+            .flatMap { scopedWorkflow in
+                scopedWorkflow.nodes.compactMap { node -> OpsCenterNodeSummary? in
+                    guard node.agentID == agentID else { return nil }
+
+                    let latestReceipt = executionResults
+                        .filter { $0.nodeID == node.id }
+                        .filter(scopeMatchesReceipt)
+                        .sorted { ($0.completedAt ?? $0.startedAt) > ($1.completedAt ?? $1.startedAt) }
+                        .first
+                    let nodeDispatches = Self.relatedDispatches(for: node, in: scopedDispatches)
+                    let status = resolveStatus(
+                        node: node,
+                        relatedDispatches: nodeDispatches,
+                        latestReceipt: latestReceipt
+                    )
+                    let lastUpdatedAt = (
+                        nodeDispatches.map(\.updatedAt)
+                        + [latestReceipt?.completedAt, latestReceipt?.startedAt].compactMap { $0 }
+                    ).max()
+                    let averageDuration = averageTimeInterval(
+                        executionResults
+                            .filter { $0.nodeID == node.id }
+                            .filter(scopeMatchesReceipt)
+                            .compactMap(\.duration)
+                    )
+
+                    return OpsCenterNodeSummary(
+                        id: node.id,
+                        title: node.title,
+                        agentName: agent.name,
+                        status: status,
+                        incomingEdgeCount: scopedWorkflow.edges.filter { $0.toNodeID == node.id }.count,
+                        outgoingEdgeCount: scopedWorkflow.edges.filter { $0.fromNodeID == node.id }.count,
+                        lastUpdatedAt: lastUpdatedAt,
+                        latestDetail: latestDetailText(receipt: latestReceipt, dispatches: nodeDispatches),
+                        averageDuration: averageDuration
+                    )
+                }
+            }
+            .sorted { lhs, rhs in
+                if lhs.status != rhs.status {
+                    return severityRank(lhs.status) < severityRank(rhs.status)
+                }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+
+        let digest = opsBuildAgentRadarDigests(
+            agents: visibleAgents,
+            trackedMemoryAgentIDs: trackedMemoryAgentIDs,
+            tasks: workflow == nil ? tasks : scopedTasks,
+            executionResults: workflow == nil ? executionResults : relatedReceipts,
+            executionLogs: workflow == nil ? executionLogs : executionLogs.filter { entry in
+                entry.agentID == agentID
+                    || entry.nodeID.map { scopedNodeAgentIDs[$0] == agentID } == true
+                    || (normalizedSessionID(entry.sessionID).map { relatedSessionIDs.contains($0) } ?? false)
+            },
+            activeAgentIDs: activeAgentIDs,
+            nodeAgentIDs: scopedNodeAgentIDs
+        )
+        .first(where: { $0.id == agentID })
+
+        let resolvedDigest = digest ?? OpsCenterAgentRadarDigest(
+            id: agentID,
+            agentName: agent.name,
+            status: .neutral,
+            completedCount: relatedReceipts.filter { $0.status == .completed }.count,
+            failedCount: relatedReceipts.filter { $0.status == .failed }.count,
+            warningCount: executionLogs.filter { $0.level == .warning && $0.agentID == agentID }.count,
+            errorCount: executionLogs.filter { $0.level == .error && $0.agentID == agentID }.count,
+            activeTaskCount: scopedTasks.filter { !$0.isCompleted }.count,
+            averageDuration: averageTimeInterval(relatedReceipts.compactMap(\.duration)),
+            lastActivityAt: (
+                relatedReceipts.compactMap { $0.completedAt ?? $0.startedAt }
+                    + executionLogs.filter { $0.agentID == agentID }.map(\.timestamp)
+            ).max(),
+            hasTrackedMemory: trackedMemoryAgentIDs.contains(agentID),
+            isActive: activeAgentIDs.contains(agentID) || scopedTasks.contains(where: { !$0.isCompleted }),
+            costPressureScore: 0,
+            attentionText: LocalizedString.text("war_room_attention_no_pressure"),
+            logQuery: agent.name
+        )
+
+        return OpsCenterAgentInvestigation(
+            agentID: agentID,
+            agentName: agent.name,
+            scopeTitle: workflow?.name ?? project.name,
+            status: resolvedDigest.status,
+            completedCount: resolvedDigest.completedCount,
+            failedCount: resolvedDigest.failedCount,
+            warningCount: resolvedDigest.warningCount,
+            errorCount: resolvedDigest.errorCount,
+            activeTaskCount: resolvedDigest.activeTaskCount,
+            averageDuration: resolvedDigest.averageDuration,
+            lastActivityAt: resolvedDigest.lastActivityAt,
+            hasTrackedMemory: resolvedDigest.hasTrackedMemory,
+            isActive: resolvedDigest.isActive,
+            costPressureScore: resolvedDigest.costPressureScore,
+            attentionText: resolvedDigest.attentionText,
+            relatedNodes: relatedNodes,
+            relatedSessions: relatedSessions,
+            events: buildEventDigests(relatedEvents),
+            dispatches: buildDispatchDigests(agentDispatches, agentNamesByID: agentNamesByID),
+            receipts: buildReceiptDigests(
+                relatedReceipts,
+                nodeTitlesByID: nodeTitlesByID,
+                agentNamesByID: agentNamesByID
+            ),
+            messages: buildMessageDigests(scopedMessages, agentNamesByID: agentNamesByID),
+            tasks: buildTaskDigests(scopedTasks, agentNamesByID: agentNamesByID)
         )
     }
 
@@ -1458,5 +1722,11 @@ enum OpsCenterSnapshotBuilder {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard singleLine.count > limit else { return singleLine }
         return "\(singleLine.prefix(limit))..."
+    }
+
+    private static func averageTimeInterval(_ values: [TimeInterval]) -> TimeInterval? {
+        guard !values.isEmpty else { return nil }
+        let total = values.reduce(0, +)
+        return total / Double(values.count)
     }
 }

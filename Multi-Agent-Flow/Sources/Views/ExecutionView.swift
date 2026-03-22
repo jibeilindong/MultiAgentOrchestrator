@@ -592,7 +592,8 @@ struct ExecutionView: View {  // 这应该是 ExecutionView，不是 ContentView
             workflow,
             agents: project.agents,
             projectID: project.id,
-            projectRuntimeSessionID: project.runtimeState.sessionID
+            projectRuntimeSessionID: project.runtimeState.sessionID,
+            executionIntent: .workflowControlled
         ) { _ in
             isExecuting = false
             showResults = true

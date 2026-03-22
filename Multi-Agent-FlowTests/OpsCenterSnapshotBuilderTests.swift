@@ -907,6 +907,135 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
         XCTAssertFalse(stableDigest.isActive)
     }
 
+    func testBuildAgentInvestigationAggregatesAgentOwnedEvidenceAndSessions() throws {
+        var project = MAProject(name: "Ops Agent Investigation")
+
+        let planner = Agent(name: "Planner Agent")
+        let reviewer = Agent(name: "Reviewer Agent")
+        project.agents = [planner, reviewer]
+
+        var workflow = project.workflows[0]
+        var plannerNode = WorkflowNode(type: .agent)
+        plannerNode.agentID = planner.id
+        plannerNode.title = "Planner Node"
+
+        var reviewerNode = WorkflowNode(type: .agent)
+        reviewerNode.agentID = reviewer.id
+        reviewerNode.title = "Reviewer Node"
+
+        workflow.nodes = [plannerNode, reviewerNode]
+        workflow.edges = [WorkflowEdge(from: plannerNode.id, to: reviewerNode.id)]
+        project.workflows = [workflow]
+
+        let sessionID = "agent-investigation-session"
+        let startedAt = Date(timeIntervalSince1970: 1_710_700_000)
+
+        let runtimeEvent = OpenClawRuntimeEvent(
+            id: "agent-investigation-event",
+            eventType: .taskDispatch,
+            workflowId: workflow.id.uuidString,
+            nodeId: reviewerNode.id.uuidString,
+            sessionKey: sessionID,
+            source: OpenClawRuntimeActor(kind: .agent, agentId: planner.id.uuidString, agentName: planner.name),
+            target: OpenClawRuntimeActor(kind: .agent, agentId: reviewer.id.uuidString, agentName: reviewer.name),
+            transport: OpenClawRuntimeTransport(kind: .runtimeChannel, deploymentKind: "local"),
+            payload: ["summary": "Route work to reviewer"]
+        )
+        project.runtimeState.runtimeEvents = [runtimeEvent]
+        project.runtimeState.inflightDispatches = [
+            RuntimeDispatchRecord(
+                eventID: "dispatch-reviewer",
+                workflowID: workflow.id.uuidString,
+                nodeID: reviewerNode.id.uuidString,
+                sourceAgentID: planner.id.uuidString,
+                targetAgentID: reviewer.id.uuidString,
+                summary: "Reviewer must validate the plan",
+                sessionKey: sessionID,
+                status: .running,
+                transportKind: .runtimeChannel,
+                queuedAt: startedAt,
+                updatedAt: startedAt.addingTimeInterval(12)
+            )
+        ]
+
+        var reviewTask = Task(
+            title: "Review Plan",
+            description: "Validate the final proposal",
+            status: .inProgress,
+            priority: .high,
+            assignedAgentID: reviewer.id,
+            workflowNodeID: reviewerNode.id
+        )
+        reviewTask.createdAt = startedAt.addingTimeInterval(5)
+        reviewTask.metadata["workflowID"] = workflow.id.uuidString
+        reviewTask.metadata["workbenchSessionID"] = sessionID
+
+        var reviewMessage = Message(from: planner.id, to: reviewer.id, type: .task, content: "Please check the risk section.")
+        reviewMessage.timestamp = startedAt.addingTimeInterval(8)
+        reviewMessage.metadata["channel"] = "workbench"
+        reviewMessage.metadata["workflowID"] = workflow.id.uuidString
+        reviewMessage.metadata["workbenchSessionID"] = sessionID
+
+        let reviewResult = ExecutionResult(
+            nodeID: reviewerNode.id,
+            agentID: reviewer.id,
+            status: .failed,
+            output: "Reviewer found an invalid connection assumption",
+            outputType: .errorSummary,
+            sessionID: sessionID,
+            transportKind: OpenClawRuntimeTransportKind.runtimeChannel.rawValue,
+            runtimeEvents: [runtimeEvent],
+            primaryRuntimeEvent: runtimeEvent,
+            startedAt: startedAt,
+            completedAt: startedAt.addingTimeInterval(90)
+        )
+
+        let investigation = try XCTUnwrap(
+            OpsCenterSnapshotBuilder.buildAgentInvestigation(
+                project: project,
+                workflow: nil,
+                agentID: reviewer.id,
+                tasks: [reviewTask],
+                messages: [reviewMessage],
+                executionResults: [reviewResult],
+                executionLogs: [
+                    ExecutionLogEntry(
+                        level: .warning,
+                        message: "Reviewer exceeded expected latency",
+                        nodeID: reviewerNode.id,
+                        sessionID: sessionID
+                    ),
+                    ExecutionLogEntry(
+                        level: .error,
+                        message: "Reviewer returned an invalid tool response",
+                        sessionID: sessionID,
+                        agentID: reviewer.id
+                    )
+                ],
+                activeAgentIDs: Set([reviewer.id])
+            )
+        )
+
+        XCTAssertEqual(investigation.agentID, reviewer.id)
+        XCTAssertEqual(investigation.agentName, reviewer.name)
+        XCTAssertEqual(investigation.scopeTitle, project.name)
+        XCTAssertEqual(investigation.status, .critical)
+        XCTAssertEqual(investigation.completedCount, 0)
+        XCTAssertEqual(investigation.failedCount, 1)
+        XCTAssertEqual(investigation.warningCount, 1)
+        XCTAssertEqual(investigation.errorCount, 1)
+        XCTAssertEqual(investigation.activeTaskCount, 1)
+        XCTAssertTrue(investigation.isActive)
+        XCTAssertFalse(investigation.hasTrackedMemory)
+        XCTAssertEqual(investigation.relatedNodes.map(\.id), [reviewerNode.id])
+        XCTAssertEqual(investigation.relatedSessions.map(\.sessionID), [sessionID])
+        XCTAssertEqual(investigation.events.count, 1)
+        XCTAssertEqual(investigation.dispatches.count, 1)
+        XCTAssertEqual(investigation.receipts.count, 1)
+        XCTAssertEqual(investigation.messages.count, 1)
+        XCTAssertEqual(investigation.tasks.count, 1)
+    }
+
     func testBuildAssetRadarSnapshotSurfacesMissingStaleAndCompressionSignals() throws {
         let fileManager = FileManager.default
         let rootURL = fileManager.temporaryDirectory

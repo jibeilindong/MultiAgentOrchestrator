@@ -4713,6 +4713,7 @@ class AppState: ObservableObject {
                 prompt: testCase.prompt,
                 projectID: currentProject?.id,
                 projectRuntimeSessionID: currentProject?.runtimeState.sessionID,
+                executionIntent: .inspectionReadonly,
                 agentOutputMode: .structuredJSON
             ) { [weak self] results in
                 guard let self else { return }
@@ -5445,6 +5446,7 @@ class AppState: ObservableObject {
                     prompt: trimmedPrompt,
                     projectID: project.id,
                     projectRuntimeSessionID: project.runtimeState.sessionID,
+                    executionIntent: .conversationAutonomous,
                     startingNodes: backgroundNodes,
                     entryNodeIDsOverride: backgroundEntryNodeIDs,
                     preloadedResults: [entryResult],
@@ -6193,7 +6195,10 @@ class AppState: ObservableObject {
             source: source,
             target: target,
             transport: OpenClawRuntimeTransport(kind: .gatewayChat, deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue),
-            payload: payload
+            payload: payload,
+            control: [
+                "executionIntent": OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue
+            ]
         )
     }
 
@@ -6214,6 +6219,7 @@ class AppState: ObservableObject {
             targetAgentID: event.target.agentId,
             summary: event.summaryText,
             sessionKey: event.sessionKey,
+            executionIntent: event.control["executionIntent"] ?? event.payload["executionIntent"],
             idempotencyKey: event.idempotencyKey,
             attempt: event.attempt ?? 1,
             status: status,
@@ -6427,6 +6433,9 @@ class AppState: ObservableObject {
                     : "Runtime dispatch timed out before completion.",
                 "retryable": dispatch.allowRetry && canRetry(dispatch) ? "true" : "false",
                 "summary": dispatch.summary
+            ],
+            control: [
+                "executionIntent": dispatch.executionIntent ?? OpenClawRuntimeExecutionIntent.workflowControlled.rawValue
             ]
         )
     }

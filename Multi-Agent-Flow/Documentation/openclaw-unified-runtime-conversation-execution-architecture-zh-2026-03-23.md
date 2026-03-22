@@ -52,6 +52,19 @@ Execution Plane
 - `OpenClawManager` 已不再承担全部路径解析和命令规划职责，而是通过 `OpenClawHost` 进入受控执行面。
 - UI 与 AppState 已从固定的 `Connect -> Attach -> Sync -> Run/Chat` 语义，升级为 `Probe / Bind / Publish / Execute` 控制面展示。
 - 项目快照 `ProjectOpenClawSnapshot` 已新增控制面快照投影，后续可作为聊天态与执行态共存时的统一恢复锚点。
+- `OpenClawService` 已新增显式 `OpenClawRuntimeExecutionIntent`，当前至少区分：
+  - `conversationAutonomous`
+  - `workflowControlled`
+  - `inspectionReadonly`
+  - `benchmark`
+- 正式执行入口与聊天入口已开始使用不同准入策略：
+  - Workbench/后台续跑默认走 `conversationAutonomous`
+  - Launch Verification 走 `inspectionReadonly`
+  - ExecutionView 点击 Run 走 `workflowControlled`
+- 当前代码已经开始强制执行“聊天可临时发布、正式执行需持久发布”的门槛：
+  - `workflowControlled` 在 `local/container` 下要求已 `Bind` 当前项目、项目镜像已准备完成、runtime 已同步到最新 revision
+  - `conversationAutonomous` 与 `inspectionReadonly` 在本地模式下允许以 `ephemeral publish` 继续
+  - `remoteServer` 暂不强制本地 `persistent publish` 门槛
 
 这意味着当前系统已经从“方案设计阶段”进入“运行时宿主抽象与控制面下沉阶段”。
 
@@ -335,6 +348,28 @@ canControlledRun
     )
 ```
 
+### 4.1 当前代码中的实际准入规则
+
+截至 2026-03-23，代码中的准入逻辑已经比上面的抽象模型更具体：
+
+- `conversationAutonomous`
+  - 允许轻绑定继续运行
+  - 如果当前项目未强绑定、镜像仍有待准备变更、或 runtime published revision 落后于镜像 revision，会记录提示日志并按 `ephemeral publish` 语义继续
+- `inspectionReadonly`
+  - 与聊天类似，允许在不污染正式 published revision 的前提下发起只读检查
+- `workflowControlled`
+  - 在 `local/container` 模式下，必须满足以下条件才允许运行：
+  - 当前项目已附着到 OpenClaw 会话
+  - `workflowConfigurationRevision <= appliedToMirrorConfigurationRevision`
+  - `syncedToRuntimeConfigurationRevision >= appliedToMirrorConfigurationRevision`
+  - `sessionLifecycle.stage == synced`
+  - `hasPendingMirrorChanges == false`
+  - 任何一条不满足，都会直接阻止正式 Run，并给出针对 `Bind` / `Publish` / `Sync` 的明确提示
+- `benchmark`
+  - 作为独立意图保留，不再复用聊天态的提示逻辑
+- `remoteServer`
+  - 当前版本下暂不强制本地项目级 `persistent publish` 门槛，后续由远端控制面与回执体系接管
+
 ## 5. 各场景是否需要四个门槛
 
 | 场景 | Probe | Bind | Publish | Execute |
@@ -344,6 +379,12 @@ canControlledRun
 | 只读检查 | 需要 | 可选 | 否 | `inspect` |
 | 正式执行，runtime 已同步 | 需要 | 是，`strongBind` | 否 | `run` |
 | 正式执行，mirror/policy 有变更 | 需要 | 是，`strongBind` | 是，`persistentSync` | `run` |
+
+当前落地实现可进一步归纳为：
+
+- 聊天与检查默认“可继续，但会提示当前是临时发布语义”
+- 正式执行默认“不可跳过 persistent publish”
+- 这意味着 `Connect -> Attach -> Sync -> Run/Chat` 已不再是固定顺序流程，而是“按 execution intent 触发不同门槛”
 
 ## 五、双模式运行定义
 
@@ -744,6 +785,13 @@ Workbench 输入框旁建议固定显示：
 - 聊天不再被强制要求先做重型 sync
 - 正式执行只在必要时要求 persistent sync
 
+当前状态：
+
+- 已部分落地
+- `Probe / Bind / Publish / Execute` 已进入 UI、AppState、Project Snapshot
+- 正式 Run 已开始执行 persistent publish 准入校验
+- 聊天与检查已允许沿 `ephemeral publish` 继续
+
 ## Phase 2：显式会话类型与传输契约
 
 目标：
@@ -762,6 +810,13 @@ Workbench 输入框旁建议固定显示：
 完成标准：
 
 - transport 由 capability + mode + sessionType 统一决策
+
+当前状态：
+
+- 已部分落地
+- 当前代码先以 `executionIntent` 显式区分聊天、正式执行、只读检查与 benchmark
+- transport routing 已开始把 `executionIntent` 纳入决策，而不再只依赖 `sessionID` 前缀和输出模式
+- `sessionType` / `threadType` / `TransportPlan` 的完整持久化与审计落盘仍待继续
 
 ## Phase 3：Workbench 双模式化
 

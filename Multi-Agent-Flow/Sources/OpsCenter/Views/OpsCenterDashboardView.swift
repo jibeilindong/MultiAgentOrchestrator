@@ -186,7 +186,8 @@ struct OpsCenterDashboardView: View {
         switch selectedPage {
         case .warRoom:
             OpsCenterWarRoomDashboardView(
-                onFocusLogs: focusLogConsole
+                onFocusLogs: focusLogConsole,
+                onSelectAgent: openAgentInvestigation
             )
         case .threads:
             OpsCenterThreadsDashboardView(
@@ -586,6 +587,23 @@ struct OpsCenterDashboardView: View {
                 )
             )
         }
+    }
+
+    private func openAgentInvestigation(_ agentID: UUID) {
+        guard let investigation = OpsCenterSnapshotBuilder.buildAgentInvestigation(
+            project: appState.currentProject,
+            workflow: nil,
+            agentID: agentID,
+            tasks: appState.taskManager.tasks,
+            messages: appState.messageManager.messages,
+            executionResults: appState.openClawService.executionResults,
+            executionLogs: appState.openClawService.executionLogs,
+            activeAgentIDs: Set(appState.openClawManager.activeAgents.keys)
+        ) else {
+            return
+        }
+
+        selectedInvestigation = .agent(investigation)
     }
 
     private func openRouteInvestigation(_ edgeID: UUID) {
@@ -1178,6 +1196,7 @@ struct OpsCenterDashboardView: View {
 private struct OpsCenterWarRoomDashboardView: View {
     @EnvironmentObject var appState: AppState
     let onFocusLogs: (String, OpsCenterLogLevelFilter, OpsCenterLogScope) -> Void
+    let onSelectAgent: (UUID) -> Void
 
     @State private var assetSnapshot: OpsCenterAssetRadarSnapshot = .empty
 
@@ -1268,6 +1287,7 @@ private struct OpsCenterWarRoomDashboardView: View {
             label: digest.agentName,
             detailText: digest.attentionText,
             status: digest.status,
+            agentID: digest.id,
             logQuery: digest.logQuery,
             levelFilter: digest.status == .critical ? .errors : .all
         )
@@ -1281,6 +1301,7 @@ private struct OpsCenterWarRoomDashboardView: View {
                 label: incident.title,
                 detailText: incident.detailText,
                 status: incident.status,
+                agentID: nil,
                 logQuery: incident.query,
                 levelFilter: incident.status == .critical ? .errors : .warnings
             )
@@ -1296,6 +1317,7 @@ private struct OpsCenterWarRoomDashboardView: View {
             label: lane.title,
             detailText: lane.detailText,
             status: lane.status,
+            agentID: nil,
             logQuery: lane.logQuery,
             levelFilter: lane.status == .critical ? .errors : .all
         )
@@ -1309,6 +1331,7 @@ private struct OpsCenterWarRoomDashboardView: View {
                 label: workspace.workspaceName,
                 detailText: workspace.detailText,
                 status: workspace.status,
+                agentID: nil,
                 logQuery: workspace.logQuery,
                 levelFilter: .all
             )
@@ -1324,6 +1347,7 @@ private struct OpsCenterWarRoomDashboardView: View {
             label: memory.agentName,
             detailText: memory.detailText,
             status: memory.status,
+            agentID: nil,
             logQuery: memory.logQuery,
             levelFilter: .all
         )
@@ -1392,7 +1416,14 @@ private struct OpsCenterWarRoomDashboardView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
                         ForEach(focusCards) { card in
                             Group {
-                                if let query = card.logQuery {
+                                if let agentID = card.agentID {
+                                    Button {
+                                        onSelectAgent(agentID)
+                                    } label: {
+                                        OpsCenterWarRoomFocusCard(card: card)
+                                    }
+                                    .buttonStyle(.plain)
+                                } else if let query = card.logQuery {
                                     Button {
                                         onFocusLogs(query, card.levelFilter, .all)
                                     } label: {
@@ -1442,7 +1473,7 @@ private struct OpsCenterWarRoomDashboardView: View {
                     VStack(spacing: 8) {
                         ForEach(Array(agentDigests.prefix(6))) { digest in
                             Button {
-                                onFocusLogs(digest.logQuery, digest.status == .critical ? .errors : .all, .all)
+                                onSelectAgent(digest.id)
                             } label: {
                                 OpsCenterWarRoomQueueRow(
                                     title: digest.agentName,
@@ -1717,6 +1748,7 @@ private struct OpsCenterWarRoomFocusCardData: Identifiable {
     let label: String
     let detailText: String
     let status: OpsHealthStatus
+    let agentID: UUID?
     let logQuery: String?
     let levelFilter: OpsCenterLogLevelFilter
 }
@@ -6710,6 +6742,8 @@ private struct OpsCenterInvestigationPanel: View {
                 }
 
                 switch target {
+                case let .agent(investigation):
+                    agentInvestigationBody(investigation)
                 case let .session(investigation):
                     sessionInvestigationBody(investigation)
                 case let .thread(investigation):
@@ -6775,6 +6809,19 @@ private struct OpsCenterInvestigationPanel: View {
         )
     }
 
+    private func relatedLogs(for investigation: OpsCenterAgentInvestigation) -> [ExecutionLogEntry] {
+        let nodeIDs = Set(investigation.relatedNodes.map(\.id))
+        let sessionIDs = Set(investigation.relatedSessions.map(\.sessionID))
+        return Array(
+            relatedLogs(
+                sessionIDs: sessionIDs,
+                nodeIDs: nodeIDs,
+                agentIDs: Set([investigation.agentID])
+            )
+            .prefix(12)
+        )
+    }
+
     private func relatedLogs(for investigation: OpsCenterThreadInvestigation) -> [ExecutionLogEntry] {
         let nodeIDs = Set(investigation.relatedNodes.map(\.id))
         let agentIDs = Set(nodeIDs.compactMap { agentIDByNodeID[$0] })
@@ -6830,6 +6877,271 @@ private struct OpsCenterInvestigationPanel: View {
                         onSelectNode: onSelectNode,
                         onSelectSession: onSelectSession
                     )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func agentInvestigationBody(_ investigation: OpsCenterAgentInvestigation) -> some View {
+        let successRate: String = {
+            let total = investigation.completedCount + investigation.failedCount
+            guard total > 0 else { return "0%" }
+            let rate = Int((Double(investigation.completedCount) / Double(total) * 100).rounded())
+            return "\(rate)%"
+        }()
+
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
+            opsMetricCard(
+                title: LocalizedString.text("investigation_agent_health_title"),
+                value: opsWarRoomStatusTitle(investigation.status),
+                detail: investigation.attentionText,
+                color: opsHistoryHealthColor(investigation.status)
+            )
+            opsMetricCard(
+                title: LocalizedString.text("investigation_success_rate_title"),
+                value: successRate,
+                detail: LocalizedString.format(
+                    "investigation_agent_success_detail",
+                    investigation.completedCount,
+                    investigation.failedCount
+                ),
+                color: investigation.failedCount > 0 ? .orange : .green
+            )
+            opsMetricCard(
+                title: LocalizedString.text("tasks"),
+                value: "\(investigation.activeTaskCount)",
+                detail: LocalizedString.text("investigation_agent_tasks_detail"),
+                color: investigation.activeTaskCount > 0 ? .blue : .secondary
+            )
+            opsMetricCard(
+                title: LocalizedString.text("history_avg_duration_title"),
+                value: investigation.averageDuration.map(opsDurationText) ?? LocalizedString.text("na"),
+                detail: LocalizedString.text("investigation_agent_avg_duration_detail"),
+                color: investigation.averageDuration.map { $0 >= 120 ? .orange : .green } ?? .secondary
+            )
+            opsMetricCard(
+                title: LocalizedString.text("war_room_cost_pressure"),
+                value: investigation.costPressureText,
+                detail: LocalizedString.text("investigation_agent_cost_detail"),
+                color: investigation.costPressureScore >= 4 ? .orange : .green
+            )
+            opsMetricCard(
+                title: LocalizedString.executionLogs,
+                value: "\(investigation.warningCount + investigation.errorCount)",
+                detail: LocalizedString.format(
+                    "investigation_agent_log_detail",
+                    investigation.warningCount,
+                    investigation.errorCount
+                ),
+                color: investigation.errorCount > 0 ? .red : (investigation.warningCount > 0 ? .orange : .green)
+            )
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("investigation_agent_posture_title"),
+            detail: LocalizedString.text("investigation_agent_posture_detail")
+        ) {
+            VStack(spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(LocalizedString.text("investigation_scope_title"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(investigation.scopeTitle)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    opsStatusPill(
+                        title: investigation.isActive ? LocalizedString.text("running_status") : LocalizedString.text("idle_state"),
+                        color: investigation.isActive ? .orange : .secondary
+                    )
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(LocalizedString.text("war_room_memory_coverage"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(
+                            investigation.hasTrackedMemory
+                                ? LocalizedString.text("war_room_agent_memory_tracked")
+                                : LocalizedString.text("war_room_agent_memory_gap")
+                        )
+                        .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    opsStatusPill(
+                        title: investigation.hasTrackedMemory
+                            ? LocalizedString.text("war_room_memory_status_ready")
+                            : LocalizedString.text("war_room_asset_status_watch"),
+                        color: investigation.hasTrackedMemory ? .green : .yellow
+                    )
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(LocalizedString.text("investigation_agent_last_activity_title"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(
+                            investigation.lastActivityAt?.formatted(date: .abbreviated, time: .shortened)
+                                ?? LocalizedString.text("investigation_agent_last_activity_empty")
+                        )
+                        .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    Text(
+                        LocalizedString.format(
+                            "investigation_agent_node_coverage_detail",
+                            investigation.relatedNodes.count,
+                            investigation.relatedSessions.count
+                        )
+                    )
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("investigation_related_nodes_title"),
+            detail: LocalizedString.text("investigation_agent_related_nodes_detail")
+        ) {
+            if investigation.relatedNodes.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_related_nodes_empty"))
+            } else {
+                ForEach(investigation.relatedNodes) { node in
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(node.title)
+                                .font(.subheadline.weight(.medium))
+                            Text(node.latestDetail ?? LocalizedString.text("node_state_detail_empty"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        opsStatusPill(title: node.status.title, color: node.status.color)
+                        investigationActionButton(title: LocalizedString.text("open_node")) {
+                            onSelectNode(node.id)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("investigation_related_sessions_title"),
+            detail: LocalizedString.text("investigation_agent_related_sessions_detail")
+        ) {
+            if investigation.relatedSessions.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_related_sessions_empty"))
+            } else {
+                ForEach(investigation.relatedSessions) { session in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(session.sessionID)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            Text(LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        opsStatusPill(
+                            title: session.failedDispatchCount > 0
+                                ? LocalizedString.text("failure_signal_badge")
+                                : LocalizedString.text("observed_badge"),
+                            color: session.failedDispatchCount > 0 ? .red : .blue
+                        )
+                        investigationActionButton(title: LocalizedString.text("open_session")) {
+                            onSelectSession(session.sessionID)
+                        }
+                        investigationActionButton(title: LocalizedString.text("open_thread")) {
+                            onSelectThread(session.sessionID)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("investigation_runtime_events_title"),
+            detail: LocalizedString.text("investigation_agent_runtime_events_detail")
+        ) {
+            if investigation.events.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_runtime_events_empty"))
+            } else {
+                ForEach(investigation.events.prefix(10)) { event in
+                    OpsCenterEventDigestCard(event: event)
+                }
+            }
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("dispatches_label"),
+            detail: LocalizedString.text("investigation_agent_dispatches_detail")
+        ) {
+            if investigation.dispatches.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_dispatches_empty"))
+            } else {
+                ForEach(investigation.dispatches.prefix(12)) { dispatch in
+                    OpsCenterDispatchDigestCard(dispatch: dispatch)
+                }
+            }
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("receipts_label"),
+            detail: LocalizedString.text("investigation_agent_receipts_detail")
+        ) {
+            if investigation.receipts.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_receipts_empty"))
+            } else {
+                ForEach(investigation.receipts.prefix(10)) { receipt in
+                    OpsCenterReceiptDigestCard(receipt: receipt)
+                }
+            }
+        }
+
+        investigationLogsSection(relatedLogs(for: investigation))
+
+        opsInvestigationSection(
+            LocalizedString.text("investigation_workbench_messages_title"),
+            detail: LocalizedString.text("investigation_agent_messages_detail")
+        ) {
+            if investigation.messages.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_messages_empty"))
+            } else {
+                ForEach(investigation.messages.prefix(10)) { message in
+                    OpsCenterMessageDigestCard(message: message)
+                }
+            }
+        }
+
+        opsInvestigationSection(
+            LocalizedString.text("investigation_workbench_tasks_title"),
+            detail: LocalizedString.text("investigation_agent_tasks_section_detail")
+        ) {
+            if investigation.tasks.isEmpty {
+                opsInlineEmptyState(LocalizedString.text("investigation_agent_tasks_empty"))
+            } else {
+                ForEach(investigation.tasks.prefix(10)) { task in
+                    OpsCenterTaskDigestCard(task: task)
                 }
             }
         }

@@ -33,6 +33,7 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
     var targetAgentID: String
     var summary: String
     var sessionKey: String?
+    var executionIntent: String?
     var idempotencyKey: String?
     var attempt: Int
     var status: RuntimeDispatchStatus
@@ -56,6 +57,7 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
         targetAgentID: String,
         summary: String,
         sessionKey: String? = nil,
+        executionIntent: String? = nil,
         idempotencyKey: String? = nil,
         attempt: Int = 1,
         status: RuntimeDispatchStatus,
@@ -78,6 +80,7 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
         self.targetAgentID = targetAgentID
         self.summary = summary
         self.sessionKey = sessionKey
+        self.executionIntent = executionIntent
         self.idempotencyKey = idempotencyKey
         self.attempt = attempt
         self.status = status
