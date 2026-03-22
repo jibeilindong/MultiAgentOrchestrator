@@ -20,6 +20,9 @@ struct WorkbenchConversationView: View {
     @State private var selectedWorkflowID: UUID?
     @State private var dashboardLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var lastCombinedLayout: WorkbenchDashboardLayout = .sideBySide
+    @State private var runtimeConfigPanelMode: WorkbenchRuntimeConfigPanelMode = .storedDefault
+    @State private var runtimeConfigExpandedHeight: CGFloat = SettingsManager.shared.workbenchRuntimeConfigPanelExpandedHeight
+    @State private var runtimeConfigHeightDragOrigin: CGFloat?
     @State private var prompt = ""
     @State private var errorText: String?
     @State private var pendingAutoScrollWorkItem: DispatchWorkItem?
@@ -33,6 +36,10 @@ struct WorkbenchConversationView: View {
     @State private var manualChannelDrafts: [UUID: String] = [:]
     @State private var manualAccountDrafts: [UUID: String] = [:]
     @State private var activeRuntimePreparationAction: WorkbenchRuntimePreparationAction?
+
+    private let compactRuntimeConfigBodyHeight: CGFloat = 146
+    private let minimumExpandedRuntimeConfigHeight: CGFloat = 240
+    private let maximumExpandedRuntimeConfigHeight: CGFloat = 560
 
     private var project: MAProject? { appState.currentProject }
     private var workflows: [Workflow] { project?.workflows ?? [] }
@@ -81,6 +88,40 @@ struct WorkbenchConversationView: View {
             return LocalizedString.text("workflow_apply_sync_current_session_hint")
         }
         return nil
+    }
+
+    private var runtimeConfigurationSummaryText: String {
+        if let runtimeConfigMessage, !runtimeConfigMessage.isEmpty {
+            return runtimeConfigMessage
+        }
+        if let runtimePreparationSummary, !runtimePreparationSummary.isEmpty {
+            return runtimePreparationSummary
+        }
+        return LocalizedString.format("runtime_config_summary_agents", workflowAgents.count)
+    }
+
+    private var runtimeConfigurationBodyHeight: CGFloat {
+        switch runtimeConfigPanelMode {
+        case .hidden:
+            return 0
+        case .compact:
+            return compactRuntimeConfigBodyHeight
+        case .expanded:
+            return clampedRuntimeConfigExpandedHeight(runtimeConfigExpandedHeight)
+        }
+    }
+
+    private var showsRuntimeConfigurationEditor: Bool {
+        runtimeConfigPanelMode == .expanded
+    }
+
+    private var shouldAutoCollapseRuntimeConfigurationPanel: Bool {
+        runtimeConfigPanelMode == .expanded
+    }
+
+    private var runtimeConfigurationPrimaryActionTitle: String? {
+        guard let action = recommendedRuntimePreparationAction else { return nil }
+        return runtimePreparationActionTitle(action)
     }
 
     private var recommendedRuntimePreparationAction: WorkbenchRuntimePreparationAction? {
@@ -325,6 +366,7 @@ struct WorkbenchConversationView: View {
             }
         }
         .onAppear {
+            runtimeConfigExpandedHeight = clampedRuntimeConfigExpandedHeight(runtimeConfigExpandedHeight)
             if selectedWorkflowID == nil {
                 selectedWorkflowID = workflows.first?.id
             }
@@ -555,30 +597,121 @@ struct WorkbenchConversationView: View {
     }
 
     private var runtimeConfigurationPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        VStack(spacing: 0) {
+            runtimeConfigurationPanelHeader
+
+            if runtimeConfigPanelMode != .hidden {
+                Divider()
+
+                runtimeConfigurationPanelBody
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .frame(height: runtimeConfigurationBodyHeight, alignment: .topLeading)
+                    .clipped()
+
+                if runtimeConfigPanelMode == .expanded {
+                    Divider()
+                    runtimeConfigurationResizeHandle
+                }
+            }
+        }
+        .background(Color(.controlBackgroundColor).opacity(0.6))
+    }
+
+    private var runtimeConfigurationPanelHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(LocalizedString.text("runtime_config_title"))
-                        .font(.headline)
-                    Text(LocalizedString.text("runtime_config_subtitle"))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 8) {
+                        Text(LocalizedString.text("runtime_config_title"))
+                            .font(.headline)
+                        Text(runtimeConfigPanelMode.label)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.14))
+                            .clipShape(Capsule())
+                    }
+
+                    Text(
+                        runtimeConfigPanelMode == .expanded
+                            ? LocalizedString.text("runtime_config_subtitle")
+                            : runtimeConfigurationSummaryText
+                    )
+                    .font(.caption)
+                    .foregroundColor(
+                        runtimeConfigPanelMode == .expanded
+                            ? .secondary
+                            : (runtimeConfigMessage == nil ? .secondary : runtimeConfigTone.color)
+                    )
+                    .lineLimit(runtimeConfigPanelMode == .expanded ? 2 : 1)
                 }
 
-                Spacer()
+                Spacer(minLength: 12)
 
-                if isRefreshingRuntimeConfigurations {
-                    ProgressView()
+                HStack(spacing: 8) {
+                    if let runtimeConfigurationPrimaryActionTitle, runtimeConfigPanelMode == .hidden {
+                        Button(runtimeConfigurationPrimaryActionTitle) {
+                            performRecommendedRuntimePreparationAction()
+                        }
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                }
+                    }
 
-                Button(LocalizedString.text("runtime_config_refresh")) {
-                    refreshRuntimeConfigurationDataIfNeeded(force: true)
+                    if isRefreshingRuntimeConfigurations {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    Button(LocalizedString.text("runtime_config_refresh")) {
+                        refreshRuntimeConfigurationDataIfNeeded(force: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canRefreshRuntimeInventory)
+
+                    switch runtimeConfigPanelMode {
+                    case .hidden:
+                        Button(LocalizedString.text("runtime_config_expand")) {
+                            setRuntimeConfigPanelMode(.expanded)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    case .compact:
+                        Button(LocalizedString.text("runtime_config_expand")) {
+                            setRuntimeConfigPanelMode(.expanded)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button(LocalizedString.text("runtime_config_hide")) {
+                            setRuntimeConfigPanelMode(.hidden)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    case .expanded:
+                        Button(LocalizedString.text("runtime_config_compact")) {
+                            setRuntimeConfigPanelMode(.compact)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button(LocalizedString.text("runtime_config_hide")) {
+                            setRuntimeConfigPanelMode(.hidden)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .disabled(!canRefreshRuntimeInventory)
             }
 
+            runtimeConfigurationStatusBadges
+        }
+        .padding()
+    }
+
+    private var runtimeConfigurationStatusBadges: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 statusBadge(
                     title: appState.openClawManager.isConnected
@@ -605,76 +738,103 @@ struct WorkbenchConversationView: View {
                     color: appState.isCurrentProjectRuntimeSessionSynchronized ? .green : .orange
                 )
             }
+            .padding(.trailing, 1)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
 
-            if let runtimeConfigMessage {
-                Text(runtimeConfigMessage)
-                    .font(.caption)
-                    .foregroundColor(runtimeConfigTone.color)
-            }
-
-            if let runtimePreparationSummary {
-                Text(runtimePreparationSummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            if appState.openClawManager.config.deploymentKind != .remoteServer {
-                FlowLayout(spacing: 8) {
-                    runtimePreparationButton(
-                        action: .connect,
-                        title: LocalizedString.text("connect_openclaw"),
-                        enabled: canConnectRuntimePreparation
-                    ) {
-                        connectOpenClawForRuntimeConfiguration()
-                    }
-
-                    runtimePreparationButton(
-                        action: .attach,
-                        title: LocalizedString.text("attach_current_project"),
-                        enabled: canAttachRuntimePreparation
-                    ) {
-                        attachCurrentProjectForRuntimeConfiguration()
-                    }
-
-                    runtimePreparationButton(
-                        action: .prepareMirror,
-                        title: LocalizedString.text("apply_workflow_to_mirror"),
-                        enabled: canPrepareMirrorRuntimePreparation
-                    ) {
-                        prepareMirrorForRuntimeConfiguration()
-                    }
-
-                    runtimePreparationButton(
-                        action: .syncSession,
-                        title: LocalizedString.text("sync_current_session"),
-                        enabled: canSyncRuntimePreparation
-                    ) {
-                        syncCurrentSessionForRuntimeConfiguration()
-                    }
+    private var runtimeConfigurationPanelBody: some View {
+        ScrollView(showsIndicators: runtimeConfigPanelMode == .expanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                if let runtimeConfigMessage, runtimeConfigPanelMode != .hidden {
+                    Text(runtimeConfigMessage)
+                        .font(.caption)
+                        .foregroundColor(runtimeConfigTone.color)
                 }
-            }
 
-            if appState.openClawManager.config.deploymentKind == .remoteServer {
-                Text(LocalizedString.text("runtime_config_remote_unsupported"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else if workflowAgents.isEmpty {
-                Text(LocalizedString.text("runtime_config_no_agents"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(workflowAgents) { agent in
-                            runtimeConfigurationCard(for: agent)
+                if let runtimePreparationSummary {
+                    Text(runtimePreparationSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if appState.openClawManager.config.deploymentKind != .remoteServer {
+                    FlowLayout(spacing: 8) {
+                        runtimePreparationButton(
+                            action: .connect,
+                            title: LocalizedString.text("connect_openclaw"),
+                            enabled: canConnectRuntimePreparation
+                        ) {
+                            connectOpenClawForRuntimeConfiguration()
+                        }
+
+                        runtimePreparationButton(
+                            action: .attach,
+                            title: LocalizedString.text("attach_current_project"),
+                            enabled: canAttachRuntimePreparation
+                        ) {
+                            attachCurrentProjectForRuntimeConfiguration()
+                        }
+
+                        runtimePreparationButton(
+                            action: .prepareMirror,
+                            title: LocalizedString.text("apply_workflow_to_mirror"),
+                            enabled: canPrepareMirrorRuntimePreparation
+                        ) {
+                            prepareMirrorForRuntimeConfiguration()
+                        }
+
+                        runtimePreparationButton(
+                            action: .syncSession,
+                            title: LocalizedString.text("sync_current_session"),
+                            enabled: canSyncRuntimePreparation
+                        ) {
+                            syncCurrentSessionForRuntimeConfiguration()
                         }
                     }
                 }
-                .frame(minHeight: 140, maxHeight: 320)
+
+                if showsRuntimeConfigurationEditor {
+                    if appState.openClawManager.config.deploymentKind == .remoteServer {
+                        Text(LocalizedString.text("runtime_config_remote_unsupported"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else if workflowAgents.isEmpty {
+                        Text(LocalizedString.text("runtime_config_no_agents"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(workflowAgents) { agent in
+                                runtimeConfigurationCard(for: agent)
+                            }
+                        }
+                    }
+                }
             }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding()
-        .background(Color(.controlBackgroundColor).opacity(0.6))
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private var runtimeConfigurationResizeHandle: some View {
+        HStack(spacing: 8) {
+            Capsule()
+                .fill(Color.secondary.opacity(0.35))
+                .frame(width: 44, height: 5)
+
+            Text(LocalizedString.text("runtime_config_drag_hint"))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .gesture(runtimeConfigurationResizeGesture)
+        .onTapGesture(count: 2) {
+            resetRuntimeConfigExpandedHeight()
+        }
     }
 
     @ViewBuilder
@@ -1303,8 +1463,37 @@ struct WorkbenchConversationView: View {
             }
 
             if success {
+                collapseRuntimeConfigurationPanelAfterSuccessfulAction()
                 refreshRuntimeConfigurationDataIfNeeded(force: true)
             }
+        }
+    }
+
+    private func runtimePreparationActionTitle(_ action: WorkbenchRuntimePreparationAction) -> String {
+        switch action {
+        case .connect:
+            return LocalizedString.text("connect_openclaw")
+        case .attach:
+            return LocalizedString.text("attach_current_project")
+        case .prepareMirror:
+            return LocalizedString.text("apply_workflow_to_mirror")
+        case .syncSession:
+            return LocalizedString.text("sync_current_session")
+        }
+    }
+
+    private func performRecommendedRuntimePreparationAction() {
+        guard let action = recommendedRuntimePreparationAction else { return }
+
+        switch action {
+        case .connect:
+            connectOpenClawForRuntimeConfiguration()
+        case .attach:
+            attachCurrentProjectForRuntimeConfiguration()
+        case .prepareMirror:
+            prepareMirrorForRuntimeConfiguration()
+        case .syncSession:
+            syncCurrentSessionForRuntimeConfiguration()
         }
     }
 
@@ -1395,9 +1584,48 @@ struct WorkbenchConversationView: View {
             runtimeConfigTone = success ? .success : .error
 
             if success && canRefreshRuntimeInventory {
+                collapseRuntimeConfigurationPanelAfterSuccessfulAction()
                 refreshRuntimeConfigurationDataIfNeeded(force: true)
             }
         }
+    }
+
+    private func collapseRuntimeConfigurationPanelAfterSuccessfulAction() {
+        guard shouldAutoCollapseRuntimeConfigurationPanel else { return }
+        setRuntimeConfigPanelMode(.compact)
+    }
+
+    private func setRuntimeConfigPanelMode(_ mode: WorkbenchRuntimeConfigPanelMode) {
+        runtimeConfigPanelMode = mode
+        SettingsManager.shared.workbenchRuntimeConfigPanelMode = mode.rawValue
+    }
+
+    private func clampedRuntimeConfigExpandedHeight(_ proposedHeight: CGFloat) -> CGFloat {
+        min(max(proposedHeight, minimumExpandedRuntimeConfigHeight), maximumExpandedRuntimeConfigHeight)
+    }
+
+    private func resetRuntimeConfigExpandedHeight() {
+        let resetHeight = clampedRuntimeConfigExpandedHeight(320)
+        runtimeConfigExpandedHeight = resetHeight
+        SettingsManager.shared.workbenchRuntimeConfigPanelExpandedHeight = resetHeight
+    }
+
+    private var runtimeConfigurationResizeGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let originHeight = runtimeConfigHeightDragOrigin ?? runtimeConfigExpandedHeight
+                if runtimeConfigHeightDragOrigin == nil {
+                    runtimeConfigHeightDragOrigin = originHeight
+                }
+                runtimeConfigExpandedHeight = clampedRuntimeConfigExpandedHeight(originHeight + value.translation.height)
+            }
+            .onEnded { value in
+                let originHeight = runtimeConfigHeightDragOrigin ?? runtimeConfigExpandedHeight
+                let resolvedHeight = clampedRuntimeConfigExpandedHeight(originHeight + value.translation.height)
+                runtimeConfigExpandedHeight = resolvedHeight
+                runtimeConfigHeightDragOrigin = nil
+                SettingsManager.shared.workbenchRuntimeConfigPanelExpandedHeight = resolvedHeight
+            }
     }
 
     private func runtimePreparationHint(for state: AppState.AgentRuntimePreparationState) -> String {
@@ -1547,6 +1775,27 @@ private enum WorkbenchRuntimeConfigTone {
             return .red
         case .neutral:
             return .secondary
+        }
+    }
+}
+
+private enum WorkbenchRuntimeConfigPanelMode: String {
+    case hidden
+    case compact
+    case expanded
+
+    static var storedDefault: WorkbenchRuntimeConfigPanelMode {
+        WorkbenchRuntimeConfigPanelMode(rawValue: SettingsManager.shared.workbenchRuntimeConfigPanelMode) ?? .compact
+    }
+
+    var label: String {
+        switch self {
+        case .hidden:
+            return LocalizedString.text("runtime_config_mode_hidden")
+        case .compact:
+            return LocalizedString.text("runtime_config_mode_compact")
+        case .expanded:
+            return LocalizedString.text("runtime_config_mode_expanded")
         }
     }
 }

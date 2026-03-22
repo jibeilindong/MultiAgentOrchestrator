@@ -28,6 +28,8 @@ class SettingsManager {
         static let sidebarWidth = "sidebarWidth"
         static let propertiesPanelWidth = "propertiesPanelWidth"
         static let realtimePanelWidth = "realtimePanelWidth"
+        static let workbenchRuntimeConfigPanelMode = "workbenchRuntimeConfigPanelMode"
+        static let workbenchRuntimeConfigPanelExpandedHeight = "workbenchRuntimeConfigPanelExpandedHeight"
     }
     
     // 当前应用版本（用于迁移）
@@ -213,6 +215,19 @@ class SettingsManager {
             return value > 0 ? value : 280
         }
         set { defaults.set(newValue, forKey: Keys.realtimePanelWidth) }
+    }
+
+    var workbenchRuntimeConfigPanelMode: String {
+        get { defaults.string(forKey: Keys.workbenchRuntimeConfigPanelMode) ?? "compact" }
+        set { defaults.set(newValue, forKey: Keys.workbenchRuntimeConfigPanelMode) }
+    }
+
+    var workbenchRuntimeConfigPanelExpandedHeight: CGFloat {
+        get {
+            let value = defaults.double(forKey: Keys.workbenchRuntimeConfigPanelExpandedHeight)
+            return value > 0 ? value : 320
+        }
+        set { defaults.set(newValue, forKey: Keys.workbenchRuntimeConfigPanelExpandedHeight) }
     }
     
     // MARK: - 数据校验

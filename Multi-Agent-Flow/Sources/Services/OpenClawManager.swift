@@ -454,15 +454,88 @@ class OpenClawManager: ObservableObject {
         var unresolvedAgentNames: [String] = []
     }
 
+    private enum LocalRuntimeRegistrationStage: String {
+        case workspaceResolution
+        case canonicalConfig
+        case runtimeRecognition
+        case cliRegistrationFallback
+        case bootstrap
+        case activation
+    }
+
+    private enum LocalRuntimeRegistrationStageStatus {
+        case succeeded
+        case failed
+        case skipped
+    }
+
+    private struct LocalRuntimeRegistrationStageReport {
+        let stage: LocalRuntimeRegistrationStage
+        let status: LocalRuntimeRegistrationStageStatus
+        let changed: Bool
+        let detail: String?
+    }
+
+    private struct LocalRuntimeAgentRegistrationReport {
+        let agentName: String
+        let identifier: String
+        let success: Bool
+        let message: String
+        let bootstrapPathRequired: Bool
+        let workspaceRequirement: LocalRuntimeWorkspaceRequirement?
+        let stageReports: [LocalRuntimeRegistrationStageReport]
+
+        var changed: Bool {
+            stageReports.contains(where: \.changed)
+        }
+
+        var usedCLIRegistrationFallback: Bool {
+            stageReports.contains {
+                $0.stage == .cliRegistrationFallback && $0.status == .succeeded && $0.changed
+            }
+        }
+
+        var provisionedByCanonicalConfig: Bool {
+            stageReports.contains {
+                $0.stage == .canonicalConfig && $0.status == .succeeded && $0.changed
+            }
+        }
+
+        var activationChanged: Bool {
+            stageReports.contains {
+                $0.stage == .activation && $0.status == .succeeded && $0.changed
+            }
+        }
+    }
+
     private struct LocalRuntimeRegistrationResult {
         var changedAgentNames: [String] = []
         var warnings: [String] = []
         var failureMessages: [String] = []
         var bootstrapPathRequiredAgentNames: [String] = []
         var workspacePathRequirements: [LocalRuntimeWorkspaceRequirement] = []
+        var agentReports: [LocalRuntimeAgentRegistrationReport] = []
 
         var workspacePathRequiredAgentNames: [String] {
             Array(Set(workspacePathRequirements.map(\.agentName))).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        var cliFallbackAgentNames: [String] {
+            Array(Set(agentReports.filter(\.usedCLIRegistrationFallback).map(\.agentName))).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        var canonicalProvisionedAgentNames: [String] {
+            Array(Set(agentReports.filter(\.provisionedByCanonicalConfig).map(\.agentName))).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+
+        var activationUpdatedAgentNames: [String] {
+            Array(Set(agentReports.filter(\.activationChanged).map(\.agentName))).sorted {
                 $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
             }
         }
@@ -2492,7 +2565,7 @@ class OpenClawManager: ObservableObject {
                 expectedIdentifiers.insert(normalizeAgentKey(expectedIdentifier))
             }
 
-            let registration = ensureLocalRuntimeAgentRegistration(
+            let registration = performLocalRuntimeAgentRegistration(
                 for: agent,
                 in: project,
                 workflowID: workflowID,
@@ -2500,22 +2573,20 @@ class OpenClawManager: ObservableObject {
                 cachedBindingRecords: bindingRecords,
                 using: config
             )
+            result.agentReports.append(registration)
             if !registration.success {
-                if !registration.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    result.failureMessages.append(registration.message)
-                    if registration.bootstrapPathRequired {
-                        result.bootstrapPathRequiredAgentNames.append(agent.name)
-                    }
-                    if let workspaceRequirement = registration.workspaceRequirement {
-                        result.workspacePathRequirements.append(workspaceRequirement)
-                    }
-                } else {
-                    result.failureMessages.append("本地 workflow agent \(agent.name) 自动注册失败。")
+                let failureMessage = localRuntimeRegistrationFailureMessage(for: registration)
+                result.failureMessages.append(failureMessage)
+                if registration.bootstrapPathRequired {
+                    result.bootstrapPathRequiredAgentNames.append(agent.name)
+                }
+                if let workspaceRequirement = registration.workspaceRequirement {
+                    result.workspacePathRequirements.append(workspaceRequirement)
                 }
                 continue
             }
 
-            if !registration.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if registration.changed {
                 changedNames.insert(agent.name)
             }
         }
@@ -2591,13 +2662,63 @@ class OpenClawManager: ObservableObject {
         return project.agents.filter { boundAgentIDs.contains($0.id) }
     }
 
+    private func localRuntimeRegistrationStageTitle(_ stage: LocalRuntimeRegistrationStage) -> String {
+        switch stage {
+        case .workspaceResolution:
+            return "workspace 解析"
+        case .canonicalConfig:
+            return "canonical 配置写入"
+        case .runtimeRecognition:
+            return "runtime 识别"
+        case .cliRegistrationFallback:
+            return "CLI 注册兜底"
+        case .bootstrap:
+            return "bootstrap 补齐"
+        case .activation:
+            return "model / channel 激活"
+        }
+    }
+
+    private func localRuntimeRegistrationFailureMessage(for report: LocalRuntimeAgentRegistrationReport) -> String {
+        let failedStages = report.stageReports
+            .filter { $0.status == .failed }
+            .map { stageReport -> String in
+                let title = localRuntimeRegistrationStageTitle(stageReport.stage)
+                let detail = stageReport.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return detail.isEmpty ? title : "\(title)：\(detail)"
+            }
+        let stageSummary = failedStages.joined(separator: "；")
+        let baseMessage = report.message.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if baseMessage.isEmpty {
+            if stageSummary.isEmpty {
+                return "本地 workflow agent \(report.agentName) 自动注册失败。"
+            }
+            return "本地 workflow agent \(report.agentName) 自动注册失败。失败阶段：\(stageSummary)。"
+        }
+
+        guard !stageSummary.isEmpty, !baseMessage.contains(stageSummary) else {
+            return baseMessage
+        }
+        return "\(baseMessage) 失败阶段：\(stageSummary)。"
+    }
+
     private func localRuntimeRegistrationSummary(from result: LocalRuntimeRegistrationResult) -> String {
         guard result.success, !result.changedAgentNames.isEmpty else {
             return ""
         }
 
-        let names = result.changedAgentNames.joined(separator: "、")
-        return "已补齐并校验本地 runtime agent 注册：\(names)。"
+        var parts = ["已补齐并校验本地 runtime agent 注册：\(result.changedAgentNames.joined(separator: "、"))。"]
+        if !result.canonicalProvisionedAgentNames.isEmpty {
+            parts.append("已同步 canonical 配置：\(result.canonicalProvisionedAgentNames.joined(separator: "、"))。")
+        }
+        if !result.cliFallbackAgentNames.isEmpty {
+            parts.append("其中 \(result.cliFallbackAgentNames.joined(separator: "、")) 通过 CLI add 兼容兜底完成显式注册。")
+        }
+        if !result.activationUpdatedAgentNames.isEmpty {
+            parts.append("已自动补齐 model / channel：\(result.activationUpdatedAgentNames.joined(separator: "、"))。")
+        }
+        return parts.joined(separator: " ")
     }
 
     func executeOpenClawCLI(
@@ -3157,6 +3278,91 @@ class OpenClawManager: ObservableObject {
         return trimmed
     }
 
+    private func canonicalLocalRuntimePath(_ path: String?) -> String? {
+        let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed, isDirectory: true)
+            .standardizedFileURL
+            .path
+    }
+
+    private func localRuntimeAgentWorkspaceURL(
+        for identifier: String,
+        using config: OpenClawConfig? = nil
+    ) -> URL {
+        localOpenClawRootURL(using: config)
+            .appendingPathComponent("agents", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
+            .appendingPathComponent("workspace", isDirectory: true)
+    }
+
+    private func resolvedWorkspaceSourcePath(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil
+    ) -> String? {
+        if let managedWorkspace = projectManagedWorkspacePath(for: agent, in: project, workflowID: workflowID) {
+            return managedWorkspace
+        }
+
+        if let userProvidedWorkspace = userProvidedLocalWorkspacePath(for: agent, in: project, workflowID: workflowID) {
+            return userProvidedWorkspace
+        }
+
+        let candidateNames = [
+            agent.openClawDefinition.agentIdentifier,
+            agent.name
+        ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if let localWorkspace = localAgentWorkspacePath(matching: candidateNames) {
+            return localWorkspace
+        }
+
+        let normalizedNames = Set(candidateNames.map(normalizeAgentKey))
+        if !normalizedNames.isEmpty,
+           let record = discoveryResults.first(where: { normalizedNames.contains(normalizeAgentKey($0.name)) }) {
+            return firstNonEmptyPath(record.workspacePath)
+        }
+
+        return nil
+    }
+
+    private func synchronizeLocalRuntimeWorkspace(
+        from sourceWorkspacePath: String,
+        to targetWorkspaceURL: URL,
+        identifier: String
+    ) -> (success: Bool, message: String) {
+        let sourceURL = URL(fileURLWithPath: sourceWorkspacePath, isDirectory: true).standardizedFileURL
+        let targetURL = targetWorkspaceURL.standardizedFileURL
+
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
+            return (false, "本地 workflow agent \(identifier) 的源 workspace 不存在：\(sourceURL.path)")
+        }
+
+        do {
+            try fileManager.createDirectory(at: targetURL, withIntermediateDirectories: true)
+            guard sourceURL.path != targetURL.path else {
+                return (true, "")
+            }
+
+            _ = try replaceDirectoryContents(of: targetURL, withContentsOf: sourceURL)
+            return (true, "已将 \(identifier) 的 workspace 同步到 OpenClaw runtime 路径。")
+        } catch {
+            return (false, "同步本地 workflow agent \(identifier) 的 runtime workspace 失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func writeOpenClawConfigRoot(
+        _ root: [String: Any],
+        to configURL: URL
+    ) throws {
+        let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        let serialized = String(data: updatedData, encoding: .utf8) ?? "{}"
+        let normalized = serialized.replacingOccurrences(of: "\\/", with: "/")
+        try Data(normalized.utf8).write(to: configURL, options: .atomic)
+    }
+
     private func localRuntimeAuthProviders(preferredAgentDirectory: URL? = nil) -> Set<String> {
         let authFiles = candidateLocalRuntimeAgentDirectories(preferredAgentDirectory: preferredAgentDirectory)
             .map { $0.appendingPathComponent("auth-profiles.json", isDirectory: false) }
@@ -3244,17 +3450,16 @@ class OpenClawManager: ObservableObject {
     }
 
     private func synchronizeLocalRuntimeAgentConfigEntry(
+        configIndex: Int? = nil,
         identifier: String,
         name: String,
         workspacePath: String?,
         agentDirPath: String?,
-        modelIdentifier: String?
+        modelIdentifier: String?,
+        updateModel: Bool = true
     ) -> (success: Bool, message: String) {
         let configURL = resolveLocalOpenClawConfigURL()
             ?? localOpenClawRootURL().appendingPathComponent("openclaw.json", isDirectory: false)
-        guard fileManager.fileExists(atPath: configURL.path) else {
-            return (true, "")
-        }
 
         do {
             let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3269,53 +3474,50 @@ class OpenClawManager: ObservableObject {
                 return trimmed.isEmpty ? nil : trimmed
             }()
             let trimmedAgentDirPath: String? = {
-                let trimmed = agentDirPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return trimmed.isEmpty ? nil : trimmed
+                canonicalLocalRuntimePath(agentDirPath)
             }()
             let trimmedModelIdentifier: String? = {
                 let trimmed = modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return trimmed.isEmpty ? nil : trimmed
             }()
+            let normalizedWorkspacePath = canonicalLocalRuntimePath(trimmedWorkspacePath)
+            let normalizedAgentDirPath = canonicalLocalRuntimePath(trimmedAgentDirPath)
 
-            let data = try Data(contentsOf: configURL)
-            guard
-                var root = (try JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                var agents = root["agents"] as? [String: Any],
-                var list = agents["list"] as? [[String: Any]]
-            else {
-                return (false, "本地 OpenClaw 配置存在，但 agents.list 无法解析，未能自动同步 runtime agent 配置。")
+            var root: [String: Any]
+            if fileManager.fileExists(atPath: configURL.path) {
+                let data = try Data(contentsOf: configURL)
+                guard let parsedRoot = (try JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    return (false, "本地 OpenClaw 配置存在，但根对象无法解析，未能自动同步 runtime agent 配置。")
+                }
+                root = parsedRoot
+            } else {
+                root = [:]
             }
+            var agents = (root["agents"] as? [String: Any]) ?? [:]
+            var list = (agents["list"] as? [[String: Any]]) ?? []
 
             let normalizedIdentifier = normalizeAgentKey(trimmedIdentifier)
-            let normalizedName = normalizeAgentKey(desiredName)
-            let normalizedDesiredWorkspacePath = trimmedWorkspacePath.flatMap(normalizeWorkspacePath)
-            let normalizedDesiredAgentDirPath = trimmedAgentDirPath.flatMap(normalizeWorkspacePath)
-            let parsedEntries = parseLocalAgentConfigEntries(from: list)
-            let matchingIndices = parsedEntries.compactMap { entry in
-                localAgentConfigEntryMatches(
-                    entry,
-                    normalizedIdentifier: normalizedIdentifier,
-                    normalizedName: normalizedName,
-                    normalizedWorkspacePath: normalizedDesiredWorkspacePath,
-                    normalizedAgentDirPath: normalizedDesiredAgentDirPath
-                ) ? entry.configIndex : nil
+            let exactMatchingIndices = list.enumerated().compactMap { index, item in
+                let existingIdentifier = normalizeAgentKey(stringValue(item, keys: ["id", "agentID", "agentId"]) ?? "")
+                return existingIdentifier == normalizedIdentifier ? index : nil
             }
 
-            let canonicalIndex = bestLocalAgentConfigCanonicalIndex(
-                matchingIndices,
-                in: list,
-                normalizedIdentifier: normalizedIdentifier,
-                normalizedName: normalizedName,
-                normalizedWorkspacePath: normalizedDesiredWorkspacePath,
-                normalizedAgentDirPath: normalizedDesiredAgentDirPath
-            )
+            let canonicalIndex: Int?
+            if let configIndex, configIndex >= 0, configIndex < list.count {
+                canonicalIndex = configIndex
+            } else {
+                if exactMatchingIndices.count > 1 {
+                    return (false, "openclaw.json 中存在多条 id 为 \(trimmedIdentifier) 的 agent 记录，已停止自动写入以避免污染配置。")
+                }
+                canonicalIndex = exactMatchingIndices.first
+            }
 
             var entry: [String: Any] = canonicalIndex.flatMap { index in
                 guard index >= 0 && index < list.count else { return nil }
                 return list[index]
             } ?? [:]
             var updatedFields: [String] = []
-            var removedDuplicateCount = 0
+            let originalFileData = fileManager.fileExists(atPath: configURL.path) ? try Data(contentsOf: configURL) : nil
 
             if (stringValue(entry, keys: ["id"]) ?? "") != trimmedIdentifier {
                 entry["id"] = trimmedIdentifier
@@ -3327,82 +3529,72 @@ class OpenClawManager: ObservableObject {
                 updatedFields.append("name")
             }
 
-            if let trimmedWorkspacePath,
-               (stringValue(entry, keys: ["workspace"]) ?? "") != trimmedWorkspacePath {
-                entry["workspace"] = trimmedWorkspacePath
+            if let normalizedWorkspacePath,
+               (stringValue(entry, keys: ["workspace"]) ?? "") != normalizedWorkspacePath {
+                entry["workspace"] = normalizedWorkspacePath
                 updatedFields.append("workspace")
             }
 
-            if let trimmedAgentDirPath,
-               (stringValue(entry, keys: ["agentDir"]) ?? "") != trimmedAgentDirPath {
-                entry["agentDir"] = trimmedAgentDirPath
+            if let normalizedAgentDirPath,
+               (stringValue(entry, keys: ["agentDir"]) ?? "") != normalizedAgentDirPath {
+                entry["agentDir"] = normalizedAgentDirPath
                 updatedFields.append("agentDir")
             }
 
-            if let trimmedModelIdentifier,
+            if updateModel,
+               let trimmedModelIdentifier,
                (stringValue(entry, keys: ["model"]) ?? "") != trimmedModelIdentifier {
                 entry["model"] = trimmedModelIdentifier
                 updatedFields.append("model")
             }
 
             if let canonicalIndex {
-                let matchingIndexSet = Set(matchingIndices)
-                var rebuiltList: [[String: Any]] = []
-                rebuiltList.reserveCapacity(list.count - max(matchingIndices.count - 1, 0))
-
-                for (index, item) in list.enumerated() {
-                    if index == canonicalIndex {
-                        rebuiltList.append(entry)
-                        continue
-                    }
-
-                    if matchingIndexSet.contains(index) {
-                        removedDuplicateCount += 1
-                        continue
-                    }
-
-                    rebuiltList.append(item)
-                }
-
-                list = rebuiltList
+                list[canonicalIndex] = entry
             } else {
                 list.append(entry)
                 updatedFields.append("new")
             }
 
-            guard !updatedFields.isEmpty || removedDuplicateCount > 0 else {
+            guard !updatedFields.isEmpty else {
                 return (true, "")
             }
 
             agents["list"] = list
             root["agents"] = agents
 
-            let updatedData = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
-            try updatedData.write(to: configURL, options: .atomic)
+            try writeOpenClawConfigRoot(root, to: configURL)
             cachedLocalWorkspaceMap = [:]
             cachedLocalWorkspaceConfigModificationDate = nil
 
-            let verification = resolveLocalAgentConfigResolution(
-                matching: [trimmedIdentifier, desiredName],
-                at: configURL
-            )
-            guard verification.status == .uniqueValid,
-                  let selectedEntry = verification.selectedEntry else {
-                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：未找到唯一有效的 workspace 记录。")
+            let refreshedEntries = readLocalAgentConfigEntries(at: configURL)
+            let exactEntries = refreshedEntries.filter { normalizeAgentKey($0.id ?? "") == normalizedIdentifier }
+            guard exactEntries.count == 1, let selectedEntry = exactEntries.first else {
+                if let originalFileData {
+                    try? originalFileData.write(to: configURL, options: .atomic)
+                } else {
+                    try? fileManager.removeItem(at: configURL)
+                }
+                return (false, "已尝试写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：未找到唯一精确 id 记录，已回滚本次写入。")
             }
 
-            if !selectedEntry.candidateKeys.contains(normalizedIdentifier) {
-                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：canonical 记录的标识不一致。")
+            if let normalizedWorkspacePath,
+               canonicalLocalRuntimePath(selectedEntry.workspacePath) != normalizedWorkspacePath {
+                if let originalFileData {
+                    try? originalFileData.write(to: configURL, options: .atomic)
+                } else {
+                    try? fileManager.removeItem(at: configURL)
+                }
+                return (false, "已尝试写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：workspace 未收敛到 runtime 目标路径，已回滚本次写入。")
             }
 
-            if let normalizedDesiredWorkspacePath,
-               normalizeWorkspacePath(selectedEntry.workspacePath ?? "") != normalizedDesiredWorkspacePath {
-                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：workspace 未收敛到当前注册路径。")
-            }
-
-            if let normalizedDesiredAgentDirPath,
-               normalizeWorkspacePath(selectedEntry.agentDirPath ?? "") != normalizedDesiredAgentDirPath {
-                return (false, "已写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：agentDir 未收敛到当前注册路径。")
+            if let normalizedAgentDirPath,
+               canonicalLocalRuntimePath(selectedEntry.agentDirPath) != normalizedAgentDirPath {
+                if let originalFileData {
+                    try? originalFileData.write(to: configURL, options: .atomic)
+                } else {
+                    try? fileManager.removeItem(at: configURL)
+                }
+                return (false, "已尝试写回本地 runtime agent \(trimmedIdentifier) 配置，但回读校验未通过：agentDir 未收敛到 runtime 目标路径，已回滚本次写入。")
             }
 
             var messageParts: [String] = []
@@ -3413,9 +3605,6 @@ class OpenClawManager: ObservableObject {
                 if !displayFields.isEmpty {
                     messageParts.append("已同步本地 runtime agent \(trimmedIdentifier) 的 \(displayFields.joined(separator: "、")) 配置。")
                 }
-            }
-            if removedDuplicateCount > 0 {
-                messageParts.append("已清理 \(removedDuplicateCount) 条重复的本地 runtime agent 配置记录。")
             }
 
             return (true, messageParts.joined(separator: " "))
@@ -4065,29 +4254,72 @@ class OpenClawManager: ObservableObject {
         }
     }
 
-    func ensureLocalRuntimeAgentRegistration(
+    private func performLocalRuntimeAgentRegistration(
         for agent: Agent,
         in project: MAProject? = nil,
         workflowID: UUID? = nil,
         cachedRuntimeRecords: [ManagedAgentRecord]? = nil,
         cachedBindingRecords: [ManagedAgentBindingRecord]? = nil,
         using config: OpenClawConfig? = nil
-    ) -> (
-        success: Bool,
-        identifier: String,
-        message: String,
-        bootstrapPathRequired: Bool,
-        workspaceRequirement: LocalRuntimeWorkspaceRequirement?
-    ) {
+    ) -> LocalRuntimeAgentRegistrationReport {
         let resolvedConfig = config ?? self.config
+        var stageReports: [LocalRuntimeRegistrationStageReport] = []
+
+        func appendStage(
+            _ stage: LocalRuntimeRegistrationStage,
+            _ status: LocalRuntimeRegistrationStageStatus,
+            changed: Bool = false,
+            detail: String? = nil
+        ) {
+            stageReports.append(
+                LocalRuntimeRegistrationStageReport(
+                    stage: stage,
+                    status: status,
+                    changed: changed,
+                    detail: detail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? detail : nil
+                )
+            )
+        }
+
+        func makeReport(
+            success: Bool,
+            identifier: String,
+            message: String,
+            bootstrapPathRequired: Bool,
+            workspaceRequirement: LocalRuntimeWorkspaceRequirement?
+        ) -> LocalRuntimeAgentRegistrationReport {
+            LocalRuntimeAgentRegistrationReport(
+                agentName: agent.name,
+                identifier: identifier,
+                success: success,
+                message: message,
+                bootstrapPathRequired: bootstrapPathRequired,
+                workspaceRequirement: workspaceRequirement,
+                stageReports: stageReports
+            )
+        }
+
         guard resolvedConfig.deploymentKind == .local else {
             let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
-            return (true, identifier, "", false, nil)
+            return makeReport(
+                success: true,
+                identifier: identifier,
+                message: "",
+                bootstrapPathRequired: false,
+                workspaceRequirement: nil
+            )
         }
 
         let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !identifier.isEmpty else {
-            return (false, "", "当前节点缺少可用的本地 runtime agent 标识。", false, nil)
+            appendStage(.workspaceResolution, .failed, detail: "当前节点缺少可用的本地 runtime agent 标识。")
+            return makeReport(
+                success: false,
+                identifier: "",
+                message: "当前节点缺少可用的本地 runtime agent 标识。",
+                bootstrapPathRequired: false,
+                workspaceRequirement: nil
+            )
         }
 
         let runtimeRecords: [ManagedAgentRecord]
@@ -4097,7 +4329,15 @@ class OpenClawManager: ObservableObject {
             do {
                 runtimeRecords = try loadManagedRuntimeRecords(using: resolvedConfig)
             } catch {
-                return (false, identifier, "读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)", false, nil)
+                let message = "读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)"
+                appendStage(.runtimeRecognition, .failed, detail: message)
+                return makeReport(
+                    success: false,
+                    identifier: identifier,
+                    message: message,
+                    bootstrapPathRequired: false,
+                    workspaceRequirement: nil
+                )
             }
         }
         let bindingRecords = cachedBindingRecords ?? (try? loadAllManagedAgentBindings(using: resolvedConfig)) ?? []
@@ -4132,14 +4372,38 @@ class OpenClawManager: ObservableObject {
             normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
                 || normalizeAgentKey($0.name) == normalizeAgentKey(identifier)
         }) {
+            appendStage(.runtimeRecognition, .succeeded, detail: "已匹配到现有本地 runtime agent \(matchedRecord.targetIdentifier)。")
             let runtimeAgentDirectory = firstNonEmptyPath(matchedRecord.agentDirPath)
                 .map { URL(fileURLWithPath: $0, isDirectory: true) }
                 ?? localOpenClawRootURL(using: resolvedConfig)
                     .appendingPathComponent("agents", isDirectory: true)
                     .appendingPathComponent(identifier, isDirectory: true)
                     .appendingPathComponent("agent", isDirectory: true)
-            let workspacePath = resolvedWorkspacePath(for: agent, in: project, workflowID: workflowID)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? matchedRecord.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let runtimeWorkspaceURL = localRuntimeAgentWorkspaceURL(
+                for: matchedRecord.targetIdentifier,
+                using: resolvedConfig
+            )
+            let workspaceSourcePath = firstNonEmptyPath(
+                resolvedWorkspaceSourcePath(for: agent, in: project, workflowID: workflowID),
+                matchedRecord.workspacePath
+            )
+            if let workspaceSourcePath {
+                let workspaceSync = synchronizeLocalRuntimeWorkspace(
+                    from: workspaceSourcePath,
+                    to: runtimeWorkspaceURL,
+                    identifier: matchedRecord.targetIdentifier
+                )
+                appendStage(.workspaceResolution, workspaceSync.success ? .succeeded : .failed, changed: !workspaceSync.message.isEmpty, detail: workspaceSync.message)
+                guard workspaceSync.success else {
+                    return makeReport(
+                        success: false,
+                        identifier: matchedRecord.targetIdentifier,
+                        message: workspaceSync.message,
+                        bootstrapPathRequired: false,
+                        workspaceRequirement: nil
+                    )
+                }
+            }
             let desiredModelIdentifier = qualifiedLocalRuntimeModelIdentifier(
                 agent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? matchedRecord.modelIdentifier
@@ -4152,14 +4416,16 @@ class OpenClawManager: ObservableObject {
                 using: resolvedConfig
             )
             let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
+                configIndex: matchedRecord.configIndex,
                 identifier: matchedRecord.targetIdentifier,
                 name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? matchedRecord.name
                     : agent.openClawDefinition.agentIdentifier,
-                workspacePath: workspacePath,
+                workspacePath: runtimeWorkspaceURL.path,
                 agentDirPath: runtimeAgentDirectory.path,
                 modelIdentifier: desiredModelIdentifier
             )
+            appendStage(.canonicalConfig, syncResult.success ? .succeeded : .failed, changed: !syncResult.message.isEmpty, detail: syncResult.message)
             let activation = applyLocalRuntimeActivationPlan(
                 for: agent,
                 in: project,
@@ -4170,26 +4436,51 @@ class OpenClawManager: ObservableObject {
                 allowSeedFromOtherAgents: false,
                 using: resolvedConfig
             )
-            let combinedMessages = combineMessages(syncResult.message, bootstrap.message, activation.message)
-            return (
-                bootstrap.success && syncResult.success && activation.success,
-                matchedRecord.targetIdentifier,
-                combinedMessages,
-                bootstrap.requiresUserProvidedBootstrapPath,
-                nil
+            appendStage(.bootstrap, bootstrap.success ? .succeeded : .failed, changed: !bootstrap.message.isEmpty, detail: bootstrap.message)
+            appendStage(.activation, activation.success ? .succeeded : .failed, changed: !activation.message.isEmpty, detail: activation.message)
+            let combinedMessages = combineMessages(
+                stageReports.last(where: { $0.stage == .workspaceResolution })?.detail,
+                syncResult.message,
+                bootstrap.message,
+                activation.message
+            )
+            return makeReport(
+                success: bootstrap.success && syncResult.success && activation.success,
+                identifier: matchedRecord.targetIdentifier,
+                message: combinedMessages,
+                bootstrapPathRequired: bootstrap.requiresUserProvidedBootstrapPath,
+                workspaceRequirement: nil
             )
         }
 
-        guard let workspacePath = resolvedWorkspacePath(for: agent, in: project, workflowID: workflowID)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !workspacePath.isEmpty else {
+        guard let workspaceSourcePath = resolvedWorkspaceSourcePath(for: agent, in: project, workflowID: workflowID)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workspaceSourcePath.isEmpty else {
             let diagnosticMessage = unresolvedWorkspaceDiagnosticMessage(for: agent, in: project, workflowID: workflowID)
             let baseMessage = "本地 workflow agent \(identifier) 尚未解析到可用 workspace，因此无法自动注册到 OpenClaw CLI。"
-            return (
-                false,
-                identifier,
-                [baseMessage, diagnosticMessage].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " "),
-                false,
-                workspaceRequirement
+            let message = [baseMessage, diagnosticMessage].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+            appendStage(.workspaceResolution, .failed, detail: message)
+            return makeReport(
+                success: false,
+                identifier: identifier,
+                message: message,
+                bootstrapPathRequired: false,
+                workspaceRequirement: workspaceRequirement
+            )
+        }
+        let runtimeWorkspaceURL = localRuntimeAgentWorkspaceURL(for: identifier, using: resolvedConfig)
+        let workspaceSync = synchronizeLocalRuntimeWorkspace(
+            from: workspaceSourcePath,
+            to: runtimeWorkspaceURL,
+            identifier: identifier
+        )
+        appendStage(.workspaceResolution, workspaceSync.success ? .succeeded : .failed, changed: !workspaceSync.message.isEmpty, detail: workspaceSync.message)
+        guard workspaceSync.success else {
+            return makeReport(
+                success: false,
+                identifier: identifier,
+                message: workspaceSync.message,
+                bootstrapPathRequired: false,
+                workspaceRequirement: workspaceRequirement
             )
         }
 
@@ -4207,19 +4498,29 @@ class OpenClawManager: ObservableObject {
             name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? agent.name
                 : agent.openClawDefinition.agentIdentifier,
-            workspacePath: workspacePath,
+            workspacePath: runtimeWorkspaceURL.path,
             agentDirPath: agentDirectory.path,
-            modelIdentifier: modelIdentifier
+            modelIdentifier: nil,
+            updateModel: false
         )
         guard configSyncResult.success else {
-            return (false, identifier, configSyncResult.message, false, nil)
+            appendStage(.canonicalConfig, .failed, changed: !configSyncResult.message.isEmpty, detail: configSyncResult.message)
+            return makeReport(
+                success: false,
+                identifier: identifier,
+                message: configSyncResult.message,
+                bootstrapPathRequired: false,
+                workspaceRequirement: nil
+            )
         }
+        appendStage(.canonicalConfig, .succeeded, changed: !configSyncResult.message.isEmpty, detail: configSyncResult.message)
 
         if let refreshedRuntimeRecords = try? loadManagedRuntimeRecords(using: resolvedConfig),
            let refreshedRuntimeRecord = refreshedRuntimeRecords.first(where: {
                normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
                    || normalizeAgentKey($0.name) == normalizeAgentKey(identifier)
            }) {
+            appendStage(.runtimeRecognition, .succeeded, detail: "canonical 配置已被本地 runtime 识别为 agent \(refreshedRuntimeRecord.targetIdentifier)。")
             let refreshedBindingRecords = (try? loadAllManagedAgentBindings(using: resolvedConfig)) ?? bindingRecords
             let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
                 at: agentDirectory,
@@ -4236,18 +4537,21 @@ class OpenClawManager: ObservableObject {
                 allowSeedFromOtherAgents: true,
                 using: resolvedConfig
             )
-            return (
-                bootstrap.success && activation.success,
-                refreshedRuntimeRecord.targetIdentifier,
-                combineMessages(configSyncResult.message, bootstrap.message, activation.message),
-                bootstrap.requiresUserProvidedBootstrapPath,
-                nil
+            appendStage(.bootstrap, bootstrap.success ? .succeeded : .failed, changed: !bootstrap.message.isEmpty, detail: bootstrap.message)
+            appendStage(.activation, activation.success ? .succeeded : .failed, changed: !activation.message.isEmpty, detail: activation.message)
+            return makeReport(
+                success: bootstrap.success && activation.success,
+                identifier: refreshedRuntimeRecord.targetIdentifier,
+                message: combineMessages(configSyncResult.message, bootstrap.message, activation.message),
+                bootstrapPathRequired: bootstrap.requiresUserProvidedBootstrapPath,
+                workspaceRequirement: nil
             )
         }
+        appendStage(.runtimeRecognition, .skipped, detail: "canonical 配置已写入，但当前 runtime 尚未直接识别该 agent，准备走 CLI add 兼容兜底。")
 
         var arguments = [
             "agents", "add", identifier,
-            "--workspace", workspacePath,
+            "--workspace", runtimeWorkspaceURL.path,
             "--agent-dir", agentDirectory.path,
             "--non-interactive",
             "--json"
@@ -4264,7 +4568,15 @@ class OpenClawManager: ObservableObject {
                 let stdout = String(data: result.standardOutput, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let detail = !stderr.isEmpty ? stderr : stdout
-                return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(detail)", false, nil)
+                let message = "自动注册本地 workflow agent \(identifier) 失败：\(detail)"
+                appendStage(.cliRegistrationFallback, .failed, detail: message)
+                return makeReport(
+                    success: false,
+                    identifier: identifier,
+                    message: message,
+                    bootstrapPathRequired: false,
+                    workspaceRequirement: nil
+                )
             }
 
             let registeredIdentifier = resolvedRegisteredAgentIdentifier(
@@ -4272,6 +4584,8 @@ class OpenClawManager: ObservableObject {
                 fallbackName: identifier,
                 using: resolvedConfig
             )
+            let registrationMessage = "已将本地 workflow agent \(identifier) 自动注册到 OpenClaw CLI（runtime id: \(registeredIdentifier)）。"
+            appendStage(.cliRegistrationFallback, .succeeded, changed: true, detail: registrationMessage)
             let refreshedRuntimeRecords = (try? loadManagedRuntimeRecords(using: resolvedConfig)) ?? runtimeRecords
             let refreshedBindingRecords = (try? loadAllManagedAgentBindings(using: resolvedConfig)) ?? bindingRecords
             let refreshedRuntimeRecord = refreshedRuntimeRecords.first(where: {
@@ -4284,12 +4598,14 @@ class OpenClawManager: ObservableObject {
                 using: resolvedConfig
             )
             let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
+                configIndex: refreshedRuntimeRecord?.configIndex,
                 identifier: registeredIdentifier,
                 name: agent.openClawDefinition.agentIdentifier,
-                workspacePath: workspacePath,
+                workspacePath: runtimeWorkspaceURL.path,
                 agentDirPath: agentDirectory.path,
                 modelIdentifier: modelIdentifier
             )
+            appendStage(.canonicalConfig, syncResult.success ? .succeeded : .failed, changed: !syncResult.message.isEmpty, detail: syncResult.message)
             let activation = refreshedRuntimeRecord.map {
                 applyLocalRuntimeActivationPlan(
                     for: agent,
@@ -4302,19 +4618,64 @@ class OpenClawManager: ObservableObject {
                     using: resolvedConfig
                 )
             } ?? (success: true, message: "")
-            let registrationMessage = "已将本地 workflow agent \(identifier) 自动注册到 OpenClaw CLI（runtime id: \(registeredIdentifier)）。"
+            appendStage(.bootstrap, bootstrap.success ? .succeeded : .failed, changed: !bootstrap.message.isEmpty, detail: bootstrap.message)
+            if refreshedRuntimeRecord != nil {
+                appendStage(.runtimeRecognition, .succeeded, detail: "CLI add 后已识别本地 runtime agent \(registeredIdentifier)。")
+            } else {
+                appendStage(.runtimeRecognition, .skipped, detail: "CLI add 已返回成功，但本轮未重新识别到 runtime 记录。")
+            }
+            appendStage(.activation, activation.success ? .succeeded : .failed, changed: !activation.message.isEmpty, detail: activation.message)
             let messageParts = [registrationMessage, configSyncResult.message, bootstrap.message, syncResult.message, activation.message]
                 .filter { !$0.isEmpty }
-            return (
-                bootstrap.success && syncResult.success && activation.success,
-                registeredIdentifier,
-                messageParts.joined(separator: " "),
-                bootstrap.requiresUserProvidedBootstrapPath,
-                nil
+            return makeReport(
+                success: bootstrap.success && syncResult.success && activation.success,
+                identifier: registeredIdentifier,
+                message: messageParts.joined(separator: " "),
+                bootstrapPathRequired: bootstrap.requiresUserProvidedBootstrapPath,
+                workspaceRequirement: nil
             )
         } catch {
-            return (false, identifier, "自动注册本地 workflow agent \(identifier) 失败：\(error.localizedDescription)", false, nil)
+            let message = "自动注册本地 workflow agent \(identifier) 失败：\(error.localizedDescription)"
+            appendStage(.cliRegistrationFallback, .failed, detail: message)
+            return makeReport(
+                success: false,
+                identifier: identifier,
+                message: message,
+                bootstrapPathRequired: false,
+                workspaceRequirement: nil
+            )
         }
+    }
+
+    func ensureLocalRuntimeAgentRegistration(
+        for agent: Agent,
+        in project: MAProject? = nil,
+        workflowID: UUID? = nil,
+        cachedRuntimeRecords: [ManagedAgentRecord]? = nil,
+        cachedBindingRecords: [ManagedAgentBindingRecord]? = nil,
+        using config: OpenClawConfig? = nil
+    ) -> (
+        success: Bool,
+        identifier: String,
+        message: String,
+        bootstrapPathRequired: Bool,
+        workspaceRequirement: LocalRuntimeWorkspaceRequirement?
+    ) {
+        let report = performLocalRuntimeAgentRegistration(
+            for: agent,
+            in: project,
+            workflowID: workflowID,
+            cachedRuntimeRecords: cachedRuntimeRecords,
+            cachedBindingRecords: cachedBindingRecords,
+            using: config
+        )
+        return (
+            report.success,
+            report.identifier,
+            report.message,
+            report.bootstrapPathRequired,
+            report.workspaceRequirement
+        )
     }
 
     func localAgentSoulURL(matching candidateNames: [String]) -> URL? {

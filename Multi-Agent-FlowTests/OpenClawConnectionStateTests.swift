@@ -1132,12 +1132,9 @@ final class OpenClawConnectionStateTests: XCTestCase {
         mutableProject.agents = [agent]
         mutableProject.workflows = [workflow]
 
-        let expectedWorkspacePath = ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
-            for: node.id,
-            workflowID: workflow.id,
-            projectID: project.id,
-            under: ProjectManager.shared.appSupportRootDirectory
-        ).path
+        let expectedWorkspacePath = runtimeRootURL
+            .appendingPathComponent("agents/任务中心-任务领域-1/workspace", isDirectory: true)
+            .path
 
         try manager.beginSession(for: mutableProject.id)
         manager.isConnected = true
@@ -1156,6 +1153,8 @@ final class OpenClawConnectionStateTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: expectedWorkspacePath))
 
         let configData = try Data(contentsOf: configFileURL)
+        let configText = try XCTUnwrap(String(data: configData, encoding: .utf8))
+        XCTAssertFalse(configText.contains("\\/"))
         let configObject = try XCTUnwrap(JSONSerialization.jsonObject(with: configData) as? [String: Any])
         let agentsObject = try XCTUnwrap(configObject["agents"] as? [String: Any])
         let list = try XCTUnwrap(agentsObject["list"] as? [[String: Any]])
@@ -1471,12 +1470,9 @@ final class OpenClawConnectionStateTests: XCTestCase {
         mutableProject.agents = [sharedAgent]
         mutableProject.workflows = [workflowA, workflowB]
 
-        let expectedWorkspacePath = ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
-            for: nodeB.id,
-            workflowID: workflowB.id,
-            projectID: project.id,
-            under: ProjectManager.shared.appSupportRootDirectory
-        ).path
+        let expectedWorkspacePath = runtimeRootURL
+            .appendingPathComponent("agents/任务中心-任务领域-1/workspace", isDirectory: true)
+            .path
         let unexpectedWorkspacePath = ProjectFileSystem.shared.nodeOpenClawWorkspaceDirectory(
             for: nodeA.id,
             workflowID: workflowA.id,
@@ -1770,7 +1766,10 @@ final class OpenClawConnectionStateTests: XCTestCase {
         let agentsObject = try XCTUnwrap(configObject["agents"] as? [String: Any])
         let list = try XCTUnwrap(agentsObject["list"] as? [[String: Any]])
         let registered = try XCTUnwrap(list.first { ($0["id"] as? String) == "任务中心-任务领域-1" })
-        XCTAssertEqual(registered["workspace"] as? String, workspaceRootURL.path)
+        let expectedWorkspacePath = runtimeRootURL
+            .appendingPathComponent("agents/任务中心-任务领域-1/workspace", isDirectory: true)
+            .path
+        XCTAssertEqual(registered["workspace"] as? String, expectedWorkspacePath)
     }
 
     func testResolvedWorkspacePathSkipsAmbiguousLocalConfigRecords() throws {
@@ -1943,15 +1942,19 @@ final class OpenClawConnectionStateTests: XCTestCase {
         let agentsObject = try XCTUnwrap(configObject["agents"] as? [String: Any])
         let list = try XCTUnwrap(agentsObject["list"] as? [[String: Any]])
 
-        XCTAssertEqual(list.count, 2)
-        let matchingEntries = list.filter {
-            (($0["id"] as? String) == "任务中心-任务领域-1")
-                || (($0["name"] as? String) == "任务中心-任务领域-1")
-        }
+        XCTAssertEqual(list.count, 3)
+        let matchingEntries = list.filter { ($0["id"] as? String) == "任务中心-任务领域-1" }
         XCTAssertEqual(matchingEntries.count, 1)
         XCTAssertEqual(matchingEntries.first?["id"] as? String, "任务中心-任务领域-1")
         XCTAssertEqual(matchingEntries.first?["name"] as? String, "任务中心-任务领域-1")
-        XCTAssertEqual(matchingEntries.first?["workspace"] as? String, currentWorkspaceURL.path)
+        let expectedWorkspacePath = runtimeRootURL
+            .appendingPathComponent("agents/任务中心-任务领域-1/workspace", isDirectory: true)
+            .path
+        XCTAssertEqual(matchingEntries.first?["workspace"] as? String, expectedWorkspacePath)
+        XCTAssertTrue(list.contains {
+            ($0["id"] as? String) == "legacy-task-domain-1"
+                && ($0["name"] as? String) == "任务中心-任务领域-1"
+        })
     }
 
 }
