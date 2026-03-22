@@ -350,7 +350,7 @@ class OpenClawManager: ObservableObject {
         let selectedEntry: LocalAgentConfigEntry?
     }
 
-    private struct ManagedAgentBindingRecord: Hashable {
+    struct ManagedAgentBindingRecord: Hashable {
         var agentIdentifier: String
         var channelID: String
         var accountID: String
@@ -510,6 +510,19 @@ class OpenClawManager: ObservableObject {
         let workflowID: UUID
         let nodeID: UUID
         let targetIdentifier: String
+    }
+
+    private struct LocalRuntimeActivationDonor {
+        let identifier: String
+        let modelIdentifier: String?
+        let bindings: [AgentRuntimeChannelBinding]
+        let sourceDescription: String
+    }
+
+    private struct LocalRuntimeActivationPlan {
+        let modelIdentifier: String?
+        let desiredBindings: [AgentRuntimeChannelBinding]?
+        let sourceDescription: String?
     }
 
     enum ActiveSessionProjectSyncDeploymentStatus: String {
@@ -2436,6 +2449,7 @@ class OpenClawManager: ObservableObject {
         let registerableAgentIDs = Set(registerableAgents.map(\.id))
         let skippedAgents = project.agents.filter { !registerableAgentIDs.contains($0.id) }
         let runtimeRecords: [ManagedAgentRecord]
+        let bindingRecords: [ManagedAgentBindingRecord]
 
         do {
             let listResult = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
@@ -2443,6 +2457,23 @@ class OpenClawManager: ObservableObject {
         } catch {
             result.failureMessages.append("读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)")
             return result
+        }
+
+        do {
+            let bindingsResult = try runOpenClawCommand(using: config, arguments: ["agents", "bindings", "--json"])
+            if bindingsResult.terminationStatus == 0 {
+                bindingRecords = parseManagedAgentBindings(from: bindingsResult.standardOutput)
+            } else {
+                let fallback = String(data: bindingsResult.standardError, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                bindingRecords = []
+                if !fallback.isEmpty {
+                    result.warnings.append("读取本地 OpenClaw agent bindings 失败：\(fallback)")
+                }
+            }
+        } catch {
+            bindingRecords = []
+            result.warnings.append("读取本地 OpenClaw agent bindings 失败：\(error.localizedDescription)")
         }
 
         if !skippedAgents.isEmpty {
@@ -2466,6 +2497,7 @@ class OpenClawManager: ObservableObject {
                 in: project,
                 workflowID: workflowID,
                 cachedRuntimeRecords: runtimeRecords,
+                cachedBindingRecords: bindingRecords,
                 using: config
             )
             if !registration.success {
@@ -4038,6 +4070,7 @@ class OpenClawManager: ObservableObject {
         in project: MAProject? = nil,
         workflowID: UUID? = nil,
         cachedRuntimeRecords: [ManagedAgentRecord]? = nil,
+        cachedBindingRecords: [ManagedAgentBindingRecord]? = nil,
         using config: OpenClawConfig? = nil
     ) -> (
         success: Bool,
@@ -4062,12 +4095,12 @@ class OpenClawManager: ObservableObject {
             runtimeRecords = cachedRuntimeRecords
         } else {
             do {
-                let result = try runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
-                runtimeRecords = parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
+                runtimeRecords = try loadManagedRuntimeRecords(using: resolvedConfig)
             } catch {
                 return (false, identifier, "读取本地 OpenClaw agent 列表失败：\(error.localizedDescription)", false, nil)
             }
         }
+        let bindingRecords = cachedBindingRecords ?? (try? loadAllManagedAgentBindings(using: resolvedConfig)) ?? []
 
         let workspaceRequirement: LocalRuntimeWorkspaceRequirement? = {
             guard let project,
@@ -4084,6 +4117,13 @@ class OpenClawManager: ObservableObject {
                 diagnosticMessage: unresolvedWorkspaceDiagnosticMessage(for: agent, in: project, workflowID: workflowID)
             )
         }()
+
+        func combineMessages(_ parts: String?...) -> String {
+            parts
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
 
         if runtimeRecords.contains(where: {
             normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
@@ -4120,9 +4160,19 @@ class OpenClawManager: ObservableObject {
                 agentDirPath: runtimeAgentDirectory.path,
                 modelIdentifier: desiredModelIdentifier
             )
-            let combinedMessages = [bootstrap.message, syncResult.message].filter { !$0.isEmpty }.joined(separator: " ")
+            let activation = applyLocalRuntimeActivationPlan(
+                for: agent,
+                in: project,
+                workflowID: workflowID,
+                runtimeRecord: matchedRecord,
+                runtimeRecords: runtimeRecords,
+                bindingRecords: bindingRecords,
+                allowSeedFromOtherAgents: false,
+                using: resolvedConfig
+            )
+            let combinedMessages = combineMessages(syncResult.message, bootstrap.message, activation.message)
             return (
-                bootstrap.success && syncResult.success,
+                bootstrap.success && syncResult.success && activation.success,
                 matchedRecord.targetIdentifier,
                 combinedMessages,
                 bootstrap.requiresUserProvidedBootstrapPath,
@@ -4152,6 +4202,49 @@ class OpenClawManager: ObservableObject {
             preferredAgentDirectory: agentDirectory
         )
 
+        let configSyncResult = synchronizeLocalRuntimeAgentConfigEntry(
+            identifier: identifier,
+            name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? agent.name
+                : agent.openClawDefinition.agentIdentifier,
+            workspacePath: workspacePath,
+            agentDirPath: agentDirectory.path,
+            modelIdentifier: modelIdentifier
+        )
+        guard configSyncResult.success else {
+            return (false, identifier, configSyncResult.message, false, nil)
+        }
+
+        if let refreshedRuntimeRecords = try? loadManagedRuntimeRecords(using: resolvedConfig),
+           let refreshedRuntimeRecord = refreshedRuntimeRecords.first(where: {
+               normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
+                   || normalizeAgentKey($0.name) == normalizeAgentKey(identifier)
+           }) {
+            let refreshedBindingRecords = (try? loadAllManagedAgentBindings(using: resolvedConfig)) ?? bindingRecords
+            let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
+                at: agentDirectory,
+                displayIdentifier: refreshedRuntimeRecord.targetIdentifier,
+                using: resolvedConfig
+            )
+            let activation = applyLocalRuntimeActivationPlan(
+                for: agent,
+                in: project,
+                workflowID: workflowID,
+                runtimeRecord: refreshedRuntimeRecord,
+                runtimeRecords: refreshedRuntimeRecords,
+                bindingRecords: refreshedBindingRecords,
+                allowSeedFromOtherAgents: true,
+                using: resolvedConfig
+            )
+            return (
+                bootstrap.success && activation.success,
+                refreshedRuntimeRecord.targetIdentifier,
+                combineMessages(configSyncResult.message, bootstrap.message, activation.message),
+                bootstrap.requiresUserProvidedBootstrapPath,
+                nil
+            )
+        }
+
         var arguments = [
             "agents", "add", identifier,
             "--workspace", workspacePath,
@@ -4179,6 +4272,12 @@ class OpenClawManager: ObservableObject {
                 fallbackName: identifier,
                 using: resolvedConfig
             )
+            let refreshedRuntimeRecords = (try? loadManagedRuntimeRecords(using: resolvedConfig)) ?? runtimeRecords
+            let refreshedBindingRecords = (try? loadAllManagedAgentBindings(using: resolvedConfig)) ?? bindingRecords
+            let refreshedRuntimeRecord = refreshedRuntimeRecords.first(where: {
+                normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(registeredIdentifier)
+                    || normalizeAgentKey($0.name) == normalizeAgentKey(registeredIdentifier)
+            })
             let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
                 at: agentDirectory,
                 displayIdentifier: registeredIdentifier,
@@ -4191,10 +4290,23 @@ class OpenClawManager: ObservableObject {
                 agentDirPath: agentDirectory.path,
                 modelIdentifier: modelIdentifier
             )
+            let activation = refreshedRuntimeRecord.map {
+                applyLocalRuntimeActivationPlan(
+                    for: agent,
+                    in: project,
+                    workflowID: workflowID,
+                    runtimeRecord: $0,
+                    runtimeRecords: refreshedRuntimeRecords,
+                    bindingRecords: refreshedBindingRecords,
+                    allowSeedFromOtherAgents: true,
+                    using: resolvedConfig
+                )
+            } ?? (success: true, message: "")
             let registrationMessage = "已将本地 workflow agent \(identifier) 自动注册到 OpenClaw CLI（runtime id: \(registeredIdentifier)）。"
-            let messageParts = [registrationMessage, bootstrap.message, syncResult.message].filter { !$0.isEmpty }
+            let messageParts = [registrationMessage, configSyncResult.message, bootstrap.message, syncResult.message, activation.message]
+                .filter { !$0.isEmpty }
             return (
-                bootstrap.success && syncResult.success,
+                bootstrap.success && syncResult.success && activation.success,
                 registeredIdentifier,
                 messageParts.joined(separator: " "),
                 bootstrap.requiresUserProvidedBootstrapPath,
@@ -4496,6 +4608,34 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    private func loadManagedRuntimeRecords(using config: OpenClawConfig) throws -> [ManagedAgentRecord] {
+        let result = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
+        guard result.terminationStatus == 0 else {
+            let fallback = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "OpenClawManager",
+                code: Int(result.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw agents 失败" : fallback]
+            )
+        }
+        return parseManagedAgents(from: result.standardOutput, using: config)
+    }
+
+    private func loadAllManagedAgentBindings(using config: OpenClawConfig) throws -> [ManagedAgentBindingRecord] {
+        let result = try runOpenClawCommand(using: config, arguments: ["agents", "bindings", "--json"])
+        guard result.terminationStatus == 0 else {
+            let fallback = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "OpenClawManager",
+                code: Int(result.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 Agent bindings 失败" : fallback]
+            )
+        }
+        return parseManagedAgentBindings(from: result.standardOutput)
+    }
+
     private func loadManagedAgentBindings(
         forAgentIdentifier agentIdentifier: String,
         using config: OpenClawConfig
@@ -4577,6 +4717,185 @@ class OpenClawManager: ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "写入 Agent bindings 失败" : fallback]
                 )
             }
+        }
+    }
+
+    private func desiredRuntimeConfiguration(
+        for agent: Agent,
+        in project: MAProject?,
+        workflowID: UUID? = nil
+    ) -> AgentRuntimeConfigurationRecord? {
+        guard let project else { return nil }
+        let bindingNodeID = nodeBinding(for: agent.id, in: project, workflowID: workflowID)?.nodeID
+        let matchingRecords = project.openClaw.runtimeConfigurations.filter { $0.agentID == agent.id }
+        if let bindingNodeID,
+           let exactRecord = matchingRecords.first(where: { $0.nodeID == bindingNodeID }) {
+            return exactRecord
+        }
+        return matchingRecords.first(where: { $0.nodeID == nil }) ?? matchingRecords.first
+    }
+
+    private func preferredLocalRuntimeActivationDonor(
+        excluding identifier: String,
+        runtimeRecords: [ManagedAgentRecord],
+        bindingRecords: [ManagedAgentBindingRecord],
+        using config: OpenClawConfig
+    ) -> LocalRuntimeActivationDonor? {
+        let preferredIdentifiers = [
+            preferredLocalAgentBootstrapCandidate(excluding: [identifier], using: config)?.identifier,
+            "main"
+        ]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let excludedKey = normalizeAgentKey(identifier)
+
+        var candidateIdentifiers = preferredIdentifiers
+        candidateIdentifiers.append(contentsOf: runtimeRecords.map(\.targetIdentifier))
+
+        var seen = Set<String>()
+        for candidateIdentifier in candidateIdentifiers {
+            let normalizedCandidate = normalizeAgentKey(candidateIdentifier)
+            guard !normalizedCandidate.isEmpty,
+                  normalizedCandidate != excludedKey,
+                  seen.insert(normalizedCandidate).inserted else {
+                continue
+            }
+
+            let runtimeRecord = runtimeRecords.first(where: {
+                normalizeAgentKey($0.targetIdentifier) == normalizedCandidate
+                    || normalizeAgentKey($0.name) == normalizedCandidate
+            })
+            let bindings = uniqueBindings(
+                bindingRecords
+                    .filter { normalizeAgentKey($0.agentIdentifier) == normalizedCandidate }
+                    .map(\.binding)
+            )
+            let modelIdentifier = runtimeRecord?.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (modelIdentifier?.isEmpty == false) || !bindings.isEmpty {
+                return LocalRuntimeActivationDonor(
+                    identifier: runtimeRecord?.targetIdentifier ?? candidateIdentifier,
+                    modelIdentifier: modelIdentifier,
+                    bindings: bindings,
+                    sourceDescription: "已注册 agent \(runtimeRecord?.targetIdentifier ?? candidateIdentifier)"
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func localRuntimeActivationPlan(
+        for agent: Agent,
+        in project: MAProject?,
+        workflowID: UUID? = nil,
+        runtimeRecords: [ManagedAgentRecord],
+        bindingRecords: [ManagedAgentBindingRecord],
+        allowSeedFromOtherAgents: Bool,
+        using config: OpenClawConfig
+    ) -> LocalRuntimeActivationPlan {
+        let persistedConfiguration = desiredRuntimeConfiguration(for: agent, in: project, workflowID: workflowID)
+        let explicitModel = firstNonEmptyPath(
+            persistedConfiguration?.modelIdentifier,
+            agent.openClawDefinition.modelIdentifier
+        )
+
+        if let persistedConfiguration {
+            let desiredBindings = persistedConfiguration.channelEnabled
+                ? uniqueBindings(persistedConfiguration.bindings)
+                : []
+            let shouldWriteBindings = persistedConfiguration.channelEnabled || !persistedConfiguration.bindings.isEmpty
+            return LocalRuntimeActivationPlan(
+                modelIdentifier: explicitModel,
+                desiredBindings: shouldWriteBindings ? desiredBindings : [],
+                sourceDescription: shouldWriteBindings ? "项目运行时配置" : nil
+            )
+        }
+
+        guard allowSeedFromOtherAgents,
+              let donor = preferredLocalRuntimeActivationDonor(
+                  excluding: normalizedTargetIdentifier(for: agent),
+                  runtimeRecords: runtimeRecords,
+                  bindingRecords: bindingRecords,
+                  using: config
+              ) else {
+            return LocalRuntimeActivationPlan(
+                modelIdentifier: explicitModel,
+                desiredBindings: nil,
+                sourceDescription: nil
+            )
+        }
+
+        return LocalRuntimeActivationPlan(
+            modelIdentifier: explicitModel ?? donor.modelIdentifier,
+            desiredBindings: donor.bindings.isEmpty ? nil : donor.bindings,
+            sourceDescription: donor.bindings.isEmpty && explicitModel != nil ? nil : donor.sourceDescription
+        )
+    }
+
+    private func applyLocalRuntimeActivationPlan(
+        for agent: Agent,
+        in project: MAProject?,
+        workflowID: UUID? = nil,
+        runtimeRecord: ManagedAgentRecord,
+        runtimeRecords: [ManagedAgentRecord],
+        bindingRecords: [ManagedAgentBindingRecord],
+        allowSeedFromOtherAgents: Bool,
+        using config: OpenClawConfig
+    ) -> (success: Bool, message: String) {
+        let activationPlan = localRuntimeActivationPlan(
+            for: agent,
+            in: project,
+            workflowID: workflowID,
+            runtimeRecords: runtimeRecords,
+            bindingRecords: bindingRecords,
+            allowSeedFromOtherAgents: allowSeedFromOtherAgents,
+            using: config
+        )
+
+        let runtimeAgentDirectory = firstNonEmptyPath(runtimeRecord.agentDirPath)
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        var messages: [String] = []
+
+        do {
+            if let desiredModel = activationPlan.modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !desiredModel.isEmpty {
+                let qualifiedModelIdentifier = qualifiedLocalRuntimeModelIdentifier(
+                    desiredModel,
+                    preferredAgentDirectory: runtimeAgentDirectory
+                )
+                if qualifiedModelIdentifier != runtimeRecord.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    try writeManagedAgentModel(qualifiedModelIdentifier, for: runtimeRecord, using: config)
+                    messages.append("已为 \(runtimeRecord.targetIdentifier) 写入 model。")
+                }
+            }
+
+            if let desiredBindings = activationPlan.desiredBindings {
+                let currentBindings = try loadManagedAgentBindings(
+                    forAgentIdentifier: runtimeRecord.targetIdentifier,
+                    using: config
+                )
+                let currentSet = Set(currentBindings.map(\.binding))
+                let desiredSet = Set(uniqueBindings(desiredBindings))
+                if currentSet != desiredSet {
+                    try applyManagedAgentBindings(
+                        forAgentIdentifier: runtimeRecord.targetIdentifier,
+                        currentBindings: currentBindings,
+                        desiredBindings: desiredBindings,
+                        using: config
+                    )
+                    if desiredBindings.isEmpty {
+                        messages.append("已清空 \(runtimeRecord.targetIdentifier) 的 channel bindings。")
+                    } else if let sourceDescription = activationPlan.sourceDescription, !sourceDescription.isEmpty {
+                        messages.append("已为 \(runtimeRecord.targetIdentifier) 自动沿用\(sourceDescription) 的 channel bindings。")
+                    } else {
+                        messages.append("已为 \(runtimeRecord.targetIdentifier) 写入 channel bindings。")
+                    }
+                }
+            }
+
+            return (true, messages.joined(separator: " "))
+        } catch {
+            return (false, "为本地 workflow agent \(runtimeRecord.targetIdentifier) 自动补齐 model / channel 配置失败：\(error.localizedDescription)")
         }
     }
 

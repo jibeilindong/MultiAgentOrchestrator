@@ -74,6 +74,125 @@ final class OpenClawConnectionStateTests: XCTestCase {
                         print(f"- {agent.get('name', agent.get('id', ''))}")
                 sys.exit(0)
 
+            if len(args) >= 4 and args[:2] == ["config", "set"]:
+                path = args[2]
+                value = args[3]
+                payload = load()
+                agents = payload.setdefault("agents", {}).setdefault("list", [])
+                if path.startswith("agents.list[") and path.endswith("].model"):
+                    index_text = path[len("agents.list["):path.index("]")]
+                    try:
+                        index = int(index_text)
+                    except ValueError:
+                        sys.exit(1)
+                    if index < 0 or index >= len(agents):
+                        sys.exit(1)
+                    agents[index]["model"] = value
+                    save(payload)
+                    print(json.dumps({"ok": True}, ensure_ascii=False))
+                    sys.exit(0)
+                sys.exit(1)
+
+            if args[:2] == ["channels", "list"]:
+                payload = load()
+                print(json.dumps(payload.get("channels", []), ensure_ascii=False))
+                sys.exit(0)
+
+            if args[:2] == ["agents", "bindings"]:
+                payload = load()
+                bindings = payload.get("bindings", [])
+                agent_filter = None
+                if "--agent" in args:
+                    index = args.index("--agent")
+                    if index + 1 < len(args):
+                        agent_filter = args[index + 1].strip().lower()
+                if agent_filter:
+                    bindings = [
+                        binding for binding in bindings
+                        if binding.get("agent", "").strip().lower() == agent_filter
+                    ]
+                print(json.dumps({"bindings": bindings}, ensure_ascii=False))
+                sys.exit(0)
+
+            if args[:2] == ["agents", "bind"]:
+                payload = load()
+                bindings = payload.setdefault("bindings", [])
+                agent_identifier = ""
+                bind_specs = []
+                index = 2
+                while index < len(args):
+                    flag = args[index]
+                    if flag == "--agent" and index + 1 < len(args):
+                        agent_identifier = args[index + 1]
+                        index += 2
+                    elif flag == "--bind" and index + 1 < len(args):
+                        bind_specs.append(args[index + 1])
+                        index += 2
+                    else:
+                        index += 1
+
+                for bind_spec in bind_specs:
+                    components = bind_spec.split(":", 1)
+                    channel = components[0]
+                    account = components[1] if len(components) > 1 else "default"
+                    exists = any(
+                        binding.get("agent", "").strip().lower() == agent_identifier.strip().lower()
+                        and binding.get("channel", "") == channel
+                        and binding.get("account", "default") == account
+                        for binding in bindings
+                    )
+                    if not exists:
+                        bindings.append({
+                            "agent": agent_identifier,
+                            "channel": channel,
+                            "account": account
+                        })
+                save(payload)
+                print(json.dumps({"ok": True}, ensure_ascii=False))
+                sys.exit(0)
+
+            if args[:2] == ["agents", "unbind"]:
+                payload = load()
+                bindings = payload.setdefault("bindings", [])
+                agent_identifier = ""
+                remove_all = False
+                bind_specs = []
+                index = 2
+                while index < len(args):
+                    flag = args[index]
+                    if flag == "--agent" and index + 1 < len(args):
+                        agent_identifier = args[index + 1]
+                        index += 2
+                    elif flag == "--all":
+                        remove_all = True
+                        index += 1
+                    elif flag == "--bind" and index + 1 < len(args):
+                        bind_specs.append(args[index + 1])
+                        index += 2
+                    else:
+                        index += 1
+
+                if remove_all:
+                    bindings[:] = [
+                        binding for binding in bindings
+                        if binding.get("agent", "").strip().lower() != agent_identifier.strip().lower()
+                    ]
+                else:
+                    removal_specs = set()
+                    for bind_spec in bind_specs:
+                        components = bind_spec.split(":", 1)
+                        channel = components[0]
+                        account = components[1] if len(components) > 1 else "default"
+                        removal_specs.add((channel, account))
+                    bindings[:] = [
+                        binding for binding in bindings
+                        if binding.get("agent", "").strip().lower() != agent_identifier.strip().lower()
+                        or (binding.get("channel", ""), binding.get("account", "default")) not in removal_specs
+                    ]
+                save(payload)
+                print(json.dumps({"ok": True}, ensure_ascii=False))
+                sys.exit(0)
+
             if len(args) >= 3 and args[:2] == ["agents", "add"]:
                 identifier = args[2]
                 payload = load()
@@ -1385,6 +1504,101 @@ final class OpenClawConnectionStateTests: XCTestCase {
         let registered = try XCTUnwrap(list.first { ($0["id"] as? String) == "任务中心-任务领域-1" })
         XCTAssertEqual(registered["workspace"] as? String, expectedWorkspacePath)
         XCTAssertNotEqual(registered["workspace"] as? String, unexpectedWorkspacePath)
+    }
+
+    func testFirstRegistrationSeedsModelAndBindingsFromExistingBootstrapAgent() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try """
+        {
+          "agents": {
+            "list": [
+              {
+                "id": "main",
+                "name": "main",
+                "workspace": "\(runtimeRootURL.appendingPathComponent("workspace", isDirectory: true).path)",
+                "agentDir": "\(mainAgentDirectory.path)",
+                "model": "minimax/MiniMax-M2.5"
+              }
+            ]
+          },
+          "bindings": [
+            {
+              "agent": "main",
+              "channel": "chat",
+              "account": "default"
+            }
+          ]
+        }
+        """.write(to: configFileURL, atomically: true, encoding: .utf8)
+        try #"{"profiles":{"minimax:cn":{"provider":"minimax"}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"providers":{"minimax":{"models":[{"id":"MiniMax-M2.5"}]}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let executableURL = try makeMutableOpenClawScript(in: tempDirectory, configFileURL: configFileURL)
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.autoConnect = false
+        manager.config = config
+
+        let project = MAProject(name: "Seeded Runtime Activation")
+        defer {
+            try? FileManager.default.removeItem(at: ProjectManager.shared.openClawProjectRoot(for: project.id))
+        }
+
+        var agent = makeDeferredProjectAgent(name: "任务中心-任务领域-1")
+        agent.openClawDefinition.modelIdentifier = ""
+        var workflow = Workflow(name: "Main Workflow")
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = agent.name
+        workflow.nodes = [node]
+
+        var mutableProject = project
+        mutableProject.agents = [agent]
+        mutableProject.workflows = [workflow]
+
+        try manager.beginSession(for: mutableProject.id)
+        manager.isConnected = true
+
+        let completion = expectation(description: "seeded registration completed")
+        manager.syncProjectAgentsToActiveSession(mutableProject) { result in
+            XCTAssertEqual(result.deploymentStatus, .appliedToRuntime)
+            XCTAssertNil(result.errorMessage)
+            XCTAssertTrue(result.bootstrapPathRequiredAgentNames.isEmpty)
+            completion.fulfill()
+        }
+
+        wait(for: [completion], timeout: 5.0)
+        drainMainQueue()
+
+        let configData = try Data(contentsOf: configFileURL)
+        let configObject = try XCTUnwrap(JSONSerialization.jsonObject(with: configData) as? [String: Any])
+        let agentsObject = try XCTUnwrap(configObject["agents"] as? [String: Any])
+        let list = try XCTUnwrap(agentsObject["list"] as? [[String: Any]])
+        let registered = try XCTUnwrap(list.first { ($0["id"] as? String) == "任务中心-任务领域-1" })
+        XCTAssertEqual(registered["model"] as? String, "minimax/MiniMax-M2.5")
+
+        let bindings = try XCTUnwrap(configObject["bindings"] as? [[String: Any]])
+        XCTAssertTrue(bindings.contains {
+            ($0["agent"] as? String) == "任务中心-任务领域-1"
+                && ($0["channel"] as? String) == "chat"
+                && ($0["account"] as? String) == "default"
+        })
     }
 
     func testSnapshotRestorePreservesManualBootstrapDirectoryForSubsequentSync() throws {
