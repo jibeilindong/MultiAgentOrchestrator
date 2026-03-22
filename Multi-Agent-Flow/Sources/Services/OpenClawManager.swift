@@ -607,6 +607,42 @@ class OpenClawManager: ObservableObject {
         let sourceDescription: String?
     }
 
+    private struct LocalRuntimeConfigBatchVerification {
+        let identifier: String
+        let expectedWorkspacePath: String?
+        let expectedAgentDirPath: String?
+    }
+
+    private struct LocalRuntimeConfigBatchMutationResult {
+        let success: Bool
+        let message: String
+        let changed: Bool
+    }
+
+    private struct LocalRuntimeConfigBatchContext {
+        let configURL: URL
+        var root: [String: Any]
+        var list: [[String: Any]]
+        let originalFileData: Data?
+        var verifications: [LocalRuntimeConfigBatchVerification] = []
+
+        var hasPendingChanges: Bool {
+            !verifications.isEmpty
+        }
+    }
+
+    private struct LocalRuntimeBatchRegistrationState {
+        let agent: Agent
+        let identifier: String
+        let runtimeAgentDirectory: URL
+        let runtimeWorkspaceURL: URL
+        let initialRuntimeRecord: ManagedAgentRecord?
+        let allowSeedFromOtherAgents: Bool
+        let workspaceRequirement: LocalRuntimeWorkspaceRequirement?
+        var stageReports: [LocalRuntimeRegistrationStageReport]
+        var bootstrapPathRequired: Bool
+    }
+
     enum ActiveSessionProjectSyncDeploymentStatus: String {
         case appliedToRuntime
         case skippedNoPendingChanges
@@ -2532,6 +2568,13 @@ class OpenClawManager: ObservableObject {
             result.warnings.append("读取本地 OpenClaw agent bindings 失败：\(error.localizedDescription)")
         }
 
+        let batchContextResult = loadLocalRuntimeConfigBatchContext(using: config)
+        guard let configBatchContextValue = batchContextResult.context else {
+            result.failureMessages.append(batchContextResult.message ?? "读取本地 OpenClaw 配置失败。")
+            return result
+        }
+        var configBatchContext = configBatchContextValue
+
         if !skippedAgents.isEmpty {
             let skippedNames = skippedAgents
                 .map(\.name)
@@ -2541,6 +2584,53 @@ class OpenClawManager: ObservableObject {
             result.warnings.append("以下 agent 未绑定到\(scopeDescription)，已跳过自动注册：\(skippedNames)")
         }
 
+        func makeWorkspaceRequirement(
+            for agent: Agent,
+            identifier: String
+        ) -> LocalRuntimeWorkspaceRequirement? {
+            guard let binding = nodeBinding(for: agent.id, in: project, workflowID: workflowID) else {
+                return nil
+            }
+
+            return LocalRuntimeWorkspaceRequirement(
+                agentID: agent.id,
+                workflowID: binding.workflowID,
+                nodeID: binding.nodeID,
+                agentName: agent.name,
+                targetIdentifier: identifier,
+                diagnosticMessage: unresolvedWorkspaceDiagnosticMessage(for: agent, in: project, workflowID: workflowID)
+            )
+        }
+
+        func combineMessages(from stageReports: [LocalRuntimeRegistrationStageReport]) -> String {
+            stageReports
+                .compactMap(\.detail)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+
+        func makeImmediateReport(
+            agent: Agent,
+            identifier: String,
+            bootstrapPathRequired: Bool,
+            workspaceRequirement: LocalRuntimeWorkspaceRequirement?,
+            stageReports: [LocalRuntimeRegistrationStageReport]
+        ) -> LocalRuntimeAgentRegistrationReport {
+            LocalRuntimeAgentRegistrationReport(
+                agentName: agent.name,
+                identifier: identifier,
+                success: !stageReports.contains(where: { $0.status == .failed }),
+                message: combineMessages(from: stageReports),
+                bootstrapPathRequired: bootstrapPathRequired,
+                workspaceRequirement: workspaceRequirement,
+                stageReports: stageReports
+            )
+        }
+
+        var immediateReports: [LocalRuntimeAgentRegistrationReport] = []
+        var batchStates: [LocalRuntimeBatchRegistrationState] = []
+
         for spec in registrationSpecs {
             let agent = spec.agent
             let expectedIdentifier = spec.targetIdentifier
@@ -2548,20 +2638,404 @@ class OpenClawManager: ObservableObject {
                 expectedIdentifiers.insert(normalizeAgentKey(expectedIdentifier))
             }
 
-            let registration = performLocalRuntimeAgentRegistration(
-                for: agent,
-                in: project,
-                workflowID: workflowID,
-                cachedRuntimeRecords: runtimeRecords,
-                cachedBindingRecords: bindingRecords,
+            let identifier = normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+            let workspaceRequirement = makeWorkspaceRequirement(for: agent, identifier: identifier)
+            var stageReports: [LocalRuntimeRegistrationStageReport] = []
+
+            func appendStage(
+                _ stage: LocalRuntimeRegistrationStage,
+                _ status: LocalRuntimeRegistrationStageStatus,
+                changed: Bool = false,
+                detail: String? = nil
+            ) {
+                stageReports.append(
+                    LocalRuntimeRegistrationStageReport(
+                        stage: stage,
+                        status: status,
+                        changed: changed,
+                        detail: detail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? detail : nil
+                    )
+                )
+            }
+
+            guard !identifier.isEmpty else {
+                appendStage(.workspaceResolution, .failed, detail: "当前节点缺少可用的本地 runtime agent 标识。")
+                immediateReports.append(
+                    makeImmediateReport(
+                        agent: agent,
+                        identifier: "",
+                        bootstrapPathRequired: false,
+                        workspaceRequirement: nil,
+                        stageReports: stageReports
+                    )
+                )
+                continue
+            }
+
+            let matchedRecord = runtimeRecords.first(where: {
+                normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(identifier)
+                    || normalizeAgentKey($0.name) == normalizeAgentKey(identifier)
+            })
+            let allowSeedFromOtherAgents = matchedRecord == nil
+            let runtimeWorkspaceURL = localRuntimeAgentWorkspaceURL(for: identifier, using: config)
+
+            if let matchedRecord {
+                appendStage(.runtimeRecognition, .succeeded, detail: "已匹配到现有本地 runtime agent \(matchedRecord.targetIdentifier)。")
+                let runtimeAgentDirectory = firstNonEmptyPath(matchedRecord.agentDirPath)
+                    .map { URL(fileURLWithPath: $0, isDirectory: true) }
+                    ?? localOpenClawRootURL(using: config)
+                        .appendingPathComponent("agents", isDirectory: true)
+                        .appendingPathComponent(identifier, isDirectory: true)
+                        .appendingPathComponent("agent", isDirectory: true)
+
+                let workspaceSourcePath = firstNonEmptyPath(
+                    resolvedWorkspaceSourcePath(for: agent, in: project, workflowID: workflowID),
+                    matchedRecord.workspacePath
+                )
+                if let workspaceSourcePath {
+                    let workspaceSync = synchronizeLocalRuntimeWorkspace(
+                        from: workspaceSourcePath,
+                        to: runtimeWorkspaceURL,
+                        identifier: matchedRecord.targetIdentifier
+                    )
+                    appendStage(
+                        .workspaceResolution,
+                        workspaceSync.success ? .succeeded : .failed,
+                        changed: !workspaceSync.message.isEmpty,
+                        detail: workspaceSync.message
+                    )
+                }
+
+                let desiredModelIdentifier = qualifiedLocalRuntimeModelIdentifier(
+                    agent.openClawDefinition.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? matchedRecord.modelIdentifier
+                        : agent.openClawDefinition.modelIdentifier,
+                    preferredAgentDirectory: runtimeAgentDirectory
+                )
+                let configMutation = applyLocalRuntimeConfigBatchMutation(
+                    &configBatchContext,
+                    configIndex: matchedRecord.configIndex,
+                    identifier: identifier,
+                    name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? matchedRecord.name
+                        : agent.openClawDefinition.agentIdentifier,
+                    workspacePath: runtimeWorkspaceURL.path,
+                    agentDirPath: runtimeAgentDirectory.path,
+                    modelIdentifier: desiredModelIdentifier
+                )
+                appendStage(
+                    .canonicalConfig,
+                    configMutation.success ? .succeeded : .failed,
+                    changed: configMutation.changed,
+                    detail: configMutation.message
+                )
+
+                let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
+                    at: runtimeAgentDirectory,
+                    displayIdentifier: matchedRecord.targetIdentifier,
+                    using: config
+                )
+                appendStage(
+                    .bootstrap,
+                    bootstrap.success ? .succeeded : .failed,
+                    changed: !bootstrap.message.isEmpty,
+                    detail: bootstrap.message
+                )
+
+                batchStates.append(
+                    LocalRuntimeBatchRegistrationState(
+                        agent: agent,
+                        identifier: matchedRecord.targetIdentifier,
+                        runtimeAgentDirectory: runtimeAgentDirectory,
+                        runtimeWorkspaceURL: runtimeWorkspaceURL,
+                        initialRuntimeRecord: matchedRecord,
+                        allowSeedFromOtherAgents: allowSeedFromOtherAgents,
+                        workspaceRequirement: nil,
+                        stageReports: stageReports,
+                        bootstrapPathRequired: bootstrap.requiresUserProvidedBootstrapPath
+                    )
+                )
+                continue
+            }
+
+            guard let workspaceSourcePath = resolvedWorkspaceSourcePath(for: agent, in: project, workflowID: workflowID)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !workspaceSourcePath.isEmpty else {
+                let diagnosticMessage = unresolvedWorkspaceDiagnosticMessage(for: agent, in: project, workflowID: workflowID)
+                let baseMessage = "本地 workflow agent \(identifier) 尚未解析到可用 workspace，因此无法自动注册到 OpenClaw CLI。"
+                let message = [baseMessage, diagnosticMessage]
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                appendStage(.workspaceResolution, .failed, detail: message)
+                immediateReports.append(
+                    makeImmediateReport(
+                        agent: agent,
+                        identifier: identifier,
+                        bootstrapPathRequired: false,
+                        workspaceRequirement: workspaceRequirement,
+                        stageReports: stageReports
+                    )
+                )
+                continue
+            }
+
+            let workspaceSync = synchronizeLocalRuntimeWorkspace(
+                from: workspaceSourcePath,
+                to: runtimeWorkspaceURL,
+                identifier: identifier
+            )
+            appendStage(
+                .workspaceResolution,
+                workspaceSync.success ? .succeeded : .failed,
+                changed: !workspaceSync.message.isEmpty,
+                detail: workspaceSync.message
+            )
+            guard workspaceSync.success else {
+                immediateReports.append(
+                    makeImmediateReport(
+                        agent: agent,
+                        identifier: identifier,
+                        bootstrapPathRequired: false,
+                        workspaceRequirement: workspaceRequirement,
+                        stageReports: stageReports
+                    )
+                )
+                continue
+            }
+
+            let runtimeAgentDirectory = localOpenClawRootURL(using: config)
+                .appendingPathComponent("agents", isDirectory: true)
+                .appendingPathComponent(identifier, isDirectory: true)
+                .appendingPathComponent("agent", isDirectory: true)
+            let configMutation = applyLocalRuntimeConfigBatchMutation(
+                &configBatchContext,
+                identifier: identifier,
+                name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? agent.name
+                    : agent.openClawDefinition.agentIdentifier,
+                workspacePath: runtimeWorkspaceURL.path,
+                agentDirPath: runtimeAgentDirectory.path,
+                modelIdentifier: nil,
+                updateModel: false
+            )
+            appendStage(
+                .canonicalConfig,
+                configMutation.success ? .succeeded : .failed,
+                changed: configMutation.changed,
+                detail: configMutation.message
+            )
+
+            let bootstrap = ensureLocalRuntimeAgentBootstrapFiles(
+                at: runtimeAgentDirectory,
+                displayIdentifier: identifier,
                 using: config
             )
-            result.agentReports.append(registration)
+            appendStage(
+                .bootstrap,
+                bootstrap.success ? .succeeded : .failed,
+                changed: !bootstrap.message.isEmpty,
+                detail: bootstrap.message
+            )
+
+            if configMutation.success {
+                appendStage(.runtimeRecognition, .skipped, detail: "canonical 配置已写入，待批量提交后统一校验 runtime 识别结果。")
+            }
+
+            batchStates.append(
+                LocalRuntimeBatchRegistrationState(
+                    agent: agent,
+                    identifier: identifier,
+                    runtimeAgentDirectory: runtimeAgentDirectory,
+                    runtimeWorkspaceURL: runtimeWorkspaceURL,
+                    initialRuntimeRecord: nil,
+                    allowSeedFromOtherAgents: allowSeedFromOtherAgents,
+                    workspaceRequirement: nil,
+                    stageReports: stageReports,
+                    bootstrapPathRequired: bootstrap.requiresUserProvidedBootstrapPath
+                )
+            )
+        }
+
+        let commitResult = commitLocalRuntimeConfigBatch(&configBatchContext)
+        if !commitResult.success {
+            result.failureMessages.append(commitResult.message)
+        }
+
+        var verifiedRuntimeRecords = runtimeRecords
+        do {
+            let listResult = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
+            verifiedRuntimeRecords = parseManagedAgents(from: listResult.standardOutput, using: config)
+        } catch {
+            result.failureMessages.append("本地 runtime 注册校验失败：\(error.localizedDescription)")
+        }
+
+        if commitResult.success {
+            let availableIdentifiers = Set(verifiedRuntimeRecords.map { normalizeAgentKey($0.targetIdentifier) })
+            let missingNewStateIndices = batchStates.indices.filter { index in
+                let state = batchStates[index]
+                return state.initialRuntimeRecord == nil
+                    && !availableIdentifiers.contains(normalizeAgentKey(state.identifier))
+                    && !state.stageReports.contains(where: { $0.status == .failed })
+            }
+
+            if !missingNewStateIndices.isEmpty {
+                for index in missingNewStateIndices {
+                    var state = batchStates[index]
+                    let explicitModel = qualifiedLocalRuntimeModelIdentifier(
+                        state.agent.openClawDefinition.modelIdentifier,
+                        preferredAgentDirectory: state.runtimeAgentDirectory
+                    )
+                    var arguments = [
+                        "agents", "add", state.identifier,
+                        "--workspace", state.runtimeWorkspaceURL.path,
+                        "--agent-dir", state.runtimeAgentDirectory.path,
+                        "--non-interactive",
+                        "--json"
+                    ]
+                    if !explicitModel.isEmpty {
+                        arguments.append(contentsOf: ["--model", explicitModel])
+                    }
+
+                    do {
+                        let cliResult = try runOpenClawCommand(using: config, arguments: arguments)
+                        if cliResult.terminationStatus == 0 {
+                            let registeredIdentifier = resolvedRegisteredAgentIdentifier(
+                                from: cliResult.standardOutput,
+                                fallbackName: state.identifier,
+                                using: config
+                            )
+                            state.stageReports.append(
+                                LocalRuntimeRegistrationStageReport(
+                                    stage: .cliRegistrationFallback,
+                                    status: .succeeded,
+                                    changed: true,
+                                    detail: "已将本地 workflow agent \(state.identifier) 自动注册到 OpenClaw CLI（runtime id: \(registeredIdentifier)）。"
+                                )
+                            )
+                        } else {
+                            let stderr = String(data: cliResult.standardError, encoding: .utf8)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                            let stdout = String(data: cliResult.standardOutput, encoding: .utf8)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                            let detail = !stderr.isEmpty ? stderr : stdout
+                            state.stageReports.append(
+                                LocalRuntimeRegistrationStageReport(
+                                    stage: .cliRegistrationFallback,
+                                    status: .failed,
+                                    changed: false,
+                                    detail: "自动注册本地 workflow agent \(state.identifier) 失败：\(detail)"
+                                )
+                            )
+                        }
+                    } catch {
+                        state.stageReports.append(
+                            LocalRuntimeRegistrationStageReport(
+                                stage: .cliRegistrationFallback,
+                                status: .failed,
+                                changed: false,
+                                detail: "自动注册本地 workflow agent \(state.identifier) 失败：\(error.localizedDescription)"
+                            )
+                        )
+                    }
+
+                    batchStates[index] = state
+                }
+
+                do {
+                    let listResult = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
+                    verifiedRuntimeRecords = parseManagedAgents(from: listResult.standardOutput, using: config)
+                } catch {
+                    result.failureMessages.append("本地 runtime 注册校验失败：\(error.localizedDescription)")
+                }
+            }
+        }
+
+        let finalBindingRecords: [ManagedAgentBindingRecord]
+        do {
+            let bindingsResult = try runOpenClawCommand(using: config, arguments: ["agents", "bindings", "--json"])
+            if bindingsResult.terminationStatus == 0 {
+                finalBindingRecords = parseManagedAgentBindings(from: bindingsResult.standardOutput)
+            } else {
+                finalBindingRecords = bindingRecords
+            }
+        } catch {
+            finalBindingRecords = bindingRecords
+        }
+
+        for index in batchStates.indices {
+            var state = batchStates[index]
+            let hasFailedPreparationStage = state.stageReports.contains {
+                $0.status == .failed && $0.stage != .activation && $0.stage != .cliRegistrationFallback
+            }
+            let runtimeRecord = verifiedRuntimeRecords.first(where: {
+                normalizeAgentKey($0.targetIdentifier) == normalizeAgentKey(state.identifier)
+                    || normalizeAgentKey($0.name) == normalizeAgentKey(state.identifier)
+            })
+
+            if state.initialRuntimeRecord == nil,
+               !state.stageReports.contains(where: { $0.stage == .runtimeRecognition && $0.status == .succeeded }) {
+                let detail: String
+                let status: LocalRuntimeRegistrationStageStatus
+                if let runtimeRecord {
+                    detail = "canonical 配置已被本地 runtime 识别为 agent \(runtimeRecord.targetIdentifier)。"
+                    status = .succeeded
+                } else {
+                    detail = "批量提交完成后，当前 runtime 仍未识别 agent \(state.identifier)。"
+                    status = .skipped
+                }
+                state.stageReports.append(
+                    LocalRuntimeRegistrationStageReport(
+                        stage: .runtimeRecognition,
+                        status: status,
+                        changed: false,
+                        detail: detail
+                    )
+                )
+            }
+
+            if !hasFailedPreparationStage, let runtimeRecord {
+                let activation = applyLocalRuntimeActivationPlan(
+                    for: state.agent,
+                    in: project,
+                    workflowID: workflowID,
+                    runtimeRecord: runtimeRecord,
+                    runtimeRecords: verifiedRuntimeRecords,
+                    bindingRecords: finalBindingRecords,
+                    allowSeedFromOtherAgents: state.allowSeedFromOtherAgents,
+                    using: config
+                )
+                state.stageReports.append(
+                    LocalRuntimeRegistrationStageReport(
+                        stage: .activation,
+                        status: activation.success ? .succeeded : .failed,
+                        changed: !activation.message.isEmpty,
+                        detail: activation.message
+                    )
+                )
+            }
+
+            batchStates[index] = state
+        }
+
+        result.agentReports = immediateReports + batchStates.map { state in
+            LocalRuntimeAgentRegistrationReport(
+                agentName: state.agent.name,
+                identifier: state.identifier,
+                success: !state.stageReports.contains(where: { $0.status == .failed }),
+                message: combineMessages(from: state.stageReports),
+                bootstrapPathRequired: state.bootstrapPathRequired,
+                workspaceRequirement: state.workspaceRequirement,
+                stageReports: state.stageReports
+            )
+        }
+
+        for registration in result.agentReports {
             if !registration.success {
                 let failureMessage = localRuntimeRegistrationFailureMessage(for: registration)
                 result.failureMessages.append(failureMessage)
                 if registration.bootstrapPathRequired {
-                    result.bootstrapPathRequiredAgentNames.append(agent.name)
+                    result.bootstrapPathRequiredAgentNames.append(registration.agentName)
                 }
                 if let workspaceRequirement = registration.workspaceRequirement {
                     result.workspacePathRequirements.append(workspaceRequirement)
@@ -2570,7 +3044,7 @@ class OpenClawManager: ObservableObject {
             }
 
             if registration.changed {
-                changedNames.insert(agent.name)
+                changedNames.insert(registration.agentName)
             }
         }
 
@@ -2590,21 +3064,15 @@ class OpenClawManager: ObservableObject {
             return result
         }
 
-        do {
-            let listResult = try runOpenClawCommand(using: config, arguments: ["agents", "list", "--json"])
-            let verifiedRuntimeRecords = parseManagedAgents(from: listResult.standardOutput, using: config)
-            let availableIdentifiers = Set(verifiedRuntimeRecords.map { normalizeAgentKey($0.targetIdentifier) })
-            let missing = expectedIdentifiers.subtracting(availableIdentifiers)
-            if !missing.isEmpty {
-                let missingText = registerableAgents
-                    .filter { missing.contains(normalizeAgentKey(normalizedTargetIdentifier(for: $0))) }
-                    .map(\.name)
-                    .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-                    .joined(separator: "、")
-                result.failureMessages.append("本地 runtime 注册校验失败，以下 agent 仍未出现在 OpenClaw CLI 中：\(missingText)")
-            }
-        } catch {
-            result.failureMessages.append("本地 runtime 注册校验失败：\(error.localizedDescription)")
+        let availableIdentifiers = Set(verifiedRuntimeRecords.map { normalizeAgentKey($0.targetIdentifier) })
+        let missing = expectedIdentifiers.subtracting(availableIdentifiers)
+        if !missing.isEmpty {
+            let missingText = registerableAgents
+                .filter { missing.contains(normalizeAgentKey(normalizedTargetIdentifier(for: $0))) }
+                .map(\.name)
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                .joined(separator: "、")
+            result.failureMessages.append("本地 runtime 注册校验失败，以下 agent 仍未出现在 OpenClaw CLI 中：\(missingText)")
         }
 
         return result
@@ -3429,6 +3897,242 @@ class OpenClawManager: ObservableObject {
         var seen = Set<String>()
         return directories.filter { directory in
             seen.insert(directory.path).inserted && fileManager.fileExists(atPath: directory.path)
+        }
+    }
+
+    private func loadLocalRuntimeConfigBatchContext(
+        using config: OpenClawConfig? = nil
+    ) -> (context: LocalRuntimeConfigBatchContext?, message: String?) {
+        let configURL = resolveLocalOpenClawConfigURL(using: config)
+            ?? localOpenClawRootURL(using: config).appendingPathComponent("openclaw.json", isDirectory: false)
+
+        do {
+            let root: [String: Any]
+            let originalFileData = fileManager.fileExists(atPath: configURL.path) ? try Data(contentsOf: configURL) : nil
+
+            if let originalFileData {
+                guard let parsedRoot = (try JSONSerialization.jsonObject(with: originalFileData)) as? [String: Any] else {
+                    return (nil, "本地 OpenClaw 配置存在，但根对象无法解析，未能自动同步 runtime agent 配置。")
+                }
+                root = parsedRoot
+            } else {
+                root = [:]
+            }
+
+            let agents = (root["agents"] as? [String: Any]) ?? [:]
+            let list = (agents["list"] as? [[String: Any]]) ?? []
+            return (
+                LocalRuntimeConfigBatchContext(
+                    configURL: configURL,
+                    root: root,
+                    list: list,
+                    originalFileData: originalFileData
+                ),
+                nil
+            )
+        } catch {
+            return (nil, "读取本地 OpenClaw 配置失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func applyLocalRuntimeConfigBatchMutation(
+        _ context: inout LocalRuntimeConfigBatchContext,
+        configIndex: Int? = nil,
+        identifier: String,
+        name: String,
+        workspacePath: String?,
+        agentDirPath: String?,
+        modelIdentifier: String?,
+        updateModel: Bool = true
+    ) -> LocalRuntimeConfigBatchMutationResult {
+        let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedIdentifier.isEmpty else {
+            return LocalRuntimeConfigBatchMutationResult(
+                success: false,
+                message: "同步本地 runtime agent 配置失败：缺少有效的 agent 标识。",
+                changed: false
+            )
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let desiredName = trimmedName.isEmpty ? trimmedIdentifier : trimmedName
+        let trimmedWorkspacePath: String? = {
+            let trimmed = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let trimmedAgentDirPath = canonicalLocalRuntimePath(agentDirPath)
+        let trimmedModelIdentifier: String? = {
+            let trimmed = modelIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let normalizedWorkspacePath = canonicalLocalRuntimePath(trimmedWorkspacePath)
+        let normalizedAgentDirPath = canonicalLocalRuntimePath(trimmedAgentDirPath)
+        let normalizedIdentifier = normalizeAgentKey(trimmedIdentifier)
+
+        let exactMatchingIndices = context.list.enumerated().compactMap { index, item in
+            let existingIdentifier = normalizeAgentKey(stringValue(item, keys: ["id", "agentID", "agentId"]) ?? "")
+            return existingIdentifier == normalizedIdentifier ? index : nil
+        }
+
+        let canonicalIndex: Int?
+        if let configIndex, configIndex >= 0, configIndex < context.list.count {
+            canonicalIndex = configIndex
+        } else {
+            if exactMatchingIndices.count > 1 {
+                return LocalRuntimeConfigBatchMutationResult(
+                    success: false,
+                    message: "openclaw.json 中存在多条 id 为 \(trimmedIdentifier) 的 agent 记录，已停止自动写入以避免污染配置。",
+                    changed: false
+                )
+            }
+            canonicalIndex = exactMatchingIndices.first
+        }
+
+        var entry: [String: Any] = canonicalIndex.flatMap { index in
+            guard index >= 0 && index < context.list.count else { return nil }
+            return context.list[index]
+        } ?? [:]
+        var updatedFields: [String] = []
+
+        if (stringValue(entry, keys: ["id"]) ?? "") != trimmedIdentifier {
+            entry["id"] = trimmedIdentifier
+            updatedFields.append("id")
+        }
+
+        if (stringValue(entry, keys: ["name"]) ?? "") != desiredName {
+            entry["name"] = desiredName
+            updatedFields.append("name")
+        }
+
+        if let normalizedWorkspacePath,
+           (stringValue(entry, keys: ["workspace"]) ?? "") != normalizedWorkspacePath {
+            entry["workspace"] = normalizedWorkspacePath
+            updatedFields.append("workspace")
+        }
+
+        if let normalizedAgentDirPath,
+           (stringValue(entry, keys: ["agentDir"]) ?? "") != normalizedAgentDirPath {
+            entry["agentDir"] = normalizedAgentDirPath
+            updatedFields.append("agentDir")
+        }
+
+        if updateModel,
+           let trimmedModelIdentifier,
+           (stringValue(entry, keys: ["model"]) ?? "") != trimmedModelIdentifier {
+            entry["model"] = trimmedModelIdentifier
+            updatedFields.append("model")
+        }
+
+        if let canonicalIndex {
+            context.list[canonicalIndex] = entry
+        } else {
+            context.list.append(entry)
+            updatedFields.append("new")
+        }
+
+        guard !updatedFields.isEmpty else {
+            return LocalRuntimeConfigBatchMutationResult(success: true, message: "", changed: false)
+        }
+
+        context.verifications.append(
+            LocalRuntimeConfigBatchVerification(
+                identifier: trimmedIdentifier,
+                expectedWorkspacePath: normalizedWorkspacePath,
+                expectedAgentDirPath: normalizedAgentDirPath
+            )
+        )
+
+        var messageParts: [String] = []
+        if updatedFields.contains("new") {
+            messageParts.append("已写入本地 runtime agent \(trimmedIdentifier) 的 canonical 配置。")
+        } else {
+            let displayFields = updatedFields.filter { $0 != "new" }
+            if !displayFields.isEmpty {
+                messageParts.append("已同步本地 runtime agent \(trimmedIdentifier) 的 \(displayFields.joined(separator: "、")) 配置。")
+            }
+        }
+
+        return LocalRuntimeConfigBatchMutationResult(
+            success: true,
+            message: messageParts.joined(separator: " "),
+            changed: true
+        )
+    }
+
+    private func commitLocalRuntimeConfigBatch(
+        _ context: inout LocalRuntimeConfigBatchContext
+    ) -> LocalRuntimeConfigBatchMutationResult {
+        guard context.hasPendingChanges else {
+            return LocalRuntimeConfigBatchMutationResult(success: true, message: "", changed: false)
+        }
+
+        var root = context.root
+        var agents = (root["agents"] as? [String: Any]) ?? [:]
+        agents["list"] = context.list
+        root["agents"] = agents
+
+        do {
+            try writeOpenClawConfigRoot(root, to: context.configURL)
+            cachedLocalWorkspaceMap = [:]
+            cachedLocalWorkspaceConfigModificationDate = nil
+
+            let refreshedEntries = readLocalAgentConfigEntries(at: context.configURL)
+            for verification in context.verifications {
+                let normalizedIdentifier = normalizeAgentKey(verification.identifier)
+                let exactEntries = refreshedEntries.filter {
+                    normalizeAgentKey($0.id ?? "") == normalizedIdentifier
+                }
+                guard exactEntries.count == 1, let selectedEntry = exactEntries.first else {
+                    if let originalFileData = context.originalFileData {
+                        try? originalFileData.write(to: context.configURL, options: .atomic)
+                    } else {
+                        try? fileManager.removeItem(at: context.configURL)
+                    }
+                    return LocalRuntimeConfigBatchMutationResult(
+                        success: false,
+                        message: "已尝试批量写回本地 runtime agent 配置，但回读校验未通过：未找到 \(verification.identifier) 的唯一精确 id 记录，已回滚本次写入。",
+                        changed: false
+                    )
+                }
+
+                if let expectedWorkspacePath = verification.expectedWorkspacePath,
+                   canonicalLocalRuntimePath(selectedEntry.workspacePath) != expectedWorkspacePath {
+                    if let originalFileData = context.originalFileData {
+                        try? originalFileData.write(to: context.configURL, options: .atomic)
+                    } else {
+                        try? fileManager.removeItem(at: context.configURL)
+                    }
+                    return LocalRuntimeConfigBatchMutationResult(
+                        success: false,
+                        message: "已尝试批量写回本地 runtime agent 配置，但回读校验未通过：\(verification.identifier) 的 workspace 未收敛到 runtime 目标路径，已回滚本次写入。",
+                        changed: false
+                    )
+                }
+
+                if let expectedAgentDirPath = verification.expectedAgentDirPath,
+                   canonicalLocalRuntimePath(selectedEntry.agentDirPath) != expectedAgentDirPath {
+                    if let originalFileData = context.originalFileData {
+                        try? originalFileData.write(to: context.configURL, options: .atomic)
+                    } else {
+                        try? fileManager.removeItem(at: context.configURL)
+                    }
+                    return LocalRuntimeConfigBatchMutationResult(
+                        success: false,
+                        message: "已尝试批量写回本地 runtime agent 配置，但回读校验未通过：\(verification.identifier) 的 agentDir 未收敛到 runtime 目标路径，已回滚本次写入。",
+                        changed: false
+                    )
+                }
+            }
+
+            context.root = root
+            context.verifications.removeAll()
+            return LocalRuntimeConfigBatchMutationResult(success: true, message: "", changed: true)
+        } catch {
+            return LocalRuntimeConfigBatchMutationResult(
+                success: false,
+                message: "批量写回本地 runtime agent 配置失败：\(error.localizedDescription)",
+                changed: false
+            )
         }
     }
 
