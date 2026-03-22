@@ -934,6 +934,8 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
         try FileManager.default.createDirectory(at: runtimeRootURL, withIntermediateDirectories: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
         let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
         try "{}".write(to: configFileURL, atomically: true, encoding: .utf8)
 
@@ -1180,6 +1182,13 @@ final class OpenClawConnectionStateTests: XCTestCase {
         let restoredList = try XCTUnwrap(restoredAgentsObject["list"] as? [[String: Any]])
         XCTAssertFalse(restoredList.contains { ($0["id"] as? String) == "任务中心-任务领域-1" })
         XCTAssertEqual(restoredList.count, 1)
+
+        let mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: mutableProject.id)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: mirrorURL.appendingPathComponent("openclaw.json", isDirectory: false).path
+            )
+        )
     }
 
     func testSyncRegistersLocalRuntimeAgentUsingUserProvidedBootstrapDirectory() throws {
@@ -1189,6 +1198,8 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
         try FileManager.default.createDirectory(at: runtimeRootURL, withIntermediateDirectories: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
         let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
         try """
         {
@@ -1204,6 +1215,16 @@ final class OpenClawConnectionStateTests: XCTestCase {
           }
         }
         """.write(to: configFileURL, atomically: true, encoding: .utf8)
+        try #"{"profiles":{"minimax:cn":{"provider":"minimax"}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"providers":{"minimax":{"models":[{"id":"MiniMax-M2.5"}]}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
 
         let executableURL = try makeMutableOpenClawScript(in: tempDirectory, configFileURL: configFileURL)
 
@@ -1528,6 +1549,103 @@ final class OpenClawConnectionStateTests: XCTestCase {
 
         let preservedContent = try String(contentsOf: preservedAuthPath, encoding: .utf8)
         XCTAssertTrue(preservedContent.contains(#""provider":"minimax""#))
+    }
+
+    func testSyncCleansExtraneousMirrorEntriesOutsideManagedAgentTree() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try """
+        {
+          "agents": {
+            "list": [
+              {
+                "id": "main",
+                "name": "main",
+                "workspace": "\(runtimeRootURL.appendingPathComponent("workspace", isDirectory: true).path)",
+                "agentDir": "\(mainAgentDirectory.path)"
+              }
+            ]
+          }
+        }
+        """.write(to: configFileURL, atomically: true, encoding: .utf8)
+        try #"{"profiles":{"minimax:cn":{"provider":"minimax"}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"providers":{"minimax":{"models":[{"id":"MiniMax-M2.5"}]}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let executableURL = try makeMutableOpenClawScript(in: tempDirectory, configFileURL: configFileURL)
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.autoConnect = false
+        manager.config = config
+
+        let project = MAProject(name: "Mirror Pollution Cleanup")
+        defer {
+            try? FileManager.default.removeItem(at: ProjectManager.shared.openClawProjectRoot(for: project.id))
+        }
+
+        let mirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
+        let pollutedDistURL = mirrorURL.appendingPathComponent("extensions/wecom/dist/index.esm.js", isDirectory: false)
+        try FileManager.default.createDirectory(at: pollutedDistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "export default 'polluted';\n".write(to: pollutedDistURL, atomically: true, encoding: .utf8)
+        try "{}".write(
+            to: mirrorURL.appendingPathComponent("openclaw.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let workspaceRootURL = tempDirectory.appendingPathComponent("cleanup-workspace", isDirectory: true)
+        let agent = try makeProjectAgent(name: "任务中心-任务领域-1", workspaceRootURL: workspaceRootURL)
+        var workflow = Workflow(name: "Main Workflow")
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = agent.name
+        workflow.nodes = [node]
+        var mutableProject = project
+        mutableProject.agents = [agent]
+        mutableProject.workflows = [workflow]
+
+        try manager.beginSession(for: mutableProject.id)
+        manager.isConnected = true
+
+        let completion = expectation(description: "polluted mirror sync completed")
+        manager.syncProjectAgentsToActiveSession(mutableProject) { result in
+            XCTAssertEqual(result.deploymentStatus, .appliedToRuntime)
+            XCTAssertNil(result.errorMessage)
+            XCTAssertTrue(result.message.contains("已清理镜像中的非项目目录"))
+            completion.fulfill()
+        }
+
+        wait(for: [completion], timeout: 5.0)
+        drainMainQueue()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pollutedDistURL.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: runtimeRootURL
+                    .appendingPathComponent("extensions/wecom/dist/index.esm.js", isDirectory: false)
+                    .path
+            )
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: mirrorURL.appendingPathComponent("openclaw.json", isDirectory: false).path
+            )
+        )
     }
 
     func testSyncDoesNotUseProjectBackupAsAutomaticBootstrapSource() throws {
@@ -2241,4 +2359,92 @@ final class OpenClawConnectionStateTests: XCTestCase {
         })
     }
 
+    func testRegistrationRewritesNumericRuntimeIDBackToProjectIdentifier() throws {
+        let manager = OpenClawManager(notificationCenter: NotificationCenter())
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let runtimeRootURL = tempDirectory.appendingPathComponent("runtime-root", isDirectory: true)
+        let mainAgentDirectory = runtimeRootURL.appendingPathComponent("agents/main/agent", isDirectory: true)
+        let targetAgentDirectory = runtimeRootURL.appendingPathComponent("agents/任务中心-任务领域-1/agent", isDirectory: true)
+        try FileManager.default.createDirectory(at: mainAgentDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: targetAgentDirectory, withIntermediateDirectories: true)
+
+        try #"{"profiles":{"minimax:cn":{"provider":"minimax"}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("auth-profiles.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"providers":{"minimax":{"models":[{"id":"MiniMax-M2.5"}]}}}"#.write(
+            to: mainAgentDirectory.appendingPathComponent("models.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let numericWorkspaceURL = runtimeRootURL.appendingPathComponent("agents/1/workspace", isDirectory: true)
+        let currentWorkspaceURL = tempDirectory.appendingPathComponent("current-workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: numericWorkspaceURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: currentWorkspaceURL, withIntermediateDirectories: true)
+
+        let configFileURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        try """
+        {
+          "agents": {
+            "list": [
+              {
+                "id": "main",
+                "name": "main",
+                "workspace": "\(runtimeRootURL.appendingPathComponent("workspace", isDirectory: true).path)",
+                "agentDir": "\(mainAgentDirectory.path)"
+              },
+              {
+                "id": "1",
+                "name": "任务中心-任务领域-1",
+                "workspace": "\(numericWorkspaceURL.path)",
+                "agentDir": "\(targetAgentDirectory.path)"
+              }
+            ]
+          }
+        }
+        """.write(to: configFileURL, atomically: true, encoding: .utf8)
+
+        let executableURL = try makeMutableOpenClawScript(in: tempDirectory, configFileURL: configFileURL)
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.localBinaryPath = executableURL.path
+        config.autoConnect = false
+        manager.config = config
+
+        let agent = makeDeferredProjectAgent(name: "任务中心-任务领域-1")
+        let requirement = OpenClawManager.LocalRuntimeWorkspaceRequirement(
+            agentID: agent.id,
+            workflowID: UUID(),
+            nodeID: UUID(),
+            agentName: agent.name,
+            targetIdentifier: agent.name
+        )
+        let workspaceRegistration = manager.registerUserProvidedLocalWorkspaceDirectory(
+            currentWorkspaceURL,
+            for: requirement
+        )
+        XCTAssertTrue(workspaceRegistration.success, workspaceRegistration.message)
+
+        let registration = manager.ensureLocalRuntimeAgentRegistration(for: agent, using: config)
+        XCTAssertTrue(registration.success, registration.message)
+
+        let configData = try Data(contentsOf: configFileURL)
+        let configObject = try XCTUnwrap(JSONSerialization.jsonObject(with: configData) as? [String: Any])
+        let agentsObject = try XCTUnwrap(configObject["agents"] as? [String: Any])
+        let list = try XCTUnwrap(agentsObject["list"] as? [[String: Any]])
+
+        XCTAssertEqual(list.count, 2)
+        let rewrittenEntry = try XCTUnwrap(list.first { ($0["id"] as? String) == "任务中心-任务领域-1" })
+        XCTAssertEqual(
+            rewrittenEntry["workspace"] as? String,
+            runtimeRootURL
+                .appendingPathComponent("agents/任务中心-任务领域-1/workspace", isDirectory: true)
+                .path
+        )
+        XCTAssertFalse(list.contains { ($0["id"] as? String) == "1" })
+    }
 }

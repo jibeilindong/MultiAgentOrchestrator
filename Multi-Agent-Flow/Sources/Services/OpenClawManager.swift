@@ -452,6 +452,7 @@ class OpenClawManager: ObservableObject {
     private struct MirrorStageResult {
         var updatedAgentCount: Int = 0
         var unresolvedAgentNames: [String] = []
+        var cleanedEntryNames: [String] = []
     }
 
     private enum ManagedWorkspaceStageOutcome {
@@ -459,6 +460,8 @@ class OpenClawManager: ObservableObject {
         case unchanged
         case changed
     }
+
+    private static let managedSessionMirrorTopLevelEntries: Set<String> = ["agents"]
 
     private enum LocalRuntimeRegistrationStage: String {
         case workspaceResolution
@@ -1212,13 +1215,6 @@ class OpenClawManager: ObservableObject {
                 using: sessionDeployment.config
             )
             sessionDeploymentBackupPrepared = true
-            if !directoryHasContent(mirrorURL) {
-                _ = try copyDeploymentContentsToLocal(
-                    mirrorURL,
-                    deploymentRootPath: deploymentRootPath,
-                    using: sessionDeployment.config
-                )
-            }
         case .remoteServer:
             break
         }
@@ -1247,24 +1243,12 @@ class OpenClawManager: ObservableObject {
                 guard let openClawRoot = context.deployment.localRootURL else {
                     throw NSError(domain: "OpenClawManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法解析本地 OpenClaw 路径"])
                 }
-                if sessionDeploymentModified {
-                    _ = try replaceDirectoryContents(of: context.mirrorURL, withContentsOf: openClawRoot)
-                }
-
                 if restoreOriginalState && sessionDeploymentModified && sessionDeploymentBackupPrepared {
                     _ = try replaceDirectoryContents(of: openClawRoot, withContentsOf: context.backupURL)
                 }
             case .container:
                 guard let deploymentRootPath = context.deployment.deploymentRootPath else {
                     throw NSError(domain: "OpenClawManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"])
-                }
-
-                if sessionDeploymentModified {
-                    _ = try copyDeploymentContentsToLocal(
-                        context.mirrorURL,
-                        deploymentRootPath: deploymentRootPath,
-                        using: context.deployment.config
-                    )
                 }
 
                 if restoreOriginalState && sessionDeploymentModified && sessionDeploymentBackupPrepared {
@@ -2403,6 +2387,7 @@ class OpenClawManager: ObservableObject {
             }
 
             if stageResult.updatedAgentCount == 0,
+               stageResult.cleanedEntryNames.isEmpty,
                !self.sessionLifecycle.hasPendingMirrorChanges,
                self.sessionLifecycle.stage == .synced {
                 DispatchQueue.main.async {
@@ -4378,7 +4363,7 @@ class OpenClawManager: ObservableObject {
                     .appendingPathComponent(identifier, isDirectory: true)
                     .appendingPathComponent("agent", isDirectory: true)
             let runtimeWorkspaceURL = localRuntimeAgentWorkspaceURL(
-                for: matchedRecord.targetIdentifier,
+                for: identifier,
                 using: resolvedConfig
             )
             let workspaceSourcePath = firstNonEmptyPath(
@@ -4415,7 +4400,7 @@ class OpenClawManager: ObservableObject {
             )
             let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
                 configIndex: matchedRecord.configIndex,
-                identifier: matchedRecord.targetIdentifier,
+                identifier: identifier,
                 name: agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? matchedRecord.name
                     : agent.openClawDefinition.agentIdentifier,
@@ -4597,7 +4582,7 @@ class OpenClawManager: ObservableObject {
             )
             let syncResult = synchronizeLocalRuntimeAgentConfigEntry(
                 configIndex: refreshedRuntimeRecord?.configIndex,
-                identifier: registeredIdentifier,
+                identifier: identifier,
                 name: agent.openClawDefinition.agentIdentifier,
                 workspacePath: runtimeWorkspaceURL.path,
                 agentDirPath: agentDirectory.path,
@@ -5983,16 +5968,30 @@ class OpenClawManager: ObservableObject {
             return ProjectManager.shared.openClawBackupDirectory(for: project.id)
         }()
 
-        try? FileManager.default.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
+        let fileManager = FileManager.default
+        try? fileManager.createDirectory(at: mirrorURL, withIntermediateDirectories: true)
+
+        let stagingMirrorURL = fileManager.temporaryDirectory
+            .appendingPathComponent("openclaw-project-mirror-\(project.id.uuidString)-\(UUID().uuidString)", isDirectory: true)
+        try? fileManager.createDirectory(at: stagingMirrorURL, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: stagingMirrorURL) }
 
         var result = MirrorStageResult()
+        var stagedAgentRootRelativePaths = Set<String>()
+
         for agent in workflowBoundProjectAgents(in: project, workflowID: workflowID) {
-            guard let soulURL = resolveProjectMirrorSoulURL(for: agent, in: project, mirrorURL: mirrorURL, backupURL: backupURL) else {
+            guard let soulURL = resolveProjectMirrorSoulURL(
+                for: agent,
+                in: project,
+                mirrorURL: stagingMirrorURL,
+                backupURL: backupURL
+            ) else {
                 result.unresolvedAgentNames.append(agent.name)
                 continue
             }
 
             do {
+                var stagedFromManagedWorkspace = false
                 switch try stageManagedWorkspaceDocuments(
                     for: agent,
                     in: project,
@@ -6000,12 +5999,19 @@ class OpenClawManager: ObservableObject {
                     mirrorSoulURL: soulURL
                 ) {
                 case .changed:
-                    result.updatedAgentCount += 1
-                    continue
+                    stagedFromManagedWorkspace = true
                 case .unchanged:
-                    continue
+                    stagedFromManagedWorkspace = true
                 case .noManagedWorkspace:
                     break
+                }
+
+                if let relativeAgentRootPath = relativePath(of: soulURL.deletingLastPathComponent(), from: stagingMirrorURL) {
+                    stagedAgentRootRelativePaths.insert(relativeAgentRootPath)
+                }
+
+                if stagedFromManagedWorkspace {
+                    continue
                 }
             } catch {
                 result.unresolvedAgentNames.append(agent.name)
@@ -6021,7 +6027,7 @@ class OpenClawManager: ObservableObject {
                     for: agent,
                     in: project,
                     mirrorSoulURL: soulURL,
-                    mirrorURL: mirrorURL,
+                    mirrorURL: stagingMirrorURL,
                     backupURL: backupURL
                 ) else {
                     result.unresolvedAgentNames.append(agent.name)
@@ -6031,13 +6037,35 @@ class OpenClawManager: ObservableObject {
             }
 
             do {
-                if try writeTextIfNeeded(contentToStage, to: soulURL) {
-                    result.updatedAgentCount += 1
+                _ = try writeTextIfNeeded(contentToStage, to: soulURL)
+                if let relativeAgentRootPath = relativePath(of: soulURL.deletingLastPathComponent(), from: stagingMirrorURL) {
+                    stagedAgentRootRelativePaths.insert(relativeAgentRootPath)
                 }
             } catch {
                 result.unresolvedAgentNames.append(agent.name)
             }
         }
+
+        let cleanedEntryNames = visibleDirectoryEntryNames(in: mirrorURL)
+            .subtracting(visibleDirectoryEntryNames(in: stagingMirrorURL))
+            .subtracting(Self.managedSessionMirrorTopLevelEntries)
+        result.cleanedEntryNames = Array(cleanedEntryNames).sorted()
+
+        let mirrorChanged = !fileSystemItemsEqual(at: stagingMirrorURL, and: mirrorURL)
+        guard mirrorChanged else {
+            result.updatedAgentCount = 0
+            return result
+        }
+
+        for relativeAgentRootPath in stagedAgentRootRelativePaths.sorted() {
+            let stagedAgentRootURL = stagingMirrorURL.appendingPathComponent(relativeAgentRootPath, isDirectory: true)
+            let currentAgentRootURL = mirrorURL.appendingPathComponent(relativeAgentRootPath, isDirectory: true)
+            if !fileSystemItemsEqual(at: stagedAgentRootURL, and: currentAgentRootURL) {
+                result.updatedAgentCount += 1
+            }
+        }
+
+        _ = try? replaceDirectoryContents(of: mirrorURL, withContentsOf: stagingMirrorURL)
 
         return result
     }
@@ -6055,22 +6083,34 @@ class OpenClawManager: ObservableObject {
 
         let agentRootURL = mirrorSoulURL.deletingLastPathComponent()
         let workspaceMirrorURL = agentRootURL.appendingPathComponent("workspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspaceMirrorURL, withIntermediateDirectories: true)
 
-        var sawManagedDocument = false
+        let existingManagedFiles = ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles.filter { fileName in
+            FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent(fileName, isDirectory: false).path)
+        }
+
+        guard !existingManagedFiles.isEmpty else {
+            return .noManagedWorkspace
+        }
+
+        let shouldMirrorSoulIntoWorkspace = existingManagedFiles.contains { $0 != "SOUL.md" }
+        if shouldMirrorSoulIntoWorkspace {
+            try FileManager.default.createDirectory(at: workspaceMirrorURL, withIntermediateDirectories: true)
+        }
+
         var wroteAny = false
-        for fileName in ProjectFileSystem.managedOpenClawWorkspaceMarkdownFiles {
+        for fileName in existingManagedFiles {
             let sourceURL = workspaceURL.appendingPathComponent(fileName, isDirectory: false)
-            guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
-
-            sawManagedDocument = true
             let content = try String(contentsOf: sourceURL, encoding: .utf8)
             let targetURLs: [URL]
             if fileName == "SOUL.md" {
-                targetURLs = [
-                    mirrorSoulURL,
-                    workspaceMirrorURL.appendingPathComponent(fileName, isDirectory: false)
-                ]
+                if shouldMirrorSoulIntoWorkspace {
+                    targetURLs = [
+                        mirrorSoulURL,
+                        workspaceMirrorURL.appendingPathComponent(fileName, isDirectory: false)
+                    ]
+                } else {
+                    targetURLs = [mirrorSoulURL]
+                }
             } else {
                 targetURLs = [workspaceMirrorURL.appendingPathComponent(fileName, isDirectory: false)]
             }
@@ -6080,10 +6120,6 @@ class OpenClawManager: ObservableObject {
                     wroteAny = true
                 }
             }
-        }
-
-        guard sawManagedDocument else {
-            return .noManagedWorkspace
         }
 
         return wroteAny ? .changed : .unchanged
@@ -6142,7 +6178,11 @@ class OpenClawManager: ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: "无法解析本地 OpenClaw 路径"]
                 )
             }
-            _ = try mergeDirectoryContents(of: openClawRoot, withContentsOf: sessionContext.mirrorURL)
+            try applyManagedSessionMirrorContents(
+                from: sessionContext.mirrorURL,
+                deploymentRootPath: openClawRoot.path,
+                using: sessionContext.deployment.config
+            )
         case .container:
             guard let deploymentRootPath = sessionContext.deployment.deploymentRootPath else {
                 throw NSError(
@@ -6151,8 +6191,8 @@ class OpenClawManager: ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: "无法解析容器内 OpenClaw 路径"]
                 )
             }
-            try copyLocalContentsToDeployment(
-                sessionContext.mirrorURL,
+            try applyManagedSessionMirrorContents(
+                from: sessionContext.mirrorURL,
                 deploymentRootPath: deploymentRootPath,
                 using: sessionContext.deployment.config
             )
@@ -6300,6 +6340,9 @@ class OpenClawManager: ObservableObject {
         } else if result.unresolvedAgentNames.isEmpty {
             parts.append("项目镜像已是最新")
         }
+        if !result.cleanedEntryNames.isEmpty {
+            parts.append("已清理镜像中的非项目目录：\(result.cleanedEntryNames.joined(separator: ", "))")
+        }
         if !result.unresolvedAgentNames.isEmpty {
             let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
             parts.append("未能定位这些 agent 的 SOUL 路径：\(names)")
@@ -6313,6 +6356,9 @@ class OpenClawManager: ObservableObject {
             parts.append("已准备 \(result.updatedAgentCount) 个 agent 的项目镜像，尚未写回当前 OpenClaw 会话")
         } else if result.unresolvedAgentNames.isEmpty {
             parts.append("项目镜像已是最新，当前无需重新准备会话副本")
+        }
+        if !result.cleanedEntryNames.isEmpty {
+            parts.append("已清理镜像中的非项目目录：\(result.cleanedEntryNames.joined(separator: ", "))")
         }
         if !result.unresolvedAgentNames.isEmpty {
             let names = result.unresolvedAgentNames.sorted().joined(separator: ", ")
@@ -6334,6 +6380,17 @@ class OpenClawManager: ObservableObject {
                 normalizedTargetIdentifier(for: agent)
             ].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
         )
+
+        let currentProjectMirrorURL = ProjectManager.shared.openClawMirrorDirectory(for: project.id)
+        if currentProjectMirrorURL.path != mirrorURL.path,
+           let existingCurrentMirrorMatch = findMatchingSoulURL(in: currentProjectMirrorURL, matching: candidateNames),
+           let translatedExistingMatch = translateRelativeURL(
+                existingCurrentMirrorMatch,
+                from: currentProjectMirrorURL,
+                to: mirrorURL
+           ) {
+            return translatedExistingMatch
+        }
 
         let sourceCandidates = mirrorSourceCandidates(for: agent, in: project, matching: candidateNames)
         for sourceURL in sourceCandidates {
@@ -7552,6 +7609,77 @@ class OpenClawManager: ObservableObject {
         return !contents.isEmpty
     }
 
+    private func visibleDirectoryEntryNames(in url: URL) -> Set<String> {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return Set(contents.map(\.lastPathComponent))
+    }
+
+    private func relativePath(of url: URL, from root: URL) -> String? {
+        let normalizedRoot = root.standardizedFileURL.path
+        let normalizedURL = url.standardizedFileURL.path
+        guard normalizedURL == normalizedRoot || normalizedURL.hasPrefix(normalizedRoot + "/") else {
+            return nil
+        }
+
+        let relative = String(normalizedURL.dropFirst(normalizedRoot.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return relative.isEmpty ? nil : relative
+    }
+
+    private func fileSystemItemsEqual(at lhs: URL, and rhs: URL) -> Bool {
+        let fileManager = FileManager.default
+        let lhsExists = fileManager.fileExists(atPath: lhs.path)
+        let rhsExists = fileManager.fileExists(atPath: rhs.path)
+        guard lhsExists == rhsExists else { return false }
+        guard lhsExists else { return true }
+
+        let lhsIsDirectory = (try? lhs.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let rhsIsDirectory = (try? rhs.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        guard lhsIsDirectory == rhsIsDirectory else { return false }
+
+        if lhsIsDirectory {
+            guard let lhsContents = try? fileManager.contentsOfDirectory(
+                at: lhs,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ), let rhsContents = try? fileManager.contentsOfDirectory(
+                at: rhs,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return false
+            }
+
+            let lhsByName = Dictionary(uniqueKeysWithValues: lhsContents.map { ($0.lastPathComponent, $0) })
+            let rhsByName = Dictionary(uniqueKeysWithValues: rhsContents.map { ($0.lastPathComponent, $0) })
+            guard lhsByName.keys == rhsByName.keys else { return false }
+
+            for name in lhsByName.keys.sorted() {
+                guard let lhsChild = lhsByName[name], let rhsChild = rhsByName[name] else {
+                    return false
+                }
+                if !fileSystemItemsEqual(at: lhsChild, and: rhsChild) {
+                    return false
+                }
+            }
+
+            return true
+        }
+
+        guard let lhsData = try? Data(contentsOf: lhs),
+              let rhsData = try? Data(contentsOf: rhs) else {
+            return false
+        }
+        return lhsData == rhsData
+    }
+
     private func removeDirectoryContents(at url: URL) throws {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: url.path) else { return }
@@ -8130,10 +8258,49 @@ class OpenClawManager: ObservableObject {
         deploymentRootPath: String,
         using config: OpenClawConfig
     ) throws {
+        try transferLocalContentsToDeployment(
+            localSource,
+            deploymentPath: deploymentRootPath,
+            using: config,
+            replaceExistingContents: true
+        )
+    }
+
+    private func applyManagedSessionMirrorContents(
+        from mirrorURL: URL,
+        deploymentRootPath: String,
+        using config: OpenClawConfig
+    ) throws {
+        for entryName in Self.managedSessionMirrorTopLevelEntries.sorted() {
+            let sourceURL = mirrorURL.appendingPathComponent(entryName, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
+
+            let deploymentPath = URL(fileURLWithPath: deploymentRootPath, isDirectory: true)
+                .appendingPathComponent(entryName, isDirectory: true)
+                .path
+            try transferLocalContentsToDeployment(
+                sourceURL,
+                deploymentPath: deploymentPath,
+                using: config,
+                replaceExistingContents: false
+            )
+        }
+    }
+
+    private func transferLocalContentsToDeployment(
+        _ localSource: URL,
+        deploymentPath: String,
+        using config: OpenClawConfig,
+        replaceExistingContents: Bool
+    ) throws {
         switch config.deploymentKind {
         case .local:
-            let destination = URL(fileURLWithPath: deploymentRootPath, isDirectory: true)
-            _ = try replaceDirectoryContents(of: destination, withContentsOf: localSource)
+            let destination = URL(fileURLWithPath: deploymentPath, isDirectory: true)
+            if replaceExistingContents {
+                _ = try replaceDirectoryContents(of: destination, withContentsOf: localSource)
+            } else if FileManager.default.fileExists(atPath: localSource.path) {
+                _ = try mergeDirectoryContents(of: destination, withContentsOf: localSource)
+            }
         case .container:
             guard let containerName = containerName(for: config) else { return }
             guard FileManager.default.fileExists(atPath: localSource.path) else { return }
@@ -8153,20 +8320,22 @@ class OpenClawManager: ObservableObject {
 
             defer { try? FileManager.default.removeItem(at: archiveURL) }
 
-            let clearCommand = "mkdir -p \(shellQuoted(deploymentRootPath)) && find \(shellQuoted(deploymentRootPath)) -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
-            let clearResult = try runDeploymentCommand(
-                using: config,
-                arguments: ["exec", containerName, "sh", "-lc", clearCommand]
-            )
-            guard clearResult.terminationStatus == 0 else {
-                let message = String(data: clearResult.standardError, encoding: .utf8) ?? "容器目录清理失败"
-                throw NSError(domain: "OpenClawManager", code: Int(clearResult.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+            if replaceExistingContents {
+                let clearCommand = "mkdir -p \(shellQuoted(deploymentPath)) && find \(shellQuoted(deploymentPath)) -mindepth 1 -maxdepth 1 -exec rm -rf {} +"
+                let clearResult = try runDeploymentCommand(
+                    using: config,
+                    arguments: ["exec", containerName, "sh", "-lc", clearCommand]
+                )
+                guard clearResult.terminationStatus == 0 else {
+                    let message = String(data: clearResult.standardError, encoding: .utf8) ?? "容器目录清理失败"
+                    throw NSError(domain: "OpenClawManager", code: Int(clearResult.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+                }
             }
 
             let input = try FileHandle(forReadingFrom: archiveURL)
             defer { input.closeFile() }
 
-            let extractCommand = "mkdir -p \(shellQuoted(deploymentRootPath)) && tar -xf - -C \(shellQuoted(deploymentRootPath))"
+            let extractCommand = "mkdir -p \(shellQuoted(deploymentPath)) && tar -xf - -C \(shellQuoted(deploymentPath))"
             let extractResult = try runDeploymentCommand(
                 using: config,
                 arguments: ["exec", "-i", containerName, "sh", "-lc", extractCommand],
