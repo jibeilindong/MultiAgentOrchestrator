@@ -1,5 +1,5 @@
 import type { MAProject } from "@multi-agent-flow/domain";
-import { normalizeAgentName } from "./agent-naming";
+import { normalizeAgentName, normalizeRuntimeAgentIdentifier } from "./agent-naming";
 import { stableStringify } from "./json";
 import { createEmptyProject } from "./project-factory";
 import { toSwiftDate } from "./swift-date";
@@ -54,10 +54,13 @@ function normalizeAgents(input: Partial<MAProject>, base: MAProject): MAProject[
       ...agent,
       name: normalizedName,
       openClawDefinition: {
-        agentIdentifier:
+        agentIdentifier: normalizeRuntimeAgentIdentifier(
+          nextAgents,
           typeof rawOpenClawDefinition["agentIdentifier"] === "string"
-            ? rawOpenClawDefinition["agentIdentifier"] || normalizedName
-            : normalizedName,
+            ? rawOpenClawDefinition["agentIdentifier"]
+            : "",
+          normalizedName
+        ),
         modelIdentifier:
           typeof rawOpenClawDefinition["modelIdentifier"] === "string"
             ? rawOpenClawDefinition["modelIdentifier"]

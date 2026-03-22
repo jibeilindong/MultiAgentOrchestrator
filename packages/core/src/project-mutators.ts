@@ -14,7 +14,7 @@ import type {
 } from "@multi-agent-flow/domain";
 import { toSwiftDate } from "./swift-date";
 import { createUUID } from "./uuid";
-import { normalizeAgentName } from "./agent-naming";
+import { normalizeAgentName, normalizeRuntimeAgentIdentifier } from "./agent-naming";
 import { normalizeWorkflowNodeTitle } from "./workflow-node-naming";
 
 function withUpdatedAt(project: MAProject): MAProject {
@@ -65,6 +65,7 @@ function createDefaultProtocolMemory(now: number): OpenClawAgentProtocolMemory {
 function createAgent(name: string, index: number, existingAgents: Agent[] = []): Agent {
   const now = toSwiftDate();
   const normalizedName = normalizeAgentName(existingAgents, name);
+  const runtimeAgentIdentifier = normalizeRuntimeAgentIdentifier(existingAgents, normalizedName, normalizedName);
 
   return {
     id: createUUID(),
@@ -81,7 +82,7 @@ function createAgent(name: string, index: number, existingAgents: Agent[] = []):
     capabilities: ["basic"],
     colorHex: null,
     openClawDefinition: {
-      agentIdentifier: normalizedName,
+      agentIdentifier: runtimeAgentIdentifier,
       modelIdentifier: "MiniMax-M2.5",
       runtimeProfile: "default",
       memoryBackupPath: null,
@@ -630,9 +631,14 @@ export function updateAgentInProject(project: MAProject, agentId: string, patch:
       openClawDefinition: {
         ...agent.openClawDefinition,
         agentIdentifier:
-          patch.openClawDefinition?.agentIdentifier === undefined
-            ? agent.openClawDefinition.agentIdentifier || normalizedName || agent.name
-            : patch.openClawDefinition.agentIdentifier.trim() || normalizedName || agent.name,
+          normalizeRuntimeAgentIdentifier(
+            project.agents,
+            patch.openClawDefinition?.agentIdentifier === undefined
+              ? agent.openClawDefinition.agentIdentifier || normalizedName || agent.name
+              : patch.openClawDefinition.agentIdentifier.trim(),
+            normalizedName || agent.name,
+            { excludeAgentId: agentId }
+          ),
         modelIdentifier:
           patch.openClawDefinition?.modelIdentifier === undefined
             ? agent.openClawDefinition.modelIdentifier

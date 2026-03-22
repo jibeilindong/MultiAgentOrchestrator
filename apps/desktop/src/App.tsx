@@ -40,6 +40,7 @@ import {
   reviewWorkbenchApprovalWithLiveExecution,
   syncOpenClawState,
   importDetectedOpenClawAgents,
+  isRuntimeAgentIdentifierValid,
   updateAgentInProject,
   updateWorkflowLaunchTestCase,
   updateOpenClawConfig,
@@ -255,6 +256,12 @@ function resolveRuntimeAgentIdentifier(project: MAProject, agentId: string | nul
     }
   }
   return "default";
+}
+
+function describeRuntimeAgentIdentifier(identifier: string): string {
+  return isRuntimeAgentIdentifierValid(identifier)
+    ? "Runtime ID is ready for OpenClaw and session spawning."
+    : "Runtime ID must use lowercase letters, digits, hyphens, or underscores.";
 }
 
 function normalizeRouteKey(value: string): string {
@@ -3004,12 +3011,23 @@ export function App() {
                           <span>OpenClaw agent ID</span>
                           <input
                             value={agent.openClawDefinition.agentIdentifier}
+                            placeholder="code-dev-task-1"
+                            spellCheck={false}
                             onChange={(event) =>
                               handleUpdateAgent(agent.id, {
                                 openClawDefinition: { agentIdentifier: event.target.value }
                               })
                             }
                           />
+                          <small
+                            className={
+                              isRuntimeAgentIdentifierValid(agent.openClawDefinition.agentIdentifier)
+                                ? "fieldNote"
+                                : "fieldNote fieldNoteError"
+                            }
+                          >
+                            {describeRuntimeAgentIdentifier(agent.openClawDefinition.agentIdentifier)}
+                          </small>
                         </label>
                         <label className="field compactField">
                           <span>Model</span>

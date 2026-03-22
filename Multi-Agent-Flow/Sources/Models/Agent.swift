@@ -132,6 +132,7 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
     }
 
     private static let validNamePattern = try! NSRegularExpression(pattern: #"^([^-]+)-([^-]+)-([1-9]\d*)$"#)
+    private static let validRuntimeIdentifierPattern = try! NSRegularExpression(pattern: #"^[a-z0-9]+(?:[_-][a-z0-9]+)*$"#)
     
     // 不需要为 CGPoint 定义 Codable，因为我们有单独的扩展文件
     
@@ -147,13 +148,53 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
         self.updatedAt = Date()
         self.capabilities = ["basic"]
         self.colorHex = nil
-        self.openClawDefinition = OpenClawAgentDefinition(agentIdentifier: normalizedName)
+        self.openClawDefinition = OpenClawAgentDefinition(
+            agentIdentifier: Agent.normalizedRuntimeIdentifier(
+                requestedIdentifier: normalizedName,
+                fallbackName: normalizedName
+            )
+        )
     }
 
     static func isValidName(_ name: String) -> Bool {
         let normalized = normalizeWhitespace(normalizeDash(name))
         let range = NSRange(location: 0, length: normalized.utf16.count)
         return validNamePattern.firstMatch(in: normalized, options: [], range: range) != nil
+    }
+
+    static func isValidRuntimeIdentifier(_ identifier: String) -> Bool {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let range = NSRange(location: 0, length: normalized.utf16.count)
+        return validRuntimeIdentifierPattern.firstMatch(in: normalized, options: [], range: range) != nil
+    }
+
+    static func normalizedRuntimeIdentifier(
+        requestedIdentifier: String,
+        fallbackName: String,
+        existingAgents: [Agent] = [],
+        excludingAgentID: UUID? = nil
+    ) -> String {
+        let requestedCandidate = sanitizeRuntimeIdentifierCandidate(requestedIdentifier)
+        let fallbackCandidate = sanitizeRuntimeIdentifierCandidate(fallbackName)
+        let baseIdentifier = !requestedCandidate.isEmpty
+            ? requestedCandidate
+            : (!fallbackCandidate.isEmpty ? fallbackCandidate : "agent")
+
+        let usedIdentifiers = Set(
+            existingAgents.compactMap { agent -> String? in
+                guard agent.id != excludingAgentID else { return nil }
+                let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+                return identifier.isEmpty ? nil : identifier.lowercased()
+            }
+        )
+
+        var candidate = baseIdentifier
+        var suffix = 2
+        while usedIdentifiers.contains(candidate.lowercased()) {
+            candidate = "\(baseIdentifier)-\(suffix)"
+            suffix += 1
+        }
+        return candidate
     }
 
     static func normalizedName(
@@ -230,6 +271,39 @@ struct Agent: Codable, Identifiable, Equatable, Hashable {
             taskDomain: defaults.taskDomain,
             sequence: nil
         )
+    }
+
+    private static func sanitizeRuntimeIdentifierCandidate(_ value: String) -> String {
+        let normalized = normalizeWhitespace(normalizeDash(value)).lowercased()
+        var result = ""
+        var lastCharacterWasSeparator = false
+
+        for scalar in normalized.unicodeScalars {
+            switch scalar.value {
+            case 97...122, 48...57:
+                result.unicodeScalars.append(scalar)
+                lastCharacterWasSeparator = false
+            case 45, 95:
+                if !result.isEmpty && !lastCharacterWasSeparator {
+                    result.append("-")
+                    lastCharacterWasSeparator = true
+                }
+            default:
+                if !result.isEmpty && !lastCharacterWasSeparator {
+                    result.append("-")
+                    lastCharacterWasSeparator = true
+                }
+            }
+        }
+
+        let trimmed = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        guard !trimmed.isEmpty else { return "" }
+
+        if trimmed.rangeOfCharacter(from: CharacterSet.letters) == nil {
+            return "agent-\(trimmed)"
+        }
+
+        return trimmed
     }
 
     private static func parseExistingName(_ name: String) -> NameSegments? {

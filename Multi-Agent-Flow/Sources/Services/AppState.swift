@@ -1642,7 +1642,11 @@ class AppState: ObservableObject {
             """
             agent.position = CGPoint(x: CGFloat(180 + (index * 220)), y: CGFloat(180 + ((index % 2) * 130)))
             agent.capabilities = entry.2
-            agent.openClawDefinition.agentIdentifier = normalizedName
+            agent.openClawDefinition.agentIdentifier = Agent.normalizedRuntimeIdentifier(
+                requestedIdentifier: normalizedName,
+                fallbackName: normalizedName,
+                existingAgents: agents
+            )
             agents.append(agent)
         }
         return agents
@@ -1680,9 +1684,12 @@ class AppState: ObservableObject {
                 existingAgents: normalizedAgents,
                 excludingAgentID: agent.id
             )
-            if normalizedAgent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                normalizedAgent.openClawDefinition.agentIdentifier = normalizedAgent.name
-            }
+            normalizedAgent.openClawDefinition.agentIdentifier = Agent.normalizedRuntimeIdentifier(
+                requestedIdentifier: normalizedAgent.openClawDefinition.agentIdentifier,
+                fallbackName: normalizedAgent.name,
+                existingAgents: normalizedAgents,
+                excludingAgentID: agent.id
+            )
             normalizedAgents.append(normalizedAgent)
         }
 
@@ -2986,7 +2993,11 @@ class AppState: ObservableObject {
 
         agent.soulMD = soulText
         agent.capabilities = capabilities
-        agent = Self.preparedDraftAgentForDeferredMaterialization(agent, agentIdentifier: agent.name)
+        agent = Self.preparedDraftAgentForDeferredMaterialization(
+            agent,
+            agentIdentifier: agent.openClawDefinition.agentIdentifier,
+            existingAgents: existingAgents
+        )
         agent.updatedAt = Date()
         return agent
     }
@@ -3478,9 +3489,12 @@ class AppState: ObservableObject {
             existingAgents: project.agents,
             excludingAgentID: updatedAgent.id
         )
-        if normalizedAgent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            normalizedAgent.openClawDefinition.agentIdentifier = normalizedAgent.name
-        }
+        normalizedAgent.openClawDefinition.agentIdentifier = Agent.normalizedRuntimeIdentifier(
+            requestedIdentifier: normalizedAgent.openClawDefinition.agentIdentifier,
+            fallbackName: normalizedAgent.name,
+            existingAgents: project.agents,
+            excludingAgentID: updatedAgent.id
+        )
 
         project.agents[index] = normalizedAgent
         for workflowIndex in project.workflows.indices {
@@ -4616,6 +4630,25 @@ class AppState: ObservableObject {
             failures.append("存在 \(invalidIdentifiers.count) 个 agent 缺少可用的 OpenClaw 标识。")
         }
 
+        let malformedIdentifiers = agents.filter { agent in
+            let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !identifier.isEmpty && !Agent.isValidRuntimeIdentifier(identifier)
+        }
+        if !malformedIdentifiers.isEmpty {
+            failures.append("存在 \(malformedIdentifiers.count) 个 agent 使用了非法的 OpenClaw ID。仅允许小写字母、数字、连字符和下划线。")
+        }
+
+        let duplicateIdentifierGroups = Dictionary(
+            grouping: agents.compactMap { agent -> String? in
+                let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return identifier.isEmpty ? nil : identifier
+            },
+            by: { $0 }
+        ).values.filter { $0.count > 1 }
+        if !duplicateIdentifierGroups.isEmpty {
+            failures.append("存在 \(duplicateIdentifierGroups.count) 组重复的 OpenClaw ID，启动前需要先修复。")
+        }
+
         let isolationAssessment = openClawManager.runtimeIsolationAssessment(for: workflow, agents: agents)
         warnings.append(contentsOf: isolationAssessment.advisoryMessages)
 
@@ -5354,7 +5387,7 @@ class AppState: ObservableObject {
         } else {
             newAgent.description = "Description"
         }
-        newAgent = Self.preparedDraftAgentForDeferredMaterialization(newAgent, agentIdentifier: resolvedName)
+        newAgent = Self.preparedDraftAgentForDeferredMaterialization(newAgent, agentIdentifier: resolvedName, existingAgents: project.agents)
 
         project.agents.append(newAgent)
         markWorkflowConfigurationPending(in: &project)
@@ -5407,12 +5440,16 @@ class AppState: ObservableObject {
 
     static func preparedDraftAgentForDeferredMaterialization(
         _ agent: Agent,
-        agentIdentifier: String? = nil
+        agentIdentifier: String? = nil,
+        existingAgents: [Agent] = []
     ) -> Agent {
         var draftAgent = agent
-        if let agentIdentifier {
-            draftAgent.openClawDefinition.agentIdentifier = agentIdentifier
-        }
+        draftAgent.openClawDefinition.agentIdentifier = Agent.normalizedRuntimeIdentifier(
+            requestedIdentifier: agentIdentifier ?? draftAgent.openClawDefinition.agentIdentifier,
+            fallbackName: draftAgent.name,
+            existingAgents: existingAgents,
+            excludingAgentID: draftAgent.id
+        )
         draftAgent.openClawDefinition.soulSourcePath = nil
         draftAgent.openClawDefinition.lastImportedSoulPath = nil
         draftAgent.openClawDefinition.lastImportedAt = nil
@@ -5523,7 +5560,11 @@ class AppState: ObservableObject {
         copied.capabilities = agent.capabilities
         copied.colorHex = agent.colorHex
         copied.openClawDefinition = agent.openClawDefinition
-        copied = Self.preparedDraftAgentForDeferredMaterialization(copied, agentIdentifier: copied.name)
+        copied = Self.preparedDraftAgentForDeferredMaterialization(
+            copied,
+            agentIdentifier: copied.openClawDefinition.agentIdentifier,
+            existingAgents: currentProject?.agents ?? []
+        )
         copied.updatedAt = Date()
         return copied
     }

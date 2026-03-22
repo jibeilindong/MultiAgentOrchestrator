@@ -2,6 +2,7 @@ import type { Agent } from "@multi-agent-flow/domain";
 
 const AGENT_NAME_SEPARATOR = "-";
 const VALID_AGENT_NAME_PATTERN = /^([^-]+)-([^-]+)-([1-9]\d*)$/;
+export const VALID_RUNTIME_AGENT_IDENTIFIER_PATTERN = /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/;
 
 interface AgentNameSegments {
   functionDescription: string;
@@ -130,8 +131,65 @@ function nextAgentNameSequence(
   return sequence;
 }
 
+function normalizeRuntimeAgentIdentifierKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function sanitizeRuntimeAgentIdentifierCandidate(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/[-_]{2,}/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  return /[a-z]/.test(normalized) ? normalized : `agent-${normalized}`;
+}
+
+function nextRuntimeAgentIdentifier(
+  agents: Agent[],
+  baseIdentifier: string,
+  excludeAgentId?: string
+): string {
+  const usedIdentifiers = new Set(
+    agents
+      .filter((agent) => agent.id !== excludeAgentId)
+      .map((agent) => normalizeRuntimeAgentIdentifierKey(agent.openClawDefinition.agentIdentifier))
+      .filter(Boolean)
+  );
+
+  let candidate = baseIdentifier;
+  let suffix = 2;
+  while (usedIdentifiers.has(normalizeRuntimeAgentIdentifierKey(candidate))) {
+    candidate = `${baseIdentifier}-${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
 export function isAgentNameValid(name: string): boolean {
   return VALID_AGENT_NAME_PATTERN.test(normalizeWhitespace(normalizeDash(name)));
+}
+
+export function isRuntimeAgentIdentifierValid(value: string): boolean {
+  return VALID_RUNTIME_AGENT_IDENTIFIER_PATTERN.test(value.trim().toLowerCase());
+}
+
+export function normalizeRuntimeAgentIdentifier(
+  agents: Agent[],
+  requestedIdentifier: string,
+  fallbackName: string,
+  options: Pick<NormalizeAgentNameOptions, "excludeAgentId"> = {}
+): string {
+  const sanitizedRequestedIdentifier = sanitizeRuntimeAgentIdentifierCandidate(requestedIdentifier);
+  const sanitizedFallbackIdentifier = sanitizeRuntimeAgentIdentifierCandidate(fallbackName);
+  const baseIdentifier = sanitizedRequestedIdentifier || sanitizedFallbackIdentifier || "agent";
+  return nextRuntimeAgentIdentifier(agents, baseIdentifier, options.excludeAgentId);
 }
 
 export function normalizeAgentName(

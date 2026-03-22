@@ -169,6 +169,17 @@ body {
   text-transform: uppercase;
 }
 
+.fieldNote {
+  color: #52708a;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.fieldNoteError {
+  color: #b42318;
+  font-weight: 600;
+}
+
 .sectionLabel {
   color: #52708a;
   font-size: 0.82rem;

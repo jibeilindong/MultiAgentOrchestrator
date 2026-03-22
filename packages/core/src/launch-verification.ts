@@ -10,6 +10,7 @@ import type {
   WorkflowNode,
   WorkflowVerificationStatus
 } from "@multi-agent-flow/domain";
+import { isRuntimeAgentIdentifierValid } from "./agent-naming";
 import { assessWorkflowRuntimeIsolation } from "./runtime-isolation";
 import { toSwiftDate } from "./swift-date";
 import { createUUID } from "./uuid";
@@ -168,11 +169,34 @@ function staticVerificationFindings(project: MAProject, workflow: Workflow): {
     failures.push(`${missingAgentNodes.length} agent node(s) are missing a valid assigned agent.`);
   }
 
-  const invalidIdentifiers = project.agents.filter((agent) => {
+  const missingIdentifiers = project.agents.filter((agent) => {
     return !agent.name.trim() && !agent.openClawDefinition.agentIdentifier.trim();
   });
+  if (missingIdentifiers.length > 0) {
+    failures.push(`${missingIdentifiers.length} agent(s) are missing a usable OpenClaw identifier.`);
+  }
+
+  const invalidIdentifiers = project.agents.filter((agent) => {
+    const identifier = agent.openClawDefinition.agentIdentifier.trim();
+    return identifier.length > 0 && !isRuntimeAgentIdentifierValid(identifier);
+  });
   if (invalidIdentifiers.length > 0) {
-    failures.push(`${invalidIdentifiers.length} agent(s) are missing a usable OpenClaw identifier.`);
+    failures.push(
+      `${invalidIdentifiers.length} agent(s) have invalid OpenClaw agent IDs. Use lowercase letters, digits, hyphens, or underscores.`
+    );
+  }
+
+  const identifierCounts = new Map<string, number>();
+  for (const agent of project.agents) {
+    const identifier = agent.openClawDefinition.agentIdentifier.trim().toLowerCase();
+    if (!identifier) {
+      continue;
+    }
+    identifierCounts.set(identifier, (identifierCounts.get(identifier) ?? 0) + 1);
+  }
+  const duplicateIdentifierCount = Array.from(identifierCounts.values()).filter((count) => count > 1).length;
+  if (duplicateIdentifierCount > 0) {
+    failures.push(`${duplicateIdentifierCount} duplicate OpenClaw agent ID group(s) must be resolved before launch.`);
   }
 
   const runtimeIsolation = assessWorkflowRuntimeIsolation(project, workflow);
