@@ -301,7 +301,6 @@ struct AgentPropertiesView: View {
             VStack(alignment: .leading, spacing: 12) {
                 agentBasicFieldsSection
                 Divider()
-                openClawDefinitionSection
                 agentColorSection
                 Divider()
                 managedConfigSection

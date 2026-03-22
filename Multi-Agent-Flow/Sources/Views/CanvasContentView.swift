@@ -1652,8 +1652,8 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
                 guard let self, let view = self.view, view.window != nil else { return event }
+                guard event.window == view.window else { return event }
                 guard self.isEnabled() else { return event }
-                guard !self.isHandledByAnotherView(at: event.locationInWindow) else { return event }
 
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
@@ -1711,25 +1711,6 @@ private struct BlankCanvasDragMonitor: NSViewRepresentable {
                     return event
                 }
             }
-        }
-
-        private func isHandledByAnotherView(at windowLocation: CGPoint) -> Bool {
-            guard let view,
-                  let window = view.window,
-                  let contentView = window.contentView else {
-                return false
-            }
-
-            let point = contentView.convert(windowLocation, from: nil)
-            guard let hitView = contentView.hitTest(point) else {
-                return false
-            }
-
-            if hitView == view || hitView.isDescendant(of: view) {
-                return false
-            }
-
-            return true
         }
 
         private func hitInteractiveControl(at windowLocation: CGPoint) -> Bool {
@@ -1851,7 +1832,7 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .rightMouseDragged, .rightMouseUp]) { [weak self] event in
                 guard let self, let view = self.view, view.window != nil else { return event }
-                guard !self.isHandledByAnotherView(at: event.locationInWindow) else { return event }
+                guard event.window == view.window else { return event }
                 let converted = view.convert(event.locationInWindow, from: nil)
                 let location = CGPoint(x: converted.x, y: view.bounds.height - converted.y)
                 let alternateLocation = CGPoint(x: converted.x, y: converted.y)
@@ -1878,25 +1859,6 @@ private struct RightMouseDragMonitor: NSViewRepresentable {
                     return event
                 }
             }
-        }
-
-        private func isHandledByAnotherView(at windowLocation: CGPoint) -> Bool {
-            guard let view,
-                  let window = view.window,
-                  let contentView = window.contentView else {
-                return false
-            }
-
-            let point = contentView.convert(windowLocation, from: nil)
-            guard let hitView = contentView.hitTest(point) else {
-                return false
-            }
-
-            if hitView == view || hitView.isDescendant(of: view) {
-                return false
-            }
-
-            return true
         }
 
         func detach() {

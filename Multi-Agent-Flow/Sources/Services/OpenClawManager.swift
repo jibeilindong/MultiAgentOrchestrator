@@ -188,6 +188,8 @@ class OpenClawManager: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var agents: [String] = []
     @Published var discoveryResults: [ProjectOpenClawDetectedAgentRecord] = []
+    @Published var availableChannelAccounts: [OpenClawChannelAccountRecord] = []
+    @Published var runtimeConfigurations: [AgentRuntimeConfigurationRecord] = []
     @Published var activeAgents: [UUID: ActiveAgentRuntime] = [:]
     @Published var status: OpenClawStatus = .disconnected
     @Published var config: OpenClawConfig = .load()
@@ -314,6 +316,16 @@ class OpenClawManager: ObservableObject {
             self.workspacePath = workspacePath
             self.modelIdentifier = modelIdentifier
             self.installedSkills = installedSkills
+        }
+    }
+
+    private struct ManagedAgentBindingRecord: Hashable {
+        var agentIdentifier: String
+        var channelID: String
+        var accountID: String
+
+        var binding: AgentRuntimeChannelBinding {
+            AgentRuntimeChannelBinding(channelID: channelID, accountID: accountID)
         }
     }
 
@@ -1111,6 +1123,8 @@ class OpenClawManager: ObservableObject {
         agents = []
         activeAgents.removeAll()
         discoveryResults = []
+        availableChannelAccounts = []
+        runtimeConfigurations = []
         clearDiscoverySnapshot()
         resetAgentRuntimeChannels()
         resetGatewayConnection()
@@ -1164,6 +1178,7 @@ class OpenClawManager: ObservableObject {
             config: config,
             isConnected: isConnected,
             availableAgents: agents,
+            availableChannelAccounts: availableChannelAccounts,
             activeAgents: activeAgents.values
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 .map {
@@ -1175,6 +1190,7 @@ class OpenClawManager: ObservableObject {
                     )
                 },
             detectedAgents: discoveryResults,
+            runtimeConfigurations: runtimeConfigurations,
             connectionState: connectionState,
             projectAttachment: projectAttachment,
             sessionLifecycle: sessionLifecycle,
@@ -1190,6 +1206,8 @@ class OpenClawManager: ObservableObject {
         config.save()
         agents = snapshot.availableAgents
         discoveryResults = snapshot.detectedAgents
+        availableChannelAccounts = snapshot.availableChannelAccounts
+        runtimeConfigurations = snapshot.runtimeConfigurations
         var restoredConnectionState = snapshot.connectionState
         restoredConnectionState.deploymentKind = snapshot.config.deploymentKind
         if restoredConnectionState.phase == .ready {
@@ -1485,6 +1503,250 @@ class OpenClawManager: ObservableObject {
         }
     }
 
+    func loadRuntimeConfigurationInventory(
+        for project: MAProject?,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String, [AgentRuntimeConfigurationRecord], [OpenClawChannelAccountRecord]) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard let project else {
+            completion(false, "请先创建或打开项目，再加载 Agent 运行时配置。", [], [])
+            return
+        }
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持读取 Agent channel 绑定配置。", [], [])
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var warnings: [String] = []
+            let runtimeAgents: [ManagedAgentRecord]
+
+            do {
+                let result = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
+                guard result.terminationStatus == 0 else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(result.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw agents 失败" : fallback]
+                    )
+                }
+                runtimeAgents = self.parseManagedAgents(from: result.standardOutput, using: resolvedConfig)
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, [], [])
+                }
+                return
+            }
+
+            let channelAccounts: [OpenClawChannelAccountRecord]
+            do {
+                let result = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["channels", "list", "--json"])
+                if result.terminationStatus == 0 {
+                    channelAccounts = self.parseChannelAccounts(from: result.standardOutput)
+                } else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    channelAccounts = []
+                    if !fallback.isEmpty {
+                        warnings.append(fallback)
+                    }
+                }
+            } catch {
+                channelAccounts = []
+                warnings.append(error.localizedDescription)
+            }
+
+            let bindingRecords: [ManagedAgentBindingRecord]
+            do {
+                let result = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "bindings", "--json"])
+                if result.terminationStatus == 0 {
+                    bindingRecords = self.parseManagedAgentBindings(from: result.standardOutput)
+                } else {
+                    let fallback = String(data: result.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    bindingRecords = []
+                    if !fallback.isEmpty {
+                        warnings.append(fallback)
+                    }
+                }
+            } catch {
+                bindingRecords = []
+                warnings.append(error.localizedDescription)
+            }
+
+            let persistedRuntimeConfigurations = Dictionary(
+                uniqueKeysWithValues: project.openClaw.runtimeConfigurations.map { ($0.agentID, $0) }
+            )
+            let detectedRecords = project.openClaw.detectedAgents.isEmpty ? self.discoveryResults : project.openClaw.detectedAgents
+
+            let records = project.agents.map { projectAgent -> AgentRuntimeConfigurationRecord in
+                let persisted = persistedRuntimeConfigurations[projectAgent.id]
+                let candidateKeys = self.managedAgentLookupKeys(for: projectAgent)
+                let runtimeRecord = runtimeAgents.first { runtime in
+                    candidateKeys.contains(self.normalizeAgentKey(runtime.targetIdentifier))
+                        || candidateKeys.contains(self.normalizeAgentKey(runtime.name))
+                }
+                let runtimeBindings = bindingRecords
+                    .filter { candidateKeys.contains(self.normalizeAgentKey($0.agentIdentifier)) }
+                    .map(\.binding)
+                let detectedRecord = detectedRecords.first { record in
+                    candidateKeys.contains(self.normalizeAgentKey(record.name))
+                }
+                let resolvedPaths = self.resolveManagedAgentPaths(
+                    for: projectAgent,
+                    runtimeRecord: runtimeRecord,
+                    detectedRecord: detectedRecord
+                )
+                let resolvedBindings = runtimeBindings.isEmpty ? (persisted?.bindings ?? []) : runtimeBindings
+                let runtimeModelIdentifier = runtimeRecord?.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let persistedModelIdentifier = persisted?.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let modelIdentifier: String
+                if !runtimeModelIdentifier.isEmpty {
+                    modelIdentifier = runtimeModelIdentifier
+                } else if !persistedModelIdentifier.isEmpty {
+                    modelIdentifier = persistedModelIdentifier
+                } else {
+                    modelIdentifier = projectAgent.openClawDefinition.modelIdentifier
+                }
+                let nodeID = self.nodeBinding(for: projectAgent.id, in: project)?.nodeID ?? persisted?.nodeID
+
+                return AgentRuntimeConfigurationRecord(
+                    agentID: projectAgent.id,
+                    nodeID: nodeID,
+                    modelIdentifier: modelIdentifier,
+                    runtimeProfile: persisted?.runtimeProfile ?? projectAgent.openClawDefinition.runtimeProfile,
+                    channelEnabled: persisted?.channelEnabled ?? !resolvedBindings.isEmpty,
+                    bindings: self.uniqueBindings(resolvedBindings),
+                    source: (runtimeRecord != nil || !runtimeBindings.isEmpty) ? .runtimeExisting : (persisted?.source ?? .manualOverride),
+                    resolvedManagedPath: resolvedPaths.workspacePath ?? persisted?.resolvedManagedPath,
+                    lastResolvedAt: Date(),
+                    isStale: runtimeRecord == nil,
+                    updatedAt: persisted?.updatedAt ?? Date()
+                )
+            }
+
+            DispatchQueue.main.async {
+                self.availableChannelAccounts = channelAccounts
+                self.runtimeConfigurations = records
+
+                let warningText = warnings
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "；")
+                let message: String
+                if warningText.isEmpty {
+                    message = "已加载 \(records.count) 个 Agent 的运行时配置。"
+                } else {
+                    message = "已加载 \(records.count) 个 Agent 的运行时配置，但部分 channel 信息不可用：\(warningText)"
+                }
+                completion(true, message, records, channelAccounts)
+            }
+        }
+    }
+
+    func applyRuntimeConfiguration(
+        _ desiredConfiguration: AgentRuntimeConfigurationRecord,
+        for agent: Agent,
+        in project: MAProject,
+        using config: OpenClawConfig? = nil,
+        completion: @escaping (Bool, String, AgentRuntimeConfigurationRecord?) -> Void
+    ) {
+        let resolvedConfig = config ?? self.config
+
+        guard resolvedConfig.deploymentKind != .remoteServer else {
+            completion(false, "远程网关模式下暂不支持写回 Agent channel 绑定配置。", nil)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let identifier = self.normalizedTargetIdentifier(for: agent).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !identifier.isEmpty else {
+                DispatchQueue.main.async {
+                    completion(false, "当前 Agent 缺少可写回的 runtime 标识。", nil)
+                }
+                return
+            }
+
+            do {
+                let agentsResult = try self.runOpenClawCommand(using: resolvedConfig, arguments: ["agents", "list", "--json"])
+                guard agentsResult.terminationStatus == 0 else {
+                    let fallback = String(data: agentsResult.standardError, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: Int(agentsResult.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 OpenClaw agents 失败" : fallback]
+                    )
+                }
+
+                let runtimeAgents = self.parseManagedAgents(from: agentsResult.standardOutput, using: resolvedConfig)
+                guard let runtimeAgent = runtimeAgents.first(where: {
+                    self.normalizeAgentKey($0.targetIdentifier) == self.normalizeAgentKey(identifier)
+                        || self.normalizeAgentKey($0.name) == self.normalizeAgentKey(identifier)
+                }) else {
+                    throw NSError(
+                        domain: "OpenClawManager",
+                        code: 1301,
+                        userInfo: [NSLocalizedDescriptionKey: "尚未在 OpenClaw 运行时中找到对应 Agent：\(identifier)。请先确认镜像已同步且 agent 已注册。"]
+                    )
+                }
+
+                let trimmedModel = desiredConfiguration.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedModel.isEmpty, trimmedModel != runtimeAgent.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    try self.writeManagedAgentModel(trimmedModel, for: runtimeAgent, using: resolvedConfig)
+                }
+
+                let currentBindings = try self.loadManagedAgentBindings(
+                    forAgentIdentifier: runtimeAgent.targetIdentifier,
+                    using: resolvedConfig
+                )
+                try self.applyManagedAgentBindings(
+                    forAgentIdentifier: runtimeAgent.targetIdentifier,
+                    currentBindings: currentBindings,
+                    desiredBindings: desiredConfiguration.channelEnabled ? desiredConfiguration.bindings : [],
+                    using: resolvedConfig
+                )
+
+                let refreshedBindings = try self.loadManagedAgentBindings(
+                    forAgentIdentifier: runtimeAgent.targetIdentifier,
+                    using: resolvedConfig
+                )
+                let refreshedUniqueBindings = self.uniqueBindings(refreshedBindings.map(\.binding))
+                let refreshedRecord = AgentRuntimeConfigurationRecord(
+                    agentID: desiredConfiguration.agentID,
+                    nodeID: desiredConfiguration.nodeID ?? self.nodeBinding(for: agent.id, in: project)?.nodeID,
+                    modelIdentifier: trimmedModel.isEmpty ? runtimeAgent.modelIdentifier : trimmedModel,
+                    runtimeProfile: desiredConfiguration.runtimeProfile,
+                    channelEnabled: desiredConfiguration.channelEnabled && !refreshedUniqueBindings.isEmpty,
+                    bindings: refreshedUniqueBindings,
+                    source: .manualOverride,
+                    resolvedManagedPath: desiredConfiguration.resolvedManagedPath,
+                    lastResolvedAt: Date(),
+                    isStale: false,
+                    updatedAt: Date()
+                )
+
+                DispatchQueue.main.async {
+                    if let index = self.runtimeConfigurations.firstIndex(where: { $0.agentID == refreshedRecord.agentID }) {
+                        self.runtimeConfigurations[index] = refreshedRecord
+                    } else {
+                        self.runtimeConfigurations.append(refreshedRecord)
+                    }
+                    completion(true, "\(agent.name) 的运行时模型与 channel 绑定已应用到 OpenClaw。", refreshedRecord)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription, nil)
+                }
+            }
+        }
+    }
+
     func updateManagedAgentModel(
         _ agent: ManagedAgentRecord,
         model: String,
@@ -1504,27 +1766,9 @@ class OpenClawManager: ObservableObject {
             return
         }
 
-        guard let configIndex = agent.configIndex else {
-            completion(false, "未找到 \(agent.name) 对应的 OpenClaw 运行时配置，无法直接写回。")
-            return
-        }
-
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let result = try self.runOpenClawCommand(
-                    using: resolvedConfig,
-                    arguments: ["config", "set", "agents.list[\(configIndex)].model", trimmedModel]
-                )
-
-                guard result.terminationStatus == 0 else {
-                    let fallback = String(data: result.standardError, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    throw NSError(
-                        domain: "OpenClawManager",
-                        code: Int(result.terminationStatus),
-                        userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "更新 agent model 失败" : fallback]
-                    )
-                }
+                try self.writeManagedAgentModel(trimmedModel, for: agent, using: resolvedConfig)
 
                 DispatchQueue.main.async {
                     completion(true, "\(agent.name) 的 model 已更新为 \(trimmedModel)。建议重新连接或重启 OpenClaw 使其完全生效。")
@@ -3560,6 +3804,314 @@ class OpenClawManager: ObservableObject {
 
         return Array(Set(messages)).sorted {
             $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func writeManagedAgentModel(
+        _ model: String,
+        for agent: ManagedAgentRecord,
+        using config: OpenClawConfig
+    ) throws {
+        guard let configIndex = agent.configIndex else {
+            throw NSError(
+                domain: "OpenClawManager",
+                code: 1302,
+                userInfo: [NSLocalizedDescriptionKey: "未找到 \(agent.name) 对应的 OpenClaw 运行时配置，无法直接写回。"]
+            )
+        }
+
+        let result = try runOpenClawCommand(
+            using: config,
+            arguments: ["config", "set", "agents.list[\(configIndex)].model", model]
+        )
+
+        guard result.terminationStatus == 0 else {
+            let fallback = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "OpenClawManager",
+                code: Int(result.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "更新 agent model 失败" : fallback]
+            )
+        }
+    }
+
+    private func loadManagedAgentBindings(
+        forAgentIdentifier agentIdentifier: String,
+        using config: OpenClawConfig
+    ) throws -> [ManagedAgentBindingRecord] {
+        let result = try runOpenClawCommand(
+            using: config,
+            arguments: ["agents", "bindings", "--agent", agentIdentifier, "--json"]
+        )
+        guard result.terminationStatus == 0 else {
+            let fallback = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw NSError(
+                domain: "OpenClawManager",
+                code: Int(result.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "读取 Agent bindings 失败" : fallback]
+            )
+        }
+        return parseManagedAgentBindings(from: result.standardOutput)
+            .filter { normalizeAgentKey($0.agentIdentifier) == normalizeAgentKey(agentIdentifier) }
+    }
+
+    private func applyManagedAgentBindings(
+        forAgentIdentifier agentIdentifier: String,
+        currentBindings: [ManagedAgentBindingRecord],
+        desiredBindings: [AgentRuntimeChannelBinding],
+        using config: OpenClawConfig
+    ) throws {
+        let currentSet = Set(currentBindings.map(\.binding))
+        let desiredSet = Set(uniqueBindings(desiredBindings))
+        let bindingsToAdd = desiredSet.subtracting(currentSet)
+        let bindingsToRemove = currentSet.subtracting(desiredSet)
+
+        if desiredSet.isEmpty, !currentSet.isEmpty {
+            let result = try runOpenClawCommand(
+                using: config,
+                arguments: ["agents", "unbind", "--agent", agentIdentifier, "--all", "--json"]
+            )
+            guard result.terminationStatus == 0 else {
+                let fallback = String(data: result.standardError, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: Int(result.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "移除 Agent bindings 失败" : fallback]
+                )
+            }
+            return
+        }
+
+        if !bindingsToRemove.isEmpty {
+            let bindSpecs = bindingsToRemove.map(bindingSpec(for:))
+            let result = try runOpenClawCommand(
+                using: config,
+                arguments: ["agents", "unbind", "--agent", agentIdentifier] + bindSpecs.flatMap { ["--bind", $0] } + ["--json"]
+            )
+            guard result.terminationStatus == 0 else {
+                let fallback = String(data: result.standardError, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: Int(result.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "移除 Agent bindings 失败" : fallback]
+                )
+            }
+        }
+
+        if !bindingsToAdd.isEmpty {
+            let bindSpecs = bindingsToAdd.map(bindingSpec(for:))
+            let result = try runOpenClawCommand(
+                using: config,
+                arguments: ["agents", "bind", "--agent", agentIdentifier] + bindSpecs.flatMap { ["--bind", $0] } + ["--json"]
+            )
+            guard result.terminationStatus == 0 else {
+                let fallback = String(data: result.standardError, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                throw NSError(
+                    domain: "OpenClawManager",
+                    code: Int(result.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: fallback.isEmpty ? "写入 Agent bindings 失败" : fallback]
+                )
+            }
+        }
+    }
+
+    private func bindingSpec(for binding: AgentRuntimeChannelBinding) -> String {
+        let channel = binding.channelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = binding.accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channel.isEmpty else { return "" }
+        return account.isEmpty ? channel : "\(channel):\(account)"
+    }
+
+    private func uniqueBindings(_ bindings: [AgentRuntimeChannelBinding]) -> [AgentRuntimeChannelBinding] {
+        var seen = Set<String>()
+        return bindings.filter { binding in
+            let key = binding.id
+            return !key.isEmpty && seen.insert(key).inserted
+        }
+    }
+
+    private func parseChannelAccounts(from data: Data) -> [OpenClawChannelAccountRecord] {
+        guard
+            let jsonData = extractJSONPayload(from: data),
+            let jsonObject = try? JSONSerialization.jsonObject(with: jsonData)
+        else {
+            return []
+        }
+
+        var records: [OpenClawChannelAccountRecord] = []
+
+        func appendAccount(channelID: String?, accountID: String?, displayName: String?, isDefault: Bool) {
+            guard
+                let rawChannelID = channelID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !rawChannelID.isEmpty
+            else {
+                return
+            }
+
+            let normalizedAccountID = accountID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? accountID!.trimmingCharacters(in: .whitespacesAndNewlines)
+                : "default"
+            let normalizedDisplayName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            records.append(
+                OpenClawChannelAccountRecord(
+                    channelID: rawChannelID,
+                    accountID: normalizedAccountID,
+                    displayName: normalizedDisplayName?.isEmpty == false ? normalizedDisplayName : "\(rawChannelID):\(normalizedAccountID)",
+                    isDefaultAccount: isDefault || normalizedAccountID == "default"
+                )
+            )
+        }
+
+        func walk(_ value: Any, inheritedChannelID: String?) {
+            if let dictionary = value as? [String: Any] {
+                let explicitChannelID = stringValue(dictionary, keys: ["channel", "channelId", "channelID"])
+                let childChannelID: String?
+                if explicitChannelID != nil {
+                    childChannelID = explicitChannelID
+                } else if dictionary["accounts"] != nil {
+                    childChannelID = stringValue(dictionary, keys: ["id", "name", "slug", "type"]) ?? inheritedChannelID
+                } else {
+                    childChannelID = inheritedChannelID
+                }
+
+                let explicitAccountID = stringValue(dictionary, keys: ["account", "accountId", "accountID"])
+                    ?? (dictionary["accounts"] == nil ? stringValue(dictionary, keys: ["id"]) : nil)
+                let explicitDisplayName = stringValue(dictionary, keys: ["displayName", "label", "title", "name"])
+                let isDefaultAccount = (dictionary["isDefault"] as? Bool) == true
+                    || (dictionary["default"] as? Bool) == true
+
+                if let childChannelID,
+                   let explicitAccountID,
+                   dictionary["accounts"] == nil,
+                   (dictionary["account"] != nil
+                        || dictionary["accountId"] != nil
+                        || dictionary["accountID"] != nil
+                        || dictionary["isDefault"] != nil
+                        || dictionary["default"] != nil
+                        || dictionary["displayName"] != nil
+                        || dictionary["label"] != nil) {
+                    appendAccount(
+                        channelID: childChannelID,
+                        accountID: explicitAccountID,
+                        displayName: explicitDisplayName,
+                        isDefault: isDefaultAccount
+                    )
+                }
+
+                if dictionary["accounts"] == nil,
+                   let childChannelID,
+                   inheritedChannelID == nil,
+                   explicitAccountID == nil,
+                   (dictionary["enabled"] != nil || dictionary["status"] != nil || dictionary["health"] != nil) {
+                    appendAccount(channelID: childChannelID, accountID: "default", displayName: explicitDisplayName, isDefault: true)
+                }
+
+                for (key, child) in dictionary {
+                    if key == "accounts", let accountMap = child as? [String: Any] {
+                        for (accountKey, accountValue) in accountMap {
+                            if let accountDictionary = accountValue as? [String: Any] {
+                                appendAccount(
+                                    channelID: childChannelID,
+                                    accountID: stringValue(accountDictionary, keys: ["account", "accountId", "accountID"]) ?? accountKey,
+                                    displayName: stringValue(accountDictionary, keys: ["displayName", "label", "title", "name"]),
+                                    isDefault: accountKey == "default"
+                                )
+                            } else {
+                                appendAccount(
+                                    channelID: childChannelID,
+                                    accountID: accountKey,
+                                    displayName: nil,
+                                    isDefault: accountKey == "default"
+                                )
+                            }
+                        }
+                    } else {
+                        walk(child, inheritedChannelID: childChannelID)
+                    }
+                }
+            } else if let array = value as? [Any] {
+                for child in array {
+                    walk(child, inheritedChannelID: inheritedChannelID)
+                }
+            }
+        }
+
+        walk(jsonObject, inheritedChannelID: nil)
+
+        var seen = Set<String>()
+        return records
+            .filter { seen.insert($0.id).inserted }
+            .sorted {
+                if $0.channelID == $1.channelID {
+                    if $0.isDefaultAccount != $1.isDefaultAccount {
+                        return $0.isDefaultAccount
+                    }
+                    return $0.accountID.localizedCaseInsensitiveCompare($1.accountID) == .orderedAscending
+                }
+                return $0.channelID.localizedCaseInsensitiveCompare($1.channelID) == .orderedAscending
+            }
+    }
+
+    private func parseManagedAgentBindings(from data: Data) -> [ManagedAgentBindingRecord] {
+        guard
+            let jsonData = extractJSONPayload(from: data),
+            let jsonObject = try? JSONSerialization.jsonObject(with: jsonData)
+        else {
+            return []
+        }
+
+        var records: [ManagedAgentBindingRecord] = []
+
+        func walk(_ value: Any, inheritedAgentIdentifier: String?) {
+            if let dictionary = value as? [String: Any] {
+                let agentIdentifier = stringValue(dictionary, keys: ["agent", "agentId", "agentID", "agentIdentifier", "target"])
+                    ?? inheritedAgentIdentifier
+                let channelID = stringValue(dictionary, keys: ["channel", "channelId", "channelID"])
+                let accountID = stringValue(dictionary, keys: ["account", "accountId", "accountID"]) ?? "default"
+
+                if let agentIdentifier, let channelID {
+                    records.append(
+                        ManagedAgentBindingRecord(
+                            agentIdentifier: agentIdentifier,
+                            channelID: channelID,
+                            accountID: accountID
+                        )
+                    )
+                }
+
+                for child in dictionary.values {
+                    walk(child, inheritedAgentIdentifier: agentIdentifier)
+                }
+            } else if let array = value as? [Any] {
+                for child in array {
+                    walk(child, inheritedAgentIdentifier: inheritedAgentIdentifier)
+                }
+            } else if let bindingSpec = value as? String,
+                      let inheritedAgentIdentifier {
+                let components = bindingSpec.split(separator: ":", maxSplits: 1).map(String.init)
+                guard let channelID = components.first, !channelID.isEmpty else { return }
+                let accountID = components.count > 1 ? components[1] : "default"
+                records.append(
+                    ManagedAgentBindingRecord(
+                        agentIdentifier: inheritedAgentIdentifier,
+                        channelID: channelID,
+                        accountID: accountID
+                    )
+                )
+            }
+        }
+
+        walk(jsonObject, inheritedAgentIdentifier: nil)
+
+        var seen = Set<String>()
+        return records.filter { record in
+            let key = "\(normalizeAgentKey(record.agentIdentifier))|\(record.channelID)|\(record.accountID)"
+            return seen.insert(key).inserted
         }
     }
 

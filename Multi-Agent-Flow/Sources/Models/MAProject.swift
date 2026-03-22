@@ -349,6 +349,86 @@ struct ProjectOpenClawAgentRecord: Codable, Identifiable, Hashable {
     var lastReloadedAt: Date?
 }
 
+struct OpenClawChannelAccountRecord: Codable, Identifiable, Hashable {
+    let id: String
+    var channelID: String
+    var accountID: String
+    var displayName: String
+    var isDefaultAccount: Bool
+
+    init(
+        channelID: String,
+        accountID: String,
+        displayName: String? = nil,
+        isDefaultAccount: Bool = false
+    ) {
+        self.id = "\(channelID):\(accountID)"
+        self.channelID = channelID
+        self.accountID = accountID
+        self.displayName = displayName ?? "\(channelID):\(accountID)"
+        self.isDefaultAccount = isDefaultAccount
+    }
+}
+
+enum AgentRuntimeConfigurationSource: String, Codable, Hashable, CaseIterable {
+    case runtimeExisting = "runtime_existing"
+    case manualOverride = "manual_override"
+}
+
+struct AgentRuntimeChannelBinding: Codable, Identifiable, Hashable {
+    let id: String
+    var channelID: String
+    var accountID: String
+
+    init(channelID: String, accountID: String) {
+        self.id = "\(channelID):\(accountID)"
+        self.channelID = channelID
+        self.accountID = accountID
+    }
+}
+
+struct AgentRuntimeConfigurationRecord: Codable, Identifiable, Hashable {
+    let id: UUID
+    var agentID: UUID
+    var nodeID: UUID?
+    var modelIdentifier: String
+    var runtimeProfile: String
+    var channelEnabled: Bool
+    var bindings: [AgentRuntimeChannelBinding]
+    var source: AgentRuntimeConfigurationSource
+    var resolvedManagedPath: String?
+    var lastResolvedAt: Date?
+    var isStale: Bool
+    var updatedAt: Date
+
+    init(
+        agentID: UUID,
+        nodeID: UUID? = nil,
+        modelIdentifier: String = "",
+        runtimeProfile: String = "default",
+        channelEnabled: Bool = false,
+        bindings: [AgentRuntimeChannelBinding] = [],
+        source: AgentRuntimeConfigurationSource = .manualOverride,
+        resolvedManagedPath: String? = nil,
+        lastResolvedAt: Date? = nil,
+        isStale: Bool = false,
+        updatedAt: Date = Date()
+    ) {
+        self.id = agentID
+        self.agentID = agentID
+        self.nodeID = nodeID
+        self.modelIdentifier = modelIdentifier
+        self.runtimeProfile = runtimeProfile
+        self.channelEnabled = channelEnabled
+        self.bindings = bindings
+        self.source = source
+        self.resolvedManagedPath = resolvedManagedPath
+        self.lastResolvedAt = lastResolvedAt
+        self.isStale = isStale
+        self.updatedAt = updatedAt
+    }
+}
+
 struct ProjectOpenClawDetectedAgentRecord: Codable, Identifiable, Hashable {
     let id: String
     var name: String
@@ -770,8 +850,10 @@ struct ProjectOpenClawSnapshot: Codable {
     var config: OpenClawConfig
     var isConnected: Bool
     var availableAgents: [String]
+    var availableChannelAccounts: [OpenClawChannelAccountRecord]
     var activeAgents: [ProjectOpenClawAgentRecord]
     var detectedAgents: [ProjectOpenClawDetectedAgentRecord]
+    var runtimeConfigurations: [AgentRuntimeConfigurationRecord]
     var connectionState: OpenClawConnectionStateSnapshot
     var projectAttachment: OpenClawProjectAttachmentSnapshot
     var sessionLifecycle: OpenClawSessionLifecycleSnapshot
@@ -785,8 +867,10 @@ struct ProjectOpenClawSnapshot: Codable {
         case config
         case isConnected
         case availableAgents
+        case availableChannelAccounts
         case activeAgents
         case detectedAgents
+        case runtimeConfigurations
         case connectionState
         case projectAttachment
         case sessionLifecycle
@@ -801,8 +885,10 @@ struct ProjectOpenClawSnapshot: Codable {
         config: OpenClawConfig = .default,
         isConnected: Bool = false,
         availableAgents: [String] = [],
+        availableChannelAccounts: [OpenClawChannelAccountRecord] = [],
         activeAgents: [ProjectOpenClawAgentRecord] = [],
         detectedAgents: [ProjectOpenClawDetectedAgentRecord] = [],
+        runtimeConfigurations: [AgentRuntimeConfigurationRecord] = [],
         connectionState: OpenClawConnectionStateSnapshot = OpenClawConnectionStateSnapshot(),
         projectAttachment: OpenClawProjectAttachmentSnapshot = OpenClawProjectAttachmentSnapshot(),
         sessionLifecycle: OpenClawSessionLifecycleSnapshot = OpenClawSessionLifecycleSnapshot(),
@@ -815,8 +901,10 @@ struct ProjectOpenClawSnapshot: Codable {
         self.config = config
         self.isConnected = isConnected
         self.availableAgents = availableAgents
+        self.availableChannelAccounts = availableChannelAccounts
         self.activeAgents = activeAgents
         self.detectedAgents = detectedAgents
+        self.runtimeConfigurations = runtimeConfigurations
         self.connectionState = connectionState
         self.projectAttachment = projectAttachment
         self.sessionLifecycle = sessionLifecycle
@@ -832,8 +920,10 @@ struct ProjectOpenClawSnapshot: Codable {
         config = try container.decodeIfPresent(OpenClawConfig.self, forKey: .config) ?? .default
         isConnected = try container.decodeIfPresent(Bool.self, forKey: .isConnected) ?? false
         availableAgents = try container.decodeIfPresent([String].self, forKey: .availableAgents) ?? []
+        availableChannelAccounts = try container.decodeIfPresent([OpenClawChannelAccountRecord].self, forKey: .availableChannelAccounts) ?? []
         activeAgents = try container.decodeIfPresent([ProjectOpenClawAgentRecord].self, forKey: .activeAgents) ?? []
         detectedAgents = try container.decodeIfPresent([ProjectOpenClawDetectedAgentRecord].self, forKey: .detectedAgents) ?? []
+        runtimeConfigurations = try container.decodeIfPresent([AgentRuntimeConfigurationRecord].self, forKey: .runtimeConfigurations) ?? []
         connectionState = try container.decodeIfPresent(OpenClawConnectionStateSnapshot.self, forKey: .connectionState)
             ?? OpenClawConnectionStateSnapshot(
                 phase: isConnected ? .ready : .idle,
@@ -855,8 +945,10 @@ struct ProjectOpenClawSnapshot: Codable {
         try container.encode(config, forKey: .config)
         try container.encode(isConnected, forKey: .isConnected)
         try container.encode(availableAgents, forKey: .availableAgents)
+        try container.encode(availableChannelAccounts, forKey: .availableChannelAccounts)
         try container.encode(activeAgents, forKey: .activeAgents)
         try container.encode(detectedAgents, forKey: .detectedAgents)
+        try container.encode(runtimeConfigurations, forKey: .runtimeConfigurations)
         try container.encode(connectionState, forKey: .connectionState)
         try container.encode(projectAttachment, forKey: .projectAttachment)
         try container.encode(sessionLifecycle, forKey: .sessionLifecycle)

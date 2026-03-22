@@ -645,6 +645,24 @@ class AppState: ObservableObject {
         let agentName: String
     }
 
+    struct AgentRuntimePreparationState {
+        let agentID: UUID
+        let nodeID: UUID?
+        let isConnected: Bool
+        let isAttachedToCurrentProject: Bool
+        let isMirrorPrepared: Bool
+        let isMirrorSynchronized: Bool
+        let managedPath: String?
+
+        var hasManagedPath: Bool {
+            !(managedPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
+
+        var canConfigure: Bool {
+            isConnected && isAttachedToCurrentProject && isMirrorPrepared && hasManagedPath
+        }
+    }
+
     var hasPendingWorkflowConfiguration: Bool {
         Self.hasPendingWorkflowConfiguration(currentProject?.runtimeState)
     }
@@ -953,6 +971,18 @@ class AppState: ObservableObject {
             .store(in: &cancellables)
 
         openClawManager.$discoveryResults
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$availableChannelAccounts
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
+        openClawManager.$runtimeConfigurations
             .sink { [weak self] _ in
                 self?.syncCurrentProjectFromManagers()
             }
@@ -3452,6 +3482,137 @@ class AppState: ObservableObject {
         project.updatedAt = Date()
         currentProject = project
         objectWillChange.send()
+    }
+
+    func runtimeConfiguration(for agentID: UUID) -> AgentRuntimeConfigurationRecord? {
+        guard let project = currentProject,
+              let agent = project.agents.first(where: { $0.id == agentID }) else {
+            return nil
+        }
+
+        if let existing = project.openClaw.runtimeConfigurations.first(where: { $0.agentID == agentID }) {
+            return existing
+        }
+
+        let nodeID = nodeBinding(for: agentID, in: project)?.nodeID
+        let managedPath = managedNodeOpenClawWorkspaceURL(for: agent, in: project)?.path
+        return AgentRuntimeConfigurationRecord(
+            agentID: agentID,
+            nodeID: nodeID,
+            modelIdentifier: agent.openClawDefinition.modelIdentifier,
+            runtimeProfile: agent.openClawDefinition.runtimeProfile,
+            channelEnabled: false,
+            bindings: [],
+            source: .manualOverride,
+            resolvedManagedPath: managedPath,
+            lastResolvedAt: nil,
+            isStale: true,
+            updatedAt: Date()
+        )
+    }
+
+    func upsertRuntimeConfiguration(_ record: AgentRuntimeConfigurationRecord) {
+        guard var project = currentProject else { return }
+
+        var updatedRecord = record
+        if let agent = project.agents.first(where: { $0.id == record.agentID }),
+           let managedPath = managedNodeOpenClawWorkspaceURL(for: agent, in: project)?.path,
+           updatedRecord.resolvedManagedPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            updatedRecord.resolvedManagedPath = managedPath
+        }
+        updatedRecord.updatedAt = Date()
+
+        if let index = project.openClaw.runtimeConfigurations.firstIndex(where: { $0.agentID == record.agentID }) {
+            project.openClaw.runtimeConfigurations[index] = updatedRecord
+        } else {
+            project.openClaw.runtimeConfigurations.append(updatedRecord)
+        }
+        project.openClaw.lastSyncedAt = Date()
+        project.updatedAt = Date()
+        currentProject = project
+
+        if let index = openClawManager.runtimeConfigurations.firstIndex(where: { $0.agentID == record.agentID }) {
+            openClawManager.runtimeConfigurations[index] = updatedRecord
+        } else {
+            openClawManager.runtimeConfigurations.append(updatedRecord)
+        }
+        objectWillChange.send()
+    }
+
+    func replaceRuntimeConfigurationInventory(
+        _ records: [AgentRuntimeConfigurationRecord],
+        availableChannelAccounts: [OpenClawChannelAccountRecord]
+    ) {
+        guard var project = currentProject else { return }
+
+        project.openClaw.runtimeConfigurations = records
+        project.openClaw.availableChannelAccounts = availableChannelAccounts
+        project.openClaw.lastSyncedAt = Date()
+        project.updatedAt = Date()
+        currentProject = project
+
+        openClawManager.runtimeConfigurations = records
+        openClawManager.availableChannelAccounts = availableChannelAccounts
+        objectWillChange.send()
+    }
+
+    func refreshRuntimeConfigurationInventory(
+        completion: @escaping (Bool, String, [AgentRuntimeConfigurationRecord], [OpenClawChannelAccountRecord]) -> Void
+    ) {
+        guard let project = currentProject else {
+            completion(false, "请先创建或打开项目。", [], [])
+            return
+        }
+
+        openClawManager.loadRuntimeConfigurationInventory(for: project) { [weak self] success, message, records, channelAccounts in
+            guard let self else { return }
+            if success {
+                self.replaceRuntimeConfigurationInventory(records, availableChannelAccounts: channelAccounts)
+            }
+            completion(success, message, records, channelAccounts)
+        }
+    }
+
+    func applyRuntimeConfiguration(
+        for agentID: UUID,
+        completion: @escaping (Bool, String, AgentRuntimeConfigurationRecord?) -> Void
+    ) {
+        guard let project = currentProject,
+              let agent = project.agents.first(where: { $0.id == agentID }),
+              let configuration = runtimeConfiguration(for: agentID) else {
+            completion(false, "未找到需要应用的 Agent 运行时配置。", nil)
+            return
+        }
+
+        openClawManager.applyRuntimeConfiguration(configuration, for: agent, in: project) { [weak self] success, message, refreshedRecord in
+            guard let self else { return }
+            if success, let refreshedRecord {
+                self.upsertRuntimeConfiguration(refreshedRecord)
+            }
+            completion(success, message, refreshedRecord)
+        }
+    }
+
+    func runtimePreparationState(for agentID: UUID) -> AgentRuntimePreparationState? {
+        guard let project = currentProject,
+              let agent = project.agents.first(where: { $0.id == agentID }) else {
+            return nil
+        }
+
+        let nodeID = nodeBinding(for: agentID, in: project)?.nodeID
+        let runtimeConfiguration = runtimeConfiguration(for: agentID)
+        let managedPath = runtimeConfiguration?.resolvedManagedPath
+            ?? managedNodeOpenClawWorkspaceURL(for: agent, in: project)?.path
+
+        return AgentRuntimePreparationState(
+            agentID: agentID,
+            nodeID: nodeID,
+            isConnected: openClawManager.isConnected,
+            isAttachedToCurrentProject: isCurrentProjectAttachedToOpenClaw,
+            isMirrorPrepared: openClawManager.sessionLifecycle.stage != .inactive,
+            isMirrorSynchronized: openClawManager.sessionLifecycle.stage == .synced,
+            managedPath: managedPath
+        )
     }
 
     private func resolveAgentSoulFileURL(for agent: Agent) -> URL? {

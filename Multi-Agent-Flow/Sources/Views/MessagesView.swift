@@ -23,15 +23,40 @@ struct WorkbenchConversationView: View {
     @State private var prompt = ""
     @State private var errorText: String?
     @State private var pendingAutoScrollWorkItem: DispatchWorkItem?
+    @State private var availableModels: [String] = []
+    @State private var runtimeConfigDrafts: [UUID: AgentRuntimeConfigurationRecord] = [:]
+    @State private var runtimeInventoryRecords: [UUID: AgentRuntimeConfigurationRecord] = [:]
+    @State private var runtimeConfigMessage: String?
+    @State private var runtimeConfigTone: WorkbenchRuntimeConfigTone = .neutral
+    @State private var isRefreshingRuntimeConfigurations = false
+    @State private var applyingRuntimeConfigurationAgentID: UUID?
+    @State private var manualChannelDrafts: [UUID: String] = [:]
+    @State private var manualAccountDrafts: [UUID: String] = [:]
 
     private var project: MAProject? { appState.currentProject }
     private var workflows: [Workflow] { project?.workflows ?? [] }
+    private var availableChannelAccounts: [OpenClawChannelAccountRecord] {
+        project?.openClaw.availableChannelAccounts ?? appState.openClawManager.availableChannelAccounts
+    }
 
     private var selectedWorkflow: Workflow? {
         if let selectedWorkflowID {
             return workflows.first { $0.id == selectedWorkflowID }
         }
         return workflows.first
+    }
+
+    private var workflowAgents: [Agent] {
+        guard let selectedWorkflow, let project else { return [] }
+
+        var seen = Set<UUID>()
+        return selectedWorkflow.nodes
+            .filter { $0.type == .agent }
+            .compactMap(\.agentID)
+            .filter { seen.insert($0).inserted }
+            .compactMap { agentID in
+                project.agents.first(where: { $0.id == agentID })
+            }
     }
 
     private var isWorkbenchRuntimeAvailable: Bool {
@@ -213,6 +238,7 @@ struct WorkbenchConversationView: View {
                 selectedWorkflowID = workflows.first?.id
             }
             appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+            refreshRuntimeConfigurationDataIfNeeded()
         }
         .onChange(of: workflows.map(\.id)) { _, newValue in
             guard let firstID = newValue.first else { return }
@@ -220,13 +246,21 @@ struct WorkbenchConversationView: View {
                 selectedWorkflowID = firstID
             }
             appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+            refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: selectedWorkflowID) { _, newValue in
             appState.refreshWorkbenchHistory(for: newValue)
+            refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: appState.openClawManager.canReadSessionHistory) { _, canReadSessionHistory in
             guard canReadSessionHistory else { return }
             appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+        }
+        .onChange(of: appState.openClawManager.isConnected) { _, _ in
+            refreshRuntimeConfigurationDataIfNeeded(force: true)
+        }
+        .onChange(of: appState.currentProject?.id) { _, _ in
+            refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: dashboardLayout) { _, newValue in
             if newValue != .dashboardOnly {
@@ -245,6 +279,10 @@ struct WorkbenchConversationView: View {
                 openClawBanner
                 Divider()
             }
+
+            runtimeConfigurationPanel
+
+            Divider()
 
             workbenchAndDashboardPane
         }
@@ -339,6 +377,242 @@ struct WorkbenchConversationView: View {
         }
         .padding()
         .background(Color.orange.opacity(0.08))
+    }
+
+    private var runtimeConfigurationPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("运行时配置")
+                        .font(.headline)
+                    Text("工作台负责为节点对应的 Agent 配置模型与 channel，编辑器不再承担这部分配置。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if isRefreshingRuntimeConfigurations {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Button("刷新运行时") {
+                    refreshRuntimeConfigurationDataIfNeeded(force: true)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isRefreshingRuntimeConfigurations || project == nil)
+            }
+
+            HStack(spacing: 8) {
+                statusBadge(
+                    title: appState.openClawManager.isConnected ? "OpenClaw 已连接" : "OpenClaw 未连接",
+                    color: appState.openClawManager.isConnected ? .green : .red
+                )
+                statusBadge(
+                    title: appState.isCurrentProjectAttachedToOpenClaw ? "当前项目已附着" : "当前项目未附着",
+                    color: appState.isCurrentProjectAttachedToOpenClaw ? .green : .orange
+                )
+                statusBadge(
+                    title: appState.openClawManager.sessionLifecycle.stage == .inactive ? "镜像未就绪" : "镜像已准备",
+                    color: appState.openClawManager.sessionLifecycle.stage == .inactive ? .orange : .green
+                )
+                statusBadge(
+                    title: appState.openClawManager.sessionLifecycle.stage == .synced ? "会话已同步" : "会话待同步",
+                    color: appState.openClawManager.sessionLifecycle.stage == .synced ? .green : .orange
+                )
+            }
+
+            if let runtimeConfigMessage {
+                Text(runtimeConfigMessage)
+                    .font(.caption)
+                    .foregroundColor(runtimeConfigTone.color)
+            }
+
+            if appState.openClawManager.config.deploymentKind == .remoteServer {
+                Text("当前是远程网关模式。按照现阶段 OpenClaw 能力，这里暂不支持直接读取或写回 Agent 的 channel 绑定。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else if workflowAgents.isEmpty {
+                Text("当前工作流还没有可配置的 Agent 节点。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(workflowAgents) { agent in
+                            runtimeConfigurationCard(for: agent)
+                        }
+                    }
+                }
+                .frame(minHeight: 140, maxHeight: 320)
+            }
+        }
+        .padding()
+        .background(Color(.controlBackgroundColor).opacity(0.6))
+    }
+
+    @ViewBuilder
+    private func runtimeConfigurationCard(for agent: Agent) -> some View {
+        let preparation = appState.runtimePreparationState(for: agent.id)
+        let draft = runtimeConfigDrafts[agent.id] ?? appState.runtimeConfiguration(for: agent.id)
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(agent.name)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text(preparation?.managedPath ?? "尚未解析到受管路径")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                Spacer()
+
+                if let preparation {
+                    statusBadge(
+                        title: preparation.canConfigure ? "可配置" : "待准备",
+                        color: preparation.canConfigure ? .green : .orange
+                    )
+                }
+
+                Button("采用现状") {
+                    adoptRuntimeInventory(for: agent.id)
+                }
+                .buttonStyle(.bordered)
+                .disabled(runtimeInventoryRecords[agent.id] == nil)
+
+                Button(applyingRuntimeConfigurationAgentID == agent.id ? "应用中…" : "应用到 OpenClaw") {
+                    applyRuntimeConfiguration(for: agent.id)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(applyingRuntimeConfigurationAgentID != nil || !(preparation?.canConfigure ?? false))
+            }
+
+            if let preparation, !preparation.canConfigure {
+                Text(runtimePreparationHint(for: preparation))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if let draft {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("模型")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    TextField("输入模型标识", text: modelBinding(for: agent.id, fallback: draft))
+                        .textFieldStyle(.roundedBorder)
+
+                    if !availableModels.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(modelSuggestions(for: draft), id: \.self) { model in
+                                    Button(model) {
+                                        var updated = draft
+                                        updated.modelIdentifier = model
+                                        persistRuntimeDraft(updated)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Toggle("连接 channel", isOn: channelEnabledBinding(for: agent.id, fallback: draft))
+
+                if draft.channelEnabled {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("已选 channel")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        if draft.bindings.isEmpty {
+                            Text("当前还没有绑定。可以直接选择 OpenClaw 已发现的 channel/account，也可以手动新增。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            FlowLayout(spacing: 6) {
+                                ForEach(draft.bindings) { binding in
+                                    HStack(spacing: 6) {
+                                        Text("\(binding.channelID):\(binding.accountID)")
+                                            .font(.caption)
+                                        Button(action: {
+                                            removeBinding(binding, for: agent.id)
+                                        }) {
+                                            Image(systemName: "xmark.circle.fill")
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .clipShape(Capsule())
+                                }
+                            }
+                        }
+
+                        if !availableChannelAccounts.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("OpenClaw 已发现的可选项")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                ForEach(availableChannelAccounts) { account in
+                                    Button(action: {
+                                        toggleChannelAccount(account, for: agent.id)
+                                    }) {
+                                        HStack {
+                                            Image(systemName: isBindingSelected(account, for: draft) ? "checkmark.circle.fill" : "circle")
+                                            Text(account.displayName)
+                                                .lineLimit(1)
+                                            Spacer()
+                                            if account.isDefaultAccount {
+                                                Text("default")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+
+                        HStack {
+                            TextField(
+                                "手动输入 channel",
+                                text: Binding(
+                                    get: { manualChannelDrafts[agent.id] ?? "" },
+                                    set: { manualChannelDrafts[agent.id] = $0 }
+                                )
+                            )
+                            .textFieldStyle(.roundedBorder)
+
+                            TextField(
+                                "account，留空则为 default",
+                                text: Binding(
+                                    get: { manualAccountDrafts[agent.id] ?? "" },
+                                    set: { manualAccountDrafts[agent.id] = $0 }
+                                )
+                            )
+                            .textFieldStyle(.roundedBorder)
+
+                            Button("新增绑定") {
+                                addManualBinding(for: agent.id)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     @ViewBuilder
@@ -704,6 +978,189 @@ struct WorkbenchConversationView: View {
     private func shrinkDashboard() {
         dashboardLayout = lastCombinedLayout
     }
+
+    private func refreshRuntimeConfigurationDataIfNeeded(force: Bool = false) {
+        guard project != nil, appState.openClawManager.config.deploymentKind != .remoteServer else {
+            return
+        }
+
+        isRefreshingRuntimeConfigurations = true
+
+        appState.openClawManager.loadAvailableModels { success, _, models in
+            availableModels = success ? models : []
+        }
+
+        appState.refreshRuntimeConfigurationInventory { success, message, records, _ in
+            isRefreshingRuntimeConfigurations = false
+            runtimeConfigMessage = message
+            runtimeConfigTone = success ? .success : .error
+
+            guard success else { return }
+
+            let inventory = Dictionary(uniqueKeysWithValues: records.map { ($0.agentID, $0) })
+            runtimeInventoryRecords = inventory
+
+            if force || runtimeConfigDrafts.isEmpty {
+                runtimeConfigDrafts = inventory
+            } else {
+                for record in records {
+                    if runtimeConfigDrafts[record.agentID] == nil {
+                        runtimeConfigDrafts[record.agentID] = record
+                    }
+                }
+            }
+        }
+    }
+
+    private func persistRuntimeDraft(_ record: AgentRuntimeConfigurationRecord) {
+        runtimeConfigDrafts[record.agentID] = record
+        appState.upsertRuntimeConfiguration(record)
+    }
+
+    private func adoptRuntimeInventory(for agentID: UUID) {
+        guard let inventoryRecord = runtimeInventoryRecords[agentID] else { return }
+        persistRuntimeDraft(inventoryRecord)
+        runtimeConfigMessage = "已采用运行时现状作为当前 Agent 的配置草稿。"
+        runtimeConfigTone = .success
+    }
+
+    private func applyRuntimeConfiguration(for agentID: UUID) {
+        applyingRuntimeConfigurationAgentID = agentID
+        runtimeConfigMessage = nil
+
+        if let draft = runtimeConfigDrafts[agentID] {
+            persistRuntimeDraft(draft)
+        }
+
+        appState.applyRuntimeConfiguration(for: agentID) { success, message, refreshedRecord in
+            applyingRuntimeConfigurationAgentID = nil
+            runtimeConfigMessage = message
+            runtimeConfigTone = success ? .success : .error
+
+            if let refreshedRecord {
+                runtimeConfigDrafts[agentID] = refreshedRecord
+                runtimeInventoryRecords[agentID] = refreshedRecord
+            }
+
+            if success {
+                refreshRuntimeConfigurationDataIfNeeded(force: true)
+            }
+        }
+    }
+
+    private func runtimePreparationHint(for state: AppState.AgentRuntimePreparationState) -> String {
+        if !state.isConnected {
+            return "需要先连接 OpenClaw。"
+        }
+        if !state.isAttachedToCurrentProject {
+            return "需要先把当前项目附着到 OpenClaw 会话。"
+        }
+        if !state.isMirrorPrepared {
+            return "需要先完成项目镜像准备，再开始配置。"
+        }
+        if !state.hasManagedPath {
+            return "当前节点还没有解析到受管路径，暂时不能可靠地下发模型与 channel 配置。"
+        }
+        return "当前配置仍待准备。"
+    }
+
+    private func modelBinding(for agentID: UUID, fallback draft: AgentRuntimeConfigurationRecord) -> Binding<String> {
+        Binding(
+            get: { runtimeConfigDrafts[agentID]?.modelIdentifier ?? draft.modelIdentifier },
+            set: { newValue in
+                var updated = runtimeConfigDrafts[agentID] ?? draft
+                updated.modelIdentifier = newValue
+                updated.source = .manualOverride
+                updated.isStale = false
+                persistRuntimeDraft(updated)
+            }
+        )
+    }
+
+    private func channelEnabledBinding(for agentID: UUID, fallback draft: AgentRuntimeConfigurationRecord) -> Binding<Bool> {
+        Binding(
+            get: { runtimeConfigDrafts[agentID]?.channelEnabled ?? draft.channelEnabled },
+            set: { newValue in
+                var updated = runtimeConfigDrafts[agentID] ?? draft
+                updated.channelEnabled = newValue
+                if !newValue {
+                    updated.bindings = []
+                }
+                updated.source = .manualOverride
+                updated.isStale = false
+                persistRuntimeDraft(updated)
+            }
+        )
+    }
+
+    private func modelSuggestions(for draft: AgentRuntimeConfigurationRecord) -> [String] {
+        var suggestions: [String] = []
+        let current = draft.modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !current.isEmpty {
+            suggestions.append(current)
+        }
+        suggestions.append(contentsOf: availableModels)
+
+        var seen = Set<String>()
+        return suggestions.filter { model in
+            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && seen.insert(trimmed).inserted
+        }
+    }
+
+    private func toggleChannelAccount(_ account: OpenClawChannelAccountRecord, for agentID: UUID) {
+        guard let draft = runtimeConfigDrafts[agentID] ?? appState.runtimeConfiguration(for: agentID) else { return }
+        let binding = AgentRuntimeChannelBinding(channelID: account.channelID, accountID: account.accountID)
+        let exists = draft.bindings.contains(binding)
+
+        var updated = draft
+        if exists {
+            updated.bindings.removeAll { $0 == binding }
+        } else {
+            updated.bindings.append(binding)
+        }
+        updated.channelEnabled = true
+        updated.source = .manualOverride
+        updated.isStale = false
+        persistRuntimeDraft(updated)
+    }
+
+    private func removeBinding(_ binding: AgentRuntimeChannelBinding, for agentID: UUID) {
+        guard let draft = runtimeConfigDrafts[agentID] ?? appState.runtimeConfiguration(for: agentID) else { return }
+        var updated = draft
+        updated.bindings.removeAll { $0 == binding }
+        updated.source = .manualOverride
+        updated.isStale = false
+        persistRuntimeDraft(updated)
+    }
+
+    private func addManualBinding(for agentID: UUID) {
+        guard let draft = runtimeConfigDrafts[agentID] ?? appState.runtimeConfiguration(for: agentID) else { return }
+        let channelID = (manualChannelDrafts[agentID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !channelID.isEmpty else { return }
+        let accountID = (manualAccountDrafts[agentID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let binding = AgentRuntimeChannelBinding(
+            channelID: channelID,
+            accountID: accountID.isEmpty ? "default" : accountID
+        )
+
+        var updated = draft
+        if !updated.bindings.contains(binding) {
+            updated.bindings.append(binding)
+        }
+        updated.channelEnabled = true
+        updated.source = .manualOverride
+        updated.isStale = false
+        persistRuntimeDraft(updated)
+
+        manualChannelDrafts[agentID] = ""
+        manualAccountDrafts[agentID] = ""
+    }
+
+    private func isBindingSelected(_ account: OpenClawChannelAccountRecord, for draft: AgentRuntimeConfigurationRecord) -> Bool {
+        let binding = AgentRuntimeChannelBinding(channelID: account.channelID, accountID: account.accountID)
+        return draft.bindings.contains(binding)
+    }
 }
 
 private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
@@ -721,6 +1178,23 @@ private enum WorkbenchDashboardLayout: String, CaseIterable, Identifiable {
             return LocalizedString.text("layout_top_bottom")
         case .dashboardOnly:
             return LocalizedString.text("layout_dashboard_only")
+        }
+    }
+}
+
+private enum WorkbenchRuntimeConfigTone {
+    case success
+    case error
+    case neutral
+
+    var color: Color {
+        switch self {
+        case .success:
+            return .green
+        case .error:
+            return .red
+        case .neutral:
+            return .secondary
         }
     }
 }
