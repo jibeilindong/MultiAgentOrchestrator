@@ -38,7 +38,7 @@ struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
     var lastMessage: String?
     var lastError: String?
 
-    init(
+    nonisolated init(
         state: OpenClawManagedRuntimeSupervisorState = .idle,
         launchStrategy: OpenClawManagedRuntimeLaunchStrategy? = nil,
         runtimeRootPath: String? = nil,
@@ -73,7 +73,7 @@ struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
     }
 }
 
-final class OpenClawManagedRuntimeSupervisor {
+nonisolated final class OpenClawManagedRuntimeSupervisor {
     private struct PersistedProcessState: Codable {
         var pid: Int32
         var port: Int

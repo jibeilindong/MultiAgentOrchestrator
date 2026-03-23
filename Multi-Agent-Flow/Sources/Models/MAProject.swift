@@ -979,17 +979,20 @@ struct ProjectOpenClawControlPlaneSnapshot: Codable, Hashable {
     var entries: [ProjectOpenClawControlPlaneEntrySnapshot]
     var highlightedGate: ProjectOpenClawControlPlaneGate?
     var summary: String?
+    var secondarySummary: String?
     var updatedAt: Date
 
     init(
         entries: [ProjectOpenClawControlPlaneEntrySnapshot] = [],
         highlightedGate: ProjectOpenClawControlPlaneGate? = nil,
         summary: String? = nil,
+        secondarySummary: String? = nil,
         updatedAt: Date = Date()
     ) {
         self.entries = entries
         self.highlightedGate = highlightedGate
         self.summary = summary
+        self.secondarySummary = secondarySummary
         self.updatedAt = updatedAt
     }
 }

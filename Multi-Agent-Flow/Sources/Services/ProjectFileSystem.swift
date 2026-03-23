@@ -3039,6 +3039,22 @@ struct ProjectFileSystem {
                 (entry.gate.rawValue, entry.status.rawValue)
             }
         )
+        var capabilitySnapshot: [String: String] = [
+            "deploymentKind": project.openClaw.config.deploymentKind.rawValue,
+            "runtimeOwnership": project.openClaw.config.runtimeOwnership.rawValue,
+            "probeGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.probe.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
+            "bindGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.bind.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
+            "publishGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.publish.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
+            "executeGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.execute.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue
+        ]
+        if let summary = project.openClaw.controlPlane.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty {
+            capabilitySnapshot["controlPlaneSummary"] = summary
+        }
+        if let secondarySummary = project.openClaw.controlPlane.secondarySummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !secondarySummary.isEmpty {
+            capabilitySnapshot["controlPlaneSecondarySummary"] = secondarySummary
+        }
 
         return RuntimeTransportPlanDocument(
             sessionID: sessionID,
@@ -3049,14 +3065,7 @@ struct ProjectFileSystem {
             preferredTransport: preferredTransport,
             actualTransport: dominantActualTransport,
             actualTransportKinds: actualTransportKinds,
-            capabilitySnapshot: [
-                "deploymentKind": project.openClaw.config.deploymentKind.rawValue,
-                "runtimeOwnership": project.openClaw.config.runtimeOwnership.rawValue,
-                "probeGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.probe.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
-                "bindGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.bind.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
-                "publishGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.publish.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
-                "executeGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.execute.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue
-            ],
+            capabilitySnapshot: capabilitySnapshot,
             fallbackReason: fallbackReason,
             degradationReason: degradationReason,
             generatedAt: Date()

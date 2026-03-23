@@ -1590,10 +1590,11 @@ struct MonitoringDashboardView: View {
         }
     }
     private var openClawOverviewDetailText: String {
+        let base = "\(appState.openClawManager.config.deploymentSummary) • \(appState.openClawRuntimeControlPlaneBadgeTitle) • \(appState.openClawAttachmentStatusTitle)"
         if let revisionSummary = appState.openClawRevisionSummary {
-            return "\(appState.openClawManager.config.deploymentSummary) • \(appState.openClawAttachmentStatusTitle) • \(revisionSummary)"
+            return "\(base) • \(revisionSummary)"
         }
-        return "\(appState.openClawManager.config.deploymentSummary) • \(appState.openClawAttachmentStatusTitle)"
+        return base
     }
     private var openClawOverviewCardColor: Color {
         switch appState.currentProjectOpenClawAttachmentState {
@@ -2991,6 +2992,18 @@ struct MonitoringDashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(LocalizedString.text("intervention_actions"))
                 .font(.headline)
+
+            Text(appState.openClawRuntimeControlPlaneSummary)
+                .font(.footnote.weight(.medium))
+                .foregroundColor(appState.openClawRuntimeControlPlaneBadgeColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let secondarySummary = appState.openClawRuntimeControlPlaneSecondarySummary {
+                Text(secondarySummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Text(appState.openClawAttachmentStatusDetail)
                 .font(.footnote)

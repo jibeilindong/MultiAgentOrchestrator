@@ -655,6 +655,37 @@ private struct WorkbenchSubmissionSession {
     let userRuntimeEventID: String?
 }
 
+private struct WorkbenchSubmissionRouting {
+    let entryAgentNodes: [WorkflowNode]
+    let leadNode: WorkflowNode
+    let leadAgent: Agent
+    let entryAgentIDs: Set<UUID>
+}
+
+private struct WorkbenchRecordQuery {
+    let workflowID: UUID
+    let threadID: String?
+    let requiresWorkbenchChannel: Bool
+
+    func matches(metadata: [String: String]) -> Bool {
+        if requiresWorkbenchChannel,
+           metadata[WorkbenchMetadataKey.channel] != "workbench" {
+            return false
+        }
+
+        guard metadata[WorkbenchMetadataKey.workflowID] == workflowID.uuidString else {
+            return false
+        }
+
+        return threadID == nil || resolvedWorkbenchThreadID(from: metadata) == threadID
+    }
+}
+
+private struct WorkbenchThreadHistory {
+    let messages: [Message]
+    let tasks: [Task]
+}
+
 class AppState: ObservableObject {
     enum DraftSaveKind {
         case automatic
@@ -1141,12 +1172,12 @@ class AppState: ObservableObject {
         } else if isApplyingWorkflowConfiguration {
             publishStatus = .active
             publishDetail = "正在准备项目镜像，随后可继续执行 Publish。"
-        } else if isCurrentProjectRuntimeSessionSynchronized {
-            publishStatus = .ready
-            publishDetail = "当前项目镜像已经发布到运行时会话。"
         } else if let blockingMessage = openClawRunControlledBlockingMessage {
             publishStatus = .pending
             publishDetail = blockingMessage
+        } else if isCurrentProjectRuntimeSessionSynchronized {
+            publishStatus = .ready
+            publishDetail = "当前项目镜像已经发布到运行时会话。"
         } else if hasPendingOpenClawSessionSync {
             publishStatus = .pending
             publishDetail = "项目镜像已经准备完成，但仍有待发布的运行时修订。"
@@ -1205,7 +1236,34 @@ class AppState: ObservableObject {
     }
 
     var openClawRuntimeControlPlaneSummary: String {
-        currentOpenClawRuntimeControlPlaneEntry.detail
+        let currentEntry = currentOpenClawRuntimeControlPlaneEntry
+        if currentEntry.gate == .publish,
+           let executeEntry = openClawRuntimeControlPlane.first(where: { $0.gate == .execute }),
+           executeEntry.status == .ready,
+           executeEntry.detail != currentEntry.detail {
+            return executeEntry.detail
+        }
+        return currentEntry.detail
+    }
+
+    var openClawRuntimeControlPlaneSecondarySummary: String? {
+        let primary = openClawRuntimeControlPlaneSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let blockingMessage = openClawRunControlledBlockingMessage?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !blockingMessage.isEmpty,
+           blockingMessage != primary {
+            return blockingMessage
+        }
+
+        if let compactDiagnostic = openClawLatestRuntimeSyncCompactDiagnostic?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !compactDiagnostic.isEmpty,
+           compactDiagnostic != primary {
+            return compactDiagnostic
+        }
+
+        return nil
     }
 
     private func projectedOpenClawSnapshot() -> ProjectOpenClawSnapshot {
@@ -1231,6 +1289,7 @@ class AppState: ObservableObject {
             entries: entries,
             highlightedGate: highlightedGate,
             summary: openClawRuntimeControlPlaneSummary,
+            secondarySummary: openClawRuntimeControlPlaneSecondarySummary,
             updatedAt: Date()
         )
     }
@@ -5326,42 +5385,12 @@ class AppState: ObservableObject {
             return nil
         }
 
-        let canRunWorkbenchMode = mode == .chat
-            ? openClawManager.canRunConversation
-            : openClawManager.canRunWorkflow
-        guard canRunWorkbenchMode else {
-            let detail = openClawManager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let message = detail?.isEmpty == false
-                ? "Workbench publish failed: \(detail!)"
-                : "Workbench publish failed: OpenClaw runtime is not runnable for workbench \(mode.rawValue)."
-            openClawService.addLog(
-                .error,
-                message
-            )
+        guard validateWorkbenchSubmissionAvailability(for: mode),
+              let routing = resolveWorkbenchSubmissionRouting(
+                workflow: workflow,
+                project: project
+              ) else {
             return nil
-        }
-
-        let entryAgentNodes = entryConnectedAgentNodes(in: workflow)
-        guard let leadNode = entryAgentNodes.first,
-              let leadAgentID = leadNode.agentID,
-              let leadAgent = project.agents.first(where: { $0.id == leadAgentID }) else {
-            openClawService.addLog(
-                .error,
-                "Workbench publish failed: no agent is connected to the workflow entry(start) node."
-            )
-            return nil
-        }
-
-        let entryAgentIDs = Set(entryAgentNodes.compactMap(\.agentID))
-        let entryAgentNames = project.agents
-            .filter { entryAgentIDs.contains($0.id) }
-            .map(\.name)
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        if !entryAgentNames.isEmpty {
-            openClawService.addLog(
-                .info,
-                "Workbench entry routing: prompt will be delivered to entry-connected agent(s): \(entryAgentNames.joined(separator: ", "))"
-            )
         }
 
         if mode == .run {
@@ -5369,109 +5398,47 @@ class AppState: ObservableObject {
                 trimmedPrompt,
                 workflow: workflow,
                 project: project,
-                leadNode: leadNode,
-                leadAgent: leadAgent,
-                entryAgentIDs: entryAgentIDs,
+                routing: routing,
                 preferredThreadID: preferredThreadID
             )
         }
 
-        let threadContext = makeWorkbenchSubmissionContext(
+        return submitWorkbenchChatPrompt(
+            trimmedPrompt,
             workflow: workflow,
-            leadAgent: leadAgent,
-            interactionMode: mode,
             project: project,
+            routing: routing,
             preferredThreadID: preferredThreadID
         )
+    }
 
-        let beginWorkbenchExecution: () -> Void = { [weak self] in
-            guard let self else { return }
-            let workbenchThinkingLevel = self.workbenchThinkingLevel(for: trimmedPrompt)
-            let session = self.beginWorkbenchSubmissionSession(
-                prompt: trimmedPrompt,
-                workflow: workflow,
-                leadNode: leadNode,
-                leadAgent: leadAgent,
-                entryAgentIDs: entryAgentIDs,
-                threadContext: threadContext,
-                interactionMode: .chat,
-                thinkingLevel: workbenchThinkingLevel,
-            )
-
-            let otherEntryNodes = entryAgentNodes.filter { $0.id != leadNode.id }
-            let replyTracker = self.makeWorkbenchEntryReplyTracker(
-                workflowID: workflow.id,
-                taskID: session.taskID,
-                agent: leadAgent,
-                context: session.context,
-                thinkingLevel: workbenchThinkingLevel
-            )
-
-            self.prepareWorkbenchEntryExecution(
-                leadNodeID: leadNode.id,
-                totalSteps: max(entryAgentNodes.count, 1),
-                sessionID: session.context.sessionID,
-                agent: leadAgent,
-                thinkingLevel: workbenchThinkingLevel
-            )
-
-            self.openClawService.executeWorkbenchEntryNode(
-                node: leadNode,
-                workflow: workflow,
-                agents: project.agents,
-                prompt: trimmedPrompt,
-                projectID: project.id,
-                sessionID: session.context.sessionID,
-                threadID: session.context.threadID,
-                thinkingLevel: workbenchThinkingLevel,
-                onStream: { [weak self] chunk in
-                    guard let self else { return }
-                    guard !chunk.isEmpty,
-                          !chunk.allSatisfy({ $0.isWhitespace || $0.isNewline }) else { return }
-
-                    self.appendWorkbenchEntryStreamChunk(
-                        chunk,
-                        to: replyTracker,
-                        workflowID: workflow.id,
-                        taskID: session.taskID,
-                        agent: leadAgent,
-                        context: session.context,
-                        thinkingLevel: workbenchThinkingLevel,
-                        startedAt: session.startedAt
-                    )
-                },
-                onDispatched: { [weak self] dispatchEvent in
-                    guard let self else { return }
-                    self.handleWorkbenchDispatchEvent(dispatchEvent)
-                },
-                onAccepted: { [weak self] acceptedEvent in
-                    guard let self else { return }
-                    self.handleWorkbenchAcceptedEvent(acceptedEvent)
-                },
-                onProgress: { [weak self] progressEvent in
-                    guard let self else { return }
-                    self.handleWorkbenchProgressEvent(progressEvent)
-                }
-            ) { [weak self] entryExecution in
-                guard let self else { return }
-                self.handleWorkbenchEntryExecutionCompletion(
-                    entryExecution,
-                    replyTracker: replyTracker,
-                    prompt: trimmedPrompt,
-                    workflow: workflow,
-                    project: project,
-                    leadNode: leadNode,
-                    leadAgent: leadAgent,
-                    otherEntryNodes: otherEntryNodes,
-                    thinkingLevel: workbenchThinkingLevel,
-                    session: session
-                )
-            }
-        }
-
-        beginWorkbenchExecution()
-
-        return threadContext.threadID
+    @discardableResult
+    private func submitWorkbenchChatPrompt(
+        _ prompt: String,
+        workflow: Workflow,
+        project: MAProject,
+        routing: WorkbenchSubmissionRouting,
+        preferredThreadID: String?
+    ) -> String? {
+        let workbenchThinkingLevel = workbenchThinkingLevel(for: prompt)
+        let session = prepareWorkbenchSubmission(
+            prompt: prompt,
+            workflow: workflow,
+            project: project,
+            routing: routing,
+            mode: .chat,
+            preferredThreadID: preferredThreadID,
+            thinkingLevel: workbenchThinkingLevel
+        )
+        executeWorkbenchChatEntry(
+            workflow: workflow,
+            project: project,
+            prompt: prompt,
+            routing: routing,
+            session: session,
+            thinkingLevel: workbenchThinkingLevel
+        )
+        return session.context.threadID
     }
 
     @discardableResult
@@ -5479,32 +5446,22 @@ class AppState: ObservableObject {
         _ prompt: String,
         workflow: Workflow,
         project: MAProject,
-        leadNode: WorkflowNode,
-        leadAgent: Agent,
-        entryAgentIDs: Set<UUID>,
+        routing: WorkbenchSubmissionRouting,
         preferredThreadID: String?
     ) -> String? {
-        let threadContext = makeWorkbenchSubmissionContext(
-            workflow: workflow,
-            leadAgent: leadAgent,
-            interactionMode: .run,
-            project: project,
-            preferredThreadID: preferredThreadID
-        )
-        let session = beginWorkbenchSubmissionSession(
+        let session = prepareWorkbenchSubmission(
             prompt: prompt,
             workflow: workflow,
-            leadNode: leadNode,
-            leadAgent: leadAgent,
-            entryAgentIDs: entryAgentIDs,
-            threadContext: threadContext,
-            interactionMode: .run
+            project: project,
+            routing: routing,
+            mode: .run,
+            preferredThreadID: preferredThreadID
         )
         let statusMessageID = beginWorkbenchRunExecution(
             workflowID: workflow.id,
             workflowName: workflow.name,
             taskID: session.taskID,
-            agent: leadAgent,
+            agent: routing.leadAgent,
             context: session.context
         )
 
@@ -5524,7 +5481,7 @@ class AppState: ObservableObject {
                 prompt: prompt,
                 statusMessageID: statusMessageID,
                 workflowID: workflow.id,
-                agent: leadAgent,
+                agent: routing.leadAgent,
                 context: session.context,
                 startedAt: session.startedAt,
                 completedAt: completedAt,
@@ -6083,48 +6040,67 @@ class AppState: ObservableObject {
             return []
         }
 
-        var threadContextSamples: [String: [WorkbenchThreadContextSample]] = [:]
-        var threadMessages: [String: [Message]] = [:]
-        var threadTasks: [String: [Task]] = [:]
-        let activeRunsByThreadID = project.runtimeState.activeWorkbenchRuns.reduce(into: [String: WorkbenchActiveRunRecord]()) {
-            $0[$1.threadID] = $1
-        }
-        let threadStateRecordsByThreadID = project.runtimeState.workbenchThreadStates.reduce(into: [String: WorkbenchThreadStateRecord]()) {
-            $0[$1.threadID] = $1
-        }
+        let history = workbenchThreadHistory(for: workflow.id)
 
-        for message in workbenchMessages(for: workflow.id) {
-            guard let threadID = resolvedWorkbenchThreadID(from: message.metadata) else { continue }
-            threadMessages[threadID, default: []].append(message)
-            if let context = workbenchThreadContext(for: message, workflow: workflow, project: project) {
-                threadContextSamples[threadID, default: []].append(
-                    WorkbenchThreadContextSample(context: context, activityAt: message.timestamp)
+        let summaryCollections = workbenchThreadStateCoordinator.collectSummaryCollections(
+            messageRecords: history.messages.compactMap { message in
+                makeWorkbenchThreadSummaryMessageRecord(
+                    message,
+                    workflow: workflow,
+                    project: project
+                )
+            },
+            taskRecords: history.tasks.compactMap { task in
+                makeWorkbenchThreadSummaryTaskRecord(
+                    task,
+                    workflow: workflow,
+                    project: project
                 )
             }
-        }
-
-        for task in workbenchTasks(for: workflow.id) {
-            guard let threadID = resolvedWorkbenchThreadID(from: task.metadata) else { continue }
-            threadTasks[threadID, default: []].append(task)
-            if let context = workbenchThreadContext(for: task, workflow: workflow, project: project) {
-                threadContextSamples[threadID, default: []].append(
-                    WorkbenchThreadContextSample(
-                        context: context,
-                        activityAt: task.completedAt ?? task.startedAt ?? task.createdAt
-                    )
-                )
-            }
-        }
+        )
 
         return workbenchThreadStateCoordinator.summarizeThreads(
             workflowID: workflow.id,
-            threadMessages: threadMessages,
-            threadTasks: threadTasks,
-            threadContextSamples: threadContextSamples,
-            activeRunsByThreadID: activeRunsByThreadID,
-            threadStateRecordsByThreadID: threadStateRecordsByThreadID
+            summaryCollections: summaryCollections,
+            activeRunRecords: project.runtimeState.activeWorkbenchRuns,
+            threadStateRecords: project.runtimeState.workbenchThreadStates
         )
         .map(WorkbenchThreadSummary.init)
+    }
+
+    private func makeWorkbenchThreadSummaryMessageRecord(
+        _ message: Message,
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchThreadSummaryMessageRecord? {
+        guard let threadID = resolvedWorkbenchThreadID(from: message.metadata) else { return nil }
+        let contextSample = workbenchThreadContext(for: message, workflow: workflow, project: project).map {
+            WorkbenchThreadContextSample(context: $0, activityAt: message.timestamp)
+        }
+        return WorkbenchThreadSummaryMessageRecord(
+            threadID: threadID,
+            message: message,
+            contextSample: contextSample
+        )
+    }
+
+    private func makeWorkbenchThreadSummaryTaskRecord(
+        _ task: Task,
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchThreadSummaryTaskRecord? {
+        guard let threadID = resolvedWorkbenchThreadID(from: task.metadata) else { return nil }
+        let contextSample = workbenchThreadContext(for: task, workflow: workflow, project: project).map {
+            WorkbenchThreadContextSample(
+                context: $0,
+                activityAt: task.completedAt ?? task.startedAt ?? task.createdAt
+            )
+        }
+        return WorkbenchThreadSummaryTaskRecord(
+            threadID: threadID,
+            task: task,
+            contextSample: contextSample
+        )
     }
 
     private func transitionWorkbenchThread(
@@ -6279,6 +6255,89 @@ class AppState: ObservableObject {
             projectSessionID: project.runtimeState.sessionID,
             project: project,
             reuseExistingThreadID: preferredThreadID
+        )
+    }
+
+    private func validateWorkbenchSubmissionAvailability(
+        for mode: WorkbenchInteractionMode
+    ) -> Bool {
+        let canRunWorkbenchMode = mode == .chat
+            ? openClawManager.canRunConversation
+            : openClawManager.canRunWorkflow
+        guard canRunWorkbenchMode else {
+            let detail = openClawManager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail?.isEmpty == false
+                ? "Workbench publish failed: \(detail!)"
+                : "Workbench publish failed: OpenClaw runtime is not runnable for workbench \(mode.rawValue)."
+            openClawService.addLog(.error, message)
+            return false
+        }
+
+        return true
+    }
+
+    private func resolveWorkbenchSubmissionRouting(
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchSubmissionRouting? {
+        let entryAgentNodes = entryConnectedAgentNodes(in: workflow)
+        guard let leadNode = entryAgentNodes.first,
+              let leadAgentID = leadNode.agentID,
+              let leadAgent = project.agents.first(where: { $0.id == leadAgentID }) else {
+            openClawService.addLog(
+                .error,
+                "Workbench publish failed: no agent is connected to the workflow entry(start) node."
+            )
+            return nil
+        }
+
+        let entryAgentIDs = Set(entryAgentNodes.compactMap(\.agentID))
+        let entryAgentNames = project.agents
+            .filter { entryAgentIDs.contains($0.id) }
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        if !entryAgentNames.isEmpty {
+            openClawService.addLog(
+                .info,
+                "Workbench entry routing: prompt will be delivered to entry-connected agent(s): \(entryAgentNames.joined(separator: ", "))"
+            )
+        }
+
+        return WorkbenchSubmissionRouting(
+            entryAgentNodes: entryAgentNodes,
+            leadNode: leadNode,
+            leadAgent: leadAgent,
+            entryAgentIDs: entryAgentIDs
+        )
+    }
+
+    private func prepareWorkbenchSubmission(
+        prompt: String,
+        workflow: Workflow,
+        project: MAProject,
+        routing: WorkbenchSubmissionRouting,
+        mode: WorkbenchInteractionMode,
+        preferredThreadID: String?,
+        thinkingLevel: AgentThinkingLevel? = nil,
+        at startedAt: Date = Date()
+    ) -> WorkbenchSubmissionSession {
+        let threadContext = makeWorkbenchSubmissionContext(
+            workflow: workflow,
+            leadAgent: routing.leadAgent,
+            interactionMode: mode,
+            project: project,
+            preferredThreadID: preferredThreadID
+        )
+        return beginWorkbenchSubmissionSession(
+            prompt: prompt,
+            workflow: workflow,
+            leadNode: routing.leadNode,
+            leadAgent: routing.leadAgent,
+            entryAgentIDs: routing.entryAgentIDs,
+            threadContext: threadContext,
+            interactionMode: mode,
+            thinkingLevel: thinkingLevel,
+            at: startedAt
         )
     }
 
@@ -6456,6 +6515,85 @@ class AppState: ObservableObject {
         )
     }
 
+    private func executeWorkbenchChatEntry(
+        workflow: Workflow,
+        project: MAProject,
+        prompt: String,
+        routing: WorkbenchSubmissionRouting,
+        session: WorkbenchSubmissionSession,
+        thinkingLevel: AgentThinkingLevel
+    ) {
+        let otherEntryNodes = routing.entryAgentNodes.filter { $0.id != routing.leadNode.id }
+        let replyTracker = makeWorkbenchEntryReplyTracker(
+            workflowID: workflow.id,
+            taskID: session.taskID,
+            agent: routing.leadAgent,
+            context: session.context,
+            thinkingLevel: thinkingLevel
+        )
+
+        prepareWorkbenchEntryExecution(
+            leadNodeID: routing.leadNode.id,
+            totalSteps: max(routing.entryAgentNodes.count, 1),
+            sessionID: session.context.sessionID,
+            agent: routing.leadAgent,
+            thinkingLevel: thinkingLevel
+        )
+
+        openClawService.executeWorkbenchEntryNode(
+            node: routing.leadNode,
+            workflow: workflow,
+            agents: project.agents,
+            prompt: prompt,
+            projectID: project.id,
+            sessionID: session.context.sessionID,
+            threadID: session.context.threadID,
+            thinkingLevel: thinkingLevel,
+            onStream: { [weak self] chunk in
+                guard let self else { return }
+                guard !chunk.isEmpty,
+                      !chunk.allSatisfy({ $0.isWhitespace || $0.isNewline }) else { return }
+
+                self.appendWorkbenchEntryStreamChunk(
+                    chunk,
+                    to: replyTracker,
+                    workflowID: workflow.id,
+                    taskID: session.taskID,
+                    agent: routing.leadAgent,
+                    context: session.context,
+                    thinkingLevel: thinkingLevel,
+                    startedAt: session.startedAt
+                )
+            },
+            onDispatched: { [weak self] dispatchEvent in
+                guard let self else { return }
+                self.handleWorkbenchDispatchEvent(dispatchEvent)
+            },
+            onAccepted: { [weak self] acceptedEvent in
+                guard let self else { return }
+                self.handleWorkbenchAcceptedEvent(acceptedEvent)
+            },
+            onProgress: { [weak self] progressEvent in
+                guard let self else { return }
+                self.handleWorkbenchProgressEvent(progressEvent)
+            }
+        ) { [weak self] entryExecution in
+            guard let self else { return }
+            self.handleWorkbenchEntryExecutionCompletion(
+                entryExecution,
+                replyTracker: replyTracker,
+                prompt: prompt,
+                workflow: workflow,
+                project: project,
+                leadNode: routing.leadNode,
+                leadAgent: routing.leadAgent,
+                otherEntryNodes: otherEntryNodes,
+                thinkingLevel: thinkingLevel,
+                session: session
+            )
+        }
+    }
+
     private func continueWorkbenchExecutionInBackground(
         workflow: Workflow,
         project: MAProject,
@@ -6507,22 +6645,68 @@ class AppState: ObservableObject {
         session: WorkbenchSubmissionSession
     ) {
         let entryResult = entryExecution.result
+        persistAndCompleteWorkbenchEntryReply(
+            entryResult,
+            tracker: replyTracker,
+            workflowID: workflow.id,
+            taskID: session.taskID,
+            leadAgent: leadAgent,
+            session: session,
+            thinkingLevel: thinkingLevel,
+        )
+
+        let backgroundNodes = orderedUniqueWorkflowNodes(otherEntryNodes + entryExecution.downstreamNodes)
+        handleWorkbenchChatEntryDisposition(
+            entryResult: entryResult,
+            backgroundNodes: backgroundNodes,
+            replyTracker: replyTracker,
+            prompt: prompt,
+            workflow: workflow,
+            project: project,
+            leadNode: leadNode,
+            leadAgent: leadAgent,
+            otherEntryNodes: otherEntryNodes,
+            session: session
+        )
+    }
+
+    private func persistAndCompleteWorkbenchEntryReply(
+        _ entryResult: ExecutionResult,
+        tracker: WorkbenchEntryReplyTracker,
+        workflowID: UUID,
+        taskID: UUID,
+        leadAgent: Agent,
+        session: WorkbenchSubmissionSession,
+        thinkingLevel: AgentThinkingLevel
+    ) {
         persistWorkbenchGatewaySessionKey(
             entryResult.sessionID,
             for: session.context
         )
         completeWorkbenchEntryReply(
             with: entryResult,
-            tracker: replyTracker,
-            workflowID: workflow.id,
-            taskID: session.taskID,
+            tracker: tracker,
+            workflowID: workflowID,
+            taskID: taskID,
             agent: leadAgent,
             context: session.context,
             thinkingLevel: thinkingLevel,
             startedAt: session.startedAt
         )
+    }
 
-        let backgroundNodes = orderedUniqueWorkflowNodes(otherEntryNodes + entryExecution.downstreamNodes)
+    private func handleWorkbenchChatEntryDisposition(
+        entryResult: ExecutionResult,
+        backgroundNodes: [WorkflowNode],
+        replyTracker: WorkbenchEntryReplyTracker,
+        prompt: String,
+        workflow: Workflow,
+        project: MAProject,
+        leadNode: WorkflowNode,
+        leadAgent: Agent,
+        otherEntryNodes: [WorkflowNode],
+        session: WorkbenchSubmissionSession
+    ) {
         switch workbenchFlowLifecycleCoordinator.chatEntryDisposition(
             for: entryResult,
             hasBackgroundNodes: !backgroundNodes.isEmpty
@@ -6932,19 +7116,15 @@ class AppState: ObservableObject {
         preferredThreadID: String? = nil
     ) -> WorkbenchRemoteSessionContext? {
         if let preferredThreadID,
-           let context = workbenchThreadContext(for: preferredThreadID, workflow: workflow, project: project) {
+           let context = resolvedWorkbenchThreadContext(
+                for: workflow,
+                project: project,
+                threadID: preferredThreadID
+           ) {
             return context
         }
 
-        return firstResolvedWorkbenchThreadContext(
-            from: workbenchMessages(for: workflow.id),
-            workflow: workflow,
-            project: project
-        ) ?? firstResolvedWorkbenchThreadContext(
-            from: workbenchTasks(for: workflow.id),
-            workflow: workflow,
-            project: project
-        )
+        return resolvedWorkbenchThreadContext(for: workflow, project: project)
     }
 
     private func workbenchThreadContext(
@@ -6952,15 +7132,29 @@ class AppState: ObservableObject {
         workflow: Workflow,
         project: MAProject
     ) -> WorkbenchRemoteSessionContext? {
-        return firstResolvedWorkbenchThreadContext(
-            from: workbenchMessages(for: workflow.id, threadID: threadID),
-            workflow: workflow,
-            project: project
-        ) ?? firstResolvedWorkbenchThreadContext(
-            from: workbenchTasks(for: workflow.id, threadID: threadID),
-            workflow: workflow,
-            project: project
+        resolvedWorkbenchThreadContext(
+            for: workflow,
+            project: project,
+            threadID: threadID
         )
+    }
+
+    private func resolvedWorkbenchThreadContext(
+        for workflow: Workflow,
+        project: MAProject,
+        threadID: String? = nil
+    ) -> WorkbenchRemoteSessionContext? {
+        let history = workbenchThreadHistory(for: workflow.id, threadID: threadID)
+        let messageContext = firstResolvedWorkbenchThreadContext(
+            from: history.messages
+        ) { message in
+            workbenchThreadContext(for: message, workflow: workflow, project: project)
+        }
+        return messageContext ?? firstResolvedWorkbenchThreadContext(
+            from: history.tasks
+        ) { task in
+            workbenchThreadContext(for: task, workflow: workflow, project: project)
+        }
     }
 
     private func workbenchThreadContext(
@@ -6971,8 +7165,8 @@ class AppState: ObservableObject {
         resolveWorkbenchRemoteSessionContext(
             workflow: workflow,
             metadata: message.metadata,
-            leadAgent: workbenchLeadAgent(for: message, project: project),
-            defaultProjectSessionID: project.runtimeState.sessionID
+            leadAgentCandidateIDs: [message.fromAgentID, message.toAgentID],
+            project: project
         )
     }
 
@@ -6984,7 +7178,24 @@ class AppState: ObservableObject {
         resolveWorkbenchRemoteSessionContext(
             workflow: workflow,
             metadata: task.metadata,
-            leadAgent: workbenchLeadAgent(for: task, project: project),
+            leadAgentCandidateIDs: [task.assignedAgentID],
+            project: project
+        )
+    }
+
+    private func resolveWorkbenchRemoteSessionContext(
+        workflow: Workflow,
+        metadata: [String: String],
+        leadAgentCandidateIDs: [UUID?],
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        resolveWorkbenchRemoteSessionContext(
+            workflow: workflow,
+            metadata: metadata,
+            leadAgent: workbenchLeadAgent(
+                candidateIDs: leadAgentCandidateIDs + workbenchEntryAgentCandidateIDs(from: metadata),
+                project: project
+            ),
             defaultProjectSessionID: project.runtimeState.sessionID
         )
     }
@@ -7020,48 +7231,91 @@ class AppState: ObservableObject {
         for workflowID: UUID,
         threadID: String? = nil
     ) -> [Message] {
-        messageManager.messages
-            .filter { message in
-                message.metadata[WorkbenchMetadataKey.channel] == "workbench"
-                    && message.metadata[WorkbenchMetadataKey.workflowID] == workflowID.uuidString
-                    && (threadID == nil || resolvedWorkbenchThreadID(from: message.metadata) == threadID)
+        let query = WorkbenchRecordQuery(
+            workflowID: workflowID,
+            threadID: threadID,
+            requiresWorkbenchChannel: true
+        )
+        return filteredWorkbenchRecords(
+            messageManager.messages,
+            query: query,
+            metadata: \.metadata
+        )
+        .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func filteredWorkbenchRecords<Record>(
+        _ records: [Record],
+        query: WorkbenchRecordQuery,
+        metadata: (Record) -> [String: String]
+    ) -> [Record] {
+        records
+            .filter { record in
+                query.matches(metadata: metadata(record))
             }
-            .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func filteredWorkbenchRecords<Record>(
+        _ records: [Record],
+        query: WorkbenchRecordQuery,
+        metadata: KeyPath<Record, [String: String]>
+    ) -> [Record] {
+        filteredWorkbenchRecords(records, query: query) { record in
+            record[keyPath: metadata]
+        }
+    }
+
+    private func workbenchMessages(
+        for context: WorkbenchThreadContext
+    ) -> [Message] {
+        workbenchThreadHistory(for: context).messages
     }
 
     private func workbenchTasks(
         for workflowID: UUID,
         threadID: String? = nil
     ) -> [Task] {
-        taskManager.tasks
-            .filter { task in
-                task.metadata[WorkbenchMetadataKey.workflowID] == workflowID.uuidString
-                    && (threadID == nil || resolvedWorkbenchThreadID(from: task.metadata) == threadID)
-            }
-            .sorted { $0.createdAt > $1.createdAt }
+        let query = WorkbenchRecordQuery(
+            workflowID: workflowID,
+            threadID: threadID,
+            requiresWorkbenchChannel: false
+        )
+        return filteredWorkbenchRecords(
+            taskManager.tasks,
+            query: query,
+            metadata: \.metadata
+        )
+        .sorted { $0.createdAt > $1.createdAt }
     }
 
-    private func firstResolvedWorkbenchThreadContext(
-        from messages: [Message],
-        workflow: Workflow,
-        project: MAProject
-    ) -> WorkbenchRemoteSessionContext? {
-        for message in messages {
-            guard let context = workbenchThreadContext(for: message, workflow: workflow, project: project) else {
-                continue
-            }
-            return context
-        }
-        return nil
+    private func workbenchTasks(
+        for context: WorkbenchThreadContext
+    ) -> [Task] {
+        workbenchThreadHistory(for: context).tasks
     }
 
-    private func firstResolvedWorkbenchThreadContext(
-        from tasks: [Task],
-        workflow: Workflow,
-        project: MAProject
+    private func workbenchThreadHistory(
+        for workflowID: UUID,
+        threadID: String? = nil
+    ) -> WorkbenchThreadHistory {
+        WorkbenchThreadHistory(
+            messages: workbenchMessages(for: workflowID, threadID: threadID),
+            tasks: workbenchTasks(for: workflowID, threadID: threadID)
+        )
+    }
+
+    private func workbenchThreadHistory(
+        for context: WorkbenchThreadContext
+    ) -> WorkbenchThreadHistory {
+        workbenchThreadHistory(for: context.workflowID, threadID: context.threadID)
+    }
+
+    private func firstResolvedWorkbenchThreadContext<Record>(
+        from records: [Record],
+        resolve: (Record) -> WorkbenchRemoteSessionContext?
     ) -> WorkbenchRemoteSessionContext? {
-        for task in tasks {
-            guard let context = workbenchThreadContext(for: task, workflow: workflow, project: project) else {
+        for record in records {
+            guard let context = resolve(record) else {
                 continue
             }
             return context
@@ -7158,27 +7412,13 @@ class AppState: ObservableObject {
         )
     }
 
-    private func workbenchLeadAgent(for message: Message, project: MAProject) -> Agent? {
-        workbenchLeadAgent(
-            candidateIDs: [
-                message.fromAgentID,
-                message.toAgentID,
-                UUID(uuidString: message.metadata[WorkbenchMetadataKey.workbenchEntryAgentID] ?? ""),
-                UUID(uuidString: message.metadata["entryAgentID"] ?? "")
-            ],
-            project: project
-        )
-    }
-
-    private func workbenchLeadAgent(for task: Task, project: MAProject) -> Agent? {
-        workbenchLeadAgent(
-            candidateIDs: [
-                task.assignedAgentID,
-                UUID(uuidString: task.metadata[WorkbenchMetadataKey.workbenchEntryAgentID] ?? ""),
-                UUID(uuidString: task.metadata["entryAgentID"] ?? "")
-            ],
-            project: project
-        )
+    private func workbenchEntryAgentCandidateIDs(
+        from metadata: [String: String]
+    ) -> [UUID?] {
+        [
+            UUID(uuidString: metadata[WorkbenchMetadataKey.workbenchEntryAgentID] ?? ""),
+            UUID(uuidString: metadata["entryAgentID"] ?? "")
+        ]
     }
 
     private func workbenchLeadAgent(
@@ -7266,21 +7506,7 @@ class AppState: ObservableObject {
 
         guard !remoteMessages.isEmpty else { return }
 
-        var existingDigests = Set(
-            messageManager.messages.compactMap { message -> String? in
-                guard message.metadata[WorkbenchMetadataKey.channel] == "workbench",
-                      message.metadata[WorkbenchMetadataKey.workflowID] == sessionContext.workflowID.uuidString,
-                      resolvedWorkbenchThreadID(from: message.metadata) == sessionContext.threadID else {
-                    return nil
-                }
-
-                let role = (message.inferredRole ?? message.metadata["role"] ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                guard role == "user" || role == "assistant" else { return nil }
-                return workbenchTranscriptDigest(role: role, text: message.content)
-            }
-        )
+        var existingDigests = existingWorkbenchTranscriptDigests(for: sessionContext)
 
         for entry in remoteMessages {
             let role = entry.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -7290,35 +7516,73 @@ class AppState: ObservableObject {
                 continue
             }
 
-            var appendedMessage = Message(
-                from: sessionContext.agentID,
-                to: sessionContext.agentID,
-                type: role == "user" ? .task : .notification,
-                content: entry.text
+            messageManager.appendMessage(
+                makeWorkbenchTranscriptMessage(
+                    role: role,
+                    text: entry.text,
+                    digest: digest,
+                    timestamp: timestamp,
+                    sessionContext: sessionContext
+                )
             )
-            appendedMessage.timestamp = timestamp
-            appendedMessage.status = .read
-            appendedMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
-            appendedMessage.metadata["role"] = role
-            appendedMessage.metadata["kind"] = role == "user" ? "input" : "output"
-            appendedMessage.metadata[WorkbenchMetadataKey.workflowID] = sessionContext.workflowID.uuidString
-            appendedMessage.metadata["remoteTranscriptDigest"] = digest
-            applyWorkbenchThreadMetadata(&appendedMessage.metadata, context: sessionContext)
-            if role == "assistant" {
-                appendedMessage.metadata["entryReply"] = "true"
-                appendedMessage.metadata["streamed"] = "true"
-                appendedMessage.metadata["thinking"] = "false"
-                appendedMessage.metadata["agentName"] = sessionContext.agentName
-                appendedMessage.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
-            }
-            appendedMessage.runtimeEvent = makeTranscriptRuntimeEvent(
-                role: role,
-                text: entry.text,
-                sessionContext: sessionContext
-            )
-            messageManager.appendMessage(appendedMessage)
             existingDigests.insert(digest)
         }
+    }
+
+    private func existingWorkbenchTranscriptDigests(
+        for sessionContext: WorkbenchRemoteSessionContext
+    ) -> Set<String> {
+        Set(
+            workbenchMessages(for: sessionContext).compactMap { message in
+                workbenchTranscriptDigest(from: message)
+            }
+        )
+    }
+
+    private func workbenchTranscriptDigest(
+        from message: Message
+    ) -> String? {
+        let role = (message.inferredRole ?? message.metadata["role"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard role == "user" || role == "assistant" else { return nil }
+        return workbenchTranscriptDigest(role: role, text: message.content)
+    }
+
+    private func makeWorkbenchTranscriptMessage(
+        role: String,
+        text: String,
+        digest: String,
+        timestamp: Date,
+        sessionContext: WorkbenchRemoteSessionContext
+    ) -> Message {
+        var message = Message(
+            from: sessionContext.agentID,
+            to: sessionContext.agentID,
+            type: role == "user" ? .task : .notification,
+            content: text
+        )
+        message.timestamp = timestamp
+        message.status = .read
+        message.metadata[WorkbenchMetadataKey.channel] = "workbench"
+        message.metadata["role"] = role
+        message.metadata["kind"] = role == "user" ? "input" : "output"
+        message.metadata[WorkbenchMetadataKey.workflowID] = sessionContext.workflowID.uuidString
+        message.metadata["remoteTranscriptDigest"] = digest
+        applyWorkbenchThreadMetadata(&message.metadata, context: sessionContext)
+        if role == "assistant" {
+            message.metadata["entryReply"] = "true"
+            message.metadata["streamed"] = "true"
+            message.metadata["thinking"] = "false"
+            message.metadata["agentName"] = sessionContext.agentName
+            message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
+        }
+        message.runtimeEvent = makeTranscriptRuntimeEvent(
+            role: role,
+            text: text,
+            sessionContext: sessionContext
+        )
+        return message
     }
 
     private func persistWorkbenchGatewaySessionKey(
@@ -7333,7 +7597,8 @@ class AppState: ObservableObject {
             return
         }
 
-        let messageIDs = workbenchMessages(for: context.workflowID, threadID: context.threadID).map(\.id)
+        let history = workbenchThreadHistory(for: context)
+        let messageIDs = history.messages.map(\.id)
 
         for messageID in messageIDs {
             messageManager.updateMessage(messageID) { message in
@@ -7341,7 +7606,7 @@ class AppState: ObservableObject {
             }
         }
 
-        for var task in workbenchTasks(for: context.workflowID, threadID: context.threadID) {
+        for var task in history.tasks {
             task.metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = normalizedGatewaySessionKey
             taskManager.updateTask(task)
         }

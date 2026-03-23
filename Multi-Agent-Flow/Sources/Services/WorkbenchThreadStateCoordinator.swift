@@ -37,7 +37,68 @@ struct WorkbenchThreadSummaryDescriptor: Hashable, Sendable {
     let taskCount: Int
 }
 
+struct WorkbenchThreadSummaryCollections {
+    var threadContextSamples: [String: [WorkbenchThreadContextSample]] = [:]
+    var threadMessages: [String: [Message]] = [:]
+    var threadTasks: [String: [Task]] = [:]
+}
+
+struct WorkbenchThreadSummaryMessageRecord {
+    let threadID: String
+    let message: Message
+    let contextSample: WorkbenchThreadContextSample?
+}
+
+struct WorkbenchThreadSummaryTaskRecord {
+    let threadID: String
+    let task: Task
+    let contextSample: WorkbenchThreadContextSample?
+}
+
 final class WorkbenchThreadStateCoordinator {
+    func collectSummaryCollections(
+        messageRecords: [WorkbenchThreadSummaryMessageRecord],
+        taskRecords: [WorkbenchThreadSummaryTaskRecord]
+    ) -> WorkbenchThreadSummaryCollections {
+        var collections = WorkbenchThreadSummaryCollections()
+
+        for record in messageRecords {
+            collections.threadMessages[record.threadID, default: []].append(record.message)
+            if let contextSample = record.contextSample {
+                collections.threadContextSamples[record.threadID, default: []].append(contextSample)
+            }
+        }
+
+        for record in taskRecords {
+            collections.threadTasks[record.threadID, default: []].append(record.task)
+            if let contextSample = record.contextSample {
+                collections.threadContextSamples[record.threadID, default: []].append(contextSample)
+            }
+        }
+
+        return collections
+    }
+
+    func summarizeThreads(
+        workflowID: UUID,
+        summaryCollections: WorkbenchThreadSummaryCollections,
+        activeRunRecords: [WorkbenchActiveRunRecord],
+        threadStateRecords: [WorkbenchThreadStateRecord]
+    ) -> [WorkbenchThreadSummaryDescriptor] {
+        summarizeThreads(
+            workflowID: workflowID,
+            threadMessages: summaryCollections.threadMessages,
+            threadTasks: summaryCollections.threadTasks,
+            threadContextSamples: summaryCollections.threadContextSamples,
+            activeRunsByThreadID: activeRunRecords.reduce(into: [String: WorkbenchActiveRunRecord]()) {
+                $0[$1.threadID] = $1
+            },
+            threadStateRecordsByThreadID: threadStateRecords.reduce(into: [String: WorkbenchThreadStateRecord]()) {
+                $0[$1.threadID] = $1
+            }
+        )
+    }
+
     func summarizeThreads(
         workflowID: UUID,
         threadMessages: [String: [Message]],

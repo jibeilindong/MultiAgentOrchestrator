@@ -203,11 +203,11 @@ struct OpenClawConfig: Codable {
 }
 
 extension OpenClawConfig {
-    var requiresExplicitLocalBinaryPath: Bool {
+    nonisolated var requiresExplicitLocalBinaryPath: Bool {
         deploymentKind == .local && runtimeOwnership == .externalLocal
     }
 
-    var usesManagedLocalRuntime: Bool {
+    nonisolated var usesManagedLocalRuntime: Bool {
         deploymentKind == .local && runtimeOwnership == .appManaged
     }
 }

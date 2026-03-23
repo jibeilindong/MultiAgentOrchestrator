@@ -1469,9 +1469,17 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
-                HStack(spacing: 8) {
-                    toolbarSaveStatusView
+            if appState.isSavingDraft
+                || appState.lastDraftSaveTime != nil
+                || showsWorkflowRuntimeStatus {
+                VStack(alignment: .trailing, spacing: 8) {
+                    if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
+                        HStack(spacing: 8) {
+                            toolbarSaveStatusView
+                        }
+                    }
+
+                    workflowRuntimeStatusStack
                 }
                 .padding(.top, 8)
             }
@@ -1804,6 +1812,40 @@ struct EditorToolbar: View {
             return LocalizedString.format("draft_restored_at", formattedDate)
         case .manual, .none:
             return LocalizedString.format("draft_saved_at", formattedDate)
+        }
+    }
+
+    private var showsWorkflowRuntimeStatus: Bool {
+        appState.openClawRevisionSummary != nil
+            || appState.openClawLatestRuntimeSyncSummary != nil
+            || appState.currentOpenClawRuntimeControlPlaneEntry.status != .ready
+            || appState.openClawRuntimeControlPlaneSecondarySummary != nil
+    }
+
+    @ViewBuilder
+    private var workflowRuntimeStatusStack: some View {
+        if showsWorkflowRuntimeStatus {
+            VStack(alignment: .trailing, spacing: 8) {
+                HStack(spacing: 8) {
+                    if let revisionSummary = appState.openClawRevisionSummary {
+                        workflowRevisionStatusView(revisionSummary)
+                    }
+
+                    if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
+                        workflowRuntimeSyncReceiptStatusView(runtimeSyncSummary)
+                    }
+                }
+
+                if appState.currentOpenClawRuntimeControlPlaneEntry.status != .ready {
+                    workflowRuntimeSyncDiagnosticView(appState.openClawRuntimeControlPlaneSummary)
+                        .frame(maxWidth: 420, alignment: .trailing)
+                }
+
+                if let secondarySummary = appState.openClawRuntimeControlPlaneSecondarySummary {
+                    workflowRuntimeSyncDiagnosticView(secondarySummary)
+                        .frame(maxWidth: 420, alignment: .trailing)
+                }
+            }
         }
     }
 

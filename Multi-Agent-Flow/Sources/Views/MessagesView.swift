@@ -628,7 +628,7 @@ struct WorkbenchConversationView: View {
 
             dashboardLayoutButtons
 
-            runtimeStatusBadges
+            runtimeStatusCluster
 
             Button(LocalizedString.saveProject) {
                 appState.saveProject()
@@ -661,7 +661,7 @@ struct WorkbenchConversationView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 dashboardLayoutButtons
-                runtimeStatusBadges
+                runtimeStatusCluster
             }
         }
     }
@@ -782,6 +782,33 @@ struct WorkbenchConversationView: View {
                 title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
                 color: appState.openClawService.isExecuting ? .orange : .secondary
             )
+        }
+    }
+
+    @ViewBuilder
+    private var runtimeStatusSummary: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(appState.openClawRuntimeControlPlaneSummary)
+                .font(.caption2.weight(.medium))
+                .foregroundColor(appState.openClawRuntimeControlPlaneBadgeColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            if let secondarySummary = appState.openClawRuntimeControlPlaneSecondarySummary {
+                Text(secondarySummary)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .frame(maxWidth: 320, alignment: .leading)
+    }
+
+    private var runtimeStatusCluster: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            runtimeStatusBadges
+            runtimeStatusSummary
         }
     }
 

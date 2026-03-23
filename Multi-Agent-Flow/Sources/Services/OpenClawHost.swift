@@ -6,182 +6,38 @@
 import Foundation
 import Darwin
 
-func executeProcessAndCaptureOutput(
-    executableURL: URL,
-    arguments: [String],
-    standardInput: FileHandle? = nil,
-    timeoutSeconds: TimeInterval? = nil,
-    onStdoutChunk: ((Data) -> Void)? = nil
-) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
-    let process = Process()
-    process.executableURL = executableURL
-    process.arguments = arguments
-    process.standardInput = standardInput
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-
-    let lock = NSLock()
-    var stdoutData = Data()
-    var stderrData = Data()
-    let terminationSemaphore = DispatchSemaphore(value: 0)
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-        let data = handle.availableData
-        guard !data.isEmpty else { return }
-        lock.lock()
-        stdoutData.append(data)
-        lock.unlock()
-        onStdoutChunk?(data)
-    }
-
-    stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-        let data = handle.availableData
-        guard !data.isEmpty else { return }
-        lock.lock()
-        stderrData.append(data)
-        lock.unlock()
-    }
-
-    process.terminationHandler = { _ in
-        terminationSemaphore.signal()
-    }
-
-    try process.run()
-
-    let waitResult: DispatchTimeoutResult
-    if let timeoutSeconds {
-        waitResult = terminationSemaphore.wait(timeout: .now() + max(timeoutSeconds, 1))
-    } else {
-        terminationSemaphore.wait()
-        waitResult = .success
-    }
-
-    if waitResult == .timedOut {
-        if process.isRunning {
-            process.terminate()
-            if terminationSemaphore.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-                _ = terminationSemaphore.wait(timeout: .now() + 1)
-            }
-        }
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        if !stdout.isEmpty {
-            lock.lock()
-            stdoutData.append(stdout)
-            lock.unlock()
-        }
-        if !stderr.isEmpty {
-            lock.lock()
-            stderrData.append(stderr)
-            lock.unlock()
-        }
-
-        throw NSError(
-            domain: "OpenClawManager",
-            code: 9801,
-            userInfo: [NSLocalizedDescriptionKey: "命令执行超时（\(Int(max(timeoutSeconds ?? 0, 1))) 秒）：\((arguments.first ?? executableURL.lastPathComponent))"]
-        )
-    }
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-    stderrPipe.fileHandleForReading.readabilityHandler = nil
-
-    let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    if !remainingStdout.isEmpty {
-        lock.lock()
-        stdoutData.append(remainingStdout)
-        lock.unlock()
-        onStdoutChunk?(remainingStdout)
-    }
-
-    let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-    if !remainingStderr.isEmpty {
-        lock.lock()
-        stderrData.append(remainingStderr)
-        lock.unlock()
-    }
-
-    lock.lock()
-    let finalStdout = stdoutData
-    let finalStderr = stderrData
-    lock.unlock()
-
-    return (process.terminationStatus, finalStdout, finalStderr)
-}
-
 struct OpenClawHostCommandPlan {
     let executableURL: URL
     let arguments: [String]
 }
 
-private func openClawDeduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
-    var seen = Set<String>()
-    return candidates.compactMap { candidate in
-        let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return nil }
-        guard seen.insert(normalized).inserted else { return nil }
-        return normalized
-    }
-}
+nonisolated final class OpenClawHost {
+    private final class ProcessOutputAccumulator {
+        private let lock = NSLock()
+        private var stdoutData = Data()
+        private var stderrData = Data()
 
-private func defaultManagedLocalRuntimeRootURL(
-    fileManager: FileManager = .default
-) -> URL? {
-    fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        .first?
-        .appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
-        .appendingPathComponent("openclaw", isDirectory: true)
-        .appendingPathComponent("runtime", isDirectory: true)
-}
+        func appendStdout(_ data: Data) {
+            lock.lock()
+            stdoutData.append(data)
+            lock.unlock()
+        }
 
-private func localBinaryPathCandidates(
-    for config: OpenClawConfig,
-    bundleResourceURL: URL? = Bundle.main.resourceURL,
-    managedRuntimeRootURL: URL? = nil,
-    homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
-) -> [String] {
-    let configured = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard config.deploymentKind == .local else {
-        return configured.isEmpty ? [] : [configured]
+        func appendStderr(_ data: Data) {
+            lock.lock()
+            stderrData.append(data)
+            lock.unlock()
+        }
+
+        func snapshot() -> (stdout: Data, stderr: Data) {
+            lock.lock()
+            let stdout = stdoutData
+            let stderr = stderrData
+            lock.unlock()
+            return (stdout, stderr)
+        }
     }
 
-    if config.requiresExplicitLocalBinaryPath {
-        return configured.isEmpty ? [] : [configured]
-    }
-
-    let managedRoot = managedRuntimeRootURL ?? defaultManagedLocalRuntimeRootURL()
-    let bundleCandidates = [bundleResourceURL].compactMap { $0 }.flatMap { resourceURL in
-        [
-            resourceURL.appendingPathComponent("OpenClaw/bin/openclaw", isDirectory: false).path,
-            resourceURL.appendingPathComponent("openclaw/bin/openclaw", isDirectory: false).path,
-            resourceURL.appendingPathComponent("OpenClaw/openclaw", isDirectory: false).path,
-            resourceURL.appendingPathComponent("openclaw/openclaw", isDirectory: false).path
-        ]
-    }
-    let managedCandidates = [managedRoot].compactMap { $0 }.flatMap { rootURL in
-        [
-            rootURL.appendingPathComponent("bin/openclaw", isDirectory: false).path,
-            rootURL.appendingPathComponent("openclaw", isDirectory: false).path
-        ]
-    }
-    let systemCandidates = [
-        homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
-        "/usr/local/bin/openclaw",
-        "/opt/homebrew/bin/openclaw",
-        "/usr/bin/openclaw"
-    ]
-
-    return openClawDeduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates + systemCandidates)
-}
-
-final class OpenClawHost {
     private let fileManager: FileManager
     private let bundleResourceURL: URL?
     private let managedRuntimeRootURL: URL?
@@ -202,7 +58,7 @@ final class OpenClawHost {
     nonisolated deinit {}
 
     func resolveLocalBinaryPath(for config: OpenClawConfig) -> String {
-        let candidates = localBinaryPathCandidates(
+        let candidates = Self.localBinaryPathCandidates(
             for: config,
             bundleResourceURL: bundleResourceURL,
             managedRuntimeRootURL: managedRuntimeRootURL,
@@ -216,6 +72,162 @@ final class OpenClawHost {
     func fallbackLocalOpenClawRootURL() -> URL {
         homeDirectory
             .appendingPathComponent(".openclaw", isDirectory: true)
+    }
+
+    nonisolated static func executeProcessAndCaptureOutput(
+        executableURL: URL,
+        arguments: [String],
+        standardInput: FileHandle? = nil,
+        timeoutSeconds: TimeInterval? = nil,
+        onStdoutChunk: ((Data) -> Void)? = nil
+    ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardInput = standardInput
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let accumulator = ProcessOutputAccumulator()
+        let terminationSemaphore = DispatchSemaphore(value: 0)
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            accumulator.appendStdout(data)
+            onStdoutChunk?(data)
+        }
+
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            accumulator.appendStderr(data)
+        }
+
+        process.terminationHandler = { _ in
+            terminationSemaphore.signal()
+        }
+
+        try process.run()
+
+        let waitResult: DispatchTimeoutResult
+        if let timeoutSeconds {
+            waitResult = terminationSemaphore.wait(timeout: .now() + max(timeoutSeconds, 1))
+        } else {
+            terminationSemaphore.wait()
+            waitResult = .success
+        }
+
+        if waitResult == .timedOut {
+            if process.isRunning {
+                process.terminate()
+                if terminationSemaphore.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                    _ = terminationSemaphore.wait(timeout: .now() + 1)
+                }
+            }
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            if !stdout.isEmpty {
+                accumulator.appendStdout(stdout)
+            }
+            if !stderr.isEmpty {
+                accumulator.appendStderr(stderr)
+            }
+
+            throw NSError(
+                domain: "OpenClawManager",
+                code: 9801,
+                userInfo: [NSLocalizedDescriptionKey: "命令执行超时（\(Int(max(timeoutSeconds ?? 0, 1))) 秒）：\((arguments.first ?? executableURL.lastPathComponent))"]
+            )
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+        let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingStdout.isEmpty {
+            accumulator.appendStdout(remainingStdout)
+            onStdoutChunk?(remainingStdout)
+        }
+
+        let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingStderr.isEmpty {
+            accumulator.appendStderr(remainingStderr)
+        }
+
+        let snapshot = accumulator.snapshot()
+        return (process.terminationStatus, snapshot.stdout, snapshot.stderr)
+    }
+
+    nonisolated private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
+        var seen = Set<String>()
+        return candidates.compactMap { candidate in
+            let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    nonisolated private static func defaultManagedLocalRuntimeRootURL(
+        fileManager: FileManager = .default
+    ) -> URL? {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Multi-Agent-Flow", isDirectory: true)
+            .appendingPathComponent("openclaw", isDirectory: true)
+            .appendingPathComponent("runtime", isDirectory: true)
+    }
+
+    nonisolated private static func localBinaryPathCandidates(
+        for config: OpenClawConfig,
+        bundleResourceURL: URL? = Bundle.main.resourceURL,
+        managedRuntimeRootURL: URL? = nil,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String] {
+        let configured = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard config.deploymentKind == .local else {
+            return configured.isEmpty ? [] : [configured]
+        }
+
+        if config.requiresExplicitLocalBinaryPath {
+            return configured.isEmpty ? [] : [configured]
+        }
+
+        let managedRoot = managedRuntimeRootURL ?? defaultManagedLocalRuntimeRootURL()
+        let bundleCandidates = [bundleResourceURL].compactMap { $0 }.flatMap { resourceURL in
+            [
+                resourceURL.appendingPathComponent("OpenClaw/bin/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("openclaw/bin/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("OpenClaw/openclaw", isDirectory: false).path,
+                resourceURL.appendingPathComponent("openclaw/openclaw", isDirectory: false).path
+            ]
+        }
+        let managedCandidates = [managedRoot].compactMap { $0 }.flatMap { rootURL in
+            [
+                rootURL.appendingPathComponent("bin/openclaw", isDirectory: false).path,
+                rootURL.appendingPathComponent("openclaw", isDirectory: false).path
+            ]
+        }
+        let systemCandidates = [
+            homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
+            "/usr/local/bin/openclaw",
+            "/opt/homebrew/bin/openclaw",
+            "/usr/bin/openclaw"
+        ]
+
+        if !configured.isEmpty {
+            return deduplicatedLocalBinaryPaths([configured] + bundleCandidates + managedCandidates + systemCandidates)
+        }
+
+        return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates + systemCandidates)
     }
 
     func buildOpenClawCommandPlan(
@@ -332,7 +344,7 @@ final class OpenClawHost {
         onStdoutChunk: ((Data) -> Void)? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         let plan = try buildOpenClawCommandPlan(for: config, arguments: arguments)
-        return try executeProcessAndCaptureOutput(
+        return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
             standardInput: standardInput,
@@ -348,7 +360,7 @@ final class OpenClawHost {
         timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         let plan = try buildClawHubCommandPlan(for: config, arguments: arguments)
-        return try executeProcessAndCaptureOutput(
+        return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
             standardInput: standardInput,
@@ -363,7 +375,7 @@ final class OpenClawHost {
         timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         let plan = try buildDeploymentCommandPlan(for: config, arguments: arguments)
-        return try executeProcessAndCaptureOutput(
+        return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
             standardInput: standardInput,
@@ -378,7 +390,7 @@ final class OpenClawHost {
         timeoutSeconds: TimeInterval? = nil
     ) throws -> (terminationStatus: Int32, standardOutput: Data, standardError: Data) {
         let plan = try buildDeploymentShellPlan(for: config, script: script)
-        return try executeProcessAndCaptureOutput(
+        return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
             standardInput: standardInput,

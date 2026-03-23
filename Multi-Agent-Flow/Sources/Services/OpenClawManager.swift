@@ -770,7 +770,7 @@ class OpenClawManager: ObservableObject {
             standardInput: FileHandle? = nil,
             onStdoutChunk: ((String) -> Void)? = nil
         ) throws -> AgentRuntimeCommandResult {
-            let result = try executeProcessAndCaptureOutput(
+            let result = try OpenClawHost.executeProcessAndCaptureOutput(
                 executableURL: commandPlan.executableURL,
                 arguments: commandPlan.arguments + arguments,
                 standardInput: standardInput,
@@ -9352,7 +9352,7 @@ class OpenClawManager: ObservableObject {
             try result.standardOutput.write(to: archiveURL, options: .atomic)
             defer { try? FileManager.default.removeItem(at: archiveURL) }
 
-            let extract = try executeProcessAndCaptureOutput(
+            let extract = try OpenClawHost.executeProcessAndCaptureOutput(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
                 arguments: ["tar", "-xf", archiveURL.path, "-C", localDestination.path],
                 timeoutSeconds: 60
@@ -9424,7 +9424,7 @@ class OpenClawManager: ObservableObject {
 
             let archiveURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("openclaw-upload-\(UUID().uuidString).tar", isDirectory: false)
-            let createArchive = try executeProcessAndCaptureOutput(
+            let createArchive = try OpenClawHost.executeProcessAndCaptureOutput(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
                 arguments: ["tar", "-cf", archiveURL.path, "-C", localSource.path, "."],
                 timeoutSeconds: 60
