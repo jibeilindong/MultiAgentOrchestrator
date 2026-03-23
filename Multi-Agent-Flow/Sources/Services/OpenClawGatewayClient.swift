@@ -52,6 +52,7 @@ actor OpenClawGatewayClient {
         var sessionKey: String?
         var state: String?
         var errorMessage: String?
+        var assistantText: String = ""
         var lastUpdatedAt = Date()
 
         mutating func apply(payload: [String: Any]) {
@@ -73,7 +74,40 @@ actor OpenClawGatewayClient {
             {
                 self.errorMessage = errorMessage
             }
+            if let assistantText = OpenClawGatewayClient.assistantText(fromChatPayload: payload) {
+                self.assistantText = OpenClawGatewayClient.mergedAssistantText(
+                    previous: self.assistantText,
+                    incoming: assistantText
+                )
+            }
             lastUpdatedAt = Date()
+        }
+
+        func observedRunState(fallback: AgentRunState?) -> AgentRunState {
+            var runState = fallback ?? AgentRunState()
+            if !assistantText.isEmpty {
+                runState.assistantText = assistantText
+            }
+            if let sessionKey, !sessionKey.isEmpty {
+                runState.sessionKey = sessionKey
+            }
+            if let errorMessage, !errorMessage.isEmpty {
+                runState.errorMessage = errorMessage
+            }
+
+            switch state {
+            case "final":
+                runState.lifecyclePhase = "end"
+            case "aborted":
+                runState.lifecyclePhase = "aborted"
+            case "error":
+                runState.lifecyclePhase = "error"
+            default:
+                break
+            }
+
+            runState.lastUpdatedAt = lastUpdatedAt
+            return runState
         }
     }
 
@@ -389,7 +423,11 @@ actor OpenClawGatewayClient {
             runStates[runID] = agentState
         }
 
-        if waitStatus == "ok" || chatState?.state == "final" {
+        if waitStatus == "ok"
+            || chatState?.state == "final"
+            || chatState?.state == "aborted"
+            || chatState?.state == "error"
+        {
             try? await _Concurrency.Task.sleep(nanoseconds: 150_000_000)
             if let historyText = try await latestAssistantText(
                 using: config,
@@ -398,6 +436,11 @@ actor OpenClawGatewayClient {
                 agentState.assistantText = historyText
                 runStates[runID] = agentState
                 onAssistantTextUpdated(historyText)
+            } else if let streamedText = chatState?.assistantText,
+                      !streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                agentState.assistantText = streamedText
+                runStates[runID] = agentState
+                onAssistantTextUpdated(streamedText)
             } else {
                 agentState = runStates[runID] ?? agentState
             }
@@ -780,8 +823,17 @@ actor OpenClawGatewayClient {
             guard let payload = object["payload"] as? [String: Any] else { return }
             if let runID = normalizedNonEmptyString(payload["runId"]) {
                 var state = chatRunStates[runID] ?? ChatRunState()
+                let previousText = state.assistantText
                 state.apply(payload: payload)
                 chatRunStates[runID] = state
+                let observedState = state.observedRunState(fallback: runStates[runID])
+                runStates[runID] = observedState
+
+                if observedState.assistantText != previousText, let observers = runObservers[runID] {
+                    for observer in observers {
+                        observer.handler(observedState)
+                    }
+                }
             }
         case "agent":
             guard
@@ -931,6 +983,107 @@ actor OpenClawGatewayClient {
         }
 
         return nil
+    }
+
+    nonisolated static func assistantText(fromChatPayload payload: [String: Any]) -> String? {
+        if let text = chatPayloadText(from: payload["message"]) {
+            return text
+        }
+        if let text = chatPayloadText(from: payload["delta"]) {
+            return text
+        }
+        if let text = chatPayloadText(from: payload["final"]) {
+            return text
+        }
+        if let text = chatPayloadText(from: payload["assistant"]) {
+            return text
+        }
+        if let text = chatPayloadText(from: payload["response"]) {
+            return text
+        }
+        if let role = normalizedChatPayloadString(payload["role"])?.lowercased(),
+           role == "assistant",
+           let text = chatPayloadText(from: payload) {
+            return text
+        }
+        if let text = normalizedChatPayloadString(payload["assistantText"]) {
+            return text
+        }
+        if let text = normalizedChatPayloadString(payload["text"]) {
+            return text
+        }
+        return nil
+    }
+
+    nonisolated static func mergedAssistantText(previous: String, incoming: String) -> String {
+        guard !incoming.isEmpty else { return previous }
+        guard !previous.isEmpty else { return incoming }
+
+        if incoming == previous {
+            return previous
+        }
+        if incoming.hasPrefix(previous) {
+            return incoming
+        }
+        if previous.hasPrefix(incoming) {
+            return previous
+        }
+
+        let previousCharacters = Array(previous)
+        let incomingCharacters = Array(incoming)
+        let maxOverlap = min(previousCharacters.count, incomingCharacters.count)
+
+        if maxOverlap > 0 {
+            for overlap in stride(from: maxOverlap, through: 1, by: -1) {
+                let previousSuffix = previousCharacters.suffix(overlap)
+                let incomingPrefix = incomingCharacters.prefix(overlap)
+                if Array(previousSuffix) == Array(incomingPrefix) {
+                    return previous + String(incomingCharacters.dropFirst(overlap))
+                }
+            }
+        }
+
+        return previous + incoming
+    }
+
+    private nonisolated static func chatPayloadText(from value: Any?) -> String? {
+        switch value {
+        case let text as String:
+            return normalizedChatPayloadString(text)
+        case let dict as [String: Any]:
+            if let direct = normalizedChatPayloadString(dict["assistantText"])
+                ?? normalizedChatPayloadString(dict["text"])
+                ?? normalizedChatPayloadString(dict["deltaText"]) {
+                return direct
+            }
+
+            if let content = dict["content"] {
+                if let contentText = chatPayloadText(from: content) {
+                    return contentText
+                }
+            }
+
+            for key in ["message", "delta", "final", "assistant", "response", "entry"] {
+                if let nestedText = chatPayloadText(from: dict[key]) {
+                    return nestedText
+                }
+            }
+
+            return nil
+        case let array as [Any]:
+            let parts = array.compactMap { chatPayloadText(from: $0) }
+            guard !parts.isEmpty else { return nil }
+            let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return joined.isEmpty ? nil : joined
+        default:
+            return nil
+        }
+    }
+
+    private nonisolated static func normalizedChatPayloadString(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func normalizedHistoryTimestamp(_ rawValue: Any?) -> Double? {

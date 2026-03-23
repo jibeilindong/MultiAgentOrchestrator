@@ -5502,21 +5502,15 @@ class AppState: ObservableObject {
 
                 let failedCount = results.filter { $0.status == .failed }.count
                 let finalStatus: TaskStatus = results.isEmpty ? .blocked : (failedCount == 0 ? .done : .blocked)
-                self.taskManager.moveTask(task.id, to: finalStatus)
-
-                self.recordWorkbenchExecutionResults(
+                self.completeWorkbenchExecution(
+                    taskID: task.id,
+                    taskStatus: finalStatus,
                     results,
                     removingQueuedPrompt: trimmedPrompt,
-                    removingDispatchEventID: userMessage.runtimeEvent?.id
-                )
-
-                self.transitionWorkbenchThread(
+                    removingDispatchEventID: userMessage.runtimeEvent?.id,
                     context: threadContext,
-                    terminalTransition
+                    terminalTransition: terminalTransition
                 )
-
-                self.openClawService.isExecuting = false
-                self.openClawService.currentNodeID = nil
             }
 
             func orderedUniqueNodes(_ nodes: [WorkflowNode]) -> [WorkflowNode] {
@@ -5619,14 +5613,12 @@ class AppState: ObservableObject {
                     hasBackgroundNodes: !backgroundNodes.isEmpty
                 ) {
                 case let .failed(errorMessage):
-                    self.openClawService.executionResults = [entryResult]
                     completeWorkbenchExecution(
                         results: [entryResult],
                         terminalTransition: .failed(errorMessage: errorMessage)
                     )
                     return
                 case .readyToRun:
-                    self.openClawService.executionResults = [entryResult]
                     self.openClawService.addLog(
                         .info,
                         "Workbench reply completed with no additional workflow nodes queued.",
@@ -5852,17 +5844,14 @@ class AppState: ObservableObject {
             let completedAt = Date()
             persistRunLatency(label: "full_workflow", key: "fullWorkflowMs", at: completedAt)
             let runPresentation = self.workbenchFlowLifecycleCoordinator.workflowRunPresentation(for: results)
-            self.taskManager.moveTask(task.id, to: runPresentation.taskStatus)
-
-            self.recordWorkbenchExecutionResults(
+            self.completeWorkbenchExecution(
+                taskID: task.id,
+                taskStatus: runPresentation.taskStatus,
                 results,
                 removingQueuedPrompt: prompt,
-                at: completedAt
-            )
-
-            self.transitionWorkbenchThread(
                 context: threadContext,
-                runPresentation.terminalTransition
+                terminalTransition: runPresentation.terminalTransition,
+                at: completedAt
             )
 
             updateRunStatusMessage(
@@ -5871,9 +5860,6 @@ class AppState: ObservableObject {
                 outputType: runPresentation.outputType,
                 isThinking: false
             )
-            self.openClawService.executionResults = results
-            self.openClawService.isExecuting = false
-            self.openClawService.currentNodeID = nil
         }
 
         return threadContext.threadID
@@ -6613,6 +6599,32 @@ class AppState: ObservableObject {
         }
     }
 
+    private func completeWorkbenchExecution(
+        taskID: UUID,
+        taskStatus: TaskStatus,
+        _ results: [ExecutionResult],
+        removingQueuedPrompt prompt: String,
+        removingDispatchEventID dispatchEventID: String? = nil,
+        context: WorkbenchThreadContext,
+        terminalTransition: WorkbenchThreadTransition,
+        at completedAt: Date = Date()
+    ) {
+        taskManager.moveTask(taskID, to: taskStatus)
+        recordWorkbenchExecutionResults(
+            results,
+            removingQueuedPrompt: prompt,
+            removingDispatchEventID: dispatchEventID,
+            at: completedAt
+        )
+        transitionWorkbenchThread(
+            context: context,
+            terminalTransition
+        )
+        openClawService.executionResults = results
+        openClawService.isExecuting = false
+        openClawService.currentNodeID = nil
+    }
+
     private func markActiveWorkbenchThreadStatesFailed(
         in runtimeState: inout RuntimeState,
         reason: String,
@@ -6812,14 +6824,17 @@ class AppState: ObservableObject {
         gatewaySessionKey: String? = nil
     ) -> WorkbenchThreadContext {
         let agentIdentifier = resolvedWorkbenchAgentIdentifier(for: entryAgent)
-        let resolvedGatewaySessionKey = gatewaySessionKey?
+        let explicitGatewaySessionKey = gatewaySessionKey?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty == false
-            ? gatewaySessionKey!.trimmingCharacters(in: .whitespacesAndNewlines)
-            : workbenchGatewaySessionKey(
+        let resolvedGatewaySessionKey: String
+        if let explicitGatewaySessionKey, !explicitGatewaySessionKey.isEmpty {
+            resolvedGatewaySessionKey = explicitGatewaySessionKey
+        } else {
+            resolvedGatewaySessionKey = workbenchGatewaySessionKey(
                 sessionID: sessionID,
                 agentIdentifier: agentIdentifier
             )
+        }
         return WorkbenchThreadContext(
             workflowID: workflow.id,
             projectSessionID: projectSessionID,
@@ -7051,7 +7066,9 @@ class AppState: ObservableObject {
         metadata[WorkbenchMetadataKey.workbenchEntryAgentID] = context.agentID.uuidString
         metadata["entryAgentID"] = context.agentID.uuidString
         metadata[WorkbenchMetadataKey.workbenchProjectSessionID] = context.projectSessionID
-        metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = context.gatewaySessionKey
+        if resolvedWorkbenchGatewaySessionKey(from: metadata) == nil {
+            metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = context.gatewaySessionKey
+        }
         applyWorkbenchSemanticMetadata(
             &metadata,
             threadType: context.threadType,
