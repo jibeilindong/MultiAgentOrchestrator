@@ -194,7 +194,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUNTIME_SOURCE=\"$SRCROOT/managed-runtime/openclaw\"\nRUNTIME_TARGET=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/openclaw\"\nmkdir -p \"$RUNTIME_TARGET\"\nditto \"$RUNTIME_SOURCE\" \"$RUNTIME_TARGET\"\nchmod +x \"$RUNTIME_TARGET/bin/openclaw\"\nif [ -f \"$RUNTIME_TARGET/libexec/openclaw\" ]; then\n  chmod +x \"$RUNTIME_TARGET/libexec/openclaw\"\nfi\nif [ -f \"$RUNTIME_TARGET/runtime/node/bin/node\" ]; then\n  chmod +x \"$RUNTIME_TARGET/runtime/node/bin/node\"\nfi\nif [ -f \"$RUNTIME_TARGET/node/bin/node\" ]; then\n  chmod +x \"$RUNTIME_TARGET/node/bin/node\"\nfi\n";
+			shellScript = "set -euo pipefail\nRUNTIME_SOURCE=\"$SRCROOT/managed-runtime/openclaw\"\nRUNTIME_TARGET=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/openclaw\"\nmkdir -p \"$RUNTIME_TARGET\"\nrsync -a --delete --exclude='.DS_Store' --exclude='__MACOSX' \"$RUNTIME_SOURCE/\" \"$RUNTIME_TARGET/\"\nfind \"$RUNTIME_TARGET\" -name '.DS_Store' -delete\nchmod +x \"$RUNTIME_TARGET/bin/openclaw\"\nif [ -f \"$RUNTIME_TARGET/libexec/openclaw\" ]; then\n  chmod +x \"$RUNTIME_TARGET/libexec/openclaw\"\nfi\nif [ -f \"$RUNTIME_TARGET/runtime/node/bin/node\" ]; then\n  chmod +x \"$RUNTIME_TARGET/runtime/node/bin/node\"\nfi\nif [ -f \"$RUNTIME_TARGET/node/bin/node\" ]; then\n  chmod +x \"$RUNTIME_TARGET/node/bin/node\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

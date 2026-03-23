@@ -719,6 +719,29 @@ class OpenClawService: ObservableObject {
         let note: String?
         let blockingMessage: String?
     }
+
+    static func persistentPublishBlockingMessage(
+        latestSyncReceipt: OpenClawRuntimeSyncReceipt?,
+        fallback: String = "当前 run.controlled 需要先完成 persistent publish：请先执行“同步当前会话”，把最新项目镜像写入运行时会话。"
+    ) -> String {
+        guard let latestSyncReceipt else {
+            return fallback
+        }
+
+        if let blockedReason = latestSyncReceipt.blockedReasonMessage {
+            return "当前 run.controlled 需要先完成 persistent publish：\(blockedReason)"
+        }
+
+        if let primaryIssue = latestSyncReceipt.primaryIssueMessage {
+            return "当前 run.controlled 需要先完成 persistent publish：最近一次“同步当前会话”未完成。\(primaryIssue)"
+        }
+
+        if let warning = latestSyncReceipt.normalizedWarnings.first {
+            return "当前 run.controlled 需要先完成 persistent publish：最近一次“同步当前会话”仍有告警。\(warning)"
+        }
+
+        return fallback
+    }
     
     // 初始化时检测连接状态
     init() {
@@ -2138,7 +2161,9 @@ class OpenClawService: ObservableObject {
             return RuntimeExecutionAdmission(
                 allowed: false,
                 note: nil,
-                blockingMessage: "当前 run.controlled 需要先完成 persistent publish：请先执行“同步当前会话”，把最新项目镜像写入运行时会话。"
+                blockingMessage: Self.persistentPublishBlockingMessage(
+                    latestSyncReceipt: project.runtimeState.latestRuntimeSyncReceipt
+                )
             )
         }
 

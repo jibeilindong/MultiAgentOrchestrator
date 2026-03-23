@@ -981,6 +981,35 @@ class AppState: ObservableObject {
         return openClawLatestRuntimeSyncDetail
     }
 
+    var openClawRunControlledBlockingMessage: String? {
+        guard openClawManager.config.deploymentKind != .remoteServer,
+              let project = currentProject else {
+            return nil
+        }
+
+        guard isCurrentProjectAttachedToOpenClaw else {
+            return "当前 run.controlled 需要先完成 Bind：请先附着当前项目到 OpenClaw 会话。"
+        }
+
+        guard project.runtimeState.workflowConfigurationRevision <= project.runtimeState.appliedToMirrorConfigurationRevision else {
+            return "当前 run.controlled 需要先完成 Publish：项目镜像仍有待准备变更，请先应用工作流配置。"
+        }
+
+        let runtimePublished =
+            project.runtimeState.appliedToMirrorConfigurationRevision > 0
+            && project.runtimeState.syncedToRuntimeConfigurationRevision >= project.runtimeState.appliedToMirrorConfigurationRevision
+            && openClawManager.sessionLifecycle.stage == .synced
+            && !openClawManager.sessionLifecycle.hasPendingMirrorChanges
+
+        guard !runtimePublished else {
+            return nil
+        }
+
+        return OpenClawService.persistentPublishBlockingMessage(
+            latestSyncReceipt: project.runtimeState.latestRuntimeSyncReceipt
+        )
+    }
+
     var isCurrentProjectAttachedToOpenClaw: Bool {
         guard let projectID = currentProject?.id else { return false }
         return openClawManager.hasAttachedProjectSession && openClawManager.attachedProjectID == projectID
@@ -1115,6 +1144,9 @@ class AppState: ObservableObject {
         } else if isCurrentProjectRuntimeSessionSynchronized {
             publishStatus = .ready
             publishDetail = "当前项目镜像已经发布到运行时会话。"
+        } else if let blockingMessage = openClawRunControlledBlockingMessage {
+            publishStatus = .pending
+            publishDetail = blockingMessage
         } else if hasPendingOpenClawSessionSync {
             publishStatus = .pending
             publishDetail = "项目镜像已经准备完成，但仍有待发布的运行时修订。"
@@ -1133,7 +1165,9 @@ class AppState: ObservableObject {
             executeDetail = "OpenClaw 正在执行当前工作流或聊天请求。"
         } else if openClawManager.canRunConversation || openClawManager.canRunWorkflow {
             executeStatus = .ready
-            if publishStatus == .ready || publishStatus == .notRequired {
+            if let blockingMessage = openClawRunControlledBlockingMessage {
+                executeDetail = "聊天模式可以继续，但 run.controlled 当前仍被阻塞：\(blockingMessage)"
+            } else if publishStatus == .ready || publishStatus == .notRequired {
                 executeDetail = "聊天模式与执行模式都可以按当前运行时状态继续推进。"
             } else {
                 executeDetail = "运行时已经具备执行能力；聊天可以继续，正式执行建议先完成 Publish。"
@@ -1141,6 +1175,9 @@ class AppState: ObservableObject {
         } else if probeStatus == .blocked {
             executeStatus = .blocked
             executeDetail = "运行时尚未完成 Probe，当前不能进入 Execute。"
+        } else if let blockingMessage = openClawRunControlledBlockingMessage {
+            executeStatus = .pending
+            executeDetail = blockingMessage
         } else {
             executeStatus = .pending
             executeDetail = "运行时已可见，但聊天或执行能力尚未完全就绪。"
@@ -6056,10 +6093,7 @@ class AppState: ObservableObject {
             $0[$1.threadID] = $1
         }
 
-        for message in messageManager.messages where
-            message.metadata[WorkbenchMetadataKey.channel] == "workbench"
-            && message.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
-        {
+        for message in workbenchMessages(for: workflow.id) {
             guard let threadID = resolvedWorkbenchThreadID(from: message.metadata) else { continue }
             threadMessages[threadID, default: []].append(message)
             if let context = workbenchThreadContext(for: message, workflow: workflow, project: project) {
@@ -6069,9 +6103,7 @@ class AppState: ObservableObject {
             }
         }
 
-        for task in taskManager.tasks where
-            task.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
-        {
+        for task in workbenchTasks(for: workflow.id) {
             guard let threadID = resolvedWorkbenchThreadID(from: task.metadata) else { continue }
             threadTasks[threadID, default: []].append(task)
             if let context = workbenchThreadContext(for: task, workflow: workflow, project: project) {
@@ -6904,32 +6936,15 @@ class AppState: ObservableObject {
             return context
         }
 
-        let workflowMessages = messageManager.messages
-            .filter { message in
-                message.metadata[WorkbenchMetadataKey.channel] == "workbench"
-                    && message.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
-            }
-            .sorted { $0.timestamp > $1.timestamp }
-
-        for message in workflowMessages {
-            guard let context = workbenchThreadContext(for: message, workflow: workflow, project: project) else {
-                continue
-            }
-            return context
-        }
-
-        let workflowTasks = taskManager.tasks
-            .filter { $0.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString }
-            .sorted { $0.createdAt > $1.createdAt }
-
-        for task in workflowTasks {
-            guard let context = workbenchThreadContext(for: task, workflow: workflow, project: project) else {
-                continue
-            }
-            return context
-        }
-
-        return nil
+        return firstResolvedWorkbenchThreadContext(
+            from: workbenchMessages(for: workflow.id),
+            workflow: workflow,
+            project: project
+        ) ?? firstResolvedWorkbenchThreadContext(
+            from: workbenchTasks(for: workflow.id),
+            workflow: workflow,
+            project: project
+        )
     }
 
     private func workbenchThreadContext(
@@ -6937,36 +6952,15 @@ class AppState: ObservableObject {
         workflow: Workflow,
         project: MAProject
     ) -> WorkbenchRemoteSessionContext? {
-        let workflowMessages = messageManager.messages
-            .filter { message in
-                message.metadata[WorkbenchMetadataKey.channel] == "workbench"
-                    && message.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
-                    && resolvedWorkbenchThreadID(from: message.metadata) == threadID
-            }
-            .sorted { $0.timestamp > $1.timestamp }
-
-        for message in workflowMessages {
-            guard let context = workbenchThreadContext(for: message, workflow: workflow, project: project) else {
-                continue
-            }
-            return context
-        }
-
-        let workflowTasks = taskManager.tasks
-            .filter { task in
-                task.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
-                    && resolvedWorkbenchThreadID(from: task.metadata) == threadID
-            }
-            .sorted { $0.createdAt > $1.createdAt }
-
-        for task in workflowTasks {
-            guard let context = workbenchThreadContext(for: task, workflow: workflow, project: project) else {
-                continue
-            }
-            return context
-        }
-
-        return nil
+        return firstResolvedWorkbenchThreadContext(
+            from: workbenchMessages(for: workflow.id, threadID: threadID),
+            workflow: workflow,
+            project: project
+        ) ?? firstResolvedWorkbenchThreadContext(
+            from: workbenchTasks(for: workflow.id, threadID: threadID),
+            workflow: workflow,
+            project: project
+        )
     }
 
     private func workbenchThreadContext(
@@ -7020,6 +7014,59 @@ class AppState: ObservableObject {
                 ?? defaultProjectSessionID,
             gatewaySessionKey: resolvedWorkbenchGatewaySessionKey(from: metadata)
         )
+    }
+
+    private func workbenchMessages(
+        for workflowID: UUID,
+        threadID: String? = nil
+    ) -> [Message] {
+        messageManager.messages
+            .filter { message in
+                message.metadata[WorkbenchMetadataKey.channel] == "workbench"
+                    && message.metadata[WorkbenchMetadataKey.workflowID] == workflowID.uuidString
+                    && (threadID == nil || resolvedWorkbenchThreadID(from: message.metadata) == threadID)
+            }
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func workbenchTasks(
+        for workflowID: UUID,
+        threadID: String? = nil
+    ) -> [Task] {
+        taskManager.tasks
+            .filter { task in
+                task.metadata[WorkbenchMetadataKey.workflowID] == workflowID.uuidString
+                    && (threadID == nil || resolvedWorkbenchThreadID(from: task.metadata) == threadID)
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func firstResolvedWorkbenchThreadContext(
+        from messages: [Message],
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        for message in messages {
+            guard let context = workbenchThreadContext(for: message, workflow: workflow, project: project) else {
+                continue
+            }
+            return context
+        }
+        return nil
+    }
+
+    private func firstResolvedWorkbenchThreadContext(
+        from tasks: [Task],
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        for task in tasks {
+            guard let context = workbenchThreadContext(for: task, workflow: workflow, project: project) else {
+                continue
+            }
+            return context
+        }
+        return nil
     }
 
     private func makeWorkbenchThreadContext(
@@ -7286,14 +7333,7 @@ class AppState: ObservableObject {
             return
         }
 
-        let messageIDs = messageManager.messages.compactMap { message -> UUID? in
-            guard message.metadata[WorkbenchMetadataKey.channel] == "workbench",
-                  message.metadata[WorkbenchMetadataKey.workflowID] == context.workflowID.uuidString,
-                  resolvedWorkbenchThreadID(from: message.metadata) == context.threadID else {
-                return nil
-            }
-            return message.id
-        }
+        let messageIDs = workbenchMessages(for: context.workflowID, threadID: context.threadID).map(\.id)
 
         for messageID in messageIDs {
             messageManager.updateMessage(messageID) { message in
@@ -7301,12 +7341,7 @@ class AppState: ObservableObject {
             }
         }
 
-        let threadTasks = taskManager.tasks.filter { task in
-            task.metadata[WorkbenchMetadataKey.workflowID] == context.workflowID.uuidString
-                && resolvedWorkbenchThreadID(from: task.metadata) == context.threadID
-        }
-
-        for var task in threadTasks {
+        for var task in workbenchTasks(for: context.workflowID, threadID: context.threadID) {
             task.metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = normalizedGatewaySessionKey
             taskManager.updateTask(task)
         }
