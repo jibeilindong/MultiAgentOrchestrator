@@ -67,16 +67,7 @@ enum OpenClawRuntimeExecutionIntent: String, Sendable {
     }
 
     var displayName: String {
-        switch self {
-        case .conversationAutonomous:
-            return "conversation.autonomous"
-        case .workflowControlled:
-            return "run.controlled"
-        case .inspectionReadonly:
-            return "inspection.readonly"
-        case .benchmark:
-            return "benchmark"
-        }
+        semanticType.displayTitle
     }
 }
 

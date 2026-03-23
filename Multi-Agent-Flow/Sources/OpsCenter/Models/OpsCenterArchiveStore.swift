@@ -9,7 +9,17 @@ private struct OpsCenterArchiveRuntimeSessionDocument: Codable {
     let sessionID: String
     let storageDirectoryName: String
     let generatedAt: Date
+    let sessionType: String?
+    let threadID: String?
+    let workflowID: UUID?
+    let entryAgentID: UUID?
+    let entryAgentName: String?
     let workflowIDs: [String]
+    let plannedTransport: String?
+    let actualTransport: String?
+    let actualTransportKinds: [String]?
+    let fallbackReason: String?
+    let degradationReason: String?
     let eventCount: Int
     let dispatchCount: Int
     let receiptCount: Int
@@ -37,7 +47,10 @@ private struct OpsCenterArchiveThreadContextDocument: Codable {
 
 private struct OpsCenterArchiveWorkbenchThreadDocument: Codable {
     let threadID: String
+    let threadType: String?
+    let mode: String?
     let sessionID: String
+    let linkedSessionIDs: [String]?
     let workflowID: UUID?
     let workflowName: String?
     let entryAgentID: UUID?
@@ -473,6 +486,16 @@ enum OpsCenterArchiveStore {
             status: resolvedStatus,
             startedAt: resolvedStartedAt,
             lastUpdatedAt: resolvedLastUpdatedAt,
+            threadType: threadDocument?.threadType,
+            mode: threadDocument?.mode,
+            linkedSessionIDs: Set(
+                (threadDocument?.linkedSessionIDs ?? [])
+                    .compactMap { value in
+                        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return trimmed.isEmpty ? nil : trimmed.lowercased()
+                    }
+                    + [normalizedTargetThreadID, resolvedSessionID]
+            ).sorted(),
             entryAgentName: resolvedEntryAgentName,
             participantNames: participantNames,
             pendingApprovalCount: pendingApprovalCount,
@@ -716,7 +739,12 @@ enum OpsCenterArchiveStore {
         if let sessionDocument {
             return OpsCenterSessionSummary(
                 sessionID: sessionDocument.sessionID,
+                sessionType: sessionDocument.sessionType,
+                threadID: sessionDocument.threadID,
                 workflowIDs: sessionDocument.workflowIDs,
+                plannedTransport: sessionDocument.plannedTransport,
+                actualTransport: sessionDocument.actualTransport,
+                actualTransportKinds: sessionDocument.actualTransportKinds ?? [],
                 eventCount: sessionDocument.eventCount,
                 dispatchCount: sessionDocument.dispatchCount,
                 receiptCount: sessionDocument.receiptCount,
@@ -726,6 +754,8 @@ enum OpsCenterArchiveStore {
                 failedDispatchCount: sessionDocument.failedDispatchCount,
                 lastUpdatedAt: sessionDocument.lastUpdatedAt,
                 latestFailureText: latestFailureText(dispatches: dispatches, receipts: receipts),
+                fallbackReason: sessionDocument.fallbackReason,
+                degradationReason: sessionDocument.degradationReason,
                 isPrimaryRuntimeSession: sessionDocument.isProjectRuntimeSession
             )
         }
@@ -744,7 +774,12 @@ enum OpsCenterArchiveStore {
 
         return OpsCenterSessionSummary(
             sessionID: sessionID,
+            sessionType: nil,
+            threadID: nil,
             workflowIDs: workflowIDs,
+            plannedTransport: nil,
+            actualTransport: nil,
+            actualTransportKinds: [],
             eventCount: events.count,
             dispatchCount: dispatches.count,
             receiptCount: receipts.count,
@@ -758,6 +793,8 @@ enum OpsCenterArchiveStore {
                 + receipts.compactMap { $0.completedAt ?? $0.startedAt }
             ).max(),
             latestFailureText: latestFailureText(dispatches: dispatches, receipts: receipts),
+            fallbackReason: nil,
+            degradationReason: nil,
             isPrimaryRuntimeSession: false
         )
     }

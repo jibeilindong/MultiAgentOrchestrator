@@ -5008,7 +5008,11 @@ class AppState: ObservableObject {
     }
 
     @discardableResult
-    func submitWorkbenchPrompt(_ prompt: String, workflowID: UUID? = nil) -> Bool {
+    func submitWorkbenchPrompt(
+        _ prompt: String,
+        workflowID: UUID? = nil,
+        mode: WorkbenchInteractionMode = .chat
+    ) -> Bool {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty,
               !openClawService.isExecuting,
@@ -5017,11 +5021,14 @@ class AppState: ObservableObject {
             return false
         }
 
-        guard openClawManager.canRunConversation else {
+        let canRunWorkbenchMode = mode == .chat
+            ? openClawManager.canRunConversation
+            : openClawManager.canRunWorkflow
+        guard canRunWorkbenchMode else {
             let detail = openClawManager.connectionState.health.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
             let message = detail?.isEmpty == false
                 ? "Workbench publish failed: \(detail!)"
-                : "Workbench publish failed: OpenClaw runtime is not runnable for workbench conversation."
+                : "Workbench publish failed: OpenClaw runtime is not runnable for workbench \(mode.rawValue)."
             openClawService.addLog(
                 .error,
                 message
@@ -5052,9 +5059,21 @@ class AppState: ObservableObject {
             )
         }
 
+        if mode == .run {
+            return submitWorkbenchRunPrompt(
+                trimmedPrompt,
+                workflow: workflow,
+                project: project,
+                leadNode: leadNode,
+                leadAgent: leadAgent,
+                entryAgentIDs: entryAgentIDs
+            )
+        }
+
         let beginWorkbenchExecution: () -> Void = { [weak self] in
             guard let self else { return }
             let workbenchStart = Date()
+            let executionIntent = mode.executionIntent
             let workbenchSessionID = self.workbenchSessionID(
                 projectRuntimeSessionID: project.runtimeState.sessionID,
                 workflowID: workflow.id,
@@ -5078,6 +5097,11 @@ class AppState: ObservableObject {
             task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
             task.metadata["workbenchSessionID"] = workbenchSessionID
             task.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
+            self.applyWorkbenchSemanticMetadata(
+                &task.metadata,
+                interactionMode: mode,
+                executionIntent: executionIntent
+            )
             self.taskManager.addTask(task)
 
             var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
@@ -5090,6 +5114,11 @@ class AppState: ObservableObject {
             userMessage.metadata["workbenchSessionID"] = workbenchSessionID
             userMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             userMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: trimmedPrompt))
+            self.applyWorkbenchSemanticMetadata(
+                &userMessage.metadata,
+                interactionMode: mode,
+                executionIntent: executionIntent
+            )
             userMessage.runtimeEvent = self.makeWorkbenchRuntimeEvent(
                 eventType: .taskDispatch,
                 workflowID: workflow.id,
@@ -5101,7 +5130,10 @@ class AppState: ObservableObject {
                     "intent": "respond",
                     "summary": trimmedPrompt,
                     "expectedOutput": "agent_final_response"
-                ]
+                ],
+                threadType: mode.threadType,
+                threadMode: mode.threadMode,
+                executionIntent: executionIntent
             )
             self.messageManager.appendMessage(userMessage)
 
@@ -5151,6 +5183,11 @@ class AppState: ObservableObject {
             placeholderMessage.metadata["workbenchSessionID"] = workbenchSessionID
             placeholderMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             placeholderMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: placeholderMessage.content))
+            self.applyWorkbenchSemanticMetadata(
+                &placeholderMessage.metadata,
+                interactionMode: mode,
+                executionIntent: executionIntent
+            )
             self.messageManager.appendMessage(placeholderMessage)
             streamingMessageID = placeholderMessage.id
 
@@ -5178,6 +5215,11 @@ class AppState: ObservableObject {
                         message.metadata["workbenchSessionID"] = workbenchSessionID
                         message.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
                         message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
+                        self.applyWorkbenchSemanticMetadata(
+                            &message.metadata,
+                            interactionMode: mode,
+                            executionIntent: executionIntent
+                        )
                         if let runtimeEvent {
                             message.runtimeEvent = runtimeEvent
                         }
@@ -5203,6 +5245,11 @@ class AppState: ObservableObject {
                     responseMessage.metadata["workbenchSessionID"] = workbenchSessionID
                     responseMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
                     responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
+                    self.applyWorkbenchSemanticMetadata(
+                        &responseMessage.metadata,
+                        interactionMode: mode,
+                        executionIntent: executionIntent
+                    )
                     responseMessage.runtimeEvent = runtimeEvent
                     self.messageManager.appendMessage(responseMessage)
                     streamingMessageID = responseMessage.id
@@ -5496,6 +5543,276 @@ class AppState: ObservableObject {
         }
 
         beginWorkbenchExecution()
+
+        return true
+    }
+
+    @discardableResult
+    private func submitWorkbenchRunPrompt(
+        _ prompt: String,
+        workflow: Workflow,
+        project: MAProject,
+        leadNode: WorkflowNode,
+        leadAgent: Agent,
+        entryAgentIDs: Set<UUID>
+    ) -> Bool {
+        let workbenchStart = Date()
+        let workbenchSessionID = workbenchSessionID(
+            projectRuntimeSessionID: project.runtimeState.sessionID,
+            workflowID: workflow.id,
+            agentID: leadAgent.id
+        )
+
+        var task = Task(
+            title: workbenchTaskTitle(from: prompt),
+            description: prompt,
+            status: .todo,
+            priority: .high,
+            assignedAgentID: leadAgent.id,
+            workflowNodeID: leadNode.id,
+            createdBy: nil,
+            tags: ["workbench", workflow.name, "run"]
+        )
+        task.metadata["source"] = "workbench"
+        task.metadata["workflowID"] = workflow.id.uuidString
+        task.metadata["entryAgentID"] = leadAgent.id.uuidString
+        task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
+        task.metadata["workbenchSessionID"] = workbenchSessionID
+        applyWorkbenchSemanticMetadata(
+            &task.metadata,
+            interactionMode: .run,
+            executionIntent: .workflowControlled
+        )
+        taskManager.addTask(task)
+
+        var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: prompt)
+        userMessage.status = .read
+        userMessage.metadata["channel"] = "workbench"
+        userMessage.metadata["role"] = "user"
+        userMessage.metadata["kind"] = "input"
+        userMessage.metadata["workflowID"] = workflow.id.uuidString
+        userMessage.metadata["taskID"] = task.id.uuidString
+        userMessage.metadata["workbenchSessionID"] = workbenchSessionID
+        userMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: prompt))
+        applyWorkbenchSemanticMetadata(
+            &userMessage.metadata,
+            interactionMode: .run,
+            executionIntent: .workflowControlled
+        )
+        userMessage.runtimeEvent = makeWorkbenchRuntimeEvent(
+            eventType: .taskDispatch,
+            workflowID: workflow.id,
+            nodeID: leadNode.id,
+            sessionID: workbenchSessionID,
+            source: OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User"),
+            target: OpenClawRuntimeActor(kind: .agent, agentId: leadAgent.id.uuidString, agentName: leadAgent.name),
+            payload: [
+                "intent": "execute",
+                "summary": prompt,
+                "expectedOutput": "workflow_execution"
+            ],
+            threadType: WorkbenchInteractionMode.run.threadType,
+            threadMode: WorkbenchInteractionMode.run.threadMode,
+            executionIntent: .workflowControlled
+        )
+        messageManager.appendMessage(userMessage)
+
+        taskManager.moveTask(task.id, to: .inProgress)
+
+        var statusMessage = Message(
+            from: leadAgent.id,
+            to: leadAgent.id,
+            type: .notification,
+            content: "运行已提交，正在执行工作流..."
+        )
+        statusMessage.status = .read
+        statusMessage.metadata["channel"] = "workbench"
+        statusMessage.metadata["role"] = "assistant"
+        statusMessage.metadata["kind"] = "output"
+        statusMessage.metadata["workflowID"] = workflow.id.uuidString
+        statusMessage.metadata["taskID"] = task.id.uuidString
+        statusMessage.metadata["workbenchSessionID"] = workbenchSessionID
+        statusMessage.metadata["thinking"] = "true"
+        statusMessage.metadata["agentName"] = leadAgent.name
+        statusMessage.metadata["outputType"] = ExecutionOutputType.runtimeLog.rawValue
+        statusMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: statusMessage.content))
+        applyWorkbenchSemanticMetadata(
+            &statusMessage.metadata,
+            interactionMode: .run,
+            executionIntent: .workflowControlled
+        )
+        messageManager.appendMessage(statusMessage)
+        let statusMessageID = statusMessage.id
+
+        func updateRunStatusMessage(
+            content: String,
+            type: MessageType,
+            outputType: ExecutionOutputType,
+            isThinking: Bool
+        ) {
+            messageManager.updateMessage(statusMessageID) { message in
+                message.content = content
+                message.timestamp = Date()
+                message.type = type
+                message.metadata["thinking"] = isThinking ? "true" : "false"
+                message.metadata["outputType"] = outputType.rawValue
+                message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: content))
+                self.applyWorkbenchSemanticMetadata(
+                    &message.metadata,
+                    interactionMode: .run,
+                    executionIntent: .workflowControlled
+                )
+            }
+        }
+
+        func persistRunLatency(label: String, key: String, at timestamp: Date) {
+            let latency = latencyMillisecondsString(since: workbenchStart, until: timestamp)
+            persistWorkbenchLatencyMetric(taskID: task.id, messageID: statusMessageID, key: key, value: latency)
+            openClawService.addLog(
+                .info,
+                "Workbench latency: \(label)=\(latency)ms",
+                sessionID: workbenchSessionID,
+                agentID: leadAgent.id
+            )
+        }
+
+        openClawService.addLog(
+            .info,
+            "Workbench run mode selected. Executing workflow \(workflow.name) under workflowControlled semantics.",
+            sessionID: workbenchSessionID,
+            agentID: leadAgent.id
+        )
+
+        if var mutableProject = currentProject {
+            mutableProject.runtimeState.messageQueue.append(prompt)
+            if let runtimeEvent = userMessage.runtimeEvent {
+                appendRuntimeEvents([runtimeEvent], to: &mutableProject.runtimeState)
+            }
+            mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
+            mutableProject.runtimeState.lastUpdated = Date()
+            mutableProject.updatedAt = Date()
+            currentProject = mutableProject
+        }
+
+        openClawService.executeWorkflow(
+            workflow,
+            agents: project.agents,
+            prompt: prompt,
+            projectID: project.id,
+            projectRuntimeSessionID: workbenchSessionID,
+            executionIntent: .workflowControlled,
+            agentOutputMode: .structuredJSON,
+            onNodeDispatched: { [weak self] dispatchEvent in
+                guard let self else { return }
+                if var mutableProject = self.currentProject {
+                    self.enqueueRuntimeDispatch(dispatchEvent, in: &mutableProject.runtimeState)
+                    mutableProject.runtimeState.lastUpdated = Date()
+                    mutableProject.updatedAt = Date()
+                    self.currentProject = mutableProject
+                }
+            },
+            onNodeAccepted: { [weak self] acceptedEvent in
+                guard let self else { return }
+                if var mutableProject = self.currentProject {
+                    self.promoteRuntimeDispatchToInflight(acceptedEvent, in: &mutableProject.runtimeState)
+                    mutableProject.runtimeState.lastUpdated = Date()
+                    mutableProject.updatedAt = Date()
+                    self.currentProject = mutableProject
+                }
+            },
+            onNodeProgress: { [weak self] progressEvent in
+                guard let self else { return }
+                if var mutableProject = self.currentProject {
+                    self.promoteRuntimeDispatchToRunning(progressEvent, in: &mutableProject.runtimeState)
+                    mutableProject.runtimeState.lastUpdated = Date()
+                    mutableProject.updatedAt = Date()
+                    self.currentProject = mutableProject
+                }
+            }
+        ) { [weak self] results in
+            guard let self else { return }
+
+            let completedAt = Date()
+            persistRunLatency(label: "full_workflow", key: "fullWorkflowMs", at: completedAt)
+
+            let completedCount = results.filter { $0.status == .completed }.count
+            let failedResults = results.filter { $0.status == .failed }
+            let finalStatus: TaskStatus = failedResults.isEmpty ? .done : .blocked
+            self.taskManager.moveTask(task.id, to: finalStatus)
+
+            if var mutableProject = self.currentProject {
+                if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: prompt) {
+                    mutableProject.runtimeState.messageQueue.remove(at: queueIndex)
+                }
+                for result in results {
+                    mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
+                    self.recordProtocolOutcome(for: result, in: &mutableProject)
+                }
+                let terminalDispatches = results
+                    .flatMap(\.runtimeEvents)
+                    .filter { event in
+                        event.eventType == .taskResult || event.eventType == .taskError
+                    }
+                    .map { event in
+                        self.makeRuntimeDispatchRecord(
+                            from: event,
+                            status: event.eventType == .taskError ? .failed : .completed,
+                            completedAt: completedAt,
+                            errorMessage: event.eventType == .taskError ? event.payload["message"] : nil
+                        )
+                    }
+                let failedIDs = Set(
+                    terminalDispatches
+                        .filter { $0.status == .failed || $0.status == .aborted || $0.status == .expired }
+                        .map(\.id)
+                )
+                let completedDispatches = terminalDispatches.filter { !failedIDs.contains($0.id) }
+                let failedDispatches = terminalDispatches.filter { failedIDs.contains($0.id) }
+                let terminalParentIDs = Set(terminalDispatches.compactMap(\.parentEventID))
+                if !terminalParentIDs.isEmpty {
+                    mutableProject.runtimeState.inflightDispatches.removeAll { terminalParentIDs.contains($0.id) }
+                }
+                if !completedDispatches.isEmpty {
+                    self.removeSupersededFailedDispatches(for: completedDispatches, in: &mutableProject.runtimeState)
+                    let completedIDs = Set(completedDispatches.map(\.id))
+                    mutableProject.runtimeState.completedDispatches.removeAll { completedIDs.contains($0.id) }
+                    mutableProject.runtimeState.completedDispatches.append(contentsOf: completedDispatches)
+                }
+                if !failedDispatches.isEmpty {
+                    let failedRecordIDs = Set(failedDispatches.map(\.id))
+                    mutableProject.runtimeState.failedDispatches.removeAll { failedRecordIDs.contains($0.id) }
+                    mutableProject.runtimeState.failedDispatches.append(contentsOf: failedDispatches)
+                }
+                self.appendRuntimeEvents(results.flatMap(\.runtimeEvents), to: &mutableProject.runtimeState)
+                mutableProject.runtimeState.lastUpdated = Date()
+                mutableProject.updatedAt = Date()
+                self.currentProject = mutableProject
+            }
+
+            let summaryLine = (
+                results
+                    .map(\.summaryText)
+                    .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            )?.compactSingleLinePreview(limit: 220)
+            let failureLine = failedResults.first.map(\.summaryText)?.compactSingleLinePreview(limit: 180)
+            let summaryText = [
+                "Run completed: \(completedCount) succeeded, \(failedResults.count) failed.",
+                summaryLine,
+                failureLine.map { "Failure: \($0)" }
+            ]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+
+            updateRunStatusMessage(
+                content: summaryText,
+                type: failedResults.isEmpty ? .notification : .data,
+                outputType: failedResults.isEmpty ? .agentFinalResponse : .errorSummary,
+                isThinking: false
+            )
+            self.openClawService.executionResults = results
+            self.openClawService.isExecuting = false
+            self.openClawService.currentNodeID = nil
+        }
 
         return true
     }
@@ -6128,16 +6445,21 @@ class AppState: ObservableObject {
                     message.timestamp = timestamp
                     message.status = .read
                     message.type = role == "user" ? .task : .notification
-                    message.metadata["channel"] = "workbench"
-                    message.metadata["role"] = role
-                    message.metadata["kind"] = role == "user" ? "input" : "output"
-                    message.metadata["workflowID"] = sessionContext.workflowID.uuidString
-                    message.metadata["workbenchSessionID"] = sessionContext.sessionID
-                    if role == "assistant" {
-                        message.metadata["thinking"] = "false"
-                        message.metadata["streamed"] = "true"
-                        message.metadata["agentName"] = sessionContext.agentName
-                        message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
+                message.metadata["channel"] = "workbench"
+                message.metadata["role"] = role
+                message.metadata["kind"] = role == "user" ? "input" : "output"
+                message.metadata["workflowID"] = sessionContext.workflowID.uuidString
+                message.metadata["workbenchSessionID"] = sessionContext.sessionID
+                self.applyWorkbenchSemanticMetadata(
+                    &message.metadata,
+                    interactionMode: .chat,
+                    executionIntent: .conversationAutonomous
+                )
+                if role == "assistant" {
+                    message.metadata["thinking"] = "false"
+                    message.metadata["streamed"] = "true"
+                    message.metadata["agentName"] = sessionContext.agentName
+                    message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
                     }
                     message.runtimeEvent = self.makeTranscriptRuntimeEvent(
                         role: role,
@@ -6161,6 +6483,11 @@ class AppState: ObservableObject {
             appendedMessage.metadata["kind"] = role == "user" ? "input" : "output"
             appendedMessage.metadata["workflowID"] = sessionContext.workflowID.uuidString
             appendedMessage.metadata["workbenchSessionID"] = sessionContext.sessionID
+            applyWorkbenchSemanticMetadata(
+                &appendedMessage.metadata,
+                interactionMode: .chat,
+                executionIntent: .conversationAutonomous
+            )
             if role == "assistant" {
                 appendedMessage.metadata["entryReply"] = "true"
                 appendedMessage.metadata["streamed"] = "true"
@@ -6177,6 +6504,35 @@ class AppState: ObservableObject {
         }
     }
 
+    private func applyWorkbenchSemanticMetadata(
+        _ metadata: inout [String: String],
+        interactionMode: WorkbenchInteractionMode,
+        executionIntent: OpenClawRuntimeExecutionIntent? = nil
+    ) {
+        applyWorkbenchSemanticMetadata(
+            &metadata,
+            threadType: interactionMode.threadType,
+            threadMode: interactionMode.threadMode,
+            executionIntent: executionIntent ?? interactionMode.executionIntent,
+            interactionMode: interactionMode
+        )
+    }
+
+    private func applyWorkbenchSemanticMetadata(
+        _ metadata: inout [String: String],
+        threadType: RuntimeSessionSemanticType,
+        threadMode: WorkbenchThreadSemanticMode,
+        executionIntent: OpenClawRuntimeExecutionIntent,
+        interactionMode: WorkbenchInteractionMode? = nil
+    ) {
+        if let interactionMode {
+            metadata["workbenchMode"] = interactionMode.rawValue
+        }
+        metadata["executionIntent"] = executionIntent.rawValue
+        metadata["workbenchThreadType"] = threadType.rawValue
+        metadata["workbenchThreadMode"] = threadMode.rawValue
+    }
+
     private func makeWorkbenchRuntimeEvent(
         eventType: OpenClawRuntimeEventType,
         workflowID: UUID,
@@ -6184,7 +6540,10 @@ class AppState: ObservableObject {
         sessionID: String,
         source: OpenClawRuntimeActor,
         target: OpenClawRuntimeActor,
-        payload: [String: String]
+        payload: [String: String],
+        threadType: RuntimeSessionSemanticType,
+        threadMode: WorkbenchThreadSemanticMode,
+        executionIntent: OpenClawRuntimeExecutionIntent = .conversationAutonomous
     ) -> OpenClawRuntimeEvent {
         OpenClawRuntimeEvent(
             eventType: eventType,
@@ -6197,7 +6556,9 @@ class AppState: ObservableObject {
             transport: OpenClawRuntimeTransport(kind: .gatewayChat, deploymentKind: OpenClawManager.shared.config.deploymentKind.rawValue),
             payload: payload,
             control: [
-                "executionIntent": OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue
+                "executionIntent": executionIntent.rawValue,
+                "workbenchThreadType": threadType.rawValue,
+                "workbenchThreadMode": threadMode.rawValue
             ]
         )
     }
@@ -6605,6 +6966,11 @@ class AppState: ObservableObject {
             payload: [
                 "summary": text,
                 "role": normalizedRole
+            ],
+            control: [
+                "executionIntent": OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
+                "workbenchThreadType": RuntimeSessionSemanticType.conversationAutonomous.rawValue,
+                "workbenchThreadMode": WorkbenchThreadSemanticMode.autonomousConversation.rawValue
             ]
         )
     }

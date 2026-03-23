@@ -118,10 +118,33 @@ enum OpsCenterRuntimeStatus: String {
     }
 }
 
+private struct OpsCenterWorkbenchThreadLink {
+    let threadID: String
+    let threadType: RuntimeSessionSemanticType
+    let threadMode: WorkbenchThreadSemanticMode
+    let workflowID: UUID?
+    let entryAgentID: UUID?
+    let entryAgentName: String?
+    let gatewaySessionKey: String?
+}
+
+private struct OpsCenterRuntimeSessionClassification {
+    let sessionType: String
+    let threadID: String?
+    let workflowID: UUID?
+    let entryAgentID: UUID?
+    let entryAgentName: String?
+}
+
 struct OpsCenterSessionSummary: Identifiable {
     var id: String { sessionID }
     let sessionID: String
+    let sessionType: String?
+    let threadID: String?
     let workflowIDs: [String]
+    let plannedTransport: String?
+    let actualTransport: String?
+    let actualTransportKinds: [String]
     let eventCount: Int
     let dispatchCount: Int
     let receiptCount: Int
@@ -131,6 +154,8 @@ struct OpsCenterSessionSummary: Identifiable {
     let failedDispatchCount: Int
     let lastUpdatedAt: Date?
     let latestFailureText: String?
+    let fallbackReason: String?
+    let degradationReason: String?
     let isPrimaryRuntimeSession: Bool
 }
 
@@ -312,6 +337,9 @@ struct OpsCenterThreadInvestigation: Identifiable {
     let status: String
     let startedAt: Date?
     let lastUpdatedAt: Date?
+    let threadType: String?
+    let mode: String?
+    let linkedSessionIDs: [String]
     let entryAgentName: String?
     let participantNames: [String]
     let pendingApprovalCount: Int
@@ -583,6 +611,12 @@ enum OpsCenterSnapshotBuilder {
 
         let runtimeState = project.runtimeState
         let dispatches = allDispatches(from: runtimeState)
+        let agentsByID = Dictionary(uniqueKeysWithValues: project.agents.map { ($0.id, $0) })
+        let workbenchThreadLinks = buildWorkbenchThreadLinks(
+            messages: messages.filter { $0.metadata["channel"] == "workbench" },
+            tasks: tasks.filter { $0.metadata["source"] == "workbench" },
+            agentsByID: agentsByID
+        )
         let sessionIDs = Set([runtimeState.sessionID])
             .union(messages.compactMap { normalizedSessionID($0.metadata["workbenchSessionID"]) })
             .union(tasks.compactMap { normalizedSessionID($0.metadata["workbenchSessionID"]) })
@@ -597,15 +631,40 @@ enum OpsCenterSnapshotBuilder {
             let sessionEvents = runtimeState.runtimeEvents.filter { normalizedSessionID($0.sessionKey) == sessionID }
             let sessionReceipts = executionResults.filter { normalizedSessionID($0.sessionID) == sessionID }
                 .filter { nodeIDsForWorkflow.isEmpty || nodeIDsForWorkflow.contains($0.nodeID) }
+            let sessionMessages = messages.filter { normalizedSessionID($0.metadata["workbenchSessionID"]) == sessionID }
+            let sessionTasks = tasks.filter { normalizedSessionID($0.metadata["workbenchSessionID"]) == sessionID }
+            let classification = classifyRuntimeSession(
+                sessionID: sessionID,
+                project: project,
+                sessionMessages: sessionMessages,
+                sessionTasks: sessionTasks,
+                sessionDispatches: sessionDispatches,
+                sessionEvents: sessionEvents,
+                sessionReceipts: sessionReceipts,
+                workbenchThreadLinks: workbenchThreadLinks
+            )
+            let actualTransportKinds = Array(
+                Set(
+                    sessionDispatches.map { $0.transportKind.rawValue }
+                        + sessionEvents.map { $0.transport.kind.rawValue }
+                        + sessionReceipts.compactMap(\.transportKind)
+                )
+            ).sorted()
+            let actualTransport = dominantTransportKind(from: actualTransportKinds)
+            let plannedTransport = plannedTransportKind(
+                for: classification.sessionType,
+                deploymentKind: project.openClaw.config.deploymentKind,
+                actualTransport: actualTransport
+            )
 
             let workflowIDs = Set(
                 sessionDispatches.compactMap(\.workflowID)
                     + sessionEvents.compactMap(\.workflowId)
-                    + messages.compactMap { message in
+                    + sessionMessages.compactMap { message in
                         guard normalizedSessionID(message.metadata["workbenchSessionID"]) == sessionID else { return nil }
                         return normalizedWorkflowID(message.metadata["workflowID"])
                     }
-                    + tasks.compactMap { task in
+                    + sessionTasks.compactMap { task in
                         guard normalizedSessionID(task.metadata["workbenchSessionID"]) == sessionID else { return nil }
                         return normalizedWorkflowID(task.metadata["workflowID"])
                     }
@@ -617,10 +676,21 @@ enum OpsCenterSnapshotBuilder {
                 + sessionReceipts.filter { $0.status == .failed }.map(\.summaryText)
             )
             .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            let fallbackReason: String?
+            if let plannedTransport, let actualTransport, plannedTransport != actualTransport {
+                fallbackReason = "Preferred transport \(plannedTransport) degraded to \(actualTransport)."
+            } else {
+                fallbackReason = nil
+            }
 
             return OpsCenterSessionSummary(
                 sessionID: sessionID,
+                sessionType: classification.sessionType,
+                threadID: classification.threadID,
                 workflowIDs: workflowIDs,
+                plannedTransport: plannedTransport,
+                actualTransport: actualTransport,
+                actualTransportKinds: actualTransportKinds,
                 eventCount: sessionEvents.count,
                 dispatchCount: sessionDispatches.count,
                 receiptCount: sessionReceipts.count,
@@ -636,6 +706,8 @@ enum OpsCenterSnapshotBuilder {
                     + sessionReceipts.compactMap { $0.completedAt ?? $0.startedAt }
                 ).max(),
                 latestFailureText: latestFailureText,
+                fallbackReason: fallbackReason,
+                degradationReason: latestFailureText,
                 isPrimaryRuntimeSession: normalizedSessionID(runtimeState.sessionID) == sessionID
             )
         }
@@ -1192,6 +1264,18 @@ enum OpsCenterSnapshotBuilder {
         let taskDates = workbenchTasks.map { $0.completedAt ?? $0.startedAt ?? $0.createdAt }
         let lastUpdatedAt = (workbenchMessages.map(\.timestamp) + taskDates).max()
             ?? sessionInvestigation?.session.lastUpdatedAt
+        let linkedSessions = snapshot.sessionSummaries.filter {
+            ($0.threadID == normalizedTargetThreadID) || ($0.sessionID == normalizedTargetThreadID)
+        }
+        let linkedSessionIDs = Set(linkedSessions.map(\.sessionID) + [normalizedTargetThreadID]).sorted()
+        let linkedSessionTypes = linkedSessions.compactMap {
+            RuntimeSessionSemanticType(normalizedRawValue: $0.sessionType)
+        }
+        let threadSemantics = resolveWorkbenchThreadSemantics(
+            messages: workbenchMessages,
+            tasks: workbenchTasks,
+            linkedSessionTypes: linkedSessionTypes
+        )
 
         return OpsCenterThreadInvestigation(
             threadID: normalizedTargetThreadID,
@@ -1201,6 +1285,9 @@ enum OpsCenterSnapshotBuilder {
             status: workbenchThreadStatus(messages: workbenchMessages, tasks: workbenchTasks),
             startedAt: startedAt,
             lastUpdatedAt: lastUpdatedAt,
+            threadType: sessionInvestigation?.session.sessionType ?? threadSemantics.type.rawValue,
+            mode: threadSemantics.mode.rawValue,
+            linkedSessionIDs: linkedSessionIDs,
             entryAgentName: entryAgentID.flatMap { agentNamesByID[$0] },
             participantNames: participantNames,
             pendingApprovalCount: workbenchMessages.filter { $0.status == .waitingForApproval }.count,
@@ -1612,6 +1699,206 @@ enum OpsCenterSnapshotBuilder {
             }
     }
 
+    private static func buildWorkbenchThreadLinks(
+        messages: [Message],
+        tasks: [Task],
+        agentsByID: [UUID: Agent]
+    ) -> [String: OpsCenterWorkbenchThreadLink] {
+        let sessionIDs = Set(messages.compactMap { normalizedSessionID($0.metadata["workbenchSessionID"]) })
+            .union(tasks.compactMap { normalizedSessionID($0.metadata["workbenchSessionID"]) })
+            .sorted()
+
+        return Dictionary(uniqueKeysWithValues: sessionIDs.map { sessionID in
+            let sessionMessages = messages.filter { normalizedSessionID($0.metadata["workbenchSessionID"]) == sessionID }
+            let sessionTasks = tasks.filter { normalizedSessionID($0.metadata["workbenchSessionID"]) == sessionID }
+            let semantics = resolveWorkbenchThreadSemantics(
+                messages: sessionMessages,
+                tasks: sessionTasks
+            )
+            let workflowID = sessionMessages.compactMap { uuid(from: $0.metadata["workflowID"]) }.first
+                ?? sessionTasks.compactMap { uuid(from: $0.metadata["workflowID"]) }.first
+            let entryAgentID = sessionMessages.compactMap { uuid(from: $0.metadata["entryAgentID"]) }.first
+                ?? sessionTasks.compactMap(\.assignedAgentID).first
+            let entryAgent = entryAgentID.flatMap { agentsByID[$0] }
+
+            return (
+                sessionID,
+                OpsCenterWorkbenchThreadLink(
+                    threadID: sessionID,
+                    threadType: semantics.type,
+                    threadMode: semantics.mode,
+                    workflowID: workflowID,
+                    entryAgentID: entryAgentID,
+                    entryAgentName: entryAgent?.name,
+                    gatewaySessionKey: entryAgent.map { workbenchGatewaySessionKey(sessionID: sessionID, agent: $0) }
+                )
+            )
+        })
+    }
+
+    private static func workbenchThreadType(from metadata: [String: String]) -> RuntimeSessionSemanticType? {
+        RuntimeSessionSemanticType(
+            normalizedRawValue: metadata["workbenchThreadType"] ?? metadata["executionIntent"]
+        )
+    }
+
+    private static func workbenchThreadMode(from metadata: [String: String]) -> WorkbenchThreadSemanticMode? {
+        WorkbenchThreadSemanticMode(
+            normalizedRawValue: metadata["workbenchThreadMode"] ?? metadata["workbenchMode"]
+        )
+    }
+
+    private static func resolveWorkbenchThreadSemantics(
+        messages: [Message],
+        tasks: [Task],
+        linkedSessionTypes: [RuntimeSessionSemanticType] = []
+    ) -> (type: RuntimeSessionSemanticType, mode: WorkbenchThreadSemanticMode) {
+        let explicitTypes = messages.compactMap { workbenchThreadType(from: $0.metadata) }
+            + tasks.compactMap { workbenchThreadType(from: $0.metadata) }
+        let explicitModes = messages.compactMap { workbenchThreadMode(from: $0.metadata) }
+            + tasks.compactMap { workbenchThreadMode(from: $0.metadata) }
+        let allTypes = explicitTypes + linkedSessionTypes
+        let resolvedType = RuntimeSessionSemanticType.preferredWorkbenchThreadType(from: allTypes)
+            ?? .conversationAutonomous
+        let resolvedMode = WorkbenchThreadSemanticMode.preferredMode(from: explicitModes)
+            ?? WorkbenchThreadSemanticMode.inferred(from: allTypes.isEmpty ? [resolvedType] : allTypes)
+
+        return (resolvedType, resolvedMode)
+    }
+
+    private static func runtimeSessionType(from rawValue: String?) -> String? {
+        RuntimeSessionSemanticType(normalizedRawValue: rawValue)?.rawValue
+    }
+
+    private static func classifyRuntimeSession(
+        sessionID: String,
+        project: MAProject,
+        sessionMessages: [Message],
+        sessionTasks: [Task],
+        sessionDispatches: [RuntimeDispatchRecord],
+        sessionEvents: [OpenClawRuntimeEvent],
+        sessionReceipts: [ExecutionResult],
+        workbenchThreadLinks: [String: OpsCenterWorkbenchThreadLink]
+    ) -> OpsCenterRuntimeSessionClassification {
+        let directThreadLink = workbenchThreadLinks[sessionID]
+        let gatewayThreadLink = workbenchThreadLinks.values.first { $0.gatewaySessionKey == sessionID }
+        let linkedThread = directThreadLink ?? gatewayThreadLink
+        let dispatchSessionTypes = sessionDispatches.compactMap { runtimeSessionType(from: $0.executionIntent) }
+        let eventSessionTypes = sessionEvents.compactMap {
+            runtimeSessionType(from: $0.control["executionIntent"] ?? $0.payload["executionIntent"])
+        }
+        let receiptSessionTypes = sessionReceipts.compactMap { runtimeSessionType(from: $0.executionIntent) }
+        let messageSessionTypes = sessionMessages.compactMap { workbenchThreadType(from: $0.metadata)?.rawValue }
+        let taskSessionTypes = sessionTasks.compactMap { workbenchThreadType(from: $0.metadata)?.rawValue }
+        let linkedThreadSessionTypes = linkedThread.map { [$0.threadType.rawValue] } ?? []
+        let recordedSessionTypes = Set(
+            dispatchSessionTypes
+                + eventSessionTypes
+                + receiptSessionTypes
+                + messageSessionTypes
+                + taskSessionTypes
+                + linkedThreadSessionTypes
+        )
+
+        let sessionType: String
+        if recordedSessionTypes.contains("benchmark")
+            || sessionID.lowercased().hasPrefix("benchmark-")
+            || sessionID.lowercased().hasPrefix("workflow-benchmark-") {
+            sessionType = "benchmark"
+        } else if recordedSessionTypes.contains("inspection.readonly") {
+            sessionType = "inspection.readonly"
+        } else if recordedSessionTypes.contains("run.controlled") || sessionID.lowercased().hasPrefix("workflow-") {
+            sessionType = "run.controlled"
+        } else if recordedSessionTypes.contains("conversation.autonomous")
+                    || recordedSessionTypes.contains("conversation.assisted")
+                    || directThreadLink != nil
+                    || gatewayThreadLink != nil
+                    || !sessionMessages.isEmpty
+                    || !sessionTasks.isEmpty
+                    || sessionID.lowercased().hasPrefix("workbench-")
+                    || sessionID.lowercased().hasPrefix("conversation-")
+                    || sessionID.lowercased().hasPrefix("agent:") {
+            sessionType = recordedSessionTypes.contains("conversation.assisted")
+                ? "conversation.assisted"
+                : "conversation.autonomous"
+        } else if sessionID == normalizedSessionID(project.runtimeState.sessionID)
+                    || !sessionDispatches.isEmpty
+                    || !sessionReceipts.isEmpty
+                    || !sessionEvents.isEmpty {
+            sessionType = "run.controlled"
+        } else {
+            sessionType = "unknown"
+        }
+
+        let workflowID = linkedThread?.workflowID
+            ?? sessionMessages.compactMap { uuid(from: $0.metadata["workflowID"]) }.first
+            ?? sessionTasks.compactMap { uuid(from: $0.metadata["workflowID"]) }.first
+            ?? sessionDispatches.compactMap { uuid(from: $0.workflowID) }.first
+            ?? sessionEvents.compactMap { uuid(from: $0.workflowId) }.first
+        let entryAgentID = linkedThread?.entryAgentID
+            ?? sessionMessages.compactMap { uuid(from: $0.metadata["entryAgentID"]) }.first
+            ?? sessionTasks.compactMap(\.assignedAgentID).first
+            ?? sessionReceipts.map(\.agentID).first
+        let entryAgentName = linkedThread?.entryAgentName
+            ?? entryAgentID.flatMap { agentID in
+                project.agents.first(where: { $0.id == agentID })?.name
+            }
+
+        return OpsCenterRuntimeSessionClassification(
+            sessionType: sessionType,
+            threadID: linkedThread?.threadID,
+            workflowID: workflowID,
+            entryAgentID: entryAgentID,
+            entryAgentName: entryAgentName
+        )
+    }
+
+    private static func dominantTransportKind(from values: [String]) -> String? {
+        let normalizedValues = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        guard !normalizedValues.isEmpty else { return nil }
+
+        let counts = normalizedValues.reduce(into: [String: Int]()) { partial, value in
+            partial[value, default: 0] += 1
+        }
+        return counts.max { lhs, rhs in
+            if lhs.value != rhs.value {
+                return lhs.value < rhs.value
+            }
+            return lhs.key > rhs.key
+        }?.key
+    }
+
+    private static func plannedTransportKind(
+        for sessionType: String,
+        deploymentKind: OpenClawDeploymentKind,
+        actualTransport: String?
+    ) -> String? {
+        switch sessionType {
+        case "conversation.autonomous", "conversation.assisted":
+            return OpenClawRuntimeTransportKind.gatewayChat.rawValue
+        case "run.controlled", "inspection.readonly":
+            switch deploymentKind {
+            case .remoteServer:
+                return OpenClawRuntimeTransportKind.gatewayAgent.rawValue
+            case .local, .container:
+                return OpenClawRuntimeTransportKind.cli.rawValue
+            }
+        case "benchmark", "unknown":
+            return actualTransport
+        default:
+            return actualTransport
+        }
+    }
+
+    private static func workbenchThreadMode(for linkedSessions: [OpsCenterSessionSummary]) -> String {
+        let linkedSessionTypes = linkedSessions.compactMap {
+            RuntimeSessionSemanticType(normalizedRawValue: $0.sessionType)
+        }
+        return WorkbenchThreadSemanticMode.inferred(from: linkedSessionTypes).rawValue
+    }
+
     private static func severityRank(_ status: OpsCenterRuntimeStatus) -> Int {
         switch status {
         case .failed:
@@ -1707,6 +1994,37 @@ enum OpsCenterSnapshotBuilder {
     private static func normalizedWorkflowID(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func workbenchGatewaySessionKey(sessionID: String, agent: Agent) -> String {
+        let identifier = agent.openClawDefinition.agentIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAgent = normalizedWorkbenchGatewayAgentID(identifier)
+        if sessionID.lowercased().hasPrefix("agent:") {
+            return sessionID.lowercased()
+        }
+        return "agent:\(normalizedAgent):\(sanitizedWorkbenchGatewaySessionComponent(sessionID))"
+    }
+
+    private static func normalizedWorkbenchGatewayAgentID(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sanitized = trimmed
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+        return sanitized.isEmpty ? "agent" : sanitized
+    }
+
+    private static func sanitizedWorkbenchGatewaySessionComponent(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let allowed = trimmed.map { character -> Character in
+            switch character {
+            case "a"..."z", "0"..."9", "-", "_", ".":
+                return character
+            default:
+                return "-"
+            }
+        }
+        let value = String(allowed).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return value.isEmpty ? "main" : value
     }
 
     private static func normalizedUUIDString(_ value: String?) -> String? {

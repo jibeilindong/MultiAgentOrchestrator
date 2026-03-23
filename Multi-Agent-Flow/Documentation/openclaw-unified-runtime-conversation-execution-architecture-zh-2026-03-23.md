@@ -57,6 +57,7 @@ Execution Plane
   - `workflowControlled`
   - `inspectionReadonly`
   - `benchmark`
+- runtime dispatch / receipt / transcript event 已开始补写 `executionIntent`，归档层不再只能依赖 session 字符串前缀猜测聊天态或执行态。
 - 正式执行入口与聊天入口已开始使用不同准入策略：
   - Workbench/后台续跑默认走 `conversationAutonomous`
   - Launch Verification 走 `inspectionReadonly`
@@ -65,6 +66,15 @@ Execution Plane
   - `workflowControlled` 在 `local/container` 下要求已 `Bind` 当前项目、项目镜像已准备完成、runtime 已同步到最新 revision
   - `conversationAutonomous` 与 `inspectionReadonly` 在本地模式下允许以 `ephemeral publish` 继续
   - `remoteServer` 暂不强制本地 `persistent publish` 门槛
+- `ProjectFileSystem` 已开始把 `threadType / sessionType / linkedSessionIDs / transport-plan.json` 写入归档目录。
+- runtime session 归档已开始区分：
+  - 产品线程 session
+  - 网关传输 session
+  - planned transport 与 actual transport
+- 协作与运行时审计面已开始补齐：
+  - `collaboration/workbench/threads/<thread>/turns.ndjson`
+  - `collaboration/workbench/threads/<thread>/delegation.ndjson`
+  - `runtime/sessions/<session>/spans.ndjson`
 
 这意味着当前系统已经从“方案设计阶段”进入“运行时宿主抽象与控制面下沉阶段”。
 
@@ -816,7 +826,9 @@ Workbench 输入框旁建议固定显示：
 - 已部分落地
 - 当前代码先以 `executionIntent` 显式区分聊天、正式执行、只读检查与 benchmark
 - transport routing 已开始把 `executionIntent` 纳入决策，而不再只依赖 `sessionID` 前缀和输出模式
-- `sessionType` / `threadType` / `TransportPlan` 的完整持久化与审计落盘仍待继续
+- `sessionType` / `threadType` / `TransportPlan` 的共享语义与落盘链路已接通
+- `turns.ndjson` / `delegation.ndjson` / `spans.ndjson` 已开始写盘
+- 后续仍需把这些审计文件进一步接入恢复控制器与更细粒度 projection
 
 ## Phase 3：Workbench 双模式化
 
@@ -858,6 +870,13 @@ Workbench 输入框旁建议固定显示：
 
 - 聊天与执行都能被追查
 - 线程与会话可单独调查
+
+当前状态：
+
+- 已部分落地
+- `thread.json` / `context.json` / `session.json` / `transport-plan.json` / `dispatches.ndjson` / `events.ndjson` / `receipts.ndjson` 已存在
+- 本轮已新增 `turns.ndjson` / `delegation.ndjson` / `spans.ndjson`
+- 下一阶段重点应放在基于这些审计文件做恢复游标、增量回放和 Ops Center 深层调查入口
 
 ## Phase 5：Projection 与 Ops Center 升级
 

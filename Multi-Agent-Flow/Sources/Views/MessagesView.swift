@@ -5,6 +5,57 @@
 
 import SwiftUI
 
+enum WorkbenchInteractionMode: String, CaseIterable, Identifiable {
+    case chat
+    case run
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .chat:
+            return "Chat"
+        case .run:
+            return "Run"
+        }
+    }
+
+    var subtitle: String {
+        executionIntent.semanticType.displayTitle
+    }
+
+    var executionIntent: OpenClawRuntimeExecutionIntent {
+        switch self {
+        case .chat:
+            return .conversationAutonomous
+        case .run:
+            return .workflowControlled
+        }
+    }
+
+    var threadType: RuntimeSessionSemanticType {
+        executionIntent.semanticType
+    }
+
+    var threadMode: WorkbenchThreadSemanticMode {
+        switch self {
+        case .chat:
+            return .autonomousConversation
+        case .run:
+            return .controlledRun
+        }
+    }
+
+    var submitButtonTitle: String {
+        switch self {
+        case .chat:
+            return LocalizedString.text("send_to_workflow")
+        case .run:
+            return "Run Workflow"
+        }
+    }
+}
+
 struct MessagesView: View {
     @ObservedObject var messageManager: MessageManager
 
@@ -36,6 +87,7 @@ struct WorkbenchConversationView: View {
     @State private var manualChannelDrafts: [UUID: String] = [:]
     @State private var manualAccountDrafts: [UUID: String] = [:]
     @State private var activeRuntimePreparationAction: WorkbenchRuntimePreparationAction?
+    @State private var submitMode: WorkbenchInteractionMode = .chat
 
     private let compactRuntimeConfigBodyHeight: CGFloat = 146
     private let minimumExpandedRuntimeConfigHeight: CGFloat = 240
@@ -195,7 +247,16 @@ struct WorkbenchConversationView: View {
     }
 
     private var isWorkbenchRuntimeAvailable: Bool {
-        appState.openClawManager.canRunConversation
+        appState.openClawManager.canRunConversation || appState.openClawManager.canRunWorkflow
+    }
+
+    private var canSubmitCurrentMode: Bool {
+        switch submitMode {
+        case .chat:
+            return appState.openClawManager.canRunConversation
+        case .run:
+            return appState.openClawManager.canRunWorkflow
+        }
     }
 
     private var openClawRuntimeBadgeTitle: String {
@@ -1137,6 +1198,21 @@ struct WorkbenchConversationView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Mode")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Picker("Mode", selection: $submitMode) {
+                            ForEach(WorkbenchInteractionMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(submitMode.subtitle)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+
                     TextField(
                         LocalizedString.text("workbench_prompt_placeholder"),
                         text: $prompt,
@@ -1182,13 +1258,14 @@ struct WorkbenchConversationView: View {
                     .disabled(!canStopActiveRemoteConversation || isStoppingActiveRemoteConversation)
                 }
 
-                Button(LocalizedString.text("send_to_workflow")) {
+                Button(submitMode.submitButtonTitle) {
                     publishPrompt()
                 }
                 .disabled(
                     prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || appState.openClawService.isExecuting
                             || !hasExecutableWorkflow
+                            || !canSubmitCurrentMode
                     )
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -1344,12 +1421,12 @@ struct WorkbenchConversationView: View {
             return
         }
 
-        guard isWorkbenchRuntimeAvailable else {
+        guard canSubmitCurrentMode else {
             errorText = LocalizedString.text("workbench_error_connect_openclaw")
             return
         }
 
-        guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID) else {
+        guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID, mode: submitMode) else {
             errorText = appState.openClawService.isExecuting
                 ? LocalizedString.text("workbench_error_busy")
                 : LocalizedString.text("workbench_error_submit_failed")

@@ -81,7 +81,12 @@ struct OpsCenterProjectionLiveRunDocument: Codable {
 
 struct OpsCenterProjectionSessionEntry: Codable {
     let sessionID: String
+    let sessionType: String?
+    let threadID: String?
     let workflowIDs: [String]
+    let plannedTransport: String?
+    let actualTransport: String?
+    let actualTransportKinds: [String]?
     let messageCount: Int
     let taskCount: Int
     let eventCount: Int
@@ -92,6 +97,8 @@ struct OpsCenterProjectionSessionEntry: Codable {
     let completedDispatchCount: Int
     let failedDispatchCount: Int
     let latestFailureText: String?
+    let fallbackReason: String?
+    let degradationReason: String?
     let lastUpdatedAt: Date?
     let isProjectRuntimeSession: Bool
 }
@@ -132,7 +139,10 @@ struct OpsCenterProjectionNodesRuntimeDocument: Codable {
 
 struct OpsCenterProjectionThreadEntry: Codable {
     let threadID: String
+    let threadType: String?
+    let mode: String?
     let sessionID: String
+    let linkedSessionIDs: [String]?
     let workflowID: UUID?
     let workflowName: String?
     let entryAgentName: String?
@@ -399,7 +409,12 @@ struct OpsCenterProjectionBundle {
             .map { entry in
                 OpsCenterSessionSummary(
                     sessionID: entry.sessionID,
+                    sessionType: entry.sessionType,
+                    threadID: entry.threadID,
                     workflowIDs: entry.workflowIDs,
+                    plannedTransport: entry.plannedTransport,
+                    actualTransport: entry.actualTransport,
+                    actualTransportKinds: entry.actualTransportKinds ?? [],
                     eventCount: entry.eventCount,
                     dispatchCount: entry.dispatchCount,
                     receiptCount: entry.receiptCount,
@@ -409,6 +424,8 @@ struct OpsCenterProjectionBundle {
                     failedDispatchCount: entry.failedDispatchCount,
                     lastUpdatedAt: entry.lastUpdatedAt,
                     latestFailureText: entry.latestFailureText,
+                    fallbackReason: entry.fallbackReason,
+                    degradationReason: entry.degradationReason,
                     isPrimaryRuntimeSession: entry.isProjectRuntimeSession
                 )
             }

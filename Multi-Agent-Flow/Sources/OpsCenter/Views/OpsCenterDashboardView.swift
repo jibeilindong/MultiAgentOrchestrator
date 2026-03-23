@@ -558,7 +558,12 @@ struct OpsCenterDashboardView: View {
                 .map {
                     OpsCenterSessionSummary(
                         sessionID: $0.sessionID,
+                        sessionType: $0.sessionType,
+                        threadID: $0.threadID,
                         workflowIDs: $0.workflowIDs,
+                        plannedTransport: $0.plannedTransport,
+                        actualTransport: $0.actualTransport,
+                        actualTransportKinds: $0.actualTransportKinds ?? [],
                         eventCount: $0.eventCount,
                         dispatchCount: $0.dispatchCount,
                         receiptCount: $0.receiptCount,
@@ -568,6 +573,8 @@ struct OpsCenterDashboardView: View {
                         failedDispatchCount: $0.failedDispatchCount,
                         lastUpdatedAt: $0.lastUpdatedAt,
                         latestFailureText: $0.latestFailureText,
+                        fallbackReason: $0.fallbackReason,
+                        degradationReason: $0.degradationReason,
                         isPrimaryRuntimeSession: $0.isProjectRuntimeSession
                     )
                 }
@@ -900,6 +907,9 @@ struct OpsCenterDashboardView: View {
                 status: preferredText(live.status, archive.status) ?? live.status,
                 startedAt: [live.startedAt, archive.startedAt].compactMap { $0 }.min(),
                 lastUpdatedAt: [live.lastUpdatedAt, archive.lastUpdatedAt].compactMap { $0 }.max(),
+                threadType: preferredText(live.threadType, archive.threadType),
+                mode: preferredText(live.mode, archive.mode),
+                linkedSessionIDs: Array(Set(live.linkedSessionIDs + archive.linkedSessionIDs)).sorted(),
                 entryAgentName: preferredText(live.entryAgentName, archive.entryAgentName),
                 participantNames: Array(Set(live.participantNames + archive.participantNames)).sorted(),
                 pendingApprovalCount: max(live.pendingApprovalCount, archive.pendingApprovalCount),
@@ -926,7 +936,12 @@ struct OpsCenterDashboardView: View {
     ) -> OpsCenterSessionSummary {
         OpsCenterSessionSummary(
             sessionID: lhs.sessionID,
+            sessionType: preferredText(lhs.sessionType, rhs.sessionType),
+            threadID: preferredText(lhs.threadID, rhs.threadID),
             workflowIDs: Array(Set(lhs.workflowIDs + rhs.workflowIDs)).sorted(),
+            plannedTransport: preferredText(lhs.plannedTransport, rhs.plannedTransport),
+            actualTransport: preferredText(lhs.actualTransport, rhs.actualTransport),
+            actualTransportKinds: Array(Set(lhs.actualTransportKinds + rhs.actualTransportKinds)).sorted(),
             eventCount: max(lhs.eventCount, rhs.eventCount),
             dispatchCount: max(lhs.dispatchCount, rhs.dispatchCount),
             receiptCount: max(lhs.receiptCount, rhs.receiptCount),
@@ -936,6 +951,8 @@ struct OpsCenterDashboardView: View {
             failedDispatchCount: max(lhs.failedDispatchCount, rhs.failedDispatchCount),
             lastUpdatedAt: [lhs.lastUpdatedAt, rhs.lastUpdatedAt].compactMap { $0 }.max(),
             latestFailureText: preferredText(lhs.latestFailureText, rhs.latestFailureText),
+            fallbackReason: preferredText(lhs.fallbackReason, rhs.fallbackReason),
+            degradationReason: preferredText(lhs.degradationReason, rhs.degradationReason),
             isPrimaryRuntimeSession: lhs.isPrimaryRuntimeSession || rhs.isPrimaryRuntimeSession
         )
     }
@@ -2594,9 +2611,11 @@ private struct OpsCenterSignalsDashboardView: View {
 
     private var leadThreadBySessionID: [String: OpsCenterThreadSummary] {
         Dictionary(
-            grouping: threadSummaries.compactMap { thread -> (String, OpsCenterThreadSummary)? in
-                guard let sessionID = opsNormalizedSessionID(thread.relatedSession?.sessionID) else { return nil }
-                return (sessionID, thread)
+            grouping: threadSummaries.flatMap { thread in
+                thread.linkedSessionIDs.compactMap { sessionID -> (String, OpsCenterThreadSummary)? in
+                    guard let normalized = opsNormalizedSessionID(sessionID) else { return nil }
+                    return (normalized, thread)
+                }
             },
             by: { $0.0 }
         )
@@ -3726,6 +3745,9 @@ private struct OpsCenterThreadsDashboardView: View {
 
         let haystacks = [
             thread.threadID,
+            thread.linkedSessionIDs.joined(separator: " "),
+            opsSessionTypeTitle(thread.threadType) ?? "",
+            opsThreadModeTitle(thread.mode) ?? "",
             thread.workflowName,
             thread.entryAgentName ?? "",
             thread.participantNames.joined(separator: " "),
@@ -4210,11 +4232,25 @@ private struct OpsCenterLiveRunDashboardView: View {
                 Text(session.sessionID)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(.primary)
+                Text([
+                    opsSessionTypeTitle(session.sessionType),
+                    session.threadID.map { "thread \(String($0.prefix(12)))" }
+                ].compactMap { $0 }.joined(separator: " • "))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
                 Text(
                     LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount)
                 )
                 .font(.caption)
                 .foregroundColor(.secondary)
+
+                if let transportLine = opsSessionTransportLine(session) {
+                    Text(transportLine)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
 
                 if let latestFailureText = session.latestFailureText {
                     Text(latestFailureText)
@@ -4563,8 +4599,15 @@ private struct OpsCenterSessionsDashboardView: View {
 
         let haystack = [
             session.sessionID.lowercased(),
+            (session.threadID ?? "").lowercased(),
+            (session.sessionType ?? "").lowercased(),
+            (session.plannedTransport ?? "").lowercased(),
+            (session.actualTransport ?? "").lowercased(),
+            session.actualTransportKinds.joined(separator: " ").lowercased(),
             session.workflowIDs.joined(separator: " ").lowercased(),
-            session.latestFailureText?.lowercased() ?? ""
+            session.latestFailureText?.lowercased() ?? "",
+            session.fallbackReason?.lowercased() ?? "",
+            session.degradationReason?.lowercased() ?? ""
         ]
         .joined(separator: " ")
 
@@ -5388,9 +5431,12 @@ private struct OpsCenterRouteTimelineDigest: Identifiable {
 
 private struct OpsCenterThreadSummary: Identifiable {
     let threadID: String
+    let threadType: String?
+    let mode: String?
     let workflowID: UUID?
     let workflowName: String
     let status: String
+    let linkedSessionIDs: [String]
     let entryAgentName: String?
     let participantNames: [String]
     let messageCount: Int
@@ -7159,22 +7205,61 @@ private struct OpsCenterInvestigationPanel: View {
         }
 
         opsInvestigationSection(LocalizedString.text("investigation_session_entry_title"), detail: LocalizedString.text("investigation_session_entry_detail")) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(investigation.session.sessionID)
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    Text(LocalizedString.text("investigation_session_thread_alignment"))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            VStack(spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(investigation.session.sessionID)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        Text(LocalizedString.text("investigation_session_thread_alignment"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    investigationActionButton(title: LocalizedString.text("open_thread")) {
+                        onSelectThread(investigation.session.threadID ?? investigation.session.sessionID)
+                    }
                 }
-                Spacer()
-                investigationActionButton(title: LocalizedString.text("open_thread")) {
-                    onSelectThread(investigation.session.sessionID)
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Session Type")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(opsSessionTypeTitle(investigation.session.sessionType) ?? "unknown")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("Thread Binding")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(investigation.session.threadID ?? "detached")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    }
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                if let transportLine = opsSessionTransportLine(investigation.session) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Transport")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(transportLine)
+                                .font(.subheadline.weight(.medium))
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
-            .padding(10)
-            .background(Color(.controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
 
         opsInvestigationSection(LocalizedString.text("investigation_related_nodes_title"), detail: LocalizedString.text("investigation_session_related_nodes_detail")) {
@@ -7291,6 +7376,27 @@ private struct OpsCenterInvestigationPanel: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
+                        Text("Thread Type")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(opsSessionTypeTitle(investigation.threadType) ?? RuntimeSessionSemanticType.conversationAutonomous.displayTitle)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("Mode")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(opsThreadModeTitle(investigation.mode) ?? WorkbenchThreadSemanticMode.autonomousConversation.displayTitle)
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+                .padding(10)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(LocalizedString.text("investigation_session_key_title"))
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -7331,6 +7437,27 @@ private struct OpsCenterInvestigationPanel: View {
                 .padding(10)
                 .background(Color(.controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                if !investigation.linkedSessionIDs.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Linked Sessions")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ForEach(investigation.linkedSessionIDs, id: \.self) { linkedSessionID in
+                            HStack {
+                                Text(linkedSessionID)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                Spacer()
+                                if linkedSessionID == investigation.sessionID {
+                                    opsStatusPill(title: "active", color: .blue)
+                                }
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .background(Color(.controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
             }
         }
 
@@ -7361,6 +7488,12 @@ private struct OpsCenterInvestigationPanel: View {
                         Text(LocalizedString.format("session_counts_summary", session.eventCount, session.dispatchCount, session.receiptCount))
                             .font(.caption)
                             .foregroundColor(.secondary)
+                        Text([
+                            opsSessionTypeTitle(session.sessionType),
+                            opsSessionTransportLine(session)
+                        ].compactMap { $0 }.joined(separator: " • "))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                     }
                     Spacer()
                     opsStatusPill(
@@ -9000,6 +9133,45 @@ private func opsDurationText(_ duration: TimeInterval) -> String {
     return String(format: "%.1fs", duration)
 }
 
+private func opsSessionTypeTitle(_ rawValue: String?) -> String? {
+    if let semanticType = RuntimeSessionSemanticType(normalizedRawValue: rawValue) {
+        return semanticType.displayTitle
+    }
+    return rawValue
+}
+
+private func opsThreadModeTitle(_ rawValue: String?) -> String? {
+    if let threadMode = WorkbenchThreadSemanticMode(normalizedRawValue: rawValue) {
+        return threadMode.displayTitle
+    }
+    return rawValue?.replacingOccurrences(of: "_", with: " ")
+}
+
+private func opsTransportTitle(_ rawValue: String?) -> String? {
+    let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    guard !value.isEmpty else { return nil }
+    return value
+}
+
+private func opsSessionTransportLine(_ session: OpsCenterSessionSummary) -> String? {
+    let planned = opsTransportTitle(session.plannedTransport)
+    let actual = opsTransportTitle(session.actualTransport)
+
+    if let planned, let actual, planned != actual {
+        return "planned \(planned) -> actual \(actual)"
+    }
+    if let actual {
+        return "transport \(actual)"
+    }
+    if let planned {
+        return "planned \(planned)"
+    }
+    if !session.actualTransportKinds.isEmpty {
+        return "observed \(session.actualTransportKinds.joined(separator: ", "))"
+    }
+    return nil
+}
+
 private func opsThreadRow(_ thread: OpsCenterThreadSummary, emphasis: OpsThreadRowEmphasis) -> some View {
     HStack(alignment: .top, spacing: 12) {
         opsStatusPill(
@@ -9017,6 +9189,7 @@ private func opsThreadRow(_ thread: OpsCenterThreadSummary, emphasis: OpsThreadR
                 .foregroundColor(.secondary)
                 .lineLimit(2)
             Text([
+                opsThreadModeTitle(thread.mode),
                 thread.workflowName,
                 thread.entryAgentName,
                 thread.participantNames.isEmpty ? nil : "\(thread.participantNames.count) participants"
@@ -9025,7 +9198,12 @@ private func opsThreadRow(_ thread: OpsCenterThreadSummary, emphasis: OpsThreadR
             .foregroundColor(.secondary)
             .lineLimit(1)
             if let relatedSession = thread.relatedSession {
-                Text("Runtime Q \(relatedSession.queuedDispatchCount) • Run \(relatedSession.inflightDispatchCount) • F \(relatedSession.failedDispatchCount)")
+                Text([
+                    "Runtime Q \(relatedSession.queuedDispatchCount)",
+                    "Run \(relatedSession.inflightDispatchCount)",
+                    "F \(relatedSession.failedDispatchCount)",
+                    opsSessionTransportLine(relatedSession)
+                ].compactMap { $0 }.joined(separator: " • "))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -9041,6 +9219,11 @@ private func opsThreadRow(_ thread: OpsCenterThreadSummary, emphasis: OpsThreadR
             Text("A \(thread.pendingApprovalCount) • B \(thread.blockedTaskCount) • R \(thread.activeTaskCount)")
                 .font(.caption2)
                 .foregroundColor(.secondary)
+            if thread.linkedSessionIDs.count > 1 {
+                Text("Linked \(thread.linkedSessionIDs.count)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
             if let lastUpdatedAt = thread.lastUpdatedAt {
                 Text(lastUpdatedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption2)
@@ -9120,7 +9303,8 @@ private func opsBuildThreadSummaries(
         return sessionIDs.compactMap { sessionID in
             let threadMessages = workbenchMessages.filter { opsNormalizedThreadID($0.metadata["workbenchSessionID"]) == sessionID }
             let threadTasks = workbenchTasks.filter { opsNormalizedThreadID($0.metadata["workbenchSessionID"]) == sessionID }
-            let relatedSession = sessionSummaries.first { $0.sessionID == sessionID }
+            let linkedSessions = sessionSummaries.filter { $0.threadID == sessionID || $0.sessionID == sessionID }
+            let relatedSession = linkedSessions.first { $0.sessionID == sessionID } ?? linkedSessions.first
             let resolvedWorkflowID = threadMessages.compactMap { opsWorkflowID(from: $0.metadata["workflowID"]) }.first
                 ?? threadTasks.compactMap { opsWorkflowID(from: $0.metadata["workflowID"]) }.first
             let metadataMatchesScope = threadMessages.contains { opsMatchesWorkflowScope($0.metadata, workflowID: scopedWorkflowID) }
@@ -9147,11 +9331,20 @@ private func opsBuildThreadSummaries(
             let completedTaskCount = threadTasks.filter { $0.status == .done }.count
             let failedMessageCount = threadMessages.filter { $0.status == .failed || $0.status == .rejected }.count
             let status = opsWorkbenchThreadStatus(messages: threadMessages, tasks: threadTasks)
+            let linkedSessionIDs = Set(linkedSessions.map(\.sessionID) + [sessionID]).sorted()
+            let semantics = opsResolveThreadSemantics(
+                messages: threadMessages,
+                tasks: threadTasks,
+                linkedSessions: linkedSessions
+            )
             let summary = OpsCenterThreadSummary(
                 threadID: sessionID,
+                threadType: relatedSession?.sessionType ?? semantics.type,
+                mode: semantics.mode,
                 workflowID: resolvedWorkflowID,
                 workflowName: resolvedWorkflowID.flatMap { workflowsByID[$0] } ?? workflow?.name ?? LocalizedString.text("workbench_thread_label"),
                 status: status,
+                linkedSessionIDs: linkedSessionIDs,
                 entryAgentName: entryAgentID.flatMap { agentNamesByID[$0] },
                 participantNames: participantNames,
                 messageCount: threadMessages.count,
@@ -9170,9 +9363,12 @@ private func opsBuildThreadSummaries(
             let hotspotScore = opsThreadHotspotScore(summary)
             return OpsCenterThreadSummary(
                 threadID: summary.threadID,
+                threadType: summary.threadType,
+                mode: summary.mode,
                 workflowID: summary.workflowID,
                 workflowName: summary.workflowName,
                 status: summary.status,
+                linkedSessionIDs: summary.linkedSessionIDs,
                 entryAgentName: summary.entryAgentName,
                 participantNames: summary.participantNames,
                 messageCount: summary.messageCount,
@@ -9191,12 +9387,28 @@ private func opsBuildThreadSummaries(
     }()
 
     let projectionSummaries: [OpsCenterThreadSummary] = (projections?.threadEntries(for: scopedWorkflowID) ?? []).map { entry in
-        let relatedSession = sessionSummaries.first { $0.sessionID == entry.sessionID }
+        let linkedSessions = sessionSummaries.filter { $0.threadID == entry.threadID || $0.sessionID == entry.sessionID }
+        let relatedSession = linkedSessions.first { $0.sessionID == entry.sessionID } ?? linkedSessions.first
+        let threadMessages = messages.filter {
+            $0.metadata["channel"] == "workbench" && opsNormalizedThreadID($0.metadata["workbenchSessionID"]) == entry.threadID
+        }
+        let threadTasks = tasks.filter {
+            $0.metadata["source"] == "workbench" && opsNormalizedThreadID($0.metadata["workbenchSessionID"]) == entry.threadID
+        }
+        let semantics = opsResolveThreadSemantics(
+            messages: threadMessages,
+            tasks: threadTasks,
+            linkedSessions: linkedSessions
+        )
+        let linkedSessionIDs = Set((entry.linkedSessionIDs ?? []) + linkedSessions.map(\.sessionID) + [entry.threadID, entry.sessionID]).sorted()
         let summary = OpsCenterThreadSummary(
             threadID: entry.threadID,
+            threadType: entry.threadType ?? relatedSession?.sessionType ?? semantics.type,
+            mode: entry.mode ?? semantics.mode,
             workflowID: entry.workflowID,
             workflowName: entry.workflowName ?? workflow?.name ?? LocalizedString.text("workbench_thread_label"),
             status: entry.status,
+            linkedSessionIDs: linkedSessionIDs,
             entryAgentName: entry.entryAgentName,
             participantNames: entry.participantNames,
             messageCount: entry.messageCount,
@@ -9213,9 +9425,12 @@ private func opsBuildThreadSummaries(
         )
         return OpsCenterThreadSummary(
             threadID: summary.threadID,
+            threadType: summary.threadType,
+            mode: summary.mode,
             workflowID: summary.workflowID,
             workflowName: summary.workflowName,
             status: summary.status,
+            linkedSessionIDs: summary.linkedSessionIDs,
             entryAgentName: summary.entryAgentName,
             participantNames: summary.participantNames,
             messageCount: summary.messageCount,
@@ -9233,7 +9448,9 @@ private func opsBuildThreadSummaries(
     }
 
     let merged = (projectionSummaries + liveSummaries).reduce(into: [String: OpsCenterThreadSummary]()) { partial, item in
-        if partial[item.threadID] == nil || liveSummaries.contains(where: { $0.threadID == item.threadID }) {
+        if let existing = partial[item.threadID] {
+            partial[item.threadID] = opsMergeThreadSummary(existing, item)
+        } else {
             partial[item.threadID] = item
         }
     }
@@ -9247,6 +9464,145 @@ private func opsBuildThreadSummaries(
         }
         return lhs.threadID < rhs.threadID
     }
+}
+
+private func opsMergeThreadSummary(_ lhs: OpsCenterThreadSummary, _ rhs: OpsCenterThreadSummary) -> OpsCenterThreadSummary {
+    let merged = OpsCenterThreadSummary(
+        threadID: lhs.threadID,
+        threadType: opsPreferredText(lhs.threadType, rhs.threadType),
+        mode: opsPreferredText(lhs.mode, rhs.mode),
+        workflowID: lhs.workflowID ?? rhs.workflowID,
+        workflowName: opsPreferredText(lhs.workflowName, rhs.workflowName) ?? lhs.workflowName,
+        status: opsPreferredText(lhs.status, rhs.status) ?? lhs.status,
+        linkedSessionIDs: Array(Set(lhs.linkedSessionIDs + rhs.linkedSessionIDs)).sorted(),
+        entryAgentName: opsPreferredText(lhs.entryAgentName, rhs.entryAgentName),
+        participantNames: Array(Set(lhs.participantNames + rhs.participantNames)).sorted(),
+        messageCount: max(lhs.messageCount, rhs.messageCount),
+        taskCount: max(lhs.taskCount, rhs.taskCount),
+        pendingApprovalCount: max(lhs.pendingApprovalCount, rhs.pendingApprovalCount),
+        blockedTaskCount: max(lhs.blockedTaskCount, rhs.blockedTaskCount),
+        activeTaskCount: max(lhs.activeTaskCount, rhs.activeTaskCount),
+        completedTaskCount: max(lhs.completedTaskCount, rhs.completedTaskCount),
+        failedMessageCount: max(lhs.failedMessageCount, rhs.failedMessageCount),
+        startedAt: [lhs.startedAt, rhs.startedAt].compactMap { $0 }.min(),
+        lastUpdatedAt: [lhs.lastUpdatedAt, rhs.lastUpdatedAt].compactMap { $0 }.max(),
+        relatedSession: opsMergeOptionalSessionSummary(lhs.relatedSession, rhs.relatedSession),
+        hotspotScore: 0
+    )
+    return OpsCenterThreadSummary(
+        threadID: merged.threadID,
+        threadType: merged.threadType,
+        mode: merged.mode,
+        workflowID: merged.workflowID,
+        workflowName: merged.workflowName,
+        status: merged.status,
+        linkedSessionIDs: merged.linkedSessionIDs,
+        entryAgentName: merged.entryAgentName,
+        participantNames: merged.participantNames,
+        messageCount: merged.messageCount,
+        taskCount: merged.taskCount,
+        pendingApprovalCount: merged.pendingApprovalCount,
+        blockedTaskCount: merged.blockedTaskCount,
+        activeTaskCount: merged.activeTaskCount,
+        completedTaskCount: merged.completedTaskCount,
+        failedMessageCount: merged.failedMessageCount,
+        startedAt: merged.startedAt,
+        lastUpdatedAt: merged.lastUpdatedAt,
+        relatedSession: merged.relatedSession,
+        hotspotScore: opsThreadHotspotScore(merged)
+    )
+}
+
+private func opsMergeOptionalSessionSummary(
+    _ lhs: OpsCenterSessionSummary?,
+    _ rhs: OpsCenterSessionSummary?
+) -> OpsCenterSessionSummary? {
+    switch (lhs, rhs) {
+    case let (lhs?, rhs?):
+        return opsMergeSessionSummary(lhs, rhs)
+    case let (lhs?, nil):
+        return lhs
+    case let (nil, rhs?):
+        return rhs
+    case (nil, nil):
+        return nil
+    }
+}
+
+private func opsMergeSessionSummary(_ lhs: OpsCenterSessionSummary, _ rhs: OpsCenterSessionSummary) -> OpsCenterSessionSummary {
+    OpsCenterSessionSummary(
+        sessionID: lhs.sessionID,
+        sessionType: opsPreferredText(lhs.sessionType, rhs.sessionType),
+        threadID: opsPreferredText(lhs.threadID, rhs.threadID),
+        workflowIDs: Array(Set(lhs.workflowIDs + rhs.workflowIDs)).sorted(),
+        plannedTransport: opsPreferredText(lhs.plannedTransport, rhs.plannedTransport),
+        actualTransport: opsPreferredText(lhs.actualTransport, rhs.actualTransport),
+        actualTransportKinds: Array(Set(lhs.actualTransportKinds + rhs.actualTransportKinds)).sorted(),
+        eventCount: max(lhs.eventCount, rhs.eventCount),
+        dispatchCount: max(lhs.dispatchCount, rhs.dispatchCount),
+        receiptCount: max(lhs.receiptCount, rhs.receiptCount),
+        queuedDispatchCount: max(lhs.queuedDispatchCount, rhs.queuedDispatchCount),
+        inflightDispatchCount: max(lhs.inflightDispatchCount, rhs.inflightDispatchCount),
+        completedDispatchCount: max(lhs.completedDispatchCount, rhs.completedDispatchCount),
+        failedDispatchCount: max(lhs.failedDispatchCount, rhs.failedDispatchCount),
+        lastUpdatedAt: [lhs.lastUpdatedAt, rhs.lastUpdatedAt].compactMap { $0 }.max(),
+        latestFailureText: opsPreferredText(lhs.latestFailureText, rhs.latestFailureText),
+        fallbackReason: opsPreferredText(lhs.fallbackReason, rhs.fallbackReason),
+        degradationReason: opsPreferredText(lhs.degradationReason, rhs.degradationReason),
+        isPrimaryRuntimeSession: lhs.isPrimaryRuntimeSession || rhs.isPrimaryRuntimeSession
+    )
+}
+
+private func opsPreferredText(_ primary: String?, _ fallback: String?) -> String? {
+    let primaryValue = primary?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let primaryValue, !primaryValue.isEmpty {
+        return primaryValue
+    }
+    let fallbackValue = fallback?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let fallbackValue, !fallbackValue.isEmpty {
+        return fallbackValue
+    }
+    return nil
+}
+
+private func opsWorkbenchThreadType(from metadata: [String: String]) -> RuntimeSessionSemanticType? {
+    RuntimeSessionSemanticType(
+        normalizedRawValue: metadata["workbenchThreadType"] ?? metadata["executionIntent"]
+    )
+}
+
+private func opsWorkbenchThreadMode(from metadata: [String: String]) -> WorkbenchThreadSemanticMode? {
+    WorkbenchThreadSemanticMode(
+        normalizedRawValue: metadata["workbenchThreadMode"] ?? metadata["workbenchMode"]
+    )
+}
+
+private func opsResolveThreadSemantics(
+    messages: [Message],
+    tasks: [Task],
+    linkedSessions: [OpsCenterSessionSummary]
+) -> (type: String, mode: String) {
+    let explicitTypes = messages.compactMap { opsWorkbenchThreadType(from: $0.metadata) }
+        + tasks.compactMap { opsWorkbenchThreadType(from: $0.metadata) }
+    let explicitModes = messages.compactMap { opsWorkbenchThreadMode(from: $0.metadata) }
+        + tasks.compactMap { opsWorkbenchThreadMode(from: $0.metadata) }
+    let linkedSessionTypes = linkedSessions.compactMap {
+        RuntimeSessionSemanticType(normalizedRawValue: $0.sessionType)
+    }
+    let allTypes = explicitTypes + linkedSessionTypes
+    let resolvedType = RuntimeSessionSemanticType.preferredWorkbenchThreadType(from: allTypes)
+        ?? .conversationAutonomous
+    let resolvedMode = WorkbenchThreadSemanticMode.preferredMode(from: explicitModes)
+        ?? WorkbenchThreadSemanticMode.inferred(from: allTypes.isEmpty ? [resolvedType] : allTypes)
+
+    return (resolvedType.rawValue, resolvedMode.rawValue)
+}
+
+private func opsThreadMode(from linkedSessions: [OpsCenterSessionSummary]) -> String {
+    let linkedSessionTypes = linkedSessions.compactMap {
+        RuntimeSessionSemanticType(normalizedRawValue: $0.sessionType)
+    }
+    return WorkbenchThreadSemanticMode.inferred(from: linkedSessionTypes).rawValue
 }
 
 private func opsNormalizedThreadID(_ rawValue: String?) -> String? {
