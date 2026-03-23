@@ -52,7 +52,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A1B2C3092F6A000100C9480C /* Copy Managed OpenClaw Runtime */ = {
+		C1D2E3F42F6A000100C9480C /* Copy Managed OpenClaw Runtime */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -105,7 +105,7 @@
 				931B0E062F69C94200C9480C /* Sources */,
 				931B0E072F69C94200C9480C /* Frameworks */,
 				931B0E082F69C94200C9480C /* Resources */,
-				A1B2C3092F6A000100C9480C /* Copy Managed OpenClaw Runtime */,
+				C1D2E3F42F6A000100C9480C /* Copy Managed OpenClaw Runtime */,
 			);
 			buildRules = (
 			);

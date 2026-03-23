@@ -64,11 +64,23 @@ class MessageManager: ObservableObject {
         }
     }
 
-    func workbenchMessages(for workflowID: UUID?) -> [Message] {
+    func workbenchMessages(workflowID: UUID?, threadID: String?) -> [Message] {
         messages
             .filter { message in
-                message.metadata["channel"] == "workbench"
-                    && (workflowID == nil || message.metadata["workflowID"] == workflowID?.uuidString)
+                guard message.metadata[WorkbenchMetadataKey.channel] == "workbench" else {
+                    return false
+                }
+
+                if let workflowID,
+                   message.metadata[WorkbenchMetadataKey.workflowID] != workflowID.uuidString {
+                    return false
+                }
+
+                if let threadID {
+                    return resolvedWorkbenchThreadID(from: message.metadata) == threadID
+                }
+
+                return true
             }
             .sorted { $0.timestamp < $1.timestamp }
     }

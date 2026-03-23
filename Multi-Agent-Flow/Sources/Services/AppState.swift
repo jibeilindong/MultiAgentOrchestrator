@@ -5181,14 +5181,15 @@ class AppState: ObservableObject {
     func submitWorkbenchPrompt(
         _ prompt: String,
         workflowID: UUID? = nil,
-        mode: WorkbenchInteractionMode = .chat
-    ) -> Bool {
+        mode: WorkbenchInteractionMode = .chat,
+        preferredThreadID: String? = nil
+    ) -> String? {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty,
               !openClawService.isExecuting,
               let project = currentProject,
               let workflow = self.workflow(for: workflowID) else {
-            return false
+            return nil
         }
 
         let canRunWorkbenchMode = mode == .chat
@@ -5203,7 +5204,7 @@ class AppState: ObservableObject {
                 .error,
                 message
             )
-            return false
+            return nil
         }
 
         let entryAgentNodes = entryConnectedAgentNodes(in: workflow)
@@ -5214,7 +5215,7 @@ class AppState: ObservableObject {
                 .error,
                 "Workbench publish failed: no agent is connected to the workflow entry(start) node."
             )
-            return false
+            return nil
         }
 
         let entryAgentIDs = Set(entryAgentNodes.compactMap(\.agentID))
@@ -5236,19 +5237,23 @@ class AppState: ObservableObject {
                 project: project,
                 leadNode: leadNode,
                 leadAgent: leadAgent,
-                entryAgentIDs: entryAgentIDs
+                entryAgentIDs: entryAgentIDs,
+                preferredThreadID: preferredThreadID
             )
         }
+
+        let threadContext = makeWorkbenchThreadContext(
+            workflow: workflow,
+            leadAgent: leadAgent,
+            mode: mode,
+            projectSessionID: project.runtimeState.sessionID,
+            project: project,
+            reuseExistingThreadID: preferredThreadID
+        )
 
         let beginWorkbenchExecution: () -> Void = { [weak self] in
             guard let self else { return }
             let workbenchStart = Date()
-            let executionIntent = mode.executionIntent
-            let workbenchSessionID = self.workbenchSessionID(
-                projectRuntimeSessionID: project.runtimeState.sessionID,
-                workflowID: workflow.id,
-                agentID: leadAgent.id
-            )
             let workbenchThinkingLevel = self.workbenchThinkingLevel(for: trimmedPrompt)
 
             var task = Task(
@@ -5262,38 +5267,28 @@ class AppState: ObservableObject {
                 tags: ["workbench", workflow.name]
             )
             task.metadata["source"] = "workbench"
-            task.metadata["workflowID"] = workflow.id.uuidString
+            task.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
             task.metadata["entryAgentID"] = leadAgent.id.uuidString
             task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
-            task.metadata["workbenchSessionID"] = workbenchSessionID
             task.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
-            self.applyWorkbenchSemanticMetadata(
-                &task.metadata,
-                interactionMode: mode,
-                executionIntent: executionIntent
-            )
+            self.applyWorkbenchThreadMetadata(&task.metadata, context: threadContext)
             self.taskManager.addTask(task)
 
             var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: trimmedPrompt)
             userMessage.status = .read
-            userMessage.metadata["channel"] = "workbench"
+            userMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
             userMessage.metadata["role"] = "user"
             userMessage.metadata["kind"] = "input"
-            userMessage.metadata["workflowID"] = workflow.id.uuidString
+            userMessage.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
             userMessage.metadata["taskID"] = task.id.uuidString
-            userMessage.metadata["workbenchSessionID"] = workbenchSessionID
             userMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             userMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: trimmedPrompt))
-            self.applyWorkbenchSemanticMetadata(
-                &userMessage.metadata,
-                interactionMode: mode,
-                executionIntent: executionIntent
-            )
+            self.applyWorkbenchThreadMetadata(&userMessage.metadata, context: threadContext)
             userMessage.runtimeEvent = self.makeWorkbenchRuntimeEvent(
                 eventType: .taskDispatch,
                 workflowID: workflow.id,
                 nodeID: leadNode.id,
-                sessionID: workbenchSessionID,
+                sessionID: threadContext.sessionID,
                 source: OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User"),
                 target: OpenClawRuntimeActor(kind: .agent, agentId: leadAgent.id.uuidString, agentName: leadAgent.name),
                 payload: [
@@ -5301,9 +5296,9 @@ class AppState: ObservableObject {
                     "summary": trimmedPrompt,
                     "expectedOutput": "agent_final_response"
                 ],
-                threadType: mode.threadType,
-                threadMode: mode.threadMode,
-                executionIntent: executionIntent
+                threadType: threadContext.threadType,
+                threadMode: threadContext.threadMode,
+                executionIntent: threadContext.executionIntent
             )
             self.messageManager.appendMessage(userMessage)
 
@@ -5311,7 +5306,7 @@ class AppState: ObservableObject {
             self.openClawService.addLog(
                 .info,
                 "Workbench published task '\(task.title)' to workflow \(workflow.name)",
-                sessionID: workbenchSessionID,
+                sessionID: threadContext.sessionID,
                 agentID: leadAgent.id
             )
 
@@ -5340,24 +5335,19 @@ class AppState: ObservableObject {
                 content: "已收到，正在生成回复..."
             )
             placeholderMessage.status = .read
-            placeholderMessage.metadata["channel"] = "workbench"
+            placeholderMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
             placeholderMessage.metadata["role"] = "assistant"
             placeholderMessage.metadata["kind"] = "output"
-            placeholderMessage.metadata["workflowID"] = workflow.id.uuidString
+            placeholderMessage.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
             placeholderMessage.metadata["taskID"] = task.id.uuidString
             placeholderMessage.metadata["entryReply"] = "true"
             placeholderMessage.metadata["streamed"] = "true"
             placeholderMessage.metadata["thinking"] = "true"
             placeholderMessage.metadata["agentName"] = leadAgent.name
             placeholderMessage.metadata["outputType"] = ExecutionOutputType.runtimeLog.rawValue
-            placeholderMessage.metadata["workbenchSessionID"] = workbenchSessionID
             placeholderMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             placeholderMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: placeholderMessage.content))
-            self.applyWorkbenchSemanticMetadata(
-                &placeholderMessage.metadata,
-                interactionMode: mode,
-                executionIntent: executionIntent
-            )
+            self.applyWorkbenchThreadMetadata(&placeholderMessage.metadata, context: threadContext)
             self.messageManager.appendMessage(placeholderMessage)
             streamingMessageID = placeholderMessage.id
 
@@ -5382,14 +5372,9 @@ class AppState: ObservableObject {
                         message.metadata["streamed"] = "true"
                         message.metadata["agentName"] = agent.name
                         message.metadata["outputType"] = outputType.rawValue
-                        message.metadata["workbenchSessionID"] = workbenchSessionID
                         message.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
                         message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
-                        self.applyWorkbenchSemanticMetadata(
-                            &message.metadata,
-                            interactionMode: mode,
-                            executionIntent: executionIntent
-                        )
+                        self.applyWorkbenchThreadMetadata(&message.metadata, context: threadContext)
                         if let runtimeEvent {
                             message.runtimeEvent = runtimeEvent
                         }
@@ -5402,24 +5387,19 @@ class AppState: ObservableObject {
                         content: cleanedContent
                     )
                     responseMessage.status = .read
-                    responseMessage.metadata["channel"] = "workbench"
+                    responseMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
                     responseMessage.metadata["role"] = "assistant"
                     responseMessage.metadata["kind"] = "output"
-                    responseMessage.metadata["workflowID"] = workflow.id.uuidString
+                    responseMessage.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
                     responseMessage.metadata["taskID"] = task.id.uuidString
                     responseMessage.metadata["entryReply"] = "true"
                     responseMessage.metadata["streamed"] = "true"
                     responseMessage.metadata["thinking"] = isThinking ? "true" : "false"
                     responseMessage.metadata["agentName"] = agent.name
                     responseMessage.metadata["outputType"] = outputType.rawValue
-                    responseMessage.metadata["workbenchSessionID"] = workbenchSessionID
                     responseMessage.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
                     responseMessage.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: cleanedContent))
-                    self.applyWorkbenchSemanticMetadata(
-                        &responseMessage.metadata,
-                        interactionMode: mode,
-                        executionIntent: executionIntent
-                    )
+                    self.applyWorkbenchThreadMetadata(&responseMessage.metadata, context: threadContext)
                     responseMessage.runtimeEvent = runtimeEvent
                     self.messageManager.appendMessage(responseMessage)
                     streamingMessageID = responseMessage.id
@@ -5437,7 +5417,7 @@ class AppState: ObservableObject {
                 self.openClawService.addLog(
                     .info,
                     "Workbench latency: \(label)=\(latency)ms",
-                    sessionID: workbenchSessionID,
+                    sessionID: threadContext.sessionID,
                     agentID: leadAgent.id
                 )
             }
@@ -5530,13 +5510,13 @@ class AppState: ObservableObject {
             self.openClawService.addLog(
                 .info,
                 "Workbench is generating the first reply from entry agent \(leadAgent.name).",
-                sessionID: workbenchSessionID,
+                sessionID: threadContext.sessionID,
                 agentID: leadAgent.id
             )
             self.openClawService.addLog(
                 .info,
                 "Workbench entry thinking level selected: \(workbenchThinkingLevel.rawValue).",
-                sessionID: workbenchSessionID,
+                sessionID: threadContext.sessionID,
                 agentID: leadAgent.id
             )
 
@@ -5546,7 +5526,7 @@ class AppState: ObservableObject {
                 agents: project.agents,
                 prompt: trimmedPrompt,
                 projectID: project.id,
-                sessionID: workbenchSessionID,
+                sessionID: threadContext.sessionID,
                 thinkingLevel: workbenchThinkingLevel,
                 onStream: { [weak self] chunk in
                     guard self != nil else { return }
@@ -5642,7 +5622,7 @@ class AppState: ObservableObject {
                     self.openClawService.addLog(
                         .info,
                         "Workbench reply completed with no additional workflow nodes queued.",
-                        sessionID: workbenchSessionID,
+                        sessionID: threadContext.sessionID,
                         agentID: leadAgent.id
                     )
                     completeWorkbenchExecution(results: [entryResult])
@@ -5653,7 +5633,7 @@ class AppState: ObservableObject {
                 self.openClawService.addLog(
                     .info,
                     "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s).",
-                    sessionID: workbenchSessionID,
+                    sessionID: threadContext.sessionID,
                     agentID: leadAgent.id
                 )
 
@@ -5662,8 +5642,8 @@ class AppState: ObservableObject {
                     agents: project.agents,
                     prompt: trimmedPrompt,
                     projectID: project.id,
-                    projectRuntimeSessionID: project.runtimeState.sessionID,
-                    executionIntent: .conversationAutonomous,
+                    projectRuntimeSessionID: threadContext.sessionID,
+                    executionIntent: threadContext.executionIntent,
                     startingNodes: backgroundNodes,
                     entryNodeIDsOverride: backgroundEntryNodeIDs,
                     preloadedResults: [entryResult],
@@ -5714,7 +5694,7 @@ class AppState: ObservableObject {
 
         beginWorkbenchExecution()
 
-        return true
+        return threadContext.threadID
     }
 
     @discardableResult
@@ -5724,13 +5704,17 @@ class AppState: ObservableObject {
         project: MAProject,
         leadNode: WorkflowNode,
         leadAgent: Agent,
-        entryAgentIDs: Set<UUID>
-    ) -> Bool {
+        entryAgentIDs: Set<UUID>,
+        preferredThreadID: String?
+    ) -> String? {
         let workbenchStart = Date()
-        let workbenchSessionID = workbenchSessionID(
-            projectRuntimeSessionID: project.runtimeState.sessionID,
-            workflowID: workflow.id,
-            agentID: leadAgent.id
+        let threadContext = makeWorkbenchThreadContext(
+            workflow: workflow,
+            leadAgent: leadAgent,
+            mode: .run,
+            projectSessionID: project.runtimeState.sessionID,
+            project: project,
+            reuseExistingThreadID: preferredThreadID
         )
 
         var task = Task(
@@ -5744,36 +5728,26 @@ class AppState: ObservableObject {
             tags: ["workbench", workflow.name, "run"]
         )
         task.metadata["source"] = "workbench"
-        task.metadata["workflowID"] = workflow.id.uuidString
+        task.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
         task.metadata["entryAgentID"] = leadAgent.id.uuidString
         task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
-        task.metadata["workbenchSessionID"] = workbenchSessionID
-        applyWorkbenchSemanticMetadata(
-            &task.metadata,
-            interactionMode: .run,
-            executionIntent: .workflowControlled
-        )
+        applyWorkbenchThreadMetadata(&task.metadata, context: threadContext)
         taskManager.addTask(task)
 
         var userMessage = Message(from: leadAgent.id, to: leadAgent.id, type: .task, content: prompt)
         userMessage.status = .read
-        userMessage.metadata["channel"] = "workbench"
+        userMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
         userMessage.metadata["role"] = "user"
         userMessage.metadata["kind"] = "input"
-        userMessage.metadata["workflowID"] = workflow.id.uuidString
+        userMessage.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
         userMessage.metadata["taskID"] = task.id.uuidString
-        userMessage.metadata["workbenchSessionID"] = workbenchSessionID
         userMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: prompt))
-        applyWorkbenchSemanticMetadata(
-            &userMessage.metadata,
-            interactionMode: .run,
-            executionIntent: .workflowControlled
-        )
+        applyWorkbenchThreadMetadata(&userMessage.metadata, context: threadContext)
         userMessage.runtimeEvent = makeWorkbenchRuntimeEvent(
             eventType: .taskDispatch,
             workflowID: workflow.id,
             nodeID: leadNode.id,
-            sessionID: workbenchSessionID,
+            sessionID: threadContext.sessionID,
             source: OpenClawRuntimeActor(kind: .user, agentId: "user", agentName: "User"),
             target: OpenClawRuntimeActor(kind: .agent, agentId: leadAgent.id.uuidString, agentName: leadAgent.name),
             payload: [
@@ -5781,9 +5755,9 @@ class AppState: ObservableObject {
                 "summary": prompt,
                 "expectedOutput": "workflow_execution"
             ],
-            threadType: WorkbenchInteractionMode.run.threadType,
-            threadMode: WorkbenchInteractionMode.run.threadMode,
-            executionIntent: .workflowControlled
+            threadType: threadContext.threadType,
+            threadMode: threadContext.threadMode,
+            executionIntent: threadContext.executionIntent
         )
         messageManager.appendMessage(userMessage)
 
@@ -5796,21 +5770,16 @@ class AppState: ObservableObject {
             content: "运行已提交，正在执行工作流..."
         )
         statusMessage.status = .read
-        statusMessage.metadata["channel"] = "workbench"
+        statusMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
         statusMessage.metadata["role"] = "assistant"
         statusMessage.metadata["kind"] = "output"
-        statusMessage.metadata["workflowID"] = workflow.id.uuidString
+        statusMessage.metadata[WorkbenchMetadataKey.workflowID] = workflow.id.uuidString
         statusMessage.metadata["taskID"] = task.id.uuidString
-        statusMessage.metadata["workbenchSessionID"] = workbenchSessionID
         statusMessage.metadata["thinking"] = "true"
         statusMessage.metadata["agentName"] = leadAgent.name
         statusMessage.metadata["outputType"] = ExecutionOutputType.runtimeLog.rawValue
         statusMessage.metadata["tokenEstimate"] = String(estimatedTokenCount(for: statusMessage.content))
-        applyWorkbenchSemanticMetadata(
-            &statusMessage.metadata,
-            interactionMode: .run,
-            executionIntent: .workflowControlled
-        )
+        applyWorkbenchThreadMetadata(&statusMessage.metadata, context: threadContext)
         messageManager.appendMessage(statusMessage)
         let statusMessageID = statusMessage.id
 
@@ -5827,11 +5796,7 @@ class AppState: ObservableObject {
                 message.metadata["thinking"] = isThinking ? "true" : "false"
                 message.metadata["outputType"] = outputType.rawValue
                 message.metadata["tokenEstimate"] = String(self.estimatedTokenCount(for: content))
-                self.applyWorkbenchSemanticMetadata(
-                    &message.metadata,
-                    interactionMode: .run,
-                    executionIntent: .workflowControlled
-                )
+                self.applyWorkbenchThreadMetadata(&message.metadata, context: threadContext)
             }
         }
 
@@ -5841,7 +5806,7 @@ class AppState: ObservableObject {
             openClawService.addLog(
                 .info,
                 "Workbench latency: \(label)=\(latency)ms",
-                sessionID: workbenchSessionID,
+                sessionID: threadContext.sessionID,
                 agentID: leadAgent.id
             )
         }
@@ -5849,7 +5814,7 @@ class AppState: ObservableObject {
         openClawService.addLog(
             .info,
             "Workbench run mode selected. Executing workflow \(workflow.name) under workflowControlled semantics.",
-            sessionID: workbenchSessionID,
+            sessionID: threadContext.sessionID,
             agentID: leadAgent.id
         )
 
@@ -5869,8 +5834,8 @@ class AppState: ObservableObject {
             agents: project.agents,
             prompt: prompt,
             projectID: project.id,
-            projectRuntimeSessionID: workbenchSessionID,
-            executionIntent: .workflowControlled,
+            projectRuntimeSessionID: threadContext.sessionID,
+            executionIntent: threadContext.executionIntent,
             agentOutputMode: .structuredJSON,
             onNodeDispatched: { [weak self] dispatchEvent in
                 guard let self else { return }
@@ -5984,17 +5949,21 @@ class AppState: ObservableObject {
             self.openClawService.currentNodeID = nil
         }
 
-        return true
+        return threadContext.threadID
     }
 
-    func refreshWorkbenchHistory(for workflowID: UUID? = nil) {
+    func refreshWorkbenchHistory(for workflowID: UUID? = nil, threadID: String? = nil) {
         guard openClawManager.canReadSessionHistory else { return }
 
         let connectionConfig = openClawManager.config
         guard let gatewayConfig = openClawManager.preferredGatewayConfig(using: connectionConfig) else { return }
         guard let project = currentProject,
               let workflow = self.workflow(for: workflowID) ?? project.workflows.first,
-              let sessionContext = latestWorkbenchRemoteSessionContext(for: workflow, project: project) else {
+              let sessionContext = latestWorkbenchThreadContext(
+                for: workflow,
+                project: project,
+                preferredThreadID: threadID
+              ) else {
             return
         }
 
@@ -6506,66 +6475,205 @@ class AppState: ObservableObject {
         return .off
     }
 
-    private func latestWorkbenchRemoteSessionContext(
+    func latestWorkbenchThreadID(for workflowID: UUID?) -> String? {
+        guard let project = currentProject,
+              let workflow = self.workflow(for: workflowID) ?? project.workflows.first else {
+            return nil
+        }
+        return latestWorkbenchThreadContext(for: workflow, project: project)?.threadID
+    }
+
+    private func latestWorkbenchThreadContext(
         for workflow: Workflow,
-        project: MAProject
+        project: MAProject,
+        preferredThreadID: String? = nil
     ) -> WorkbenchRemoteSessionContext? {
-        let workflowMessages = messageManager.workbenchMessages(for: workflow.id)
+        if let preferredThreadID,
+           let context = workbenchThreadContext(for: preferredThreadID, workflow: workflow, project: project) {
+            return context
+        }
+
+        let workflowMessages = messageManager.messages
+            .filter { message in
+                message.metadata[WorkbenchMetadataKey.channel] == "workbench"
+                    && message.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
+            }
             .sorted { $0.timestamp > $1.timestamp }
 
         for message in workflowMessages {
-            guard let sessionID = normalizedWorkbenchSessionID(from: message.metadata["workbenchSessionID"]) else {
+            guard let context = workbenchThreadContext(for: message, workflow: workflow, project: project) else {
                 continue
             }
-            guard let agent = workbenchLeadAgent(for: message, project: project) else { continue }
-            return makeWorkbenchRemoteSessionContext(
-                workflowID: workflow.id,
-                sessionID: sessionID,
-                agent: agent
-            )
+            return context
         }
 
         let workflowTasks = taskManager.tasks
-            .filter { $0.metadata["workflowID"] == workflow.id.uuidString }
+            .filter { $0.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString }
             .sorted { $0.createdAt > $1.createdAt }
 
         for task in workflowTasks {
-            guard let sessionID = normalizedWorkbenchSessionID(from: task.metadata["workbenchSessionID"]) else {
+            guard let context = workbenchThreadContext(for: task, workflow: workflow, project: project) else {
                 continue
             }
-            guard let agent = workbenchLeadAgent(for: task, project: project) else { continue }
-            return makeWorkbenchRemoteSessionContext(
-                workflowID: workflow.id,
-                sessionID: sessionID,
-                agent: agent
-            )
+            return context
         }
 
         return nil
     }
 
-    private func makeWorkbenchRemoteSessionContext(
-        workflowID: UUID,
-        sessionID: String,
-        agent: Agent
-    ) -> WorkbenchRemoteSessionContext {
-        let agentIdentifier = resolvedWorkbenchAgentIdentifier(for: agent)
-        return WorkbenchRemoteSessionContext(
-            workflowID: workflowID,
+    private func workbenchThreadContext(
+        for threadID: String,
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        let workflowMessages = messageManager.messages
+            .filter { message in
+                message.metadata[WorkbenchMetadataKey.channel] == "workbench"
+                    && message.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
+                    && resolvedWorkbenchThreadID(from: message.metadata) == threadID
+            }
+            .sorted { $0.timestamp > $1.timestamp }
+
+        for message in workflowMessages {
+            guard let context = workbenchThreadContext(for: message, workflow: workflow, project: project) else {
+                continue
+            }
+            return context
+        }
+
+        let workflowTasks = taskManager.tasks
+            .filter { task in
+                task.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
+                    && resolvedWorkbenchThreadID(from: task.metadata) == threadID
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+
+        for task in workflowTasks {
+            guard let context = workbenchThreadContext(for: task, workflow: workflow, project: project) else {
+                continue
+            }
+            return context
+        }
+
+        return nil
+    }
+
+    private func workbenchThreadContext(
+        for message: Message,
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        guard let threadID = resolvedWorkbenchThreadID(from: message.metadata),
+              let sessionID = resolvedWorkbenchSessionID(from: message.metadata),
+              let agent = workbenchLeadAgent(for: message, project: project) else {
+            return nil
+        }
+        return makeWorkbenchThreadContext(
+            workflow: workflow,
             sessionID: sessionID,
-            gatewaySessionKey: workbenchGatewaySessionKey(
-                sessionID: sessionID,
-                agentIdentifier: agentIdentifier
-            ),
-            agentID: agent.id,
-            agentName: agent.name
+            threadID: threadID,
+            interactionMode: WorkbenchInteractionMode(normalizedRawValue: message.metadata[WorkbenchMetadataKey.workbenchMode])
+                ?? .chat,
+            threadType: resolvedWorkbenchThreadType(from: message.metadata) ?? .conversationAutonomous,
+            threadMode: resolvedWorkbenchThreadMode(from: message.metadata) ?? .autonomousConversation,
+            entryAgent: agent,
+            projectSessionID: message.metadata[WorkbenchMetadataKey.workbenchProjectSessionID]
+                ?? project.runtimeState.sessionID
         )
     }
 
-    private func normalizedWorkbenchSessionID(from rawValue: String?) -> String? {
-        guard let rawValue else { return nil }
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    private func workbenchThreadContext(
+        for task: Task,
+        workflow: Workflow,
+        project: MAProject
+    ) -> WorkbenchRemoteSessionContext? {
+        guard let threadID = resolvedWorkbenchThreadID(from: task.metadata),
+              let sessionID = resolvedWorkbenchSessionID(from: task.metadata),
+              let agent = workbenchLeadAgent(for: task, project: project) else {
+            return nil
+        }
+        return makeWorkbenchThreadContext(
+            workflow: workflow,
+            sessionID: sessionID,
+            threadID: threadID,
+            interactionMode: WorkbenchInteractionMode(normalizedRawValue: task.metadata[WorkbenchMetadataKey.workbenchMode])
+                ?? .chat,
+            threadType: resolvedWorkbenchThreadType(from: task.metadata) ?? .conversationAutonomous,
+            threadMode: resolvedWorkbenchThreadMode(from: task.metadata) ?? .autonomousConversation,
+            entryAgent: agent,
+            projectSessionID: task.metadata[WorkbenchMetadataKey.workbenchProjectSessionID]
+                ?? project.runtimeState.sessionID
+        )
+    }
+
+    private func makeWorkbenchThreadContext(
+        workflow: Workflow,
+        leadAgent: Agent,
+        mode: WorkbenchInteractionMode,
+        projectSessionID: String,
+        project: MAProject,
+        reuseExistingThreadID: String? = nil
+    ) -> WorkbenchThreadContext {
+        if let reuseExistingThreadID,
+           let existingContext = workbenchThreadContext(for: reuseExistingThreadID, workflow: workflow, project: project) {
+            return existingContext
+        }
+
+        let normalizedProjectSessionID = projectSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedProjectSessionID = normalizedProjectSessionID.isEmpty ? UUID().uuidString : normalizedProjectSessionID
+        let threadID = workbenchThreadID(
+            projectRuntimeSessionID: resolvedProjectSessionID,
+            workflowID: workflow.id,
+            mode: mode
+        )
+        let sessionID = workbenchSessionID(
+            projectRuntimeSessionID: resolvedProjectSessionID,
+            workflowID: workflow.id,
+            agentID: leadAgent.id,
+            mode: mode,
+            threadID: threadID
+        )
+        return makeWorkbenchThreadContext(
+            workflow: workflow,
+            sessionID: sessionID,
+            threadID: threadID,
+            interactionMode: mode,
+            threadType: mode.threadType,
+            threadMode: mode.threadMode,
+            entryAgent: leadAgent,
+            projectSessionID: resolvedProjectSessionID
+        )
+    }
+
+    private func makeWorkbenchThreadContext(
+        workflow: Workflow,
+        sessionID: String,
+        threadID: String,
+        interactionMode: WorkbenchInteractionMode,
+        threadType: RuntimeSessionSemanticType,
+        threadMode: WorkbenchThreadSemanticMode,
+        entryAgent: Agent,
+        projectSessionID: String
+    ) -> WorkbenchThreadContext {
+        let agentIdentifier = resolvedWorkbenchAgentIdentifier(for: entryAgent)
+        let gatewaySessionKey = workbenchGatewaySessionKey(
+            sessionID: sessionID,
+            agentIdentifier: agentIdentifier
+        )
+        return WorkbenchThreadContext(
+            workflowID: workflow.id,
+            projectSessionID: projectSessionID,
+            threadID: threadID,
+            sessionID: sessionID,
+            gatewaySessionKey: gatewaySessionKey,
+            interactionMode: interactionMode,
+            threadType: threadType,
+            threadMode: threadMode,
+            executionIntent: interactionMode.executionIntent,
+            origin: interactionMode == .chat ? "workbench_chat" : "workbench_run",
+            agentID: entryAgent.id,
+            agentName: entryAgent.name
+        )
     }
 
     private func workbenchLeadAgent(for message: Message, project: MAProject) -> Agent? {
@@ -6671,56 +6779,27 @@ class AppState: ObservableObject {
 
         guard !remoteMessages.isEmpty else { return }
 
-        var localMessageIndicesByRole: [String: [Int]] = [:]
-        for (index, message) in messageManager.messages.enumerated() {
-            guard message.metadata["channel"] == "workbench",
-                  message.metadata["workflowID"] == sessionContext.workflowID.uuidString,
-                  message.metadata["workbenchSessionID"] == sessionContext.sessionID else {
-                continue
+        var existingDigests = Set(
+            messageManager.messages.compactMap { message -> String? in
+                guard message.metadata[WorkbenchMetadataKey.channel] == "workbench",
+                      message.metadata[WorkbenchMetadataKey.workflowID] == sessionContext.workflowID.uuidString,
+                      resolvedWorkbenchThreadID(from: message.metadata) == sessionContext.threadID else {
+                    return nil
+                }
+
+                let role = (message.inferredRole ?? message.metadata["role"] ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                guard role == "user" || role == "assistant" else { return nil }
+                return workbenchTranscriptDigest(role: role, text: message.content)
             }
+        )
 
-            let role = (message.inferredRole ?? message.metadata["role"] ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard role == "user" || role == "assistant" else { continue }
-            localMessageIndicesByRole[role, default: []].append(index)
-        }
-
-        var matchedLocalMessageIndices = Set<Int>()
         for entry in remoteMessages {
             let role = entry.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let timestamp = normalizedWorkbenchTranscriptDate(entry.timestamp)
-
-            if let existingIndex = localMessageIndicesByRole[role]?.first(where: { !matchedLocalMessageIndices.contains($0) }) {
-                matchedLocalMessageIndices.insert(existingIndex)
-                let messageID = messageManager.messages[existingIndex].id
-                messageManager.updateMessage(messageID) { message in
-                    message.content = entry.text
-                    message.timestamp = timestamp
-                    message.status = .read
-                    message.type = role == "user" ? .task : .notification
-                message.metadata["channel"] = "workbench"
-                message.metadata["role"] = role
-                message.metadata["kind"] = role == "user" ? "input" : "output"
-                message.metadata["workflowID"] = sessionContext.workflowID.uuidString
-                message.metadata["workbenchSessionID"] = sessionContext.sessionID
-                self.applyWorkbenchSemanticMetadata(
-                    &message.metadata,
-                    interactionMode: .chat,
-                    executionIntent: .conversationAutonomous
-                )
-                if role == "assistant" {
-                    message.metadata["thinking"] = "false"
-                    message.metadata["streamed"] = "true"
-                    message.metadata["agentName"] = sessionContext.agentName
-                    message.metadata["outputType"] = ExecutionOutputType.agentFinalResponse.rawValue
-                    }
-                    message.runtimeEvent = self.makeTranscriptRuntimeEvent(
-                        role: role,
-                        text: entry.text,
-                        sessionContext: sessionContext
-                    )
-                }
+            let digest = workbenchTranscriptDigest(role: role, text: entry.text)
+            if existingDigests.contains(digest) {
                 continue
             }
 
@@ -6732,16 +6811,12 @@ class AppState: ObservableObject {
             )
             appendedMessage.timestamp = timestamp
             appendedMessage.status = .read
-            appendedMessage.metadata["channel"] = "workbench"
+            appendedMessage.metadata[WorkbenchMetadataKey.channel] = "workbench"
             appendedMessage.metadata["role"] = role
             appendedMessage.metadata["kind"] = role == "user" ? "input" : "output"
-            appendedMessage.metadata["workflowID"] = sessionContext.workflowID.uuidString
-            appendedMessage.metadata["workbenchSessionID"] = sessionContext.sessionID
-            applyWorkbenchSemanticMetadata(
-                &appendedMessage.metadata,
-                interactionMode: .chat,
-                executionIntent: .conversationAutonomous
-            )
+            appendedMessage.metadata[WorkbenchMetadataKey.workflowID] = sessionContext.workflowID.uuidString
+            appendedMessage.metadata["remoteTranscriptDigest"] = digest
+            applyWorkbenchThreadMetadata(&appendedMessage.metadata, context: sessionContext)
             if role == "assistant" {
                 appendedMessage.metadata["entryReply"] = "true"
                 appendedMessage.metadata["streamed"] = "true"
@@ -6755,7 +6830,34 @@ class AppState: ObservableObject {
                 sessionContext: sessionContext
             )
             messageManager.appendMessage(appendedMessage)
+            existingDigests.insert(digest)
         }
+    }
+
+    private func workbenchTranscriptDigest(role: String, text: String) -> String {
+        let normalizedRole = role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(normalizedRole)|\(normalizedText)"
+    }
+
+    private func applyWorkbenchThreadMetadata(
+        _ metadata: inout [String: String],
+        context: WorkbenchThreadContext
+    ) {
+        metadata[WorkbenchMetadataKey.workflowID] = context.workflowID.uuidString
+        metadata[WorkbenchMetadataKey.workbenchSessionID] = context.sessionID
+        metadata[WorkbenchMetadataKey.workbenchThreadID] = context.threadID
+        metadata[WorkbenchMetadataKey.workbenchThreadOrigin] = context.origin
+        metadata[WorkbenchMetadataKey.workbenchEntryAgentID] = context.agentID.uuidString
+        metadata[WorkbenchMetadataKey.workbenchProjectSessionID] = context.projectSessionID
+        metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = context.gatewaySessionKey
+        applyWorkbenchSemanticMetadata(
+            &metadata,
+            threadType: context.threadType,
+            threadMode: context.threadMode,
+            executionIntent: context.executionIntent,
+            interactionMode: context.interactionMode
+        )
     }
 
     private func applyWorkbenchSemanticMetadata(
@@ -7222,9 +7324,9 @@ class AppState: ObservableObject {
                 "role": normalizedRole
             ],
             control: [
-                "executionIntent": OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
-                "workbenchThreadType": RuntimeSessionSemanticType.conversationAutonomous.rawValue,
-                "workbenchThreadMode": WorkbenchThreadSemanticMode.autonomousConversation.rawValue
+                "executionIntent": sessionContext.executionIntent.rawValue,
+                "workbenchThreadType": sessionContext.threadType.rawValue,
+                "workbenchThreadMode": sessionContext.threadMode.rawValue
             ]
         )
     }
@@ -7234,10 +7336,27 @@ class AppState: ObservableObject {
         return Date(timeIntervalSince1970: timestamp)
     }
 
-    private func workbenchSessionID(projectRuntimeSessionID: String, workflowID: UUID, agentID: UUID) -> String {
+    private func workbenchThreadID(
+        projectRuntimeSessionID: String,
+        workflowID: UUID,
+        mode: WorkbenchInteractionMode
+    ) -> String {
         let base = projectRuntimeSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedBase = base.isEmpty ? UUID().uuidString : base
-        return "workbench-\(resolvedBase)-\(workflowID.uuidString)-\(agentID.uuidString)"
+        return "thread-\(resolvedBase)-\(workflowID.uuidString)-\(mode.rawValue)-\(UUID().uuidString)"
+    }
+
+    private func workbenchSessionID(
+        projectRuntimeSessionID: String,
+        workflowID: UUID,
+        agentID: UUID,
+        mode: WorkbenchInteractionMode,
+        threadID: String
+    ) -> String {
+        let base = projectRuntimeSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBase = base.isEmpty ? UUID().uuidString : base
+        let threadToken = threadID.components(separatedBy: "-").last ?? UUID().uuidString
+        return "workbench-\(resolvedBase)-\(workflowID.uuidString)-\(mode.rawValue)-\(agentID.uuidString)-\(threadToken)"
     }
 
     private func latencyMillisecondsString(since start: Date, until end: Date = Date()) -> String {

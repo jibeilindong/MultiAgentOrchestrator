@@ -1,6 +1,6 @@
 This directory is the source-of-truth payload for the app-managed OpenClaw runtime.
 
-It is bundled into the macOS Swift app as `Contents/Resources/OpenClaw`
+It is copied into the macOS Swift app as `Contents/Resources/openclaw`
 and synchronized into the Electron shell at `apps/desktop/resources/openclaw`.
 
 Current payload shape:

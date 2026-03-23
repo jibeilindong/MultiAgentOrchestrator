@@ -25,7 +25,7 @@ Expected one of:
 - dist/cli.js
 
 Next step:
-- vendor the packaged OpenClaw build outputs into Multi-Agent-Flow/OpenClaw
+- vendor the packaged OpenClaw build outputs into managed-runtime/openclaw
 - run bash ./scripts/sync-openclaw-managed-runtime.sh
 EOF
 

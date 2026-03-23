@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-enum WorkbenchInteractionMode: String, CaseIterable, Identifiable {
+enum WorkbenchInteractionMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case chat
     case run
 
@@ -54,6 +54,22 @@ enum WorkbenchInteractionMode: String, CaseIterable, Identifiable {
             return "Run Workflow"
         }
     }
+
+    init?(normalizedRawValue: String?) {
+        let normalized = normalizedRawValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !normalized.isEmpty else { return nil }
+
+        switch normalized {
+        case Self.chat.rawValue:
+            self = .chat
+        case Self.run.rawValue:
+            self = .run
+        default:
+            return nil
+        }
+    }
 }
 
 struct MessagesView: View {
@@ -69,6 +85,7 @@ struct WorkbenchConversationView: View {
     @ObservedObject var messageManager: MessageManager
 
     @State private var selectedWorkflowID: UUID?
+    @State private var selectedThreadID: String?
     @State private var dashboardLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var lastCombinedLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var runtimeConfigPanelMode: WorkbenchRuntimeConfigPanelMode = .storedDefault
@@ -280,7 +297,18 @@ struct WorkbenchConversationView: View {
     }
 
     private var workbenchMessages: [Message] {
-        messageManager.workbenchMessages(for: selectedWorkflow?.id)
+        messageManager.workbenchMessages(
+            workflowID: selectedWorkflow?.id,
+            threadID: effectiveSelectedThreadID
+        )
+    }
+
+    private var effectiveSelectedThreadID: String? {
+        if let selectedThreadID,
+           !selectedThreadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return selectedThreadID
+        }
+        return appState.latestWorkbenchThreadID(for: selectedWorkflow?.id)
     }
 
     private var lastWorkbenchMessageSignature: String {
@@ -1426,7 +1454,7 @@ struct WorkbenchConversationView: View {
             return
         }
 
-        guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID, mode: submitMode) else {
+        guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID, mode: submitMode) != nil else {
             errorText = appState.openClawService.isExecuting
                 ? LocalizedString.text("workbench_error_busy")
                 : LocalizedString.text("workbench_error_submit_failed")

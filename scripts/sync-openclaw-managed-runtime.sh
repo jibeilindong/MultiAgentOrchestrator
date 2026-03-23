@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_DIR="$ROOT_DIR/Multi-Agent-Flow/OpenClaw"
+SOURCE_DIR="$ROOT_DIR/managed-runtime/openclaw"
 TARGET_DIR="$ROOT_DIR/apps/desktop/resources/openclaw"
 
 if [[ ! -f "$SOURCE_DIR/managed-runtime.json" ]]; then
