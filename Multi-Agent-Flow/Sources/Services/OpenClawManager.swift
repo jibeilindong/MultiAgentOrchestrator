@@ -2698,7 +2698,10 @@ class OpenClawManager: ObservableObject {
             LocalRuntimeAgentRegistrationReport(
                 agentName: agent.name,
                 identifier: identifier,
-                success: !stageReports.contains(where: { $0.status == .failed }),
+                success: !hasBlockingLocalRuntimeRegistrationFailure(
+                    stageReports: stageReports,
+                    bootstrapPathRequired: bootstrapPathRequired
+                ),
                 message: combineMessages(from: stageReports),
                 bootstrapPathRequired: bootstrapPathRequired,
                 workspaceRequirement: workspaceRequirement,
@@ -3044,7 +3047,10 @@ class OpenClawManager: ObservableObject {
             LocalRuntimeAgentRegistrationReport(
                 agentName: state.agent.name,
                 identifier: state.identifier,
-                success: !state.stageReports.contains(where: { $0.status == .failed }),
+                success: !hasBlockingLocalRuntimeRegistrationFailure(
+                    stageReports: state.stageReports,
+                    bootstrapPathRequired: state.bootstrapPathRequired
+                ),
                 message: combineMessages(from: state.stageReports),
                 bootstrapPathRequired: state.bootstrapPathRequired,
                 workspaceRequirement: state.workspaceRequirement,
@@ -3063,6 +3069,11 @@ class OpenClawManager: ObservableObject {
                     result.workspacePathRequirements.append(workspaceRequirement)
                 }
                 continue
+            }
+
+            if registration.bootstrapPathRequired {
+                result.warnings.append(localRuntimeRegistrationFailureMessage(for: registration))
+                result.bootstrapPathRequiredAgentNames.append(registration.agentName)
             }
 
             if registration.changed {
@@ -3174,6 +3185,25 @@ class OpenClawManager: ObservableObject {
             return baseMessage
         }
         return "\(baseMessage) 失败阶段：\(stageSummary)。"
+    }
+
+    private func hasBlockingLocalRuntimeRegistrationFailure(
+        stageReports: [LocalRuntimeRegistrationStageReport],
+        bootstrapPathRequired: Bool
+    ) -> Bool {
+        let failedStages = stageReports
+            .filter { $0.status == .failed }
+            .map(\.stage)
+
+        guard !failedStages.isEmpty else {
+            return false
+        }
+
+        if bootstrapPathRequired {
+            return failedStages.contains { $0 != .bootstrap }
+        }
+
+        return true
     }
 
     private func localRuntimeRegistrationSummary(from result: LocalRuntimeRegistrationResult) -> String {

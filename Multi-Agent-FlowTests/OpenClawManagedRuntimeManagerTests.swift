@@ -81,19 +81,19 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
         import signal
 
         GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-        CONFIG_PATH = r"#(configFileURL.path)"
+        CONFIG_PATH = r"\(configFileURL.path)"
         AGENTS = [
             {
                 "id": "agent-alpha",
                 "name": "Alpha Agent",
-                "workspace": r"#(alphaWorkspaceURL.path)",
-                "agentDir": r"#(alphaAgentDirectory.path)"
+                "workspace": r"\(alphaWorkspaceURL.path)",
+                "agentDir": r"\(alphaAgentDirectory.path)"
             },
             {
                 "id": "agent-beta",
                 "name": "Beta Agent",
-                "workspace": r"#(betaWorkspaceURL.path)",
-                "agentDir": r"#(betaAgentDirectory.path)"
+                "workspace": r"\(betaWorkspaceURL.path)",
+                "agentDir": r"\(betaAgentDirectory.path)"
             }
         ]
 
