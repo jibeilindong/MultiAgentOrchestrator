@@ -3,14 +3,17 @@
 //  Multi-Agent-Flow
 //
 
+import Combine
 import SwiftUI
 
 struct OpenClawConfigView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var openClawManager = OpenClawManager.shared
     @State private var config: OpenClawConfig = .default
     @State private var isTesting = false
     @State private var isSaving = false
     @State private var isSyncingSession = false
+    @State private var isMutatingManagedRuntime = false
     @State private var testResult: String?
     @State private var statusMessage: String?
     @State private var statusTone: StatusTone = .neutral
@@ -75,6 +78,10 @@ struct OpenClawConfigView: View {
                             }
                         }
                     }
+                }
+
+                if showsManagedRuntimeSection {
+                    managedRuntimeSection
                 }
 
                 GroupBox(LocalizedString.text("connection_settings_title")) {
@@ -213,8 +220,9 @@ struct OpenClawConfigView: View {
             )
         }
         .onAppear {
-            config = appState.openClawManager.config
+            config = openClawManager.config
             refreshStatusFromManager()
+            refreshManagedRuntimeStatus()
         }
         .onChange(of: configFingerprint(config)) { _, newFingerprint in
             if let lastTestedFingerprint, lastTestedFingerprint != newFingerprint {
@@ -222,6 +230,20 @@ struct OpenClawConfigView: View {
                 statusMessage = LocalizedString.text("config_modified_retest")
                 statusTone = .neutral
             }
+        }
+        .onChange(of: config.deploymentKind) { _, _ in
+            refreshManagedRuntimeStatus()
+            refreshStatusFromManager()
+        }
+        .onChange(of: config.runtimeOwnership) { _, _ in
+            refreshManagedRuntimeStatus()
+            refreshStatusFromManager()
+        }
+        .onReceive(openClawManager.$managedRuntimeStatus) { _ in
+            refreshStatusFromManager()
+        }
+        .onReceive(openClawManager.$status) { _ in
+            refreshStatusFromManager()
         }
     }
     
@@ -252,6 +274,69 @@ struct OpenClawConfigView: View {
                 !appState.openClawManager.hasAttachedProjectSession
                 || appState.openClawManager.attachedProjectID != currentProject.id
             )
+    }
+
+    private var showsManagedRuntimeSection: Bool {
+        config.usesManagedLocalRuntime
+    }
+
+    private var managedRuntimeSnapshot: OpenClawManagedRuntimeStatusSnapshot {
+        openClawManager.managedRuntimeStatus
+    }
+
+    private var canRefreshManagedRuntime: Bool {
+        !isTesting && !isSaving && !isSyncingSession && !isMutatingManagedRuntime
+    }
+
+    private var canStartManagedRuntime: Bool {
+        canRefreshManagedRuntime && managedRuntimeSnapshot.state != .running && managedRuntimeSnapshot.state != .starting
+    }
+
+    private var canStopManagedRuntime: Bool {
+        canRefreshManagedRuntime && (managedRuntimeSnapshot.state == .running || managedRuntimeSnapshot.state == .starting || managedRuntimeSnapshot.processID != nil)
+    }
+
+    private var canRestartManagedRuntime: Bool {
+        canRefreshManagedRuntime && (managedRuntimeSnapshot.state == .running || managedRuntimeSnapshot.state == .failed || managedRuntimeSnapshot.processID != nil)
+    }
+
+    private var managedRuntimeTitle: String {
+        switch managedRuntimeSnapshot.state {
+        case .running: return "运行中"
+        case .starting: return "启动中"
+        case .stopping: return "停止中"
+        case .failed: return "失败"
+        case .idle: return "未运行"
+        case .unmanaged: return "未托管"
+        }
+    }
+
+    private var managedRuntimeColor: Color {
+        switch managedRuntimeSnapshot.state {
+        case .running:
+            return .green
+        case .starting, .stopping:
+            return .orange
+        case .failed:
+            return .red
+        case .idle, .unmanaged:
+            return .secondary
+        }
+    }
+
+    private var managedRuntimeSummary: String {
+        managedRuntimeSnapshot.lastMessage ?? "托管 OpenClaw Runtime 状态尚未刷新。"
+    }
+
+    private var managedRuntimeLaunchStrategyText: String {
+        switch managedRuntimeSnapshot.launchStrategy {
+        case .foregroundGateway:
+            return "Foreground Gateway"
+        case .daemonCLI:
+            return "Daemon CLI"
+        case .none:
+            return "未确定"
+        }
     }
 
     private var sessionLifecycleHint: String {
@@ -301,6 +386,96 @@ struct OpenClawConfigView: View {
             return .red
         case .none:
             return .secondary
+        }
+    }
+
+    @ViewBuilder
+    private var managedRuntimeSection: some View {
+        GroupBox("Managed Runtime") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    statusPill(
+                        label: "Supervisor",
+                        value: managedRuntimeTitle,
+                        color: managedRuntimeColor
+                    )
+                    statusPill(
+                        label: "Strategy",
+                        value: managedRuntimeLaunchStrategyText,
+                        color: managedRuntimeColor
+                    )
+
+                    if let processID = managedRuntimeSnapshot.processID {
+                        statusPill(
+                            label: "PID",
+                            value: "\(processID)",
+                            color: managedRuntimeColor
+                        )
+                    }
+
+                    statusPill(
+                        label: "Port",
+                        value: "\(managedRuntimeSnapshot.port ?? config.port)",
+                        color: managedRuntimeColor
+                    )
+                }
+
+                Text(managedRuntimeSummary)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let lastError = managedRuntimeSnapshot.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !lastError.isEmpty,
+                   lastError != managedRuntimeSummary {
+                    Text(lastError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let logPath = managedRuntimeSnapshot.logPath, !logPath.isEmpty {
+                    infoLine(label: "日志", value: logPath)
+                }
+                if let runtimeRootPath = managedRuntimeSnapshot.runtimeRootPath, !runtimeRootPath.isEmpty {
+                    infoLine(label: "Runtime Root", value: runtimeRootPath)
+                }
+                if let supervisorRootPath = managedRuntimeSnapshot.supervisorRootPath, !supervisorRootPath.isEmpty {
+                    infoLine(label: "Supervisor Root", value: supervisorRootPath)
+                }
+
+                HStack(spacing: 12) {
+                    Button(action: refreshManagedRuntimeStatus) {
+                        HStack(spacing: 8) {
+                            if isMutatingManagedRuntime {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(isMutatingManagedRuntime ? "处理中..." : "刷新状态")
+                        }
+                    }
+                    .disabled(!canRefreshManagedRuntime)
+
+                    Button("启动 Runtime", action: startManagedRuntime)
+                        .disabled(!canStartManagedRuntime)
+
+                    Button("停止 Runtime", action: stopManagedRuntime)
+                        .disabled(!canStopManagedRuntime)
+
+                    Button("重启 Runtime", action: restartManagedRuntime)
+                        .disabled(!canRestartManagedRuntime)
+                }
+
+                if let lastHeartbeatAt = managedRuntimeSnapshot.lastHeartbeatAt {
+                    Text("最近心跳：\(lastHeartbeatAt.formatted(date: .abbreviated, time: .standard))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } else if let lastStartedAt = managedRuntimeSnapshot.lastStartedAt {
+                    Text("最近启动：\(lastStartedAt.formatted(date: .abbreviated, time: .standard))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
     }
 
@@ -457,6 +632,20 @@ struct OpenClawConfigView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    @ViewBuilder
+    private func infoLine(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var statusTitle: String {
         switch statusTone {
         case .success: return LocalizedString.text("connection_confirmed")
@@ -501,11 +690,12 @@ struct OpenClawConfigView: View {
     
     private func saveConfig() {
         isSaving = true
-        appState.openClawManager.config = config
+        openClawManager.config = config
         config.save()
         isSaving = false
         statusMessage = LocalizedString.text("config_saved_connect_next")
         statusTone = .neutral
+        refreshManagedRuntimeStatus()
     }
 
     private func connectNow() {
@@ -513,6 +703,49 @@ struct OpenClawConfigView: View {
         appState.connectOpenClaw(using: config) { success, message in
             isSaving = false
             testResult = message
+            statusMessage = success ? message : LocalizedString.format("error_status", message)
+            statusTone = success ? .success : .error
+        }
+    }
+
+    private func refreshManagedRuntimeStatus() {
+        managedRuntimeStatusUpdate {
+            _ = openClawManager.refreshManagedRuntimeStatus(using: config)
+            return true
+        }
+    }
+
+    private func startManagedRuntime() {
+        persistDraftConfigIfNeeded()
+        isMutatingManagedRuntime = true
+        openClawManager.startManagedRuntime { success, message in
+            isMutatingManagedRuntime = false
+            testResult = message
+            lastTestSucceeded = success
+            statusMessage = success ? message : LocalizedString.format("error_status", message)
+            statusTone = success ? .success : .error
+        }
+    }
+
+    private func stopManagedRuntime() {
+        persistDraftConfigIfNeeded()
+        isMutatingManagedRuntime = true
+        openClawManager.stopManagedRuntime { success, message in
+            isMutatingManagedRuntime = false
+            testResult = message
+            lastTestSucceeded = success
+            statusMessage = success ? message : LocalizedString.format("error_status", message)
+            statusTone = success ? .success : .error
+        }
+    }
+
+    private func restartManagedRuntime() {
+        persistDraftConfigIfNeeded()
+        isMutatingManagedRuntime = true
+        openClawManager.restartManagedRuntime { success, message in
+            isMutatingManagedRuntime = false
+            testResult = message
+            lastTestSucceeded = success
             statusMessage = success ? message : LocalizedString.format("error_status", message)
             statusTone = success ? .success : .error
         }
@@ -539,20 +772,36 @@ struct OpenClawConfigView: View {
     }
 
     private func refreshStatusFromManager() {
-        switch appState.openClawManager.status {
+        switch openClawManager.status {
         case .connected:
             statusMessage = sessionLifecycleHint
             statusTone = .success
         case .connecting:
-            statusMessage = LocalizedString.text("processing_openclaw_session")
+            statusMessage = showsManagedRuntimeSection
+                ? managedRuntimeSummary
+                : LocalizedString.text("processing_openclaw_session")
             statusTone = .neutral
         case .disconnected:
-            statusMessage = LocalizedString.text("current_not_confirmed")
+            statusMessage = showsManagedRuntimeSection
+                ? managedRuntimeSummary
+                : LocalizedString.text("current_not_confirmed")
             statusTone = .neutral
         case .error(let message):
             statusMessage = message
             statusTone = .error
         }
+    }
+
+    private func persistDraftConfigIfNeeded() {
+        openClawManager.config = config
+        config.save()
+    }
+
+    private func managedRuntimeStatusUpdate(_ action: () -> Bool) {
+        guard !isMutatingManagedRuntime else { return }
+        isMutatingManagedRuntime = true
+        let _ = action()
+        isMutatingManagedRuntime = false
     }
 
     private func configFingerprint(_ config: OpenClawConfig) -> String {

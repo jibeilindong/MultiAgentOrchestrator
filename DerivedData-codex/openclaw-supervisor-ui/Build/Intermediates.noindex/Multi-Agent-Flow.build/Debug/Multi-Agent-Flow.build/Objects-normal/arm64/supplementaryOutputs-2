@@ -1,0 +1,58 @@
+{
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/TemplateAssets.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateAssets.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateAssets.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateAssets.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateAssets.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateAssets.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/TemplateDraftSession.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateDraftSession.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateDraftSession.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateDraftSession.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateDraftSession.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateDraftSession.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/TemplateFileIndex.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileIndex.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileIndex.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileIndex.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileIndex.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileIndex.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/Workflow.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/Workflow.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/Workflow.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/Workflow.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/Workflow.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/Workflow.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/WorkflowPackage.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowPackage.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowPackage.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowPackage.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowPackage.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowPackage.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/OpsCenter/Models/OpsCenterArchiveStore.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterArchiveStore.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterArchiveStore.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterArchiveStore.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterArchiveStore.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterArchiveStore.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/OpsCenter/Models/OpsCenterModels.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterModels.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterModels.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterModels.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterModels.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterModels.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/OpsCenter/Models/OpsCenterProjectionStore.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterProjectionStore.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterProjectionStore.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterProjectionStore.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterProjectionStore.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/openclaw-supervisor-ui/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpsCenterProjectionStore.swiftdeps"
+  }
+}

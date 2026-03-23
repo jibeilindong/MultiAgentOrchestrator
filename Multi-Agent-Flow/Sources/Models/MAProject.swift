@@ -95,10 +95,53 @@ struct RuntimeDispatchRecord: Codable, Identifiable, Hashable {
     }
 }
 
+enum WorkbenchActiveRunStatus: String, Codable, CaseIterable, Hashable {
+    case running
+    case stopping
+}
+
+struct WorkbenchActiveRunRecord: Codable, Identifiable, Hashable {
+    let id: String
+    var threadID: String
+    var workflowID: String
+    var runID: String
+    var sessionKey: String
+    var transportKind: String
+    var executionIntent: String
+    var startedAt: Date
+    var updatedAt: Date
+    var status: WorkbenchActiveRunStatus
+
+    init(
+        id: String? = nil,
+        threadID: String,
+        workflowID: String,
+        runID: String,
+        sessionKey: String,
+        transportKind: String,
+        executionIntent: String,
+        startedAt: Date = Date(),
+        updatedAt: Date = Date(),
+        status: WorkbenchActiveRunStatus = .running
+    ) {
+        self.id = id ?? threadID
+        self.threadID = threadID
+        self.workflowID = workflowID
+        self.runID = runID
+        self.sessionKey = sessionKey
+        self.transportKind = transportKind
+        self.executionIntent = executionIntent
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
+        self.status = status
+    }
+}
+
 // 运行时状态
 struct RuntimeState: Codable {
     var sessionID: String
     var messageQueue: [String]
+    var activeWorkbenchRuns: [WorkbenchActiveRunRecord]
     var dispatchQueue: [RuntimeDispatchRecord]
     var inflightDispatches: [RuntimeDispatchRecord]
     var completedDispatches: [RuntimeDispatchRecord]
@@ -117,6 +160,7 @@ struct RuntimeState: Codable {
     enum CodingKeys: String, CodingKey {
         case sessionID
         case messageQueue
+        case activeWorkbenchRuns
         case dispatchQueue
         case inflightDispatches
         case completedDispatches
@@ -138,6 +182,7 @@ struct RuntimeState: Codable {
     init() {
         self.sessionID = UUID().uuidString
         self.messageQueue = []
+        self.activeWorkbenchRuns = []
         self.dispatchQueue = []
         self.inflightDispatches = []
         self.completedDispatches = []
@@ -158,6 +203,7 @@ struct RuntimeState: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? UUID().uuidString
         messageQueue = try container.decodeIfPresent([String].self, forKey: .messageQueue) ?? []
+        activeWorkbenchRuns = try container.decodeIfPresent([WorkbenchActiveRunRecord].self, forKey: .activeWorkbenchRuns) ?? []
         dispatchQueue = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .dispatchQueue) ?? []
         inflightDispatches = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .inflightDispatches) ?? []
         completedDispatches = try container.decodeIfPresent([RuntimeDispatchRecord].self, forKey: .completedDispatches) ?? []
@@ -180,6 +226,7 @@ struct RuntimeState: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sessionID, forKey: .sessionID)
         try container.encode(messageQueue, forKey: .messageQueue)
+        try container.encode(activeWorkbenchRuns, forKey: .activeWorkbenchRuns)
         try container.encode(dispatchQueue, forKey: .dispatchQueue)
         try container.encode(inflightDispatches, forKey: .inflightDispatches)
         try container.encode(completedDispatches, forKey: .completedDispatches)
