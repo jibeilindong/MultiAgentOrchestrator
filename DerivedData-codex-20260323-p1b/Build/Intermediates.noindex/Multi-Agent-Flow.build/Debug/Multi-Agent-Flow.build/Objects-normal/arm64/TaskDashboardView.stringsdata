@@ -1,0 +1,224 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/TaskDashboardView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Protocol governance metrics will appear after runtime traces are ingested.",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 2028
+        }
+      },
+      {
+        "comment": "",
+        "key": "Trace drill-down: %@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 2021
+        }
+      },
+      {
+        "comment": "",
+        "key": "Protocol Governance",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 2011
+        }
+      },
+      {
+        "comment": "",
+        "key": "Track conformance, repair quality, and interruption pressure across recent agent runs.",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 2013
+        }
+      },
+      {
+        "comment": "",
+        "key": "Protocol Trends",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 2057
+        }
+      },
+      {
+        "comment": "",
+        "key": "Click to open historical view",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 2060
+        }
+      },
+      {
+        "comment": "",
+        "key": "Repair Distribution",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 2090
+        }
+      },
+      {
+        "comment": "",
+        "key": "Recent traces",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 2093
+        }
+      },
+      {
+        "comment": "",
+        "key": "Agent Profiles",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 2122
+        }
+      },
+      {
+        "comment": "",
+        "key": "Highest protocol pressure first",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 2125
+        }
+      },
+      {
+        "comment": "",
+        "key": "Source",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 2399
+        }
+      },
+      {
+        "comment": "",
+        "key": "Severity",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 2406
+        }
+      },
+      {
+        "comment": "",
+        "key": "Window",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 2413
+        }
+      },
+      {
+        "comment": "",
+        "key": "Protocol",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 2719
+        }
+      },
+      {
+        "comment": "",
+        "key": "Protocol filter: %@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 2732
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clear",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 2736
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@: %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 3001
+        }
+      },
+      {
+        "comment": "",
+        "key": "同步当前会话",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 3042
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lldx",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 3918
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ • %@",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 5875
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 6576
+        }
+      },
+      {
+        "comment": "",
+        "key": "—",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 6726
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 6714
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 6721
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 6768
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ • %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 6792
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 6894
+        }
+      }
+    ]
+  },
+  "version": 1
+}

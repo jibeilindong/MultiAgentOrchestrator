@@ -1,0 +1,30 @@
+{
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/TaskDashboardView.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDashboardView.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDashboardView.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDashboardView.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDashboardView.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDashboardView.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/TaskDetailView.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDetailView.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDetailView.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDetailView.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDetailView.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskDetailView.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/TaskInfoRow.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskInfoRow.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskInfoRow.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskInfoRow.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskInfoRow.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TaskInfoRow.swiftdeps"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/TemplateFileTreeView.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileTreeView.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileTreeView.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileTreeView.dia",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileTreeView.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex-tests-20260323/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileTreeView.swiftdeps"
+  }
+}

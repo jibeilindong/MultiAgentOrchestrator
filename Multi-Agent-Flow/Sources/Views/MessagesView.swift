@@ -341,6 +341,36 @@ struct WorkbenchConversationView: View {
         return activeThreadSummary?.subtitle ?? "Select a thread to continue"
     }
 
+    private func threadStateColor(_ state: WorkbenchConversationState) -> Color {
+        switch state {
+        case .idle:
+            return .secondary
+        case .responding:
+            return .blue
+        case .readyToRun:
+            return .teal
+        case .running:
+            return .orange
+        case .stopping:
+            return .red
+        case .completed:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+
+    @ViewBuilder
+    private func threadStateBadge(_ state: WorkbenchConversationState) -> some View {
+        Text(state.badgeTitle)
+            .font(.caption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(threadStateColor(state).opacity(0.14))
+            .foregroundColor(threadStateColor(state))
+            .clipShape(Capsule())
+    }
+
     private var lastWorkbenchMessageSignature: String {
         guard let last = workbenchMessages.last else { return "empty" }
         return [
@@ -493,6 +523,7 @@ struct WorkbenchConversationView: View {
             }
             isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
+            syncSubmitModeForSelectedThread(selectedThreadID)
             appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded()
         }
@@ -503,17 +534,20 @@ struct WorkbenchConversationView: View {
             }
             isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
+            syncSubmitModeForSelectedThread(selectedThreadID)
             appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: selectedWorkflowID) { _, newValue in
             isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: newValue)
+            syncSubmitModeForSelectedThread(selectedThreadID)
             appState.refreshWorkbenchHistory(for: newValue, threadID: selectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: selectedThreadID) { _, newValue in
             guard !isPreparingFreshThread else { return }
+            syncSubmitModeForSelectedThread(newValue)
             appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: newValue)
         }
         .onChange(of: appState.openClawManager.canReadSessionHistory) { _, canReadSessionHistory in
@@ -526,6 +560,7 @@ struct WorkbenchConversationView: View {
         .onChange(of: appState.currentProject?.id) { _, _ in
             isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
+            syncSubmitModeForSelectedThread(selectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: dashboardLayout) { _, newValue in
@@ -670,10 +705,14 @@ struct WorkbenchConversationView: View {
                     Button {
                         selectThread(thread.id)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(thread.title)
-                            Text(thread.subtitle)
-                                .font(.caption)
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(thread.title)
+                                Text(thread.subtitle)
+                                    .font(.caption)
+                            }
+                            Spacer(minLength: 8)
+                            threadStateBadge(thread.conversationState)
                         }
                     }
                 }
@@ -691,6 +730,9 @@ struct WorkbenchConversationView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 6)
+                if let activeThreadSummary, !isPreparingFreshThread {
+                    threadStateBadge(activeThreadSummary.conversationState)
+                }
                 if let activeThreadSummary, !isPreparingFreshThread {
                     Text(activeThreadSummary.lastActivityAt, style: .relative)
                         .font(.caption2)
@@ -1344,10 +1386,13 @@ struct WorkbenchConversationView: View {
                             .foregroundColor(.secondary)
                     } else if let activeThreadSummary {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(activeThreadSummary.title)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
+                            HStack(spacing: 8) {
+                                Text(activeThreadSummary.title)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                threadStateBadge(activeThreadSummary.conversationState)
+                            }
                             Text(activeThreadSummary.preview)
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
@@ -1587,13 +1632,22 @@ struct WorkbenchConversationView: View {
 
     private func stopActiveRemoteConversation() {
         errorText = nil
-        appState.openClawService.abortActiveRemoteConversation(threadID: effectiveSelectedThreadID)
+        appState.requestStopWorkbenchConversation(activeThreadSummary)
     }
 
     private func selectThread(_ threadID: String) {
         guard !threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isPreparingFreshThread = false
         selectedThreadID = threadID
+        syncSubmitModeForSelectedThread(threadID)
+    }
+
+    private func syncSubmitModeForSelectedThread(_ threadID: String?) {
+        guard let threadID,
+              let summary = workbenchThreadSummaries.first(where: { $0.id == threadID }) else {
+            return
+        }
+        submitMode = summary.interactionMode
     }
 
     private func beginFreshThreadDraft() {

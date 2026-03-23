@@ -231,7 +231,12 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
                 sessions: [
                     OpsCenterProjectionSessionEntry(
                         sessionID: sessionID,
+                        sessionType: nil,
+                        threadID: sessionID,
                         workflowIDs: [workflow.id.uuidString],
+                        plannedTransport: nil,
+                        actualTransport: nil,
+                        actualTransportKinds: nil,
                         messageCount: 3,
                         taskCount: 2,
                         eventCount: 1,
@@ -242,6 +247,8 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
                         completedDispatchCount: 0,
                         failedDispatchCount: 1,
                         latestFailureText: "Retained failure",
+                        fallbackReason: nil,
+                        degradationReason: nil,
                         lastUpdatedAt: now,
                         isProjectRuntimeSession: true
                     )
@@ -280,7 +287,10 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
                 threads: [
                     OpsCenterProjectionThreadEntry(
                         threadID: sessionID,
+                        threadType: RuntimeSessionSemanticType.conversationAutonomous.rawValue,
+                        mode: WorkbenchThreadSemanticMode.autonomousConversation.rawValue,
                         sessionID: sessionID,
+                        linkedSessionIDs: [sessionID],
                         workflowID: workflow.id,
                         workflowName: workflow.name,
                         entryAgentName: agent.name,
@@ -662,7 +672,12 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
                 sessions: [
                     OpsCenterProjectionSessionEntry(
                         sessionID: "session-a",
+                        sessionType: nil,
+                        threadID: "session-a",
                         workflowIDs: [workflowID.uuidString],
+                        plannedTransport: nil,
+                        actualTransport: nil,
+                        actualTransportKinds: nil,
                         messageCount: 2,
                         taskCount: 1,
                         eventCount: 3,
@@ -673,6 +688,8 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
                         completedDispatchCount: 1,
                         failedDispatchCount: 0,
                         latestFailureText: nil,
+                        fallbackReason: nil,
+                        degradationReason: nil,
                         lastUpdatedAt: generatedAt.addingTimeInterval(10),
                         isProjectRuntimeSession: true
                     )
@@ -719,7 +736,10 @@ final class OpsCenterSnapshotBuilderTests: XCTestCase {
                 threads: [
                     OpsCenterProjectionThreadEntry(
                         threadID: "session-a",
+                        threadType: RuntimeSessionSemanticType.workflowControlled.rawValue,
+                        mode: WorkbenchThreadSemanticMode.controlledRun.rawValue,
                         sessionID: "session-a",
+                        linkedSessionIDs: ["session-a"],
                         workflowID: workflowID,
                         workflowName: "Main Workflow",
                         entryAgentName: "Reviewer Agent",

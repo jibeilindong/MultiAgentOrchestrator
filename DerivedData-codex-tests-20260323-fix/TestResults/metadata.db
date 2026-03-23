@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>FormatVersion</key>
+	<integer>1</integer>
+	<key>Store</key>
+	<dict>
+		<key>Multi-Agent-FlowTests</key>
+		<dict>
+			<key>OpenClawManagedRuntimeInstallerTests</key>
+			<dict>
+				<key>testInstallerCopiesBundledPayloadIntoManagedRuntimeRoot</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+				<key>testInstallerReinstallsWhenPayloadContentsChangeWithoutVersionBump</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+				<key>testInstallerReportsUnavailableWhenPayloadBinaryIsMissing</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+				<key>testInstallerSkipsWhenInstalledPayloadMatchesReceipt</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+			</dict>
+			<key>OpenClawManagedRuntimeSupervisorTests</key>
+			<dict>
+				<key>testBuildLaunchCommandPlanUsesManagedRuntimeBinaryForAppManagedConfig</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+				<key>testRefreshStatusRemovesStalePersistedPidFile</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+				<key>testRefreshStatusTreatsLivePersistedPidAsRunning</key>
+				<dict>
+					<key>mrnet</key>
+					<real>0.0</real>
+				</dict>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>

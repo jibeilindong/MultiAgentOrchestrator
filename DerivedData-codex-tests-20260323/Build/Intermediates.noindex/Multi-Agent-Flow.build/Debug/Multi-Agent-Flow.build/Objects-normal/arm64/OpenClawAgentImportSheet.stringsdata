@@ -1,0 +1,80 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/OpenClawAgentImportSheet.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "仍有已选 agent 缺少功能描述。请从模板候选中选择，或在“手动命名”里填写后再导入。",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 137
+        }
+      },
+      {
+        "comment": "",
+        "key": "导入时会强制把 agent 重命名为“功能描述-任务领域-数字”。系统会优先根据 SOUL.md 匹配模板；只有模板明显不合适时，才需要手动填写功能描述。",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 103
+        }
+      },
+      {
+        "comment": "",
+        "key": "未找到足够贴合的模板。请优先检查候选项；如果都不合适，再手动填写功能描述。",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 264
+        }
+      },
+      {
+        "comment": "",
+        "key": "SOUL 推荐功能描述：%@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 268
+        }
+      },
+      {
+        "comment": "",
+        "key": "识别依据：%@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 288
+        }
+      },
+      {
+        "comment": "",
+        "key": "导入后名称：%@",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 293
+        }
+      },
+      {
+        "comment": "",
+        "key": "功能描述",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 273
+        }
+      },
+      {
+        "comment": "",
+        "key": "仅当模板明显不合适时填写功能描述",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 283
+        }
+      },
+      {
+        "comment": "",
+        "key": "手动命名",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 277
+        }
+      }
+    ]
+  },
+  "version": 1
+}

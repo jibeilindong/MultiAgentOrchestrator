@@ -147,4 +147,26 @@ final class WorkflowApplyStatusTests: XCTestCase {
         XCTAssertEqual(decoded.latestRuntimeSyncReceipt, receipt)
         XCTAssertEqual(decoded.recentRuntimeSyncReceipts, [receipt])
     }
+
+    func testRuntimeStatePersistsActiveWorkbenchRuns() throws {
+        let runRecord = WorkbenchActiveRunRecord(
+            threadID: "thread-1",
+            workflowID: UUID().uuidString,
+            runID: "run-1",
+            sessionKey: "agent:planner:thread-1",
+            transportKind: "gateway_chat",
+            executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_710_000_030),
+            status: .stopping
+        )
+
+        var runtimeState = RuntimeState()
+        runtimeState.activeWorkbenchRuns = [runRecord]
+
+        let data = try JSONEncoder().encode(runtimeState)
+        let decoded = try JSONDecoder().decode(RuntimeState.self, from: data)
+
+        XCTAssertEqual(decoded.activeWorkbenchRuns, [runRecord])
+    }
 }

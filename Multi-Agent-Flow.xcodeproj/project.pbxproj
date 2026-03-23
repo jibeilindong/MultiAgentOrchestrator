@@ -184,19 +184,17 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/managed-runtime/openclaw/managed-runtime.json",
-				"$(SRCROOT)/managed-runtime/openclaw/bin/openclaw",
+				"$(SRCROOT)/managed-runtime/openclaw",
 			);
 			name = "Copy Managed OpenClaw Runtime";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw/managed-runtime.json",
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw/bin/openclaw",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUNTIME_SOURCE=\"$SRCROOT/managed-runtime/openclaw\"\nRUNTIME_TARGET=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/openclaw\"\nmkdir -p \"$RUNTIME_TARGET/bin\"\ncp \"$RUNTIME_SOURCE/managed-runtime.json\" \"$RUNTIME_TARGET/managed-runtime.json\"\ncp \"$RUNTIME_SOURCE/bin/openclaw\" \"$RUNTIME_TARGET/bin/openclaw\"\nchmod +x \"$RUNTIME_TARGET/bin/openclaw\"\n";
+			shellScript = "set -euo pipefail\nRUNTIME_SOURCE=\"$SRCROOT/managed-runtime/openclaw\"\nRUNTIME_TARGET=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/openclaw\"\nmkdir -p \"$RUNTIME_TARGET\"\nditto \"$RUNTIME_SOURCE\" \"$RUNTIME_TARGET\"\nchmod +x \"$RUNTIME_TARGET/bin/openclaw\"\nif [ -f \"$RUNTIME_TARGET/libexec/openclaw\" ]; then\n  chmod +x \"$RUNTIME_TARGET/libexec/openclaw\"\nfi\nif [ -f \"$RUNTIME_TARGET/runtime/node/bin/node\" ]; then\n  chmod +x \"$RUNTIME_TARGET/runtime/node/bin/node\"\nfi\nif [ -f \"$RUNTIME_TARGET/node/bin/node\" ]; then\n  chmod +x \"$RUNTIME_TARGET/node/bin/node\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -264,7 +262,7 @@
 				DEVELOPMENT_TEAM = 4TPD585PDN;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -328,7 +326,7 @@
 				DEVELOPMENT_TEAM = 4TPD585PDN;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;

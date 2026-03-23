@@ -1,0 +1,24 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/MultiAgentFlowApp.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "导入工作流设计包",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 370
+        }
+      },
+      {
+        "comment": "",
+        "key": "导出当前工作流设计包",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 376
+        }
+      }
+    ]
+  },
+  "version": 1
+}

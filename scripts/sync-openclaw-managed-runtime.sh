@@ -19,6 +19,18 @@ rm -rf "$TARGET_DIR"
 mkdir -p "$(dirname "$TARGET_DIR")"
 cp -R "$SOURCE_DIR" "$TARGET_DIR"
 chmod +x "$TARGET_DIR/bin/openclaw"
+if [[ -f "$TARGET_DIR/libexec/openclaw" ]]; then
+  chmod +x "$TARGET_DIR/libexec/openclaw"
+fi
+if [[ -f "$TARGET_DIR/openclaw.mjs" ]]; then
+  chmod +x "$TARGET_DIR/openclaw.mjs"
+fi
+if [[ -f "$TARGET_DIR/runtime/node/bin/node" ]]; then
+  chmod +x "$TARGET_DIR/runtime/node/bin/node"
+fi
+if [[ -f "$TARGET_DIR/node/bin/node" ]]; then
+  chmod +x "$TARGET_DIR/node/bin/node"
+fi
 
 echo "Synchronized managed OpenClaw runtime payload:"
 echo "  source: $SOURCE_DIR"

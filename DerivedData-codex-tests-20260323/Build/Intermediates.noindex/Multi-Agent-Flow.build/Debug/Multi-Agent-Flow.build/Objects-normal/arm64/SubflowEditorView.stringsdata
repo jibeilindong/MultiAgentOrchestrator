@@ -1,0 +1,24 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/SubflowEditorView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "- %@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 40
+        }
+      },
+      {
+        "comment": "",
+        "key": "(%lld, %lld)",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 175
+        }
+      }
+    ]
+  },
+  "version": 1
+}

@@ -7,6 +7,8 @@
     "packages/*"
   ],
   "scripts": {
+    "build:openclaw-managed-runtime-native-payload": "bash ./scripts/build-openclaw-managed-runtime-native-payload.sh",
+    "hydrate:openclaw-managed-runtime": "bash ./scripts/hydrate-openclaw-managed-runtime.sh",
     "sync:openclaw-managed-runtime": "bash ./scripts/sync-openclaw-managed-runtime.sh",
     "validate:openclaw-managed-runtime": "bash ./scripts/validate-openclaw-managed-runtime.sh",
     "dev": "npm run dev --workspace @multi-agent-flow/desktop",

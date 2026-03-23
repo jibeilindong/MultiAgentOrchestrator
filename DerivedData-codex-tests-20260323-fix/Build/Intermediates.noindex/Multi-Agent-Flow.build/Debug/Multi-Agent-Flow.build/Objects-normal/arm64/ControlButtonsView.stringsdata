@@ -1,0 +1,64 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/ControlButtonsView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "取消创建连线",
+        "location": {
+          "startingColumn": 59,
+          "startingLine": 92
+        }
+      },
+      {
+        "comment": "",
+        "key": "准备创建连线",
+        "location": {
+          "startingColumn": 82,
+          "startingLine": 92
+        }
+      },
+      {
+        "comment": "",
+        "key": "删除选中连接线",
+        "location": {
+          "startingColumn": 47,
+          "startingLine": 96
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld%%",
+        "location": {
+          "startingColumn": 38,
+          "startingLine": 116
+        }
+      },
+      {
+        "comment": "",
+        "key": "已选中 %lld 个节点",
+        "location": {
+          "startingColumn": 57,
+          "startingLine": 141
+        }
+      },
+      {
+        "comment": "",
+        "key": "当前未选中节点",
+        "location": {
+          "startingColumn": 106,
+          "startingLine": 141
+        }
+      },
+      {
+        "comment": "",
+        "key": "框选模式（也支持按住右键拖动）",
+        "location": {
+          "startingColumn": 43,
+          "startingLine": 131
+        }
+      }
+    ]
+  },
+  "version": 1
+}

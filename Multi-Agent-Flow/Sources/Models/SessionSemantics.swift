@@ -172,6 +172,35 @@ enum WorkbenchThreadSemanticMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum WorkbenchConversationState: String, Codable, CaseIterable, Sendable {
+    case idle
+    case responding
+    case readyToRun = "ready_to_run"
+    case running
+    case stopping
+    case completed
+    case failed
+
+    var badgeTitle: String {
+        switch self {
+        case .idle:
+            return "idle"
+        case .responding:
+            return "responding"
+        case .readyToRun:
+            return "ready"
+        case .running:
+            return "running"
+        case .stopping:
+            return "stopping"
+        case .completed:
+            return "completed"
+        case .failed:
+            return "failed"
+        }
+    }
+}
+
 extension OpenClawRuntimeExecutionIntent {
     var semanticType: RuntimeSessionSemanticType {
         switch self {

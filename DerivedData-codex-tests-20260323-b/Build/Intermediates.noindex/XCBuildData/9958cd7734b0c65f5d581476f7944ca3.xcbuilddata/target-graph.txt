@@ -1,0 +1,4 @@
+Target dependency graph (2 targets)
+Target 'Multi-Agent-FlowTests' in project 'Multi-Agent-Flow'
+➜ Explicit dependency on target 'Multi-Agent-Flow' in project 'Multi-Agent-Flow'
+Target 'Multi-Agent-Flow' in project 'Multi-Agent-Flow' (no dependencies)

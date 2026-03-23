@@ -1,0 +1,80 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/MessagesView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "New Thread",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 698
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@:%@",
+        "location": {
+          "startingColumn": 50,
+          "startingLine": 1171
+        }
+      },
+      {
+        "comment": "",
+        "key": "default",
+        "location": {
+          "startingColumn": 58,
+          "startingLine": 1203
+        }
+      },
+      {
+        "comment": "",
+        "key": "Next message will start a new thread for this workflow.",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 1384
+        }
+      },
+      {
+        "comment": "",
+        "key": "Mode",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 1369
+        }
+      },
+      {
+        "comment": "",
+        "key": "Mode",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 1372
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 1471
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ → %@",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 1490
+        }
+      },
+      {
+        "comment": "",
+        "key": "→",
+        "location": {
+          "startingColumn": 42,
+          "startingLine": 1503
+        }
+      }
+    ]
+  },
+  "version": 1
+}

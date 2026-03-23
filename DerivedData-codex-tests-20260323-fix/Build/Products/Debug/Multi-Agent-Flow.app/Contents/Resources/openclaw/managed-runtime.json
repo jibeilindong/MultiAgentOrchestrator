@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "openclaw.managed-runtime.payload.v1",
+  "payloadVersion": "managed-runtime-dev.2026-03-23",
+  "runtimeVersion": "openclaw-upstream-pending",
+  "binaryRelativePath": "bin/openclaw",
+  "distributionKind": "managed-shim",
+  "platform": "darwin-universal",
+  "upstream": {
+    "repository": "https://github.com/openclaw/openclaw",
+    "distributionNotes": "Hydrate with the packaged OpenClaw CLI build artifacts before release.",
+    "recommendedBuild": "pnpm build",
+    "recommendedInstall": "npm install -g openclaw@latest"
+  }
+}
