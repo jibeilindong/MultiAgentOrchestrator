@@ -407,13 +407,11 @@ struct WorkbenchConversationView: View {
     }
 
     private var canStopActiveRemoteConversation: Bool {
-        let runID = appState.openClawService.activeGatewayRunID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let sessionKey = appState.openClawService.activeGatewaySessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return !runID.isEmpty && !sessionKey.isEmpty
+        appState.openClawService.hasActiveRemoteConversation(threadID: effectiveSelectedThreadID)
     }
 
     private var isStoppingActiveRemoteConversation: Bool {
-        appState.openClawService.isAbortingActiveGatewayRun
+        appState.openClawService.isAbortingRemoteConversation(threadID: effectiveSelectedThreadID)
     }
 
     var body: some View {
@@ -463,7 +461,8 @@ struct WorkbenchConversationView: View {
             if selectedWorkflowID == nil {
                 selectedWorkflowID = workflows.first?.id
             }
-            appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+            selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded()
         }
         .onChange(of: workflows.map(\.id)) { _, newValue in
@@ -471,21 +470,27 @@ struct WorkbenchConversationView: View {
             if selectedWorkflowID == nil || !newValue.contains(selectedWorkflowID ?? firstID) {
                 selectedWorkflowID = firstID
             }
-            appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+            selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: selectedWorkflowID) { _, newValue in
-            appState.refreshWorkbenchHistory(for: newValue)
+            selectedThreadID = appState.latestWorkbenchThreadID(for: newValue)
+            appState.refreshWorkbenchHistory(for: newValue, threadID: selectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
+        }
+        .onChange(of: selectedThreadID) { _, newValue in
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: newValue)
         }
         .onChange(of: appState.openClawManager.canReadSessionHistory) { _, canReadSessionHistory in
             guard canReadSessionHistory else { return }
-            appState.refreshWorkbenchHistory(for: selectedWorkflowID)
+            appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
         }
         .onChange(of: appState.openClawManager.isConnected) { _, _ in
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: appState.currentProject?.id) { _, _ in
+            selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: dashboardLayout) { _, newValue in
@@ -1454,19 +1459,25 @@ struct WorkbenchConversationView: View {
             return
         }
 
-        guard appState.submitWorkbenchPrompt(text, workflowID: selectedWorkflowID, mode: submitMode) != nil else {
+        guard let threadID = appState.submitWorkbenchPrompt(
+            text,
+            workflowID: selectedWorkflowID,
+            mode: submitMode,
+            preferredThreadID: effectiveSelectedThreadID
+        ) else {
             errorText = appState.openClawService.isExecuting
                 ? LocalizedString.text("workbench_error_busy")
                 : LocalizedString.text("workbench_error_submit_failed")
             return
         }
 
+        selectedThreadID = threadID
         prompt = ""
     }
 
     private func stopActiveRemoteConversation() {
         errorText = nil
-        appState.openClawService.abortActiveRemoteConversation()
+        appState.openClawService.abortActiveRemoteConversation(threadID: effectiveSelectedThreadID)
     }
 
     private func scheduleAutoScroll(

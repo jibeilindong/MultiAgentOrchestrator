@@ -1,0 +1,24 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/SidebarView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "导入工作流设计包",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 95
+        }
+      },
+      {
+        "comment": "",
+        "key": "导出当前工作流设计包",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 100
+        }
+      }
+    ]
+  },
+  "version": 1
+}

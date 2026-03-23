@@ -1,0 +1,48 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/OpenClawConfigView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Local runtime ownership",
+        "location": {
+          "startingColumn": 40,
+          "startingLine": 47
+        }
+      },
+      {
+        "comment": "",
+        "key": "正在同步会话...",
+        "location": {
+          "startingColumn": 53,
+          "startingLine": 179
+        }
+      },
+      {
+        "comment": "",
+        "key": "同步当前会话",
+        "location": {
+          "startingColumn": 79,
+          "startingLine": 179
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@: %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 348
+        }
+      },
+      {
+        "comment": "",
+        "key": "clawhub skill slug",
+        "location": {
+          "startingColumn": 55,
+          "startingLine": 731
+        }
+      }
+    ]
+  },
+  "version": 1
+}

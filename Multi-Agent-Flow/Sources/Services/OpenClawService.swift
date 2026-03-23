@@ -561,6 +561,14 @@ struct ExecutionState: Codable {
 }
 
 class OpenClawService: ObservableObject {
+    private struct ActiveGatewayConversation: Sendable {
+        let threadID: String
+        let runID: String
+        let sessionKey: String
+        let startedAt: Date
+        let isAborting: Bool
+    }
+
     @Published var executionResults: [ExecutionResult] = []
     @Published var executionLogs: [ExecutionLogEntry] = []
     @Published var isExecuting = false
@@ -574,6 +582,7 @@ class OpenClawService: ObservableObject {
     @Published var activeGatewayRunID: String?
     @Published var activeGatewaySessionKey: String?
     @Published var isAbortingActiveGatewayRun = false
+    @Published private var activeGatewayConversations: [String: ActiveGatewayConversation] = [:]
     @Published var isRunningTransportBenchmark = false
     @Published var transportBenchmarkReport: TransportBenchmarkReport?
     @Published var transportBenchmarkError: String?
@@ -815,18 +824,115 @@ class OpenClawService: ObservableObject {
         }
     }
 
-    @MainActor
-    private func setActiveGatewayConversation(runID: String, sessionKey: String) {
-        activeGatewayRunID = runID
-        activeGatewaySessionKey = sessionKey
-        isAbortingActiveGatewayRun = false
+    private func normalizedActiveGatewayConversationThreadID(
+        _ threadID: String?,
+        sessionKey: String? = nil
+    ) -> String? {
+        let normalizedThreadID = threadID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedThreadID.isEmpty {
+            return normalizedThreadID
+        }
+
+        let normalizedSessionKey = sessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !normalizedSessionKey.isEmpty else { return nil }
+        return "session:\(normalizedSessionKey)"
     }
 
     @MainActor
-    private func clearActiveGatewayConversation() {
-        activeGatewayRunID = nil
-        activeGatewaySessionKey = nil
-        isAbortingActiveGatewayRun = false
+    private func syncActiveGatewayConversationSnapshot() {
+        if let latestConversation = activeGatewayConversations.values.max(by: { lhs, rhs in
+            if lhs.startedAt == rhs.startedAt {
+                return lhs.threadID < rhs.threadID
+            }
+            return lhs.startedAt < rhs.startedAt
+        }) {
+            activeGatewayRunID = latestConversation.runID
+            activeGatewaySessionKey = latestConversation.sessionKey
+            isAbortingActiveGatewayRun = latestConversation.isAborting
+        } else {
+            activeGatewayRunID = nil
+            activeGatewaySessionKey = nil
+            isAbortingActiveGatewayRun = false
+        }
+    }
+
+    @MainActor
+    private func activeGatewayConversation(threadID: String?) -> ActiveGatewayConversation? {
+        if let normalizedThreadID = normalizedActiveGatewayConversationThreadID(threadID) {
+            return activeGatewayConversations[normalizedThreadID]
+        }
+
+        return activeGatewayConversations.values.max(by: { lhs, rhs in
+            if lhs.startedAt == rhs.startedAt {
+                return lhs.threadID < rhs.threadID
+            }
+            return lhs.startedAt < rhs.startedAt
+        })
+    }
+
+    @MainActor
+    private func setActiveGatewayConversation(threadID: String?, runID: String, sessionKey: String) {
+        guard let normalizedThreadID = normalizedActiveGatewayConversationThreadID(
+            threadID,
+            sessionKey: sessionKey
+        ) else {
+            activeGatewayRunID = runID
+            activeGatewaySessionKey = sessionKey
+            isAbortingActiveGatewayRun = false
+            return
+        }
+
+        activeGatewayConversations[normalizedThreadID] = ActiveGatewayConversation(
+            threadID: normalizedThreadID,
+            runID: runID,
+            sessionKey: sessionKey,
+            startedAt: Date(),
+            isAborting: false
+        )
+        syncActiveGatewayConversationSnapshot()
+    }
+
+    @MainActor
+    private func clearActiveGatewayConversation(threadID: String? = nil, sessionKey: String? = nil) {
+        if let normalizedThreadID = normalizedActiveGatewayConversationThreadID(
+            threadID,
+            sessionKey: sessionKey
+        ) {
+            activeGatewayConversations.removeValue(forKey: normalizedThreadID)
+        } else {
+            activeGatewayConversations.removeAll()
+        }
+        syncActiveGatewayConversationSnapshot()
+    }
+
+    @MainActor
+    private func updateActiveGatewayConversationAbortState(
+        threadID: String?,
+        isAborting: Bool
+    ) -> ActiveGatewayConversation? {
+        guard let conversation = activeGatewayConversation(threadID: threadID) else {
+            return nil
+        }
+
+        activeGatewayConversations[conversation.threadID] = ActiveGatewayConversation(
+            threadID: conversation.threadID,
+            runID: conversation.runID,
+            sessionKey: conversation.sessionKey,
+            startedAt: conversation.startedAt,
+            isAborting: isAborting
+        )
+        syncActiveGatewayConversationSnapshot()
+        return activeGatewayConversations[conversation.threadID]
+    }
+
+    @MainActor
+    func hasActiveRemoteConversation(threadID: String?) -> Bool {
+        activeGatewayConversation(threadID: threadID) != nil
+    }
+
+    @MainActor
+    func isAbortingRemoteConversation(threadID: String?) -> Bool {
+        activeGatewayConversation(threadID: threadID)?.isAborting ?? false
     }
     
     // MARK: - 回滚机制（刑部任务）
@@ -934,7 +1040,8 @@ class OpenClawService: ObservableObject {
         checkConnection()
     }
 
-    func abortActiveRemoteConversation() {
+    @MainActor
+    func abortActiveRemoteConversation(threadID: String? = nil) {
         let manager = OpenClawManager.shared
         let connectionConfig = manager.config
         guard let gatewayConfig = manager.preferredGatewayConfig(using: connectionConfig) else {
@@ -942,18 +1049,21 @@ class OpenClawService: ObservableObject {
             return
         }
 
-        let sessionKey = activeGatewaySessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let runID = activeGatewayRunID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let trackedConversation = activeGatewayConversation(threadID: threadID) else {
+            addLog(.warning, "Abort ignored: no active gateway chat run is tracked.")
+            return
+        }
+
+        let sessionKey = trackedConversation.sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let runID = trackedConversation.runID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sessionKey.isEmpty, !runID.isEmpty else {
             addLog(.warning, "Abort ignored: no active gateway chat run is tracked.")
             return
         }
 
-        guard !isAbortingActiveGatewayRun else { return }
+        guard !trackedConversation.isAborting else { return }
 
-        DispatchQueue.main.async {
-            self.isAbortingActiveGatewayRun = true
-        }
+        _ = updateActiveGatewayConversationAbortState(threadID: trackedConversation.threadID, isAborting: true)
         addLog(.info, "Requesting gateway chat abort for run \(runID) in session \(sessionKey).")
 
         _Concurrency.Task { [weak self] in
@@ -966,8 +1076,11 @@ class OpenClawService: ObservableObject {
                 )
                 self.addLog(.info, "Gateway chat abort accepted for run \(runID).")
             } catch {
-                DispatchQueue.main.async {
-                    self.isAbortingActiveGatewayRun = false
+                await MainActor.run {
+                    _ = self.updateActiveGatewayConversationAbortState(
+                        threadID: trackedConversation.threadID,
+                        isAborting: false
+                    )
                     self.lastError = error.localizedDescription
                 }
                 self.addLog(.error, "Failed to abort gateway chat run \(runID): \(error.localizedDescription)")
@@ -982,6 +1095,7 @@ class OpenClawService: ObservableObject {
         prompt: String? = nil,
         projectID: UUID? = nil,
         projectRuntimeSessionID: String? = nil,
+        threadID: String? = nil,
         executionIntent: OpenClawRuntimeExecutionIntent = .workflowControlled,
         startingNodes: [WorkflowNode]? = nil,
         entryNodeIDsOverride: Set<UUID>? = nil,
@@ -1071,6 +1185,7 @@ class OpenClawService: ObservableObject {
             prompt: prompt,
             projectID: projectID,
             projectRuntimeSessionID: projectRuntimeSessionID,
+            threadID: threadID,
             executionIntent: executionIntent,
             entryNodeIDs: effectiveEntryNodeIDs,
             seedResults: preloadedResults,
@@ -1104,6 +1219,7 @@ class OpenClawService: ObservableObject {
         prompt: String,
         projectID: UUID? = nil,
         sessionID: String? = nil,
+        threadID: String? = nil,
         thinkingLevel: AgentThinkingLevel = .off,
         onStream: ((String) -> Void)? = nil,
         onDispatched: ((OpenClawRuntimeEvent) -> Void)? = nil,
@@ -1173,6 +1289,7 @@ class OpenClawService: ObservableObject {
             guardrails: guardrails,
             instructionStyle: .fastWorkbenchEntry,
             sessionID: sessionID,
+            threadID: threadID,
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: true,
             outputMode: .plainStreaming,
@@ -1326,6 +1443,7 @@ class OpenClawService: ObservableObject {
         prompt: String?,
         projectID: UUID?,
         projectRuntimeSessionID: String?,
+        threadID: String?,
         executionIntent: OpenClawRuntimeExecutionIntent,
         entryNodeIDs: Set<UUID>,
         seedResults: [ExecutionResult] = [],
@@ -1462,6 +1580,7 @@ class OpenClawService: ObservableObject {
                 downstreamTargets: guardrails.directTargets,
                 guardrails: guardrails,
                 sessionID: nodeSessionID,
+                threadID: threadID,
                 outputMode: agentOutputMode,
                 onDispatched: onNodeDispatched,
                 onAccepted: onNodeAccepted,
@@ -1536,6 +1655,7 @@ class OpenClawService: ObservableObject {
         guardrails: RuntimeDispatchGuardrails? = nil,
         instructionStyle: WorkflowInstructionStyle = .standard,
         sessionID: String? = nil,
+        threadID: String? = nil,
         thinkingLevel: AgentThinkingLevel? = nil,
         trackActiveRemoteRun: Bool = false,
         outputMode: AgentOutputMode = .structuredJSON,
@@ -1691,6 +1811,7 @@ class OpenClawService: ObservableObject {
             runtimeAgent: agent,
             workflowID: workflowID,
             sessionID: sessionID,
+            threadID: threadID,
             executionIntent: executionIntent,
             thinkingLevel: thinkingLevel,
             trackActiveRemoteRun: trackActiveRemoteRun,
@@ -1727,6 +1848,7 @@ class OpenClawService: ObservableObject {
                         guardrails: effectiveGuardrails,
                         instructionStyle: instructionStyle,
                         sessionID: sessionID,
+                        threadID: threadID,
                         thinkingLevel: thinkingLevel,
                         trackActiveRemoteRun: trackActiveRemoteRun,
                         outputMode: outputMode,
@@ -2753,6 +2875,7 @@ class OpenClawService: ObservableObject {
         runtimeAgent: Agent? = nil,
         workflowID: UUID? = nil,
         sessionID: String? = nil,
+        threadID: String? = nil,
         executionIntent: OpenClawRuntimeExecutionIntent = .conversationAutonomous,
         thinkingLevel: AgentThinkingLevel? = nil,
         trackActiveRemoteRun: Bool = false,
@@ -3103,20 +3226,30 @@ class OpenClawService: ObservableObject {
                                         guard trackActiveRemoteRun else { return }
                                         guard let service = self else { return }
                                         _Concurrency.Task { @MainActor in
-                                            service.setActiveGatewayConversation(runID: runID, sessionKey: sessionKey)
+                                            service.setActiveGatewayConversation(
+                                                threadID: threadID,
+                                                runID: runID,
+                                                sessionKey: sessionKey
+                                            )
                                         }
                                     },
                                     onAssistantTextUpdated: onAssistantTextUpdated
                                 )
                                 if trackActiveRemoteRun {
                                     await MainActor.run {
-                                        self.clearActiveGatewayConversation()
+                                        self.clearActiveGatewayConversation(
+                                            threadID: threadID,
+                                            sessionKey: gatewaySessionKey
+                                        )
                                     }
                                 }
                             } catch {
                                 if trackActiveRemoteRun {
                                     await MainActor.run {
-                                        self.clearActiveGatewayConversation()
+                                        self.clearActiveGatewayConversation(
+                                            threadID: threadID,
+                                            sessionKey: gatewaySessionKey
+                                        )
                                     }
                                 }
                                 throw error

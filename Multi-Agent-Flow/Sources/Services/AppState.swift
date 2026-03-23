@@ -5527,6 +5527,7 @@ class AppState: ObservableObject {
                 prompt: trimmedPrompt,
                 projectID: project.id,
                 sessionID: threadContext.sessionID,
+                threadID: threadContext.threadID,
                 thinkingLevel: workbenchThinkingLevel,
                 onStream: { [weak self] chunk in
                     guard self != nil else { return }
@@ -5643,6 +5644,7 @@ class AppState: ObservableObject {
                     prompt: trimmedPrompt,
                     projectID: project.id,
                     projectRuntimeSessionID: threadContext.sessionID,
+                    threadID: threadContext.threadID,
                     executionIntent: threadContext.executionIntent,
                     startingNodes: backgroundNodes,
                     entryNodeIDsOverride: backgroundEntryNodeIDs,
@@ -5835,6 +5837,7 @@ class AppState: ObservableObject {
             prompt: prompt,
             projectID: project.id,
             projectRuntimeSessionID: threadContext.sessionID,
+            threadID: threadContext.threadID,
             executionIntent: threadContext.executionIntent,
             agentOutputMode: .structuredJSON,
             onNodeDispatched: { [weak self] dispatchEvent in
@@ -6680,6 +6683,7 @@ class AppState: ObservableObject {
         let candidateIDs: [UUID?] = [
             message.fromAgentID,
             message.toAgentID,
+            UUID(uuidString: message.metadata[WorkbenchMetadataKey.workbenchEntryAgentID] ?? ""),
             UUID(uuidString: message.metadata["entryAgentID"] ?? "")
         ]
 
@@ -6695,6 +6699,7 @@ class AppState: ObservableObject {
     private func workbenchLeadAgent(for task: Task, project: MAProject) -> Agent? {
         let candidateIDs: [UUID?] = [
             task.assignedAgentID,
+            UUID(uuidString: task.metadata[WorkbenchMetadataKey.workbenchEntryAgentID] ?? ""),
             UUID(uuidString: task.metadata["entryAgentID"] ?? "")
         ]
 
@@ -6849,6 +6854,7 @@ class AppState: ObservableObject {
         metadata[WorkbenchMetadataKey.workbenchThreadID] = context.threadID
         metadata[WorkbenchMetadataKey.workbenchThreadOrigin] = context.origin
         metadata[WorkbenchMetadataKey.workbenchEntryAgentID] = context.agentID.uuidString
+        metadata["entryAgentID"] = context.agentID.uuidString
         metadata[WorkbenchMetadataKey.workbenchProjectSessionID] = context.projectSessionID
         metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = context.gatewaySessionKey
         applyWorkbenchSemanticMetadata(

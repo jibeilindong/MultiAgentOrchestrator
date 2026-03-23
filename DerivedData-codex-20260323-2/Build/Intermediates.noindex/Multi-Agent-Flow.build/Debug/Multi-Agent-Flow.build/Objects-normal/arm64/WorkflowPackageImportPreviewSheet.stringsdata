@@ -1,0 +1,72 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/WorkflowPackageImportPreviewSheet.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "导入工作流设计包",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 10
+        }
+      },
+      {
+        "comment": "",
+        "key": "包摘要",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 31
+        }
+      },
+      {
+        "comment": "",
+        "key": "导入设置",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 35
+        }
+      },
+      {
+        "comment": "",
+        "key": "该设计包只导入 workflow、节点绑定的 agent 快照，以及完整 workspace 树；不会导入任务、消息、执行结果等运行时数据。",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 43
+        }
+      },
+      {
+        "comment": "",
+        "key": "导入后根工作流名称",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 38
+        }
+      },
+      {
+        "comment": "",
+        "key": "导入完成后切换到该工作流",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 41
+        }
+      },
+      {
+        "comment": "",
+        "key": "取消",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 52
+        }
+      },
+      {
+        "comment": "",
+        "key": "导入",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 56
+        }
+      }
+    ]
+  },
+  "version": 1
+}

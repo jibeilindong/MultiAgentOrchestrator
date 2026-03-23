@@ -51,31 +51,6 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
-/* Begin PBXShellScriptBuildPhase section */
-		C1D2E3F42F6A000100C9480C /* Copy Managed OpenClaw Runtime */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/managed-runtime/openclaw/managed-runtime.json",
-				"$(SRCROOT)/managed-runtime/openclaw/bin/openclaw",
-			);
-			name = "Copy Managed OpenClaw Runtime";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw/managed-runtime.json",
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw/bin/openclaw",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUNTIME_SOURCE=\"$SRCROOT/managed-runtime/openclaw\"\nRUNTIME_TARGET=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/openclaw\"\nrm -rf \"$RUNTIME_TARGET\"\nmkdir -p \"$RUNTIME_TARGET\"\ncp -R \"$RUNTIME_SOURCE/.\" \"$RUNTIME_TARGET\"\nchmod +x \"$RUNTIME_TARGET/bin/openclaw\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
-
 /* Begin PBXGroup section */
 		931B0E012F69C94100C9480C = {
 			isa = PBXGroup;
@@ -199,6 +174,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C1D2E3F42F6A000100C9480C /* Copy Managed OpenClaw Runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/managed-runtime/openclaw/managed-runtime.json",
+				"$(SRCROOT)/managed-runtime/openclaw/bin/openclaw",
+			);
+			name = "Copy Managed OpenClaw Runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw/managed-runtime.json",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/openclaw/bin/openclaw",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nRUNTIME_SOURCE=\"$SRCROOT/managed-runtime/openclaw\"\nRUNTIME_TARGET=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/openclaw\"\nrm -rf \"$RUNTIME_TARGET\"\nmkdir -p \"$RUNTIME_TARGET\"\ncp -R \"$RUNTIME_SOURCE/.\" \"$RUNTIME_TARGET\"\nchmod +x \"$RUNTIME_TARGET/bin/openclaw\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		931B0E062F69C94200C9480C /* Sources */ = {
