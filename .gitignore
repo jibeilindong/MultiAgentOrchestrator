@@ -8,3 +8,17 @@ apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/release-verify/
 apps/desktop/release-dmg-verify/
+DerivedData*/
+
+# Managed OpenClaw runtime payloads are generated at build time.
+/managed-runtime/openclaw/*
+!/managed-runtime/openclaw/README.md
+!/managed-runtime/openclaw/bin/
+!/managed-runtime/openclaw/bin/openclaw
+!/managed-runtime/openclaw/managed-runtime.json
+
+/apps/desktop/resources/openclaw/*
+!/apps/desktop/resources/openclaw/README.md
+!/apps/desktop/resources/openclaw/bin/
+!/apps/desktop/resources/openclaw/bin/openclaw
+!/apps/desktop/resources/openclaw/managed-runtime.json

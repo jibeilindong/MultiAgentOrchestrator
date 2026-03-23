@@ -1,39 +1,29 @@
-This directory is the source-of-truth payload for the app-managed OpenClaw runtime.
+This directory stores the source-of-truth placeholder for the app-managed
+OpenClaw runtime.
 
-It is copied into the macOS Swift app as `Contents/Resources/openclaw`
-and synchronized into the Electron shell at `apps/desktop/resources/openclaw`.
+What is committed to Git:
 
-Current payload shape:
-
-- `managed-runtime.json`: managed runtime manifest and release metadata
+- `managed-runtime.json`: stable manifest with pinned upstream reference
 - `bin/openclaw`: stable launcher shim for the managed runtime
-- `libexec/openclaw`: preferred native launcher entrypoint
-- `openclaw.mjs` plus `dist/entry.js`: upstream OpenClaw build outputs
-- `runtime/node/bin/node`: bundled private Node runtime for app-managed mode
-- `hydration-receipt.json`: last import metadata written by the hydrate script
+- `README.md`: build-time hydration instructions
 
-Release expectation:
+What is generated at build time and intentionally ignored by Git:
 
-1. Build a native launcher payload from an upstream OpenClaw source tree:
-   `bash ./scripts/build-openclaw-managed-runtime-native-payload.sh --source /path/to/openclaw-source --output /tmp/openclaw-native-payload`
-2. Import the payload into the managed runtime:
-   `bash ./scripts/hydrate-openclaw-managed-runtime.sh --source /tmp/openclaw-native-payload --sync`
-3. Validate:
-   `bash ./scripts/validate-openclaw-managed-runtime.sh`
-4. Build the Swift app or Electron desktop package.
+- `libexec/openclaw`
+- `openclaw.mjs`
+- `dist/`
+- `node_modules/`
+- `runtime/node/`
+- `skills/`, `docs/`, `assets/`
+- `hydration-receipt.json`
 
-Direct import from an already built JS payload also remains supported:
-`bash ./scripts/hydrate-openclaw-managed-runtime.sh --source /path/to/openclaw-build --node-source /path/to/node-runtime --sync`
+Build-time flow:
 
-Hydration modes:
+1. Prepare the pinned upstream OpenClaw runtime:
+   `bash ./scripts/prepare-openclaw-managed-runtime.sh`
+2. Or prepare from an existing upstream checkout:
+   `bash ./scripts/prepare-openclaw-managed-runtime.sh --source /path/to/openclaw-source`
+3. Build the Swift app or Electron desktop package.
 
-- Native launcher mode:
-  requires `libexec/openclaw`, `openclaw.mjs`, `dist/`, and bundled Node
-- Pure native binary mode:
-  requires `libexec/openclaw`
-- Bundled JS mode:
-  requires `openclaw.mjs`, `dist/entry.js`, and `runtime/node/bin/node`
-
-The launcher is intentionally conservative: it executes vendored artifacts that
-live inside this payload first, and only falls back to explicitly provided
-development overrides for diagnostics.
+The packaged application still ships with a fully vendored OpenClaw runtime.
+The repository simply avoids storing the 700MB+ generated payload directly.

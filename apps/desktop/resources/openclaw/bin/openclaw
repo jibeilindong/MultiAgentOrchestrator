@@ -31,14 +31,31 @@ resolve_node() {
   return 1
 }
 
-if [[ -f "$RUNTIME_ROOT/dist/cli.js" ]]; then
+resolve_js_entrypoint() {
+  local candidate
+  for candidate in \
+    "$RUNTIME_ROOT/openclaw.mjs" \
+    "$RUNTIME_ROOT/dist/cli.js"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if JS_ENTRYPOINT="$(resolve_js_entrypoint)"; then
   if NODE_EXECUTABLE="$(resolve_node)"; then
-    exec "$NODE_EXECUTABLE" "$RUNTIME_ROOT/dist/cli.js" "$@"
+    exec "$NODE_EXECUTABLE" "$JS_ENTRYPOINT" "$@"
   fi
 
-  cat >&2 <<'EOF'
-The managed OpenClaw runtime payload contains dist/cli.js, but no bundled Node
-runtime is available and no system node executable was found.
+  cat >&2 <<EOF
+The managed OpenClaw runtime payload contains a JavaScript entrypoint, but no
+bundled Node runtime is available and no system node executable was found.
+
+Missing launcher target:
+- $JS_ENTRYPOINT
 
 Expected one of:
 - runtime/node/bin/node
@@ -60,11 +77,12 @@ have not been hydrated into this bundle yet.
 
 Expected one of:
 - libexec/openclaw
+- openclaw.mjs plus dist/entry.js and runtime/node/bin/node
 - dist/cli.js plus runtime/node/bin/node
 
 Next step:
-- hydrate the packaged OpenClaw build outputs into managed-runtime/openclaw
-- run bash ./scripts/hydrate-openclaw-managed-runtime.sh --source /path/to/openclaw-build --sync
+- prepare the pinned managed runtime payload
+- run bash ./scripts/prepare-openclaw-managed-runtime.sh
 EOF
 
 exit 72

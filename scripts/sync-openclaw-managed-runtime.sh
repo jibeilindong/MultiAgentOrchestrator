@@ -15,9 +15,12 @@ if [[ ! -f "$SOURCE_DIR/bin/openclaw" ]]; then
   exit 1
 fi
 
-rm -rf "$TARGET_DIR"
-mkdir -p "$(dirname "$TARGET_DIR")"
-cp -R "$SOURCE_DIR" "$TARGET_DIR"
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "rsync is required to synchronize the managed OpenClaw runtime payload." >&2
+  exit 1
+fi
+mkdir -p "$TARGET_DIR"
+rsync -a --delete --exclude='.DS_Store' "$SOURCE_DIR/" "$TARGET_DIR/"
 chmod +x "$TARGET_DIR/bin/openclaw"
 if [[ -f "$TARGET_DIR/libexec/openclaw" ]]; then
   chmod +x "$TARGET_DIR/libexec/openclaw"

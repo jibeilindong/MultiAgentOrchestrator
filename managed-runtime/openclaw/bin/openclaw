@@ -81,8 +81,8 @@ Expected one of:
 - dist/cli.js plus runtime/node/bin/node
 
 Next step:
-- hydrate the packaged OpenClaw build outputs into managed-runtime/openclaw
-- run bash ./scripts/hydrate-openclaw-managed-runtime.sh --source /path/to/openclaw-build --sync
+- prepare the pinned managed runtime payload
+- run bash ./scripts/prepare-openclaw-managed-runtime.sh
 EOF
 
 exit 72

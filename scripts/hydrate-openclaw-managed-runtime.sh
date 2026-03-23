@@ -184,17 +184,64 @@ fi
 mkdir -p "$PAYLOAD_DIR"
 
 cleanup_hydrated_payload() {
-  rm -rf \
+  local stale_path
+  for stale_path in \
     "$PAYLOAD_DIR/libexec" \
     "$PAYLOAD_DIR/openclaw.mjs" \
     "$PAYLOAD_DIR/dist" \
+    "$PAYLOAD_DIR/node_modules" \
     "$PAYLOAD_DIR/runtime" \
     "$PAYLOAD_DIR/node" \
+    "$PAYLOAD_DIR/skills" \
+    "$PAYLOAD_DIR/docs" \
+    "$PAYLOAD_DIR/assets" \
+    "$PAYLOAD_DIR/LICENSE" \
+    "$PAYLOAD_DIR/README.md" \
+    "$PAYLOAD_DIR/CHANGELOG.md" \
     "$PAYLOAD_DIR/package.json" \
     "$PAYLOAD_DIR/package-lock.json" \
     "$PAYLOAD_DIR/pnpm-lock.yaml" \
     "$PAYLOAD_DIR/npm-shrinkwrap.json" \
-    "$PAYLOAD_DIR/hydration-receipt.json"
+    "$PAYLOAD_DIR/hydration-receipt.json"; do
+    [[ -e "$stale_path" ]] || continue
+    python3 - "$stale_path" <<'EOF'
+import os
+import shutil
+import stat
+import sys
+
+path = sys.argv[1]
+
+def onerror(func, target, exc_info):
+    try:
+        os.chflags(target, 0)
+    except Exception:
+        pass
+    try:
+        mode = os.lstat(target).st_mode
+        os.chmod(target, mode | stat.S_IWUSR | stat.S_IXUSR)
+    except Exception:
+        pass
+    func(target)
+
+if not os.path.lexists(path):
+    raise SystemExit(0)
+
+if os.path.isdir(path) and not os.path.islink(path):
+    shutil.rmtree(path, onerror=onerror)
+else:
+    try:
+        os.chflags(path, 0)
+    except Exception:
+        pass
+    try:
+        mode = os.lstat(path).st_mode
+        os.chmod(path, mode | stat.S_IWUSR)
+    except Exception:
+        pass
+    os.unlink(path)
+EOF
+  done
 }
 
 cleanup_hydrated_payload
@@ -213,6 +260,10 @@ if [[ "$MODE" == "libexec" ]]; then
     mkdir -p "$PAYLOAD_DIR/dist"
     cp -R "$ARTIFACT_SOURCE/dist/." "$PAYLOAD_DIR/dist/"
   fi
+  if [[ -d "$ARTIFACT_SOURCE/node_modules" ]]; then
+    mkdir -p "$PAYLOAD_DIR/node_modules"
+    cp -R "$ARTIFACT_SOURCE/node_modules/." "$PAYLOAD_DIR/node_modules/"
+  fi
 
   if [[ -d "$ARTIFACT_SOURCE/runtime" ]]; then
     mkdir -p "$PAYLOAD_DIR/runtime"
@@ -227,6 +278,15 @@ if [[ "$MODE" == "libexec" ]]; then
   if [[ -f "$ARTIFACT_SOURCE/package.json" ]]; then
     cp "$ARTIFACT_SOURCE/package.json" "$PAYLOAD_DIR/package.json"
   fi
+  if [[ -f "$ARTIFACT_SOURCE/LICENSE" ]]; then
+    cp "$ARTIFACT_SOURCE/LICENSE" "$PAYLOAD_DIR/LICENSE"
+  fi
+  if [[ -f "$ARTIFACT_SOURCE/README.md" ]]; then
+    cp "$ARTIFACT_SOURCE/README.md" "$PAYLOAD_DIR/README.md"
+  fi
+  if [[ -f "$ARTIFACT_SOURCE/CHANGELOG.md" ]]; then
+    cp "$ARTIFACT_SOURCE/CHANGELOG.md" "$PAYLOAD_DIR/CHANGELOG.md"
+  fi
   if [[ -f "$ARTIFACT_SOURCE/package-lock.json" ]]; then
     cp "$ARTIFACT_SOURCE/package-lock.json" "$PAYLOAD_DIR/package-lock.json"
   fi
@@ -235,6 +295,18 @@ if [[ "$MODE" == "libexec" ]]; then
   fi
   if [[ -f "$ARTIFACT_SOURCE/npm-shrinkwrap.json" ]]; then
     cp "$ARTIFACT_SOURCE/npm-shrinkwrap.json" "$PAYLOAD_DIR/npm-shrinkwrap.json"
+  fi
+  if [[ -d "$ARTIFACT_SOURCE/skills" ]]; then
+    mkdir -p "$PAYLOAD_DIR/skills"
+    cp -R "$ARTIFACT_SOURCE/skills/." "$PAYLOAD_DIR/skills/"
+  fi
+  if [[ -d "$ARTIFACT_SOURCE/docs" ]]; then
+    mkdir -p "$PAYLOAD_DIR/docs"
+    cp -R "$ARTIFACT_SOURCE/docs/." "$PAYLOAD_DIR/docs/"
+  fi
+  if [[ -d "$ARTIFACT_SOURCE/assets" ]]; then
+    mkdir -p "$PAYLOAD_DIR/assets"
+    cp -R "$ARTIFACT_SOURCE/assets/." "$PAYLOAD_DIR/assets/"
   fi
 
   if [[ -x "$PAYLOAD_DIR/runtime/node/bin/node" ]]; then
@@ -253,9 +325,22 @@ if [[ "$MODE" == "dist" ]]; then
 
   mkdir -p "$PAYLOAD_DIR/dist"
   cp -R "$ARTIFACT_SOURCE/dist/." "$PAYLOAD_DIR/dist/"
+  if [[ -d "$ARTIFACT_SOURCE/node_modules" ]]; then
+    mkdir -p "$PAYLOAD_DIR/node_modules"
+    cp -R "$ARTIFACT_SOURCE/node_modules/." "$PAYLOAD_DIR/node_modules/"
+  fi
 
   if [[ -f "$ARTIFACT_SOURCE/package.json" ]]; then
     cp "$ARTIFACT_SOURCE/package.json" "$PAYLOAD_DIR/package.json"
+  fi
+  if [[ -f "$ARTIFACT_SOURCE/LICENSE" ]]; then
+    cp "$ARTIFACT_SOURCE/LICENSE" "$PAYLOAD_DIR/LICENSE"
+  fi
+  if [[ -f "$ARTIFACT_SOURCE/README.md" ]]; then
+    cp "$ARTIFACT_SOURCE/README.md" "$PAYLOAD_DIR/README.md"
+  fi
+  if [[ -f "$ARTIFACT_SOURCE/CHANGELOG.md" ]]; then
+    cp "$ARTIFACT_SOURCE/CHANGELOG.md" "$PAYLOAD_DIR/CHANGELOG.md"
   fi
   if [[ -f "$ARTIFACT_SOURCE/package-lock.json" ]]; then
     cp "$ARTIFACT_SOURCE/package-lock.json" "$PAYLOAD_DIR/package-lock.json"
@@ -266,11 +351,25 @@ if [[ "$MODE" == "dist" ]]; then
   if [[ -f "$ARTIFACT_SOURCE/npm-shrinkwrap.json" ]]; then
     cp "$ARTIFACT_SOURCE/npm-shrinkwrap.json" "$PAYLOAD_DIR/npm-shrinkwrap.json"
   fi
+  if [[ -d "$ARTIFACT_SOURCE/skills" ]]; then
+    mkdir -p "$PAYLOAD_DIR/skills"
+    cp -R "$ARTIFACT_SOURCE/skills/." "$PAYLOAD_DIR/skills/"
+  fi
+  if [[ -d "$ARTIFACT_SOURCE/docs" ]]; then
+    mkdir -p "$PAYLOAD_DIR/docs"
+    cp -R "$ARTIFACT_SOURCE/docs/." "$PAYLOAD_DIR/docs/"
+  fi
+  if [[ -d "$ARTIFACT_SOURCE/assets" ]]; then
+    mkdir -p "$PAYLOAD_DIR/assets"
+    cp -R "$ARTIFACT_SOURCE/assets/." "$PAYLOAD_DIR/assets/"
+  fi
 
   mkdir -p "$PAYLOAD_DIR/runtime/node/bin"
   cp "$NODE_EXECUTABLE" "$PAYLOAD_DIR/runtime/node/bin/node"
   chmod +x "$PAYLOAD_DIR/runtime/node/bin/node"
 fi
+
+find "$PAYLOAD_DIR" -name '.DS_Store' -delete 2>/dev/null || true
 
 SOURCE_VERSION=""
 if [[ -f "$ARTIFACT_SOURCE/package.json" ]]; then
@@ -281,23 +380,57 @@ if [[ -z "$SOURCE_VERSION" && "$MODE" == "libexec" ]]; then
   SOURCE_VERSION="$("$PAYLOAD_DIR/libexec/openclaw" --version 2>/dev/null | head -n 1 | tr -d '\r' || true)"
 fi
 
+detect_payload_platform() {
+  local candidate
+  local archs
+  for candidate in \
+    "$PAYLOAD_DIR/libexec/openclaw" \
+    "$PAYLOAD_DIR/runtime/node/bin/node" \
+    "$PAYLOAD_DIR/node/bin/node"; do
+    [[ -f "$candidate" ]] || continue
+    archs="$(lipo -archs "$candidate" 2>/dev/null || true)"
+    case "$archs" in
+      *arm64*x86_64*|*x86_64*arm64*)
+        printf '%s\n' "darwin-universal"
+        return 0
+        ;;
+      *arm64*)
+        printf '%s\n' "darwin-arm64"
+        return 0
+        ;;
+      *x86_64*)
+        printf '%s\n' "darwin-x86_64"
+        return 0
+        ;;
+    esac
+  done
+
+  printf '%s\n' "darwin-universal"
+}
+
+PAYLOAD_PLATFORM="$(detect_payload_platform)"
+
 DIST_KIND="managed-native-binary"
 if [[ "$MODE" == "dist" ]]; then
   DIST_KIND="managed-node-runtime"
 elif [[ -f "$PAYLOAD_DIR/openclaw.mjs" ]] && \
      [[ -d "$PAYLOAD_DIR/dist" ]] && \
+     [[ -d "$PAYLOAD_DIR/node_modules" ]] && \
      { [[ -x "$PAYLOAD_DIR/runtime/node/bin/node" ]] || [[ -x "$PAYLOAD_DIR/node/bin/node" ]]; }; then
   DIST_KIND="managed-native-launcher"
 fi
 
-node <<'EOF' "$PAYLOAD_DIR/managed-runtime.json" "$SOURCE_VERSION" "$DIST_KIND" "$ARTIFACT_SOURCE" "$NODE_EXECUTABLE" "$MODE"
+node - <<'EOF' "$PAYLOAD_DIR/managed-runtime.json" "$SOURCE_VERSION" "$DIST_KIND" "$ARTIFACT_SOURCE" "$NODE_EXECUTABLE" "$MODE" "$PAYLOAD_PLATFORM"
 const fs = require('fs');
-const [manifestPath, runtimeVersion, distributionKind, sourcePath, nodeExecutable, mode] = process.argv.slice(2);
+const [manifestPath, runtimeVersion, distributionKind, sourcePath, nodeExecutable, mode, payloadPlatform] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 if (runtimeVersion && runtimeVersion.trim()) {
   manifest.runtimeVersion = runtimeVersion.trim();
 }
 manifest.distributionKind = distributionKind;
+if (payloadPlatform && payloadPlatform.trim()) {
+  manifest.platform = payloadPlatform.trim();
+}
 manifest.hydration = {
   mode,
   sourcePath,
@@ -307,7 +440,7 @@ manifest.hydration = {
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 EOF
 
-node <<'EOF' "$PAYLOAD_DIR/hydration-receipt.json" "$ARTIFACT_SOURCE" "$NODE_EXECUTABLE" "$MODE" "$SOURCE_VERSION"
+node - <<'EOF' "$PAYLOAD_DIR/hydration-receipt.json" "$ARTIFACT_SOURCE" "$NODE_EXECUTABLE" "$MODE" "$SOURCE_VERSION"
 const fs = require('fs');
 const [receiptPath, sourcePath, nodeExecutable, mode, runtimeVersion] = process.argv.slice(2);
 const receipt = {

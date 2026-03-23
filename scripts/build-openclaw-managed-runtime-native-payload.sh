@@ -8,6 +8,7 @@ NODE_EXECUTABLE="${OPENCLAW_MANAGED_NODE_EXECUTABLE:-}"
 SWIFTC_EXECUTABLE="${SWIFTC_EXECUTABLE:-swiftc}"
 INSTALL_NAME_TOOL_EXECUTABLE="${INSTALL_NAME_TOOL_EXECUTABLE:-install_name_tool}"
 OTOOL_EXECUTABLE="${OTOOL_EXECUTABLE:-otool}"
+CODESIGN_EXECUTABLE="${CODESIGN_EXECUTABLE:-codesign}"
 
 usage() {
   cat <<'EOF'
@@ -25,6 +26,7 @@ The script produces a native launcher payload:
   libexec/openclaw
   openclaw.mjs
   dist/
+  node_modules/
   runtime/node/bin/node
 EOF
 }
@@ -87,11 +89,22 @@ print(os.path.realpath(sys.argv[1]))
 EOF
 )"
 NODE_SOURCE_ROOT="$(cd "$(dirname "$NODE_EXECUTABLE")/.." && pwd -P)"
+PACKAGE_SOURCE_DIR="$SOURCE_DIR"
 
-if [[ ! -f "$SOURCE_DIR/openclaw.mjs" ]]; then
+if [[ -f "$SOURCE_DIR/pnpm-workspace.yaml" ]] && command -v pnpm >/dev/null 2>&1; then
+  PACKAGE_NAME="$(node -e "const pkg=require(process.argv[1]); process.stdout.write(pkg.name || 'openclaw');" "$SOURCE_DIR/package.json")"
+  DEPLOY_STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-runtime-deploy.XXXXXX")"
+  if ! pnpm --dir "$SOURCE_DIR" --filter "$PACKAGE_NAME" deploy --prod --legacy "$DEPLOY_STAGING_DIR"; then
+    echo "pnpm deploy failed for OpenClaw source tree: $SOURCE_DIR" >&2
+    exit 1
+  fi
+  PACKAGE_SOURCE_DIR="$DEPLOY_STAGING_DIR"
+fi
+
+if [[ ! -f "$PACKAGE_SOURCE_DIR/openclaw.mjs" ]]; then
   cat >&2 <<EOF
 Upstream OpenClaw entrypoint is missing:
-  $SOURCE_DIR/openclaw.mjs
+  $PACKAGE_SOURCE_DIR/openclaw.mjs
 
 Build the upstream source tree first with:
   pnpm install
@@ -101,11 +114,11 @@ EOF
   exit 1
 fi
 
-if [[ ! -f "$SOURCE_DIR/dist/entry.js" ]] && [[ ! -f "$SOURCE_DIR/dist/entry.mjs" ]]; then
+if [[ ! -f "$PACKAGE_SOURCE_DIR/dist/entry.js" ]] && [[ ! -f "$PACKAGE_SOURCE_DIR/dist/entry.mjs" ]]; then
   cat >&2 <<EOF
 Upstream OpenClaw build outputs are missing:
-  $SOURCE_DIR/dist/entry.js
-  $SOURCE_DIR/dist/entry.mjs
+  $PACKAGE_SOURCE_DIR/dist/entry.js
+  $PACKAGE_SOURCE_DIR/dist/entry.mjs
 
 Build the upstream source tree first with:
   pnpm install
@@ -125,6 +138,10 @@ if ! command -v "$INSTALL_NAME_TOOL_EXECUTABLE" >/dev/null 2>&1; then
 fi
 if ! command -v "$OTOOL_EXECUTABLE" >/dev/null 2>&1; then
   echo "otool is required to inspect Node runtime dependencies." >&2
+  exit 1
+fi
+if ! command -v "$CODESIGN_EXECUTABLE" >/dev/null 2>&1; then
+  echo "codesign is required to seal the bundled Node runtime." >&2
   exit 1
 fi
 
@@ -150,14 +167,22 @@ mkdir -p \
   "$OUTPUT_DIR/runtime/node/bin" \
   "$OUTPUT_DIR/runtime/node/lib"
 
-cp "$SOURCE_DIR/openclaw.mjs" "$OUTPUT_DIR/openclaw.mjs"
+cp "$PACKAGE_SOURCE_DIR/openclaw.mjs" "$OUTPUT_DIR/openclaw.mjs"
 chmod +x "$OUTPUT_DIR/openclaw.mjs"
 
-cp -R "$SOURCE_DIR/dist" "$OUTPUT_DIR/dist"
+cp -R "$PACKAGE_SOURCE_DIR/dist" "$OUTPUT_DIR/dist"
 
-if [[ -f "$SOURCE_DIR/package.json" ]]; then
-  cp "$SOURCE_DIR/package.json" "$OUTPUT_DIR/package.json"
-fi
+for resource_dir in node_modules skills docs assets; do
+  if [[ -d "$PACKAGE_SOURCE_DIR/$resource_dir" ]]; then
+    cp -R "$PACKAGE_SOURCE_DIR/$resource_dir" "$OUTPUT_DIR/$resource_dir"
+  fi
+done
+
+for resource_file in package.json LICENSE README.md CHANGELOG.md; do
+  if [[ -f "$PACKAGE_SOURCE_DIR/$resource_file" ]]; then
+    cp "$PACKAGE_SOURCE_DIR/$resource_file" "$OUTPUT_DIR/$resource_file"
+  fi
+done
 if [[ -f "$SOURCE_DIR/pnpm-lock.yaml" ]]; then
   cp "$SOURCE_DIR/pnpm-lock.yaml" "$OUTPUT_DIR/pnpm-lock.yaml"
 fi
@@ -168,11 +193,16 @@ if [[ -f "$SOURCE_DIR/npm-shrinkwrap.json" ]]; then
   cp "$SOURCE_DIR/npm-shrinkwrap.json" "$OUTPUT_DIR/npm-shrinkwrap.json"
 fi
 
+find "$OUTPUT_DIR" -name '.DS_Store' -delete 2>/dev/null || true
+
 SWIFT_SOURCE="$(mktemp "${TMPDIR:-/tmp}/openclaw-native-launcher.XXXXXX.swift")"
 PROCESSED_BINARIES="$(mktemp "${TMPDIR:-/tmp}/openclaw-node-runtime.XXXXXX.list")"
 cleanup() {
   rm -f "$SWIFT_SOURCE"
   rm -f "$PROCESSED_BINARIES"
+  if [[ -n "${DEPLOY_STAGING_DIR:-}" ]]; then
+    rm -rf "$DEPLOY_STAGING_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -318,6 +348,16 @@ bundle_macos_binary() {
 bundle_macos_binary "$NODE_EXECUTABLE" "$NODE_TARGET_EXECUTABLE" "executable"
 chmod +x "$NODE_TARGET_EXECUTABLE"
 
+sign_macos_binary() {
+  local target_path="$1"
+  "$CODESIGN_EXECUTABLE" --force --sign - "$target_path" >/dev/null
+}
+
+find "$NODE_RUNTIME_LIB_DIR" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' dylib_path; do
+  sign_macos_binary "$dylib_path"
+done
+sign_macos_binary "$NODE_TARGET_EXECUTABLE"
+
 cat >"$SWIFT_SOURCE" <<'EOF'
 import Foundation
 import Darwin
@@ -409,9 +449,11 @@ EOF
   "$SWIFT_SOURCE" \
   -o "$OUTPUT_DIR/libexec/openclaw"
 chmod +x "$OUTPUT_DIR/libexec/openclaw"
+sign_macos_binary "$OUTPUT_DIR/libexec/openclaw"
 
 echo "Built native OpenClaw managed runtime payload:"
 echo "  source: $SOURCE_DIR"
+echo "  packaged source: $PACKAGE_SOURCE_DIR"
 echo "  output: $OUTPUT_DIR"
 echo "  bundled node: $NODE_EXECUTABLE"
 echo "  node version: $NODE_VERSION_RAW"

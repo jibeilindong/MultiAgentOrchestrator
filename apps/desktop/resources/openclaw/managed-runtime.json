@@ -3,12 +3,13 @@
   "payloadVersion": "managed-runtime-dev.2026-03-23",
   "runtimeVersion": "openclaw-upstream-pending",
   "binaryRelativePath": "bin/openclaw",
-  "distributionKind": "managed-shim",
+  "distributionKind": "managed-native-launcher",
   "platform": "darwin-universal",
   "upstream": {
     "repository": "https://github.com/openclaw/openclaw",
-    "distributionNotes": "Hydrate with the packaged OpenClaw CLI build artifacts before release.",
-    "recommendedBuild": "pnpm build",
-    "recommendedInstall": "npm install -g openclaw@latest"
+    "ref": "afb4b1173be157997d3cea9247b598c3d1d9a18a",
+    "distributionNotes": "Repository commits only the launcher shim and manifest. Hydrate the full payload at build time.",
+    "recommendedBuild": "bash ./scripts/prepare-openclaw-managed-runtime.sh",
+    "recommendedInstall": "npm run prepare:openclaw-managed-runtime"
   }
 }

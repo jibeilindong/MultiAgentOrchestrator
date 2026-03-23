@@ -25,6 +25,11 @@ has_supported_js_entrypoint() {
   return 1
 }
 
+has_runtime_node_modules() {
+  local payload_dir="$1"
+  [[ -d "$payload_dir/node_modules" ]]
+}
+
 validate_payload() {
   local payload_dir="$1"
 
@@ -40,9 +45,11 @@ validate_payload() {
   if [[ -x "$payload_dir/libexec/openclaw" ]]; then
     if [[ -f "$payload_dir/openclaw.mjs" ]] || \
        [[ -d "$payload_dir/dist" ]] || \
-       [[ -d "$payload_dir/runtime" ]] || \
+      [[ -d "$payload_dir/runtime" ]] || \
        [[ -d "$payload_dir/node" ]]; then
-      if has_supported_js_entrypoint "$payload_dir" && has_bundled_node "$payload_dir"; then
+      if has_supported_js_entrypoint "$payload_dir" && \
+         has_runtime_node_modules "$payload_dir" && \
+         has_bundled_node "$payload_dir"; then
         return 0
       fi
 
@@ -55,6 +62,7 @@ Expected together:
   - libexec/openclaw
   - openclaw.mjs or dist/cli.js
   - dist/entry.js or dist/entry.mjs
+  - node_modules/
   - runtime/node/bin/node or node/bin/node
 EOF
       return 1
@@ -63,7 +71,9 @@ EOF
     return 0
   fi
 
-  if has_supported_js_entrypoint "$payload_dir" && has_bundled_node "$payload_dir"; then
+  if has_supported_js_entrypoint "$payload_dir" && \
+     has_runtime_node_modules "$payload_dir" && \
+     has_bundled_node "$payload_dir"; then
     return 0
   fi
 
@@ -73,8 +83,8 @@ Managed runtime payload is not fully hydrated:
 
 Expected one of:
   - libexec/openclaw
-  - openclaw.mjs plus dist/entry.js and runtime/node/bin/node
-  - dist/cli.js plus runtime/node/bin/node
+  - openclaw.mjs plus dist/entry.js, node_modules, and runtime/node/bin/node
+  - dist/cli.js plus node_modules and runtime/node/bin/node
 EOF
   return 1
 }
@@ -82,9 +92,9 @@ EOF
 validate_payload "$SOURCE_DIR"
 validate_payload "$TARGET_DIR"
 
-if ! diff -qr "$SOURCE_DIR" "$TARGET_DIR" >/dev/null; then
+if ! diff -qr --exclude='.DS_Store' "$SOURCE_DIR" "$TARGET_DIR" >/dev/null; then
   echo "Managed runtime payload drift detected between Swift and Electron resources." >&2
-  diff -qr "$SOURCE_DIR" "$TARGET_DIR" || true
+  diff -qr --exclude='.DS_Store' "$SOURCE_DIR" "$TARGET_DIR" || true
   exit 1
 fi
 
