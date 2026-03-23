@@ -683,6 +683,7 @@ class AppState: ObservableObject {
     // OpenClaw 执行服务
     @Published var openClawService = OpenClawService()
     let opsAnalytics = OpsAnalyticsService()
+    private let workbenchThreadStateCoordinator = WorkbenchThreadStateCoordinator()
     private lazy var workbenchRuntimeMutationCoordinator = WorkbenchRuntimeMutationCoordinator(
         appendRuntimeEvents: { [unowned self] events, runtimeState in
             self.appendRuntimeEvents(events, to: &runtimeState)
@@ -740,27 +741,7 @@ class AppState: ObservableObject {
     private var latestSilentPersistToken = UUID()
     private var taskGenerationWorkItem: DispatchWorkItem?
 
-    private struct WorkbenchThreadContext: Sendable {
-        let workflowID: UUID
-        let projectSessionID: String
-        let threadID: String
-        let sessionID: String
-        let gatewaySessionKey: String
-        let interactionMode: WorkbenchInteractionMode
-        let threadType: RuntimeSessionSemanticType
-        let threadMode: WorkbenchThreadSemanticMode
-        let executionIntent: OpenClawRuntimeExecutionIntent
-        let origin: String
-        let agentID: UUID
-        let agentName: String
-    }
-
     private typealias WorkbenchRemoteSessionContext = WorkbenchThreadContext
-
-    private struct WorkbenchThreadContextSample: Sendable {
-        let context: WorkbenchRemoteSessionContext
-        let activityAt: Date
-    }
 
     struct WorkbenchThreadSummary: Identifiable, Hashable, Sendable {
         let id: String
@@ -777,6 +758,23 @@ class AppState: ObservableObject {
         let entryAgentName: String
         let messageCount: Int
         let taskCount: Int
+
+        init(_ descriptor: WorkbenchThreadSummaryDescriptor) {
+            self.id = descriptor.id
+            self.workflowID = descriptor.workflowID
+            self.title = descriptor.title
+            self.subtitle = descriptor.subtitle
+            self.preview = descriptor.preview
+            self.lastActivityAt = descriptor.lastActivityAt
+            self.conversationState = descriptor.conversationState
+            self.activeRunStatus = descriptor.activeRunStatus
+            self.interactionMode = descriptor.interactionMode
+            self.threadType = descriptor.threadType
+            self.threadMode = descriptor.threadMode
+            self.entryAgentName = descriptor.entryAgentName
+            self.messageCount = descriptor.messageCount
+            self.taskCount = descriptor.taskCount
+        }
     }
 
     struct AgentRuntimePreparationState {
