@@ -89,6 +89,18 @@ struct SidebarView: View {
                         Label(LocalizedString.text("export_architecture"), systemImage: "square.and.arrow.up")
                     }
 
+                    Divider()
+
+                    Button(action: { appState.importWorkflowPackage() }) {
+                        Label("导入工作流设计包", systemImage: "shippingbox")
+                    }
+                    .disabled(appState.currentProject == nil)
+
+                    Button(action: { appState.exportCurrentWorkflowPackage() }) {
+                        Label("导出当前工作流设计包", systemImage: "archivebox")
+                    }
+                    .disabled(appState.currentProject == nil || appState.workflow(for: nil) == nil)
+
                     if appState.currentProject != nil {
                         Divider()
 

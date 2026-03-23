@@ -53,6 +53,18 @@ final class AppRuntimeContext: ObservableObject {
             return
         }
 
+        do {
+            let installResult = try OpenClawManagedRuntimeInstaller.shared.installBundledRuntimeIfNeeded()
+            switch installResult.status {
+            case .installed, .alreadyCurrent:
+                print(installResult.message)
+            case .unavailable:
+                break
+            }
+        } catch {
+            print("Managed OpenClaw runtime installation failed: \(error.localizedDescription)")
+        }
+
         let appState = AppState()
         let benchmarkRunner = AppLaunchBenchmarkRunner()
         self.appState = appState
@@ -352,6 +364,20 @@ struct MultiAgentFlowApp: App {
                         appState.exportData()
                     }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                    Divider()
+
+                    Button("导入工作流设计包") {
+                        appState.importWorkflowPackage()
+                    }
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                    .disabled(appState.currentProject == nil)
+
+                    Button("导出当前工作流设计包") {
+                        appState.exportCurrentWorkflowPackage()
+                    }
+                    .keyboardShortcut("e", modifiers: [.command, .option])
+                    .disabled(appState.currentProject == nil || appState.workflow(for: nil) == nil)
 
                     if appState.currentProject != nil {
                         Divider()

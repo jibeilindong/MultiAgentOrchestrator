@@ -1,5 +1,51 @@
 import Foundation
 
+enum WorkbenchMetadataKey {
+    static let channel = "channel"
+    static let workflowID = "workflowID"
+    static let workbenchMode = "workbenchMode"
+    static let executionIntent = "executionIntent"
+    static let workbenchSessionID = "workbenchSessionID"
+    static let workbenchThreadID = "workbenchThreadID"
+    static let workbenchThreadType = "workbenchThreadType"
+    static let workbenchThreadMode = "workbenchThreadMode"
+    static let workbenchThreadOrigin = "workbenchThreadOrigin"
+    static let workbenchEntryAgentID = "workbenchEntryAgentID"
+    static let workbenchProjectSessionID = "workbenchProjectSessionID"
+    static let workbenchGatewaySessionKey = "workbenchGatewaySessionKey"
+}
+
+private func normalizedWorkbenchMetadataValue(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+func resolvedWorkbenchSessionID(from metadata: [String: String]) -> String? {
+    normalizedWorkbenchMetadataValue(metadata[WorkbenchMetadataKey.workbenchSessionID])
+}
+
+func resolvedWorkbenchThreadType(from metadata: [String: String]) -> RuntimeSessionSemanticType? {
+    RuntimeSessionSemanticType(normalizedRawValue: metadata[WorkbenchMetadataKey.workbenchThreadType])
+}
+
+func resolvedWorkbenchThreadMode(from metadata: [String: String]) -> WorkbenchThreadSemanticMode? {
+    WorkbenchThreadSemanticMode(normalizedRawValue: metadata[WorkbenchMetadataKey.workbenchThreadMode])
+}
+
+func resolvedWorkbenchThreadID(from metadata: [String: String]) -> String? {
+    if let explicitThreadID = normalizedWorkbenchMetadataValue(metadata[WorkbenchMetadataKey.workbenchThreadID]) {
+        return explicitThreadID
+    }
+
+    guard let sessionID = resolvedWorkbenchSessionID(from: metadata) else { return nil }
+
+    let workflowID = normalizedWorkbenchMetadataValue(metadata[WorkbenchMetadataKey.workflowID]) ?? "unknown-workflow"
+    let threadType = resolvedWorkbenchThreadType(from: metadata)?.rawValue ?? "unknown-thread-type"
+    let threadMode = resolvedWorkbenchThreadMode(from: metadata)?.rawValue ?? "unknown-thread-mode"
+    return "legacy-\(workflowID)-\(threadType)-\(threadMode)-\(sessionID)"
+}
+
 enum RuntimeSessionSemanticType: String, Codable, CaseIterable, Sendable {
     case conversationAutonomous = "conversation.autonomous"
     case conversationAssisted = "conversation.assisted"

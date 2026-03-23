@@ -212,6 +212,17 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(item: $appState.workflowPackageImportPreview, onDismiss: {
+            appState.cleanupWorkflowPackageImportPreview()
+        }) { preview in
+            WorkflowPackageImportPreviewSheet(preview: preview)
+                .environmentObject(appState)
+        }
+        .onChange(of: appState.workflowPackageMessage) { _, newValue in
+            guard let newValue else { return }
+            openClawMessage = newValue
+            appState.workflowPackageMessage = nil
+        }
     }
 
     @ViewBuilder

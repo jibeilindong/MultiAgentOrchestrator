@@ -17,10 +17,11 @@
     "generate:canvas-doc-assets": "node -e \"require('node:fs').rmSync('.tmp-canvas-doc-assets', { recursive: true, force: true })\" && tsc -p tsconfig.canvas-doc-assets.json && node ./.tmp-canvas-doc-assets/scripts/generate-canvas-doc-assets.js",
     "validate:routing": "node -e \"require('node:fs').rmSync('.tmp-routing-validation', { recursive: true, force: true })\" && tsc -p tsconfig.routing-validation.json && node ./.tmp-routing-validation/scripts/validate-routing.js",
     "preview": "electron-vite preview",
-    "pack": "npm run build:assets && npm run build && electron-builder --config electron-builder.yml --dir",
-    "dist": "npm run build:assets && npm run build && electron-builder --config electron-builder.yml",
-    "dist:mac": "npm run build:assets && npm run build && electron-builder --config electron-builder.yml --mac",
-    "dist:win": "npm run build:assets && npm run build && electron-builder --config electron-builder.yml --win"
+    "sync:openclaw-managed-runtime": "bash ../../scripts/sync-openclaw-managed-runtime.sh",
+    "pack": "npm run sync:openclaw-managed-runtime && npm run build:assets && npm run build && electron-builder --config electron-builder.yml --dir",
+    "dist": "npm run sync:openclaw-managed-runtime && npm run build:assets && npm run build && electron-builder --config electron-builder.yml",
+    "dist:mac": "npm run sync:openclaw-managed-runtime && npm run build:assets && npm run build && electron-builder --config electron-builder.yml --mac",
+    "dist:win": "npm run sync:openclaw-managed-runtime && npm run build:assets && npm run build && electron-builder --config electron-builder.yml --win"
   },
   "dependencies": {
     "@multi-agent-flow/core": "0.1.0",

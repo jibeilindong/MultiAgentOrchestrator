@@ -7,6 +7,10 @@ SCHEME="Multi-Agent-Flow"
 DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedDataOpenClawRuntimeValidation"
 FIXTURE_PATH="$ROOT_DIR/packages/core/fixtures/compat/runtime-protocol.maoproj"
 
+echo "Validating managed runtime payload sync..."
+bash "$ROOT_DIR/scripts/validate-openclaw-managed-runtime.sh"
+
+echo
 echo "Validating OpenClaw runtime protocol fixture..."
 npm run validate:compat --workspace @multi-agent-flow/core -- "$FIXTURE_PATH"
 

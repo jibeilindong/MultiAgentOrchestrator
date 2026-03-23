@@ -75,6 +75,8 @@ Execution Plane
   - `collaboration/workbench/threads/<thread>/turns.ndjson`
   - `collaboration/workbench/threads/<thread>/delegation.ndjson`
   - `runtime/sessions/<session>/spans.ndjson`
+- `control/recovery.json` 已开始生成轻量恢复游标，汇总最近 thread/session、水位时间戳、approval/blocked/inflight/failed 风险与恢复建议。
+- 项目恢复流程已开始消费 `control/recovery.json`，并转写为 `ProjectOpenClawSnapshot.recoveryReports` 的恢复摘要。
 - Ops Center 的 session/thread investigation 已开始读取并展示 turn / delegation / span 审计证据。
 
 这意味着当前系统已经从“方案设计阶段”进入“运行时宿主抽象与控制面下沉阶段”。
@@ -577,8 +579,15 @@ Application Support/Multi-Agent-Flow/Projects/<project-id>/
 - `design/` 是设计态真相源
 - `collaboration/` 是聊天与自治协作证据面
 - `runtime/` 是正式执行和运行态会话目录
-- `control/` 是能力、策略、审批、目录索引控制面
+- `control/` 是能力、策略、审批、恢复游标、目录索引控制面
 - `analytics/` 是 projection 输出
+
+当前 `control/` 的首个落地点：
+
+- `control/recovery.json`
+- 用于记录最近活跃 thread、最近可恢复 session、最近 audit watermark
+- 同时汇总 `approval_pending / blocked / inflight / failed` 风险信号
+- 恢复时先读该游标，再决定是直接恢复上下文、进入人工补偿，还是继续做 replay / rollback
 
 ## 九、统一状态与观测模型
 
@@ -829,7 +838,9 @@ Workbench 输入框旁建议固定显示：
 - transport routing 已开始把 `executionIntent` 纳入决策，而不再只依赖 `sessionID` 前缀和输出模式
 - `sessionType` / `threadType` / `TransportPlan` 的共享语义与落盘链路已接通
 - `turns.ndjson` / `delegation.ndjson` / `spans.ndjson` 已开始写盘
-- 后续仍需把这些审计文件进一步接入恢复控制器与更细粒度 projection
+- `control/recovery.json` 已开始基于这些审计面和运行态摘要生成恢复游标
+- 恢复链路已开始把 recovery cursor 转成 `recoveryReports`
+- 后续仍需把这些审计文件继续接入增量 replay、resume policy 与更细粒度 projection
 
 ## Phase 3：Workbench 双模式化
 
@@ -877,8 +888,10 @@ Workbench 输入框旁建议固定显示：
 - 已部分落地
 - `thread.json` / `context.json` / `session.json` / `transport-plan.json` / `dispatches.ndjson` / `events.ndjson` / `receipts.ndjson` 已存在
 - 本轮已新增 `turns.ndjson` / `delegation.ndjson` / `spans.ndjson`
+- 本轮已新增 `control/recovery.json`
 - session/thread investigation 已能直接消费这些新增审计文件
-- 下一阶段重点应放在基于这些审计文件做恢复游标、增量回放和 Ops Center 深层调查入口
+- 恢复入口已开始先消费 recovery cursor，再把结果注入 `recoveryReports`
+- 下一阶段重点应放在基于 recovery cursor 继续做增量回放、resume policy 和 Ops Center 深层调查入口
 
 ## Phase 5：Projection 与 Ops Center 升级
 

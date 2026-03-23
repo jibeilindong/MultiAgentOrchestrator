@@ -7,6 +7,8 @@
     "packages/*"
   ],
   "scripts": {
+    "sync:openclaw-managed-runtime": "bash ./scripts/sync-openclaw-managed-runtime.sh",
+    "validate:openclaw-managed-runtime": "bash ./scripts/validate-openclaw-managed-runtime.sh",
     "dev": "npm run dev --workspace @multi-agent-flow/desktop",
     "capture:canvas-doc-screenshots": "npm run capture:canvas-doc-screenshots --workspace @multi-agent-flow/desktop",
     "validate:compat": "npm run validate:compat --workspace @multi-agent-flow/core",

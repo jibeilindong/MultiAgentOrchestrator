@@ -12,6 +12,10 @@ files:
   - out/**/*
   - package.json
 
+extraResources:
+  - from: resources/openclaw
+    to: openclaw
+
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 
 mac:

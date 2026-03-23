@@ -461,6 +461,47 @@ private struct WorkflowLaunchReportDocument: Codable, Equatable {
 private typealias ArchivedWorkbenchThreadMode = WorkbenchThreadSemanticMode
 private typealias ArchivedRuntimeSessionType = RuntimeSessionSemanticType
 
+struct ProjectRecoveryCursorRiskDocument: Codable, Equatable {
+    var hasPendingApproval: Bool
+    var hasBlockedTasks: Bool
+    var hasInflightDispatches: Bool
+    var hasFailedDispatches: Bool
+
+    var requiresManualFollowUp: Bool {
+        hasPendingApproval || hasBlockedTasks
+    }
+
+    var hasOperationalRisk: Bool {
+        requiresManualFollowUp || hasInflightDispatches || hasFailedDispatches
+    }
+}
+
+struct ProjectRecoveryCursorDocument: Codable, Equatable {
+    var projectID: UUID
+    var generatedAt: Date
+    var lastAuditAt: Date?
+    var latestThreadID: String?
+    var latestThreadType: String?
+    var latestThreadMode: String?
+    var latestThreadStatus: String?
+    var latestThreadUpdatedAt: Date?
+    var latestSessionID: String?
+    var latestSessionType: String?
+    var latestSessionThreadID: String?
+    var latestSessionUpdatedAt: Date?
+    var lastTurnAt: Date?
+    var lastDelegationAt: Date?
+    var lastSpanAt: Date?
+    var pendingApprovalCount: Int
+    var blockedTaskCount: Int
+    var inflightDispatchCount: Int
+    var failedDispatchCount: Int
+    var risk: ProjectRecoveryCursorRiskDocument
+    var recoverySummary: String
+    var findings: [String]
+    var recommendedActions: [String]
+}
+
 private struct WorkbenchThreadLinkSnapshot {
     var threadID: String
     var threadType: ArchivedRuntimeSessionType
@@ -909,6 +950,16 @@ struct ProjectFileSystem {
             .appendingPathComponent("analytics", isDirectory: true)
     }
 
+    func controlRootDirectory(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        managedProjectRootDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("control", isDirectory: true)
+    }
+
+    func recoveryCursorURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
+        controlRootDirectory(for: projectID, under: appSupportRootDirectory)
+            .appendingPathComponent("recovery.json", isDirectory: false)
+    }
+
     func analyticsDatabaseURL(for projectID: UUID, under appSupportRootDirectory: URL) -> URL {
         analyticsRootDirectory(for: projectID, under: appSupportRootDirectory)
             .appendingPathComponent("analytics.sqlite", isDirectory: false)
@@ -994,6 +1045,7 @@ struct ProjectFileSystem {
         try writeTaskState(for: project, under: appSupportRootDirectory)
         try writeExecutionState(for: project, under: appSupportRootDirectory)
         try writeAnalyticsProjectionState(for: project, under: appSupportRootDirectory)
+        try writeControlState(for: project, under: appSupportRootDirectory)
         try writeIndexes(for: project, under: appSupportRootDirectory)
 
         let manifest = ProjectStorageManifest(
@@ -1017,6 +1069,12 @@ struct ProjectFileSystem {
 
     func loadSnapshot(for projectID: UUID, under appSupportRootDirectory: URL) throws -> MAProject? {
         try loadSnapshot(at: currentSnapshotURL(for: projectID, under: appSupportRootDirectory))
+    }
+
+    func loadRecoveryCursor(for projectID: UUID, under appSupportRootDirectory: URL) throws -> ProjectRecoveryCursorDocument? {
+        let url = recoveryCursorURL(for: projectID, under: appSupportRootDirectory)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try decode(ProjectRecoveryCursorDocument.self, from: url)
     }
 
     func loadAssembledProject(for projectID: UUID, under appSupportRootDirectory: URL) throws -> MAProject? {
@@ -1078,6 +1136,7 @@ struct ProjectFileSystem {
             rootURL.appendingPathComponent("snapshot", isDirectory: true),
             rootURL.appendingPathComponent("design", isDirectory: true),
             rootURL.appendingPathComponent("design/workflows", isDirectory: true),
+            rootURL.appendingPathComponent("control", isDirectory: true),
             rootURL.appendingPathComponent("collaboration", isDirectory: true),
             rootURL.appendingPathComponent("collaboration/workbench", isDirectory: true),
             rootURL.appendingPathComponent("collaboration/workbench/threads", isDirectory: true),
@@ -1124,6 +1183,15 @@ struct ProjectFileSystem {
 
         try encode(tasks, to: tasksListURL(for: project.id, under: appSupportRootDirectory))
         try encode(workspaceIndex, to: workspaceIndexURL(for: project.id, under: appSupportRootDirectory))
+    }
+
+    private func writeControlState(for project: MAProject, under appSupportRootDirectory: URL) throws {
+        let controlRootURL = controlRootDirectory(for: project.id, under: appSupportRootDirectory)
+        try fileManager.createDirectory(at: controlRootURL, withIntermediateDirectories: true)
+        try encode(
+            makeRecoveryCursorDocument(for: project),
+            to: recoveryCursorURL(for: project.id, under: appSupportRootDirectory)
+        )
     }
 
     private func writeAnalyticsProjectionState(for project: MAProject, under appSupportRootDirectory: URL) throws {
@@ -2004,30 +2072,27 @@ struct ProjectFileSystem {
         memoryRootURL: URL,
         skillsRootURL: URL
     ) throws {
-        try recreateDirectory(at: skillsRootURL)
-        try recreateDirectory(at: memoryRootURL)
+        let workspaceRootURL = resolveOpenClawWorkspaceRootURL(for: agent)
+        let skillsSourceURL = workspaceRootURL?.appendingPathComponent("skills", isDirectory: true)
+        let workspaceMemorySourceURL = workspaceRootURL?.appendingPathComponent("memory", isDirectory: true)
+        let backupMemorySourceURL = resolveOpenClawMemoryBackupRootURL(for: agent)
 
-        if let skillsSourceURL = resolveOpenClawWorkspaceRootURL(for: agent)?
-            .appendingPathComponent("skills", isDirectory: true),
-           directoryExists(at: skillsSourceURL) {
-            try copyDirectoryContents(from: skillsSourceURL, to: skillsRootURL)
-        }
+        try synchronizeWorkspaceDirectory(
+            sourceURL: skillsSourceURL,
+            destinationURL: skillsRootURL
+        )
+        try fileManager.createDirectory(at: memoryRootURL, withIntermediateDirectories: true)
 
         let workspaceMemoryRootURL = memoryRootURL.appendingPathComponent("workspace", isDirectory: true)
         let backupMemoryRootURL = memoryRootURL.appendingPathComponent("backup", isDirectory: true)
-        try fileManager.createDirectory(at: workspaceMemoryRootURL, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: backupMemoryRootURL, withIntermediateDirectories: true)
-
-        if let workspaceMemorySourceURL = resolveOpenClawWorkspaceRootURL(for: agent)?
-            .appendingPathComponent("memory", isDirectory: true),
-           directoryExists(at: workspaceMemorySourceURL) {
-            try copyDirectoryContents(from: workspaceMemorySourceURL, to: workspaceMemoryRootURL)
-        }
-
-        if let backupMemorySourceURL = resolveOpenClawMemoryBackupRootURL(for: agent),
-           directoryExists(at: backupMemorySourceURL) {
-            try copyDirectoryContents(from: backupMemorySourceURL, to: backupMemoryRootURL)
-        }
+        try synchronizeWorkspaceDirectory(
+            sourceURL: workspaceMemorySourceURL,
+            destinationURL: workspaceMemoryRootURL
+        )
+        try synchronizeWorkspaceDirectory(
+            sourceURL: backupMemorySourceURL,
+            destinationURL: backupMemoryRootURL
+        )
     }
 
     private func resolveOpenClawWorkspaceRootURL(for agent: Agent) -> URL? {
@@ -2093,6 +2158,15 @@ struct ProjectFileSystem {
             try? fileManager.removeItem(at: url)
         }
         try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    private func synchronizeWorkspaceDirectory(sourceURL: URL?, destinationURL: URL) throws {
+        if let sourceURL, directoryExists(at: sourceURL) {
+            try recreateDirectory(at: destinationURL)
+            try copyDirectoryContents(from: sourceURL, to: destinationURL)
+        } else {
+            try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+        }
     }
 
     private func copyDirectoryContents(from sourceURL: URL, to destinationURL: URL) throws {
@@ -3589,6 +3663,143 @@ struct ProjectFileSystem {
         default:
             return 5
         }
+    }
+
+    private func makeRecoveryCursorDocument(for project: MAProject) -> ProjectRecoveryCursorDocument {
+        let generatedAt = Date()
+        let threadEntries = makeAnalyticsThreadProjectionEntries(for: project)
+        let sessionEntries = makeAnalyticsSessionProjectionEntries(for: project)
+        let latestThread = threadEntries.first
+        let latestSession = sessionEntries.first
+        let pendingApprovalCount = project.messages.filter { $0.status == .waitingForApproval }.count
+            + project.runtimeState.inflightDispatches.filter { $0.status == .waitingApproval }.count
+        let blockedTaskCount = project.tasks.filter { $0.status == .blocked }.count
+        let inflightDispatchCount = project.runtimeState.inflightDispatches.count
+        let failedDispatchCount = project.runtimeState.failedDispatches.count
+        let lastTurnAt = project.messages
+            .filter { $0.metadata["channel"] == "workbench" }
+            .map(\.timestamp)
+            .max()
+        let lastDelegationAt = (
+            runtimeDispatchEnvelopes(from: project.runtimeState).map(\.record.updatedAt)
+            + project.runtimeState.runtimeEvents.map(\.timestamp)
+        )
+        .max()
+        let lastSpanAt = project.executionResults
+            .compactMap { $0.completedAt ?? $0.startedAt }
+            .max()
+        let lastAuditAt = (
+            [lastTurnAt, lastDelegationAt, lastSpanAt, latestThread?.lastUpdatedAt, latestSession?.lastUpdatedAt]
+                .compactMap { $0 }
+        )
+        .max()
+
+        let risk = ProjectRecoveryCursorRiskDocument(
+            hasPendingApproval: pendingApprovalCount > 0,
+            hasBlockedTasks: blockedTaskCount > 0,
+            hasInflightDispatches: inflightDispatchCount > 0,
+            hasFailedDispatches: failedDispatchCount > 0
+        )
+
+        var findings: [String] = []
+        if let latestThreadID = latestThread?.threadID {
+            findings.append(
+                "最近 thread 为 \(latestThreadID)，模式 \(latestThread?.mode ?? "unknown")，状态 \(latestThread?.status ?? "unknown")。"
+            )
+        }
+        if let latestSessionID = latestSession?.sessionID {
+            let transport = latestSession?.actualTransport ?? latestSession?.plannedTransport ?? "unknown"
+            findings.append(
+                "最近 session 为 \(latestSessionID)，类型 \(latestSession?.sessionType ?? "unknown")，transport \(transport)。"
+            )
+        }
+        if pendingApprovalCount > 0 {
+            findings.append("存在 \(pendingApprovalCount) 条待审批信号，恢复后仍可能停在 approval gate。")
+        }
+        if blockedTaskCount > 0 {
+            findings.append("存在 \(blockedTaskCount) 个 blocked task，需要人工确认是否补偿或重试。")
+        }
+        if inflightDispatchCount > 0 {
+            findings.append("仍有 \(inflightDispatchCount) 个 inflight dispatch，建议优先核对是否可 resume。")
+        }
+        if failedDispatchCount > 0 {
+            findings.append("检测到 \(failedDispatchCount) 个 failed dispatch，恢复后应结合 spans 决定 replay 或 rollback。")
+        }
+        if findings.isEmpty {
+            findings.append("未检测到待审批、阻塞或失败信号，可按最近 thread/session 继续恢复上下文。")
+        }
+
+        var recommendedActions: [String] = []
+        if pendingApprovalCount > 0 {
+            recommendedActions.append("先清理 approval queue，再继续 formal run 或会话恢复。")
+        }
+        if blockedTaskCount > 0 {
+            recommendedActions.append("检查 blocked task 对应的 thread investigation，确认是否需要人工补偿。")
+        }
+        if inflightDispatchCount > 0 {
+            recommendedActions.append("对最近 inflight session 做 dispatch/event/receipt 对账，再决定 resume 或超时终止。")
+        }
+        if failedDispatchCount > 0 {
+            recommendedActions.append("结合 spans 与 execution logs 判定是 replay、rollback 还是转入聊天解释。")
+        }
+        if recommendedActions.isEmpty {
+            recommendedActions.append("可直接从最近 thread/session 恢复上下文，必要时再升级到 controlled run。")
+        }
+
+        let threadFragment: String = {
+            guard let latestThread else { return "无最近 thread" }
+            return "最近 thread: \(latestThread.threadID) [\(latestThread.mode)/\(latestThread.status)]"
+        }()
+        let sessionFragment: String = {
+            guard let latestSession else { return "无最近 session" }
+            return "最近 session: \(latestSession.sessionID) [\(latestSession.sessionType)]"
+        }()
+        let riskFragment: String = {
+            if !risk.hasOperationalRisk {
+                return "风险信号清洁"
+            }
+
+            var labels: [String] = []
+            if risk.hasPendingApproval {
+                labels.append("approval_pending")
+            }
+            if risk.hasBlockedTasks {
+                labels.append("blocked")
+            }
+            if risk.hasInflightDispatches {
+                labels.append("inflight")
+            }
+            if risk.hasFailedDispatches {
+                labels.append("failed")
+            }
+            return "风险: \(labels.joined(separator: ", "))"
+        }()
+
+        return ProjectRecoveryCursorDocument(
+            projectID: project.id,
+            generatedAt: generatedAt,
+            lastAuditAt: lastAuditAt,
+            latestThreadID: latestThread?.threadID,
+            latestThreadType: latestThread?.threadType,
+            latestThreadMode: latestThread?.mode,
+            latestThreadStatus: latestThread?.status,
+            latestThreadUpdatedAt: latestThread?.lastUpdatedAt,
+            latestSessionID: latestSession?.sessionID,
+            latestSessionType: latestSession?.sessionType,
+            latestSessionThreadID: latestSession?.threadID,
+            latestSessionUpdatedAt: latestSession?.lastUpdatedAt,
+            lastTurnAt: lastTurnAt,
+            lastDelegationAt: lastDelegationAt,
+            lastSpanAt: lastSpanAt,
+            pendingApprovalCount: pendingApprovalCount,
+            blockedTaskCount: blockedTaskCount,
+            inflightDispatchCount: inflightDispatchCount,
+            failedDispatchCount: failedDispatchCount,
+            risk: risk,
+            recoverySummary: "\(threadFragment); \(sessionFragment); \(riskFragment)",
+            findings: findings,
+            recommendedActions: recommendedActions
+        )
     }
 
     private func normalizedUUIDValue(_ rawValue: String?) -> String? {

@@ -100,6 +100,9 @@ struct WorkflowEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             EditorToolbar(
+                currentWorkflowName: appState.currentWorkflowName,
+                workflows: appState.currentProject?.workflows ?? [],
+                activeWorkflowID: appState.activeWorkflowID,
                 viewMode: $sessionState.viewMode,
                 selectedNodeID: $selectedNodeID,
                 selectedNodeIDs: $selectedNodeIDs,
@@ -133,6 +136,9 @@ struct WorkflowEditorView: View {
                 onPreviewBatchConnections: previewBatchConnections,
                 onCommitBatchConnections: commitBatchConnections,
                 onCancelBatchConnections: cancelBatchConnectionMode,
+                onSelectWorkflow: { workflowID in appState.setActiveWorkflow(workflowID) },
+                onImportWorkflowPackage: { appState.importWorkflowPackage() },
+                onExportWorkflowPackage: { appState.exportCurrentWorkflowPackage() },
                 onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() },
                 onSyncWorkflowSession: { appState.syncOpenClawActiveSession(workflowID: currentWorkflow()?.id) }
             )
@@ -195,7 +201,7 @@ struct WorkflowEditorView: View {
         .onChange(of: selectedNodeID) { _, newValue in
             appState.selectedNodeID = newValue
 
-            guard let workflow = appState.currentProject?.workflows.first,
+            guard let workflow = currentWorkflow(),
                   let nodeID = newValue,
                   let node = workflow.nodes.first(where: { $0.id == nodeID }),
                   let agentID = node.agentID else {
@@ -244,6 +250,13 @@ struct WorkflowEditorView: View {
         .onChange(of: agentCollectionSignature) { _, _ in
             refreshAgentCollectionSnapshot()
             reconcileSelectionState()
+        }
+        .onChange(of: appState.activeWorkflowID) { _, _ in
+            isConnectMode = false
+            connectFromAgentID = nil
+            resetBatchConnectionState()
+            reconcileSelectionState()
+            refreshAgentCollectionSnapshot(immediate: true)
         }
     }
 
@@ -339,7 +352,10 @@ struct WorkflowEditorView: View {
     }
 
     private var agentCollectionSignature: AgentCollectionSignature {
-        makeAgentCollectionSignature(project: appState.currentProject)
+        makeAgentCollectionSignature(
+            project: appState.currentProject,
+            activeWorkflowID: appState.activeWorkflowID
+        )
     }
 
     private func refreshAgentCollectionSnapshot(immediate: Bool = false) {
@@ -349,7 +365,10 @@ struct WorkflowEditorView: View {
         agentCollectionRefreshToken = refreshToken
 
         let update = DispatchWorkItem {
-            guard let context = makeAgentCollectionSnapshotContext(appState: appState) else {
+            guard let context = makeAgentCollectionSnapshotContext(
+                appState: appState,
+                activeWorkflowID: appState.activeWorkflowID
+            ) else {
                 if agentCollectionRefreshToken == refreshToken {
                     agentCollectionSnapshot = .empty
                 }
@@ -533,7 +552,7 @@ struct WorkflowEditorView: View {
     }
     
     private func currentWorkflow() -> Workflow? {
-        appState.currentProject?.workflows.first
+        appState.workflow(for: nil)
     }
 
     private func reconcileSelectionState() {
@@ -986,7 +1005,7 @@ struct WorkflowEditorView: View {
     }
 
     private func resolveNodeID(for identifier: UUID, preferredIndex: Int) -> UUID? {
-        guard let workflow = appState.currentProject?.workflows.first else { return nil }
+        guard let workflow = currentWorkflow() else { return nil }
 
         if workflow.nodes.contains(where: { $0.id == identifier }) {
             return identifier
@@ -1014,6 +1033,9 @@ private struct BackgroundRetainedPane: ViewModifier {
 // MARK: - 工具栏
 struct EditorToolbar: View {
     @EnvironmentObject var appState: AppState
+    let currentWorkflowName: String
+    let workflows: [Workflow]
+    let activeWorkflowID: UUID?
     @Binding var viewMode: WorkflowEditorView.EditorViewMode
     @Binding var selectedNodeID: UUID?
     @Binding var selectedNodeIDs: Set<UUID>
@@ -1047,6 +1069,9 @@ struct EditorToolbar: View {
     var onPreviewBatchConnections: () -> Void
     var onCommitBatchConnections: () -> Void
     var onCancelBatchConnections: () -> Void
+    var onSelectWorkflow: (UUID) -> Void
+    var onImportWorkflowPackage: () -> Void
+    var onExportWorkflowPackage: () -> Void
     var onApplyWorkflow: () -> Void
     var onSyncWorkflowSession: () -> Void
 
@@ -1131,6 +1156,35 @@ struct EditorToolbar: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
+            WorkflowToolbarGroup(title: "Workflow") {
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(workflows) { workflow in
+                            Button {
+                                onSelectWorkflow(workflow.id)
+                            } label: {
+                                Label(
+                                    workflow.name,
+                                    systemImage: workflow.id == activeWorkflowID ? "checkmark.circle.fill" : "circle"
+                                )
+                            }
+                        }
+                    } label: {
+                        toolbarMenuLabel(title: currentWorkflowName, systemName: "point.3.connected.trianglepath.dotted")
+                    }
+                    .menuStyle(.borderlessButton)
+
+                    Menu {
+                        Button("导入设计包", action: onImportWorkflowPackage)
+                        Button("导出当前设计包", action: onExportWorkflowPackage)
+                            .disabled(workflows.isEmpty)
+                    } label: {
+                        toolbarMenuLabel(title: "设计包", systemName: "shippingbox")
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+            }
+
             WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_view")) {
                 HStack(spacing: 8) {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
@@ -1494,7 +1548,7 @@ struct EditorToolbar: View {
     }
 
     private func selectAllItems() {
-        guard let workflow = appState.currentProject?.workflows.first else { return }
+        guard let workflow = appState.workflow(for: nil) else { return }
         selectedNodeID = nil
         selectedNodeIDs = Set(workflow.nodes.map(\.id))
         selectedBoundaryIDs = Set(workflow.boundaries.map(\.id))
@@ -2227,11 +2281,13 @@ private struct AgentCollectionSnapshot {
 
 private struct AgentCollectionSnapshotContext {
     let project: MAProject
+    let activeWorkflowID: UUID?
     let managedWorkspacePathsByAgentID: [UUID: String]
 }
 
 private struct AgentCollectionSignature: Equatable {
     let projectID: UUID?
+    let workflowID: UUID?
     let projectUpdatedAt: Date?
     let runtimeUpdatedAt: Date?
     let agentCount: Int
@@ -2245,11 +2301,12 @@ private struct AgentActionFeedback: Identifiable {
     let isError: Bool
 }
 
-private func makeAgentCollectionSignature(project: MAProject?) -> AgentCollectionSignature {
-    let workflow = project?.workflows.first
+private func makeAgentCollectionSignature(project: MAProject?, activeWorkflowID: UUID?) -> AgentCollectionSignature {
+    let workflow = resolvedAgentCollectionWorkflow(in: project, activeWorkflowID: activeWorkflowID)
 
     return AgentCollectionSignature(
         projectID: project?.id,
+        workflowID: workflow?.id,
         projectUpdatedAt: project?.updatedAt,
         runtimeUpdatedAt: project?.runtimeState.lastUpdated,
         agentCount: project?.agents.count ?? 0,
@@ -2258,7 +2315,7 @@ private func makeAgentCollectionSignature(project: MAProject?) -> AgentCollectio
     )
 }
 
-private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentCollectionSnapshotContext? {
+private func makeAgentCollectionSnapshotContext(appState: AppState, activeWorkflowID: UUID?) -> AgentCollectionSnapshotContext? {
     guard let project = appState.currentProject else { return nil }
 
     var managedWorkspacePathsByAgentID: [UUID: String] = [:]
@@ -2280,6 +2337,7 @@ private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentColl
 
     return AgentCollectionSnapshotContext(
         project: project,
+        activeWorkflowID: activeWorkflowID,
         managedWorkspacePathsByAgentID: managedWorkspacePathsByAgentID
     )
 }
@@ -2287,7 +2345,7 @@ private func makeAgentCollectionSnapshotContext(appState: AppState) -> AgentColl
 private func makeAgentCollectionSnapshot(context: AgentCollectionSnapshotContext) -> AgentCollectionSnapshot {
     let project = context.project
 
-    let workflow = project.workflows.first
+    let workflow = resolvedAgentCollectionWorkflow(in: project, activeWorkflowID: context.activeWorkflowID)
     let nodes = workflow?.nodes ?? []
     let soulSourcePaths = makeAgentCollectionSoulSourcePaths(context: context)
     let connectionCounts = workflow?.connectionCountsByNodeID() ?? [:]
@@ -2335,6 +2393,14 @@ private func makeAgentCollectionSnapshot(context: AgentCollectionSnapshotContext
         withSoulCount: counts.withSoul,
         attentionCount: counts.attention
     )
+}
+
+private func resolvedAgentCollectionWorkflow(in project: MAProject?, activeWorkflowID: UUID?) -> Workflow? {
+    guard let project else { return nil }
+    if let activeWorkflowID {
+        return project.workflows.first(where: { $0.id == activeWorkflowID }) ?? project.workflows.first
+    }
+    return project.workflows.first
 }
 
 private func makeAgentCollectionSoulSourcePaths(context: AgentCollectionSnapshotContext) -> [UUID: String?] {
@@ -3517,7 +3583,7 @@ struct ArchitectureView: View {
 
                 if isBatchConnectMode {
                     BatchConnectionPreviewPanel(
-                        workflow: appState.currentProject?.workflows.first,
+                        workflow: appState.workflow(for: nil),
                         selectedNodeIDs: selectedNodeIDs,
                         sourceNodeIDs: batchSourceNodeIDs,
                         targetNodeIDs: batchTargetNodeIDs,
@@ -3554,7 +3620,7 @@ struct ArchitectureView: View {
         }
         .onChange(of: selectedNodeID) { _, newValue in
             guard shouldPresentSelectedNodeProperties else { return }
-            guard let workflow = appState.currentProject?.workflows.first,
+            guard let workflow = appState.workflow(for: nil),
                   let nodeID = newValue,
                   let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
                 shouldPresentSelectedNodeProperties = false
@@ -3605,7 +3671,7 @@ struct ArchitectureView: View {
     }
 
     private func resolveConnectableNodeID(from identifier: UUID) -> UUID? {
-        guard let workflow = appState.currentProject?.workflows.first else { return nil }
+        guard let workflow = appState.workflow(for: nil) else { return nil }
 
         if workflow.nodes.contains(where: { $0.id == identifier && ($0.type == .agent || $0.type == .start) }) {
             return identifier
@@ -4288,7 +4354,7 @@ struct NodePropertyPanel: View {
     private var hasUnsavedChanges: Bool {
         let hasNodeMetadataChanges: Bool = {
             if node.type != .agent {
-                let existingNodes = appState.currentProject?.workflows.first?.nodes ?? []
+                let existingNodes = appState.workflow(for: nil)?.nodes ?? []
                 let normalizedTitle = WorkflowNode.normalizedTitle(
                     requestedTitle: nodeTitle,
                     nodeType: node.type,
@@ -4388,7 +4454,7 @@ struct NodePropertyPanel: View {
     private func saveChanges() {
         var updatedNode = node
         if node.type != .agent {
-            let existingNodes = appState.currentProject?.workflows.first?.nodes ?? []
+            let existingNodes = appState.workflow(for: nil)?.nodes ?? []
             updatedNode.title = WorkflowNode.normalizedTitle(
                 requestedTitle: nodeTitle,
                 nodeType: node.type,
@@ -4421,7 +4487,7 @@ struct NodePropertyPanel: View {
     }
 
     private var outgoingEdges: [WorkflowEdge] {
-        appState.currentProject?.workflows.first?.edges.filter { $0.isOutgoing(from: node.id) } ?? []
+        appState.workflow(for: nil)?.edges.filter { $0.isOutgoing(from: node.id) } ?? []
     }
 
     private func binding(for edge: WorkflowEdge) -> Binding<EdgeDraft> {
@@ -4432,7 +4498,7 @@ struct NodePropertyPanel: View {
     }
 
     private func targetName(for edge: WorkflowEdge) -> String {
-        guard let workflow = appState.currentProject?.workflows.first,
+        guard let workflow = appState.workflow(for: nil),
               let targetNode = workflow.nodes.first(where: { $0.id == edge.toNodeID }) else {
             return LocalizedString.text("unknown_value")
         }
@@ -4743,7 +4809,7 @@ struct EdgePropertyPanel: View {
     }
 
     private func endpointName(for nodeID: UUID) -> String {
-        guard let workflow = appState.currentProject?.workflows.first,
+        guard let workflow = appState.workflow(for: nil),
               let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
             return LocalizedString.text("unknown_value")
         }

@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 
 extension UTType {
     static let maoproject = UTType(filenameExtension: "maoproj") ?? .json
+    static let maoworkflow = UTType(filenameExtension: "maoworkflow") ?? .zip
 }
 
 struct ProjectFileReference: Identifiable, Hashable {
@@ -654,10 +655,12 @@ class AppState: ObservableObject {
                project.runtimeState.workflowConfigurationRevision == project.runtimeState.appliedToMirrorConfigurationRevision {
                 appliedProjectSnapshot = project
             }
+            normalizeActiveWorkflowSelection()
             refreshOpsAnalytics()
         }
     }
     @Published var currentProjectFileURL: URL?
+    @Published var activeWorkflowID: UUID?
     private var appliedProjectSnapshot: MAProject?
     
     // 选中的节点ID
@@ -668,6 +671,11 @@ class AppState: ObservableObject {
     
     // 导入导出服务
     let importExportService = ImportExportService.shared
+    private let workflowPackageService = WorkflowPackageService()
+    @Published var workflowPackageImportPreview: WorkflowPackagePreview?
+    @Published var workflowPackageImportRootName: String = ""
+    @Published var switchToImportedWorkflowAfterPackageImport: Bool = true
+    @Published var workflowPackageMessage: String?
     
     // 消息管理器
     @Published var messageManager = MessageManager()
@@ -704,13 +712,22 @@ class AppState: ObservableObject {
     private var latestSilentPersistToken = UUID()
     private var taskGenerationWorkItem: DispatchWorkItem?
 
-    private struct WorkbenchRemoteSessionContext: Sendable {
+    private struct WorkbenchThreadContext: Sendable {
         let workflowID: UUID
+        let projectSessionID: String
+        let threadID: String
         let sessionID: String
         let gatewaySessionKey: String
+        let interactionMode: WorkbenchInteractionMode
+        let threadType: RuntimeSessionSemanticType
+        let threadMode: WorkbenchThreadSemanticMode
+        let executionIntent: OpenClawRuntimeExecutionIntent
+        let origin: String
         let agentID: UUID
         let agentName: String
     }
+
+    private typealias WorkbenchRemoteSessionContext = WorkbenchThreadContext
 
     struct AgentRuntimePreparationState {
         let agentID: UUID
@@ -732,6 +749,17 @@ class AppState: ObservableObject {
 
     var hasPendingWorkflowConfiguration: Bool {
         Self.hasPendingWorkflowConfiguration(currentProject?.runtimeState)
+    }
+
+    var currentWorkflowName: String {
+        workflow(for: nil)?.name ?? "Main Workflow"
+    }
+
+    var currentWorkflowDesignPackageDefaultFileName: String {
+        let baseName = currentWorkflowName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+        return baseName.isEmpty ? "workflow.maoworkflow" : "\(baseName).maoworkflow"
     }
 
     var pendingWorkflowConfigurationRevisionDelta: Int {
@@ -1634,6 +1662,7 @@ class AppState: ObservableObject {
         if clearProjectReference {
             currentProjectFileURL = nil
             currentProject = nil
+            activeWorkflowID = nil
             appliedProjectSnapshot = nil
             lastDraftSaveTime = nil
             lastDraftSaveKind = nil
@@ -1785,6 +1814,7 @@ class AppState: ObservableObject {
             tasks: project.tasks,
             existing: project.workspaceIndex
         )
+        hydrateRecoveryCursor(into: &hydratedProject)
         hydratedProject = Self.normalizeProjectNaming(hydratedProject)
         if !hydratedProject.workflows.isEmpty {
             hydratedProject.permissions = conversationPermissions(for: hydratedProject.workflows)
@@ -1821,6 +1851,105 @@ class AppState: ObservableObject {
                 "检测到自连接，已自动清理 \(deduplication.removedSelfEdgeCount) 条非法连线。"
             )
         }
+    }
+
+    private func hydrateRecoveryCursor(into project: inout MAProject) {
+        do {
+            guard let cursor = try ProjectFileSystem.shared.loadRecoveryCursor(
+                for: project.id,
+                under: projectManager.appSupportRootDirectory
+            ) else {
+                return
+            }
+
+            let report = makeRecoveryReport(from: cursor)
+            project.openClaw.recoveryReports.removeAll {
+                $0.createdAt == report.createdAt && $0.summary == report.summary
+            }
+            project.openClaw.recoveryReports.insert(report, at: 0)
+
+            var cursorTargets: [String] = []
+            if let threadID = cursor.latestThreadID {
+                cursorTargets.append("thread=\(threadID)")
+            }
+            if let sessionID = cursor.latestSessionID {
+                cursorTargets.append("session=\(sessionID)")
+            }
+            let cursorTargetSummary = cursorTargets.isEmpty
+                ? "未发现最近 thread/session"
+                : cursorTargets.joined(separator: ", ")
+
+            openClawService.addLog(
+                .info,
+                "已从 control/recovery.json 恢复控制游标：\(cursorTargetSummary)。"
+            )
+        } catch {
+            openClawService.addLog(
+                .warning,
+                "读取 control/recovery.json 失败：\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func makeRecoveryReport(from cursor: ProjectRecoveryCursorDocument) -> OpenClawRecoveryReportSnapshot {
+        let status: OpenClawRecoveryReportStatus = {
+            if cursor.risk.requiresManualFollowUp {
+                return .manualFollowUp
+            }
+            if cursor.risk.hasInflightDispatches || cursor.risk.hasFailedDispatches {
+                return .partial
+            }
+            return .completed
+        }()
+
+        var completedSteps = ["Loaded recovery cursor from control/recovery.json."]
+        if let threadID = cursor.latestThreadID {
+            let mode = cursor.latestThreadMode ?? "unknown"
+            let state = cursor.latestThreadStatus ?? "unknown"
+            completedSteps.append("Recovered latest workbench thread \(threadID) [\(mode)/\(state)].")
+        }
+        if let sessionID = cursor.latestSessionID {
+            let sessionType = cursor.latestSessionType ?? "unknown"
+            completedSteps.append("Recovered latest runtime session \(sessionID) [\(sessionType)].")
+        }
+        if let lastAuditAt = cursor.lastAuditAt {
+            completedSteps.append("Recovered latest audit watermark at \(lastAuditAt.formatted(date: .numeric, time: .standard)).")
+        }
+
+        let beforeLayers = [
+            cursor.latestThreadID.map { "thread=\($0)" },
+            cursor.latestSessionID.map { "session=\($0)" },
+            cursor.lastAuditAt.map { "audit=\($0.formatted(date: .numeric, time: .standard))" }
+        ]
+        .compactMap { $0 }
+        .joined(separator: " | ")
+
+        let afterLayers = [
+            "pendingApproval=\(cursor.pendingApprovalCount)",
+            "blocked=\(cursor.blockedTaskCount)",
+            "inflight=\(cursor.inflightDispatchCount)",
+            "failed=\(cursor.failedDispatchCount)"
+        ]
+        .joined(separator: " | ")
+
+        return OpenClawRecoveryReportSnapshot(
+            createdAt: cursor.generatedAt,
+            status: status,
+            summary: cursor.recoverySummary,
+            completedSteps: completedSteps,
+            manualSteps: cursor.recommendedActions,
+            findings: cursor.findings,
+            before: OpenClawRecoveryStateSnapshot(
+                label: "archived_control_cursor",
+                summary: cursor.recoverySummary,
+                layers: beforeLayers
+            ),
+            after: OpenClawRecoveryStateSnapshot(
+                label: "hydrated_runtime_guidance",
+                summary: cursor.recommendedActions.first ?? "Recovery guidance loaded.",
+                layers: afterLayers
+            )
+        )
     }
 
     private func makeOfflineTemplateProject(named projectName: String) -> MAProject {
@@ -2099,7 +2228,7 @@ class AppState: ObservableObject {
 
         let effectiveWorkflowID = workflowID.flatMap { candidateID in
             project.workflows.contains(where: { $0.id == candidateID }) ? candidateID : nil
-        } ?? project.workflows.first?.id
+        } ?? activeWorkflowID ?? project.workflows.first?.id
 
         if openClawManager.hasAttachedProjectSession,
            openClawManager.attachedProjectID == project.id,
@@ -2745,7 +2874,7 @@ class AppState: ObservableObject {
 
     func addBoundary(around nodeIDs: Set<UUID>) {
         guard !nodeIDs.isEmpty,
-              let workflow = currentProject?.workflows.first else { return }
+              let workflow = workflow(for: nil) else { return }
 
         let nodes = workflow.nodes.filter { nodeIDs.contains($0.id) }
         guard !nodes.isEmpty else { return }
@@ -2774,7 +2903,7 @@ class AppState: ObservableObject {
     func removeBoundary(around nodeIDs: Set<UUID>) {
         guard !nodeIDs.isEmpty else { return }
 
-        guard let workflow = currentProject?.workflows.first else { return }
+        guard let workflow = workflow(for: nil) else { return }
         let selectedNodePositions = workflow.nodes
             .filter { nodeIDs.contains($0.id) }
             .map(\.position)
@@ -2788,7 +2917,7 @@ class AppState: ObservableObject {
     }
 
     func removeBoundary(containing nodeID: UUID) {
-        guard let workflow = currentProject?.workflows.first,
+        guard let workflow = workflow(for: nil),
               let node = workflow.nodes.first(where: { $0.id == nodeID }) else { return }
         updateMainWorkflow { workflow in
             workflow.boundaries.removeAll { $0.contains(point: node.position) }
@@ -2803,7 +2932,7 @@ class AppState: ObservableObject {
     }
 
     func boundary(for nodeID: UUID) -> WorkflowBoundary? {
-        guard let workflow = currentProject?.workflows.first,
+        guard let workflow = workflow(for: nil),
               let node = workflow.nodes.first(where: { $0.id == nodeID }) else {
             return nil
         }
@@ -2923,7 +3052,11 @@ class AppState: ObservableObject {
             project.updatedAt = Date()
             currentProject = project
         }
-        return currentProject?.workflows.first
+        let resolvedWorkflow = workflow(for: activeWorkflowID) ?? currentProject?.workflows.first
+        if activeWorkflowID == nil {
+            activeWorkflowID = resolvedWorkflow?.id
+        }
+        return resolvedWorkflow
     }
     
     func updateWorkflow(_ workflow: Workflow) {
@@ -2960,7 +3093,7 @@ class AppState: ObservableObject {
     func updateMainWorkflow(_ updates: (inout Workflow) -> Void) {
         guard ensureMainWorkflow() != nil,
               var project = currentProject,
-              let index = project.workflows.indices.first else { return }
+              let index = activeWorkflowIndex(in: project) else { return }
 
         pushWorkflowUndoSnapshot()
         updates(&project.workflows[index])
@@ -2986,6 +3119,43 @@ class AppState: ObservableObject {
                 "工作流中存在自连接，已移除 \(deduplication.removedSelfEdgeCount) 条非法连线。"
             )
         }
+    }
+
+    func setActiveWorkflow(_ workflowID: UUID?) {
+        guard let project = currentProject else {
+            activeWorkflowID = nil
+            return
+        }
+
+        if let workflowID,
+           project.workflows.contains(where: { $0.id == workflowID }) {
+            activeWorkflowID = workflowID
+            return
+        }
+
+        activeWorkflowID = project.workflows.first?.id
+    }
+
+    private func normalizeActiveWorkflowSelection() {
+        guard let project = currentProject else {
+            activeWorkflowID = nil
+            return
+        }
+
+        if let activeWorkflowID,
+           project.workflows.contains(where: { $0.id == activeWorkflowID }) {
+            return
+        }
+
+        activeWorkflowID = project.workflows.first?.id
+    }
+
+    private func activeWorkflowIndex(in project: MAProject) -> Int? {
+        if let activeWorkflowID,
+           let index = project.workflows.firstIndex(where: { $0.id == activeWorkflowID }) {
+            return index
+        }
+        return project.workflows.indices.first
     }
 
     func undoWorkflowChange() {
@@ -3247,7 +3417,7 @@ class AppState: ObservableObject {
     }
 
     func undeletableNodeIDs(in nodeIDs: Set<UUID>) -> Set<UUID> {
-        guard let workflow = currentProject?.workflows.first else { return [] }
+        guard let workflow = workflow(for: nil) else { return [] }
         return Self.undeletableNodeIDs(in: workflow, from: nodeIDs)
     }
 
@@ -3271,7 +3441,7 @@ class AppState: ObservableObject {
     }
 
     func removeEdge(_ edgeID: UUID) {
-        guard let workflow = currentProject?.workflows.first,
+        guard let workflow = workflow(for: nil),
               workflow.edges.contains(where: { $0.id == edgeID }) else { return }
 
         updateMainWorkflow { workflow in
@@ -3282,7 +3452,7 @@ class AppState: ObservableObject {
 
     func removeEdges(_ edgeIDs: Set<UUID>) {
         guard !edgeIDs.isEmpty,
-              let workflow = currentProject?.workflows.first,
+              let workflow = workflow(for: nil),
               workflow.edges.contains(where: { edgeIDs.contains($0.id) }) else { return }
 
         updateMainWorkflow { workflow in
@@ -3291,7 +3461,7 @@ class AppState: ObservableObject {
     }
 
     func previewBatchConnections(sourceNodeIDs: Set<UUID>, targetNodeIDs: Set<UUID>) -> BatchConnectionPreview? {
-        guard let workflow = currentProject?.workflows.first else { return nil }
+        guard let workflow = workflow(for: nil) else { return nil }
 
         let sortedSources = sourceNodeIDs.sorted { $0.uuidString < $1.uuidString }
         let sortedTargets = targetNodeIDs.sorted { $0.uuidString < $1.uuidString }
@@ -3459,8 +3629,8 @@ class AppState: ObservableObject {
     }
 
     func connectNodes(from sourceNodeID: UUID, to targetNodeID: UUID, bidirectional: Bool = true) {
-        guard let project = currentProject,
-              let workflow = project.workflows.first,
+        guard currentProject != nil,
+              let workflow = self.workflow(for: nil),
               let sourceNode = workflow.nodes.first(where: { $0.id == sourceNodeID }),
               let targetNode = workflow.nodes.first(where: { $0.id == targetNodeID }) else { return }
 
@@ -3484,7 +3654,8 @@ class AppState: ObservableObject {
             project.workflows.append(Workflow(name: "Main Workflow"))
         }
 
-        guard var workflow = project.workflows.first else { return }
+        guard let workflowIndex = activeWorkflowIndex(in: project) else { return }
+        var workflow = project.workflows[workflowIndex]
 
         let descriptors: [ArchitectureAgentDescriptor] = buildArchitectureDescriptors(for: project.agents)
         let existingAgentNodes: [UUID: WorkflowNode] = Dictionary(uniqueKeysWithValues: workflow.nodes.compactMap { node -> (UUID, WorkflowNode)? in
@@ -3528,11 +3699,7 @@ class AppState: ObservableObject {
             nodeIDByAgentID: generatedNodeIDByAgentID
         )
 
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-        } else {
-            project.workflows.append(workflow)
-        }
+        project.workflows[workflowIndex] = workflow
 
         project.permissions = conversationPermissions(for: project.workflows)
         markWorkflowConfigurationPending(in: &project)
@@ -3674,7 +3841,7 @@ class AppState: ObservableObject {
     }
 
     func setEdgeCommunicationDirection(edgeID: UUID, bidirectional: Bool) {
-        guard currentProject?.workflows.first?.edges.contains(where: { $0.id == edgeID }) == true else { return }
+        guard workflow(for: nil)?.edges.contains(where: { $0.id == edgeID }) == true else { return }
 
         updateMainWorkflow { workflow in
             guard let edgeIndex = workflow.edges.firstIndex(where: { $0.id == edgeID }) else { return }
@@ -4001,11 +4168,11 @@ class AppState: ObservableObject {
     }
 
     func workflowNodeID(for agentID: UUID) -> UUID? {
-        currentProject?.workflows.first?.nodes.first(where: { $0.agentID == agentID && $0.type == .agent })?.id
+        workflow(for: nil)?.nodes.first(where: { $0.agentID == agentID && $0.type == .agent })?.id
     }
 
     func connectionSummary(for agentID: UUID) -> (incoming: Int, outgoing: Int) {
-        guard let workflow = currentProject?.workflows.first,
+        guard let workflow = workflow(for: nil),
               let nodeID = workflowNodeID(for: agentID) else {
             return (0, 0)
         }
@@ -4593,7 +4760,7 @@ class AppState: ObservableObject {
     
     // 从工作流生成任务
     func generateTasksFromWorkflow() {
-        guard let workflow = currentProject?.workflows.first,
+        guard let workflow = workflow(for: nil),
               let agents = currentProject?.agents else { return }
         
         taskManager.generateTasks(from: workflow, projectAgents: agents)
@@ -4613,6 +4780,9 @@ class AppState: ObservableObject {
         guard let project = currentProject else { return nil }
         if let workflowID {
             return project.workflows.first { $0.id == workflowID }
+        }
+        if let activeWorkflowID {
+            return project.workflows.first { $0.id == activeWorkflowID } ?? project.workflows.first
         }
         return project.workflows.first
     }
@@ -5900,7 +6070,32 @@ class AppState: ObservableObject {
             }
         }
     }
-    
+
+    func importWorkflowPackage() {
+        guard currentProject != nil else { return }
+
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.maoworkflow]
+        panel.allowsMultipleSelection = false
+        panel.message = "选择 .maoworkflow 工作流设计包"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+
+            do {
+                if let existingPreview = self.workflowPackageImportPreview {
+                    self.workflowPackageService.cleanupPreview(existingPreview)
+                }
+
+                let preview = try self.workflowPackageService.preflightImportPackage(at: url)
+                self.workflowPackageImportPreview = preview
+                self.workflowPackageImportRootName = preview.rootWorkflowName
+                self.switchToImportedWorkflowAfterPackageImport = true
+            } catch {
+                self.workflowPackageMessage = error.localizedDescription
+            }
+        }
+    }
+
     // 导出数据
     func exportData() {
         guard let project = currentProject else { return }
@@ -5928,6 +6123,66 @@ class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    func exportCurrentWorkflowPackage() {
+        guard let project = snapshotProjectForPersistence(),
+              let workflow = workflow(for: nil) else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.maoworkflow]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = currentWorkflowDesignPackageDefaultFileName
+        panel.message = "导出当前工作流设计包"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+
+            do {
+                try self.workflowPackageService.exportPackage(
+                    rootWorkflowID: workflow.id,
+                    from: project,
+                    under: self.projectManager.appSupportRootDirectory,
+                    to: url
+                )
+                self.workflowPackageMessage = "已导出工作流设计包：\(url.lastPathComponent)"
+            } catch {
+                self.workflowPackageMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func confirmWorkflowPackageImport() {
+        guard let preview = workflowPackageImportPreview,
+              let baseProject = snapshotProjectForPersistence() else { return }
+
+        do {
+            let result = try workflowPackageService.importPackage(
+                from: preview,
+                into: baseProject,
+                under: projectManager.appSupportRootDirectory,
+                rootWorkflowNameOverride: workflowPackageImportRootName
+            )
+            var importedProject = result.project
+            markWorkflowConfigurationPending(in: &importedProject)
+            importedProject.updatedAt = Date()
+            currentProject = importedProject
+            if switchToImportedWorkflowAfterPackageImport {
+                activeWorkflowID = result.importedRootWorkflowID
+            }
+            workflowPackageMessage = "已导入工作流设计包：\(workflowPackageImportRootName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? preview.rootWorkflowName : workflowPackageImportRootName)"
+            cleanupWorkflowPackageImportPreview()
+        } catch {
+            workflowPackageMessage = error.localizedDescription
+        }
+    }
+
+    func cleanupWorkflowPackageImportPreview() {
+        if let preview = workflowPackageImportPreview {
+            workflowPackageService.cleanupPreview(preview)
+        }
+        workflowPackageImportPreview = nil
+        workflowPackageImportRootName = ""
+        switchToImportedWorkflowAfterPackageImport = true
     }
     
     // 添加新 Agent
@@ -6140,7 +6395,8 @@ class AppState: ObservableObject {
     // 添加新节点
     func addNewNode() {
         guard var project = currentProject,
-              var workflow = project.workflows.first else { return }
+              let workflowIndex = activeWorkflowIndex(in: project) else { return }
+        var workflow = project.workflows[workflowIndex]
         
         var newNode = WorkflowNode(type: .agent)
         newNode.position = CGPoint(x: 200, y: 200)
@@ -6152,11 +6408,9 @@ class AppState: ObservableObject {
         )
         workflow.nodes.append(newNode)
         
-        if let index = project.workflows.firstIndex(where: { $0.id == workflow.id }) {
-            project.workflows[index] = workflow
-            markWorkflowConfigurationPending(in: &project)
-            currentProject = project
-        }
+        project.workflows[workflowIndex] = workflow
+        markWorkflowConfigurationPending(in: &project)
+        currentProject = project
         objectWillChange.send()
         
         scheduleTaskGeneration()

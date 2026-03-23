@@ -6,7 +6,8 @@ final class OpenClawTransportRoutingTests: XCTestCase {
         let transport = OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: .remoteServer,
             outputMode: .structuredJSON,
-            sessionID: "workflow-benchmark-123"
+            sessionID: "workflow-benchmark-123",
+            executionIntent: .workflowControlled
         )
 
         XCTAssertEqual(transport, .gatewayAgent)
@@ -16,17 +17,20 @@ final class OpenClawTransportRoutingTests: XCTestCase {
         let workbenchTransport = OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: .remoteServer,
             outputMode: .plainStreaming,
-            sessionID: "workbench-demo-123"
+            sessionID: "workbench-demo-123",
+            executionIntent: .conversationAutonomous
         )
         let benchmarkTransport = OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: .remoteServer,
             outputMode: .structuredJSON,
-            sessionID: "benchmark-demo-456"
+            sessionID: "benchmark-demo-456",
+            executionIntent: .benchmark
         )
         let agentScopedTransport = OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: .remoteServer,
             outputMode: .structuredJSON,
-            sessionID: "agent:planner:main"
+            sessionID: "agent:planner:main",
+            executionIntent: .conversationAutonomous
         )
 
         XCTAssertEqual(workbenchTransport, .gatewayChat)
@@ -38,12 +42,14 @@ final class OpenClawTransportRoutingTests: XCTestCase {
         let localTransport = OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: .local,
             outputMode: .structuredJSON,
-            sessionID: "workflow-anything"
+            sessionID: "workflow-anything",
+            executionIntent: .workflowControlled
         )
         let containerTransport = OpenClawTransportRouting.runtimeTransportKind(
             deploymentKind: .container,
             outputMode: .plainStreaming,
-            sessionID: "workbench-anything"
+            sessionID: "workbench-anything",
+            executionIntent: .conversationAutonomous
         )
 
         XCTAssertEqual(localTransport, .cli)
