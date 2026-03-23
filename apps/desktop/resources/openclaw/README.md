@@ -1,5 +1,5 @@
-This directory stores the synchronized placeholder for the app-managed OpenClaw
-runtime.
+This directory stores the source-of-truth placeholder for the app-managed
+OpenClaw runtime.
 
 What is committed to Git:
 
@@ -26,4 +26,4 @@ Build-time flow:
 3. Build the Swift app or Electron desktop package.
 
 The packaged application still ships with a fully vendored OpenClaw runtime.
-The repository simply avoids storing the generated payload directly.
+The repository simply avoids storing the 700MB+ generated payload directly.

@@ -103,7 +103,7 @@ final class OpenClawManagedRuntimeSupervisor {
     private var expectedStoppedPID: Int32?
     private var statusSnapshot: OpenClawManagedRuntimeStatusSnapshot
 
-    init(
+    nonisolated init(
         fileManager: FileManager = .default,
         host: OpenClawHost = OpenClawHost(fileManager: .default),
         managedRuntimeRootURL: URL? = OpenClawManagedRuntimeInstaller.shared.managedRuntimeRootURL(),
@@ -126,6 +126,8 @@ final class OpenClawManagedRuntimeSupervisor {
             lastMessage: "托管 OpenClaw Runtime Supervisor 已就绪。"
         )
     }
+
+    nonisolated deinit {}
 
     func currentStatusSnapshot() -> OpenClawManagedRuntimeStatusSnapshot {
         locked { statusSnapshot }

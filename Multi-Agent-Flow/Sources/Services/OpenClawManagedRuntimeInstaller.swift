@@ -81,7 +81,7 @@ private struct OpenClawManagedRuntimeBundledPayload {
 }
 
 final class OpenClawManagedRuntimeInstaller {
-    static let shared = OpenClawManagedRuntimeInstaller()
+    nonisolated static let shared = OpenClawManagedRuntimeInstaller()
 
     private let fileManager: FileManager
     private let bundleResourceURL: URL?
@@ -103,7 +103,9 @@ final class OpenClawManagedRuntimeInstaller {
         self.payloadDirectoryNames = payloadDirectoryNames
     }
 
-    func managedRuntimeRootURL() -> URL? {
+    nonisolated deinit {}
+
+    nonisolated func managedRuntimeRootURL() -> URL? {
         appSupportRootDirectory?
             .appendingPathComponent("openclaw", isDirectory: true)
             .appendingPathComponent("runtime", isDirectory: true)

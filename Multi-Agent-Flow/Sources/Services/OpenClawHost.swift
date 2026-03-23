@@ -187,7 +187,7 @@ final class OpenClawHost {
     private let managedRuntimeRootURL: URL?
     private let homeDirectory: URL
 
-    init(
+    nonisolated init(
         fileManager: FileManager = .default,
         bundleResourceURL: URL? = Bundle.main.resourceURL,
         managedRuntimeRootURL: URL? = nil,
@@ -198,6 +198,8 @@ final class OpenClawHost {
         self.managedRuntimeRootURL = managedRuntimeRootURL
         self.homeDirectory = homeDirectory
     }
+
+    nonisolated deinit {}
 
     func resolveLocalBinaryPath(for config: OpenClawConfig) -> String {
         let candidates = localBinaryPathCandidates(

@@ -25,6 +25,10 @@ func resolvedWorkbenchSessionID(from metadata: [String: String]) -> String? {
     normalizedWorkbenchMetadataValue(metadata[WorkbenchMetadataKey.workbenchSessionID])
 }
 
+func resolvedWorkbenchGatewaySessionKey(from metadata: [String: String]) -> String? {
+    normalizedWorkbenchMetadataValue(metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey])
+}
+
 func resolvedWorkbenchThreadType(from metadata: [String: String]) -> RuntimeSessionSemanticType? {
     RuntimeSessionSemanticType(normalizedRawValue: metadata[WorkbenchMetadataKey.workbenchThreadType])
 }

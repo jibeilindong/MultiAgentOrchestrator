@@ -684,6 +684,7 @@ class AppState: ObservableObject {
     @Published var openClawService = OpenClawService()
     let opsAnalytics = OpsAnalyticsService()
     private let workbenchThreadStateCoordinator = WorkbenchThreadStateCoordinator()
+    private let workbenchFlowLifecycleCoordinator = WorkbenchFlowLifecycleCoordinator()
     private lazy var workbenchRuntimeMutationCoordinator = WorkbenchRuntimeMutationCoordinator(
         appendRuntimeEvents: { [unowned self] events, runtimeState in
             self.appendRuntimeEvents(events, to: &runtimeState)
@@ -759,7 +760,7 @@ class AppState: ObservableObject {
         let messageCount: Int
         let taskCount: Int
 
-        init(_ descriptor: WorkbenchThreadSummaryDescriptor) {
+        nonisolated init(_ descriptor: WorkbenchThreadSummaryDescriptor) {
             self.id = descriptor.id
             self.workflowID = descriptor.workflowID
             self.title = descriptor.title
@@ -5586,6 +5587,10 @@ class AppState: ObservableObject {
                 guard let self else { return }
 
                 let entryResult = entryExecution.result
+                self.persistWorkbenchGatewaySessionKey(
+                    entryResult.sessionID,
+                    for: threadContext
+                )
                 let visibleOutput = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !visibleOutput.isEmpty {
                     upsertWorkbenchAssistantMessage(
@@ -5608,17 +5613,19 @@ class AppState: ObservableObject {
                     recordWorkbenchLatency("firstReplyMs", label: "first_reply", at: timestamp)
                 }
 
-                guard entryResult.status == .completed else {
+                let backgroundNodes = orderedUniqueNodes(otherEntryNodes + entryExecution.downstreamNodes)
+                switch self.workbenchFlowLifecycleCoordinator.chatEntryDisposition(
+                    for: entryResult,
+                    hasBackgroundNodes: !backgroundNodes.isEmpty
+                ) {
+                case let .failed(errorMessage):
                     self.openClawService.executionResults = [entryResult]
                     completeWorkbenchExecution(
                         results: [entryResult],
-                        terminalTransition: .failed(errorMessage: entryResult.summaryText)
+                        terminalTransition: .failed(errorMessage: errorMessage)
                     )
                     return
-                }
-
-                let backgroundNodes = orderedUniqueNodes(otherEntryNodes + entryExecution.downstreamNodes)
-                if backgroundNodes.isEmpty {
+                case .readyToRun:
                     self.openClawService.executionResults = [entryResult]
                     self.openClawService.addLog(
                         .info,
@@ -5631,62 +5638,52 @@ class AppState: ObservableObject {
                         terminalTransition: .readyToRun
                     )
                     return
-                }
-
-                let backgroundEntryNodeIDs = Set(otherEntryNodes.map(\.id))
-                self.transitionWorkbenchThread(
-                    context: threadContext,
-                    .escalatedToBackgroundRun
-                )
-                self.openClawService.addLog(
-                    .info,
-                    "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s).",
-                    sessionID: threadContext.sessionID,
-                    agentID: leadAgent.id
-                )
-
-                self.openClawService.executeWorkflow(
-                    workflow,
-                    agents: project.agents,
-                    prompt: trimmedPrompt,
-                    projectID: project.id,
-                    projectRuntimeSessionID: threadContext.sessionID,
-                    threadID: threadContext.threadID,
-                    executionIntent: threadContext.executionIntent,
-                    startingNodes: backgroundNodes,
-                    entryNodeIDsOverride: backgroundEntryNodeIDs,
-                    preloadedResults: [entryResult],
-                    precompletedNodeIDs: [leadNode.id],
-                    agentOutputMode: .plainStreaming,
-                    onNodeDispatched: { [weak self] dispatchEvent in
-                        guard let self else { return }
-                        self.handleWorkbenchDispatchEvent(dispatchEvent)
-                    },
-                    onNodeAccepted: { [weak self] acceptedEvent in
-                        guard let self else { return }
-                        self.handleWorkbenchAcceptedEvent(acceptedEvent)
-                    },
-                    onNodeProgress: { [weak self] progressEvent in
-                        guard let self else { return }
-                        self.handleWorkbenchProgressEvent(progressEvent)
-                    }
-                ) { [weak self] results in
-                    guard self != nil else { return }
-                    let failureSummary = results.first(where: { $0.status == .failed })?.summaryText
-                    let terminalTransition: WorkbenchThreadTransition = results.isEmpty || results.contains(where: { $0.status == .failed })
-                        ? .failed(
-                            errorMessage: failureSummary,
-                            interactionMode: .run,
-                            threadMode: .conversationToRun
-                        )
-                        : .completed(
-                            interactionMode: .run,
-                            threadMode: .conversationToRun
-                        )
-                    completeWorkbenchExecution(
-                        results: results,
-                        terminalTransition: terminalTransition
+                case .continueInBackground:
+                    let backgroundEntryNodeIDs = Set(otherEntryNodes.map(\.id))
+                    self.transitionWorkbenchThread(
+                        context: threadContext,
+                        .escalatedToBackgroundRun
                     )
+                    self.openClawService.addLog(
+                        .info,
+                        "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s).",
+                        sessionID: threadContext.sessionID,
+                        agentID: leadAgent.id
+                    )
+
+                    self.openClawService.executeWorkflow(
+                        workflow,
+                        agents: project.agents,
+                        prompt: trimmedPrompt,
+                        projectID: project.id,
+                        projectRuntimeSessionID: threadContext.sessionID,
+                        threadID: threadContext.threadID,
+                        executionIntent: threadContext.executionIntent,
+                        startingNodes: backgroundNodes,
+                        entryNodeIDsOverride: backgroundEntryNodeIDs,
+                        preloadedResults: [entryResult],
+                        precompletedNodeIDs: [leadNode.id],
+                        agentOutputMode: .plainStreaming,
+                        onNodeDispatched: { [weak self] dispatchEvent in
+                            guard let self else { return }
+                            self.handleWorkbenchDispatchEvent(dispatchEvent)
+                        },
+                        onNodeAccepted: { [weak self] acceptedEvent in
+                            guard let self else { return }
+                            self.handleWorkbenchAcceptedEvent(acceptedEvent)
+                        },
+                        onNodeProgress: { [weak self] progressEvent in
+                            guard let self else { return }
+                            self.handleWorkbenchProgressEvent(progressEvent)
+                        }
+                    ) { [weak self] results in
+                        guard let self else { return }
+                        completeWorkbenchExecution(
+                            results: results,
+                            terminalTransition: self.workbenchFlowLifecycleCoordinator
+                                .backgroundWorkflowTerminalTransition(for: results)
+                        )
+                    }
                 }
             }
         }
@@ -5854,11 +5851,8 @@ class AppState: ObservableObject {
 
             let completedAt = Date()
             persistRunLatency(label: "full_workflow", key: "fullWorkflowMs", at: completedAt)
-
-            let completedCount = results.filter { $0.status == .completed }.count
-            let failedResults = results.filter { $0.status == .failed }
-            let finalStatus: TaskStatus = failedResults.isEmpty ? .done : .blocked
-            self.taskManager.moveTask(task.id, to: finalStatus)
+            let runPresentation = self.workbenchFlowLifecycleCoordinator.workflowRunPresentation(for: results)
+            self.taskManager.moveTask(task.id, to: runPresentation.taskStatus)
 
             self.recordWorkbenchExecutionResults(
                 results,
@@ -5868,29 +5862,13 @@ class AppState: ObservableObject {
 
             self.transitionWorkbenchThread(
                 context: threadContext,
-                results.isEmpty || !failedResults.isEmpty
-                    ? .failed(errorMessage: failedResults.first?.summaryText)
-                    : .completed()
+                runPresentation.terminalTransition
             )
 
-            let summaryLine = (
-                results
-                    .map(\.summaryText)
-                    .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            )?.compactSingleLinePreview(limit: 220)
-            let failureLine = failedResults.first.map(\.summaryText)?.compactSingleLinePreview(limit: 180)
-            let summaryText = [
-                "Run completed: \(completedCount) succeeded, \(failedResults.count) failed.",
-                summaryLine,
-                failureLine.map { "Failure: \($0)" }
-            ]
-            .compactMap { $0 }
-            .joined(separator: "\n")
-
             updateRunStatusMessage(
-                content: summaryText,
-                type: failedResults.isEmpty ? .notification : .data,
-                outputType: failedResults.isEmpty ? .agentFinalResponse : .errorSummary,
+                content: runPresentation.summaryText,
+                type: runPresentation.messageType,
+                outputType: runPresentation.outputType,
                 isThinking: false
             )
             self.openClawService.executionResults = results
@@ -6486,146 +6464,15 @@ class AppState: ObservableObject {
             }
         }
 
-        let threadIDs = Set(threadMessages.keys)
-            .union(threadTasks.keys)
-            .union(threadContextSamples.keys)
-            .union(threadStateRecordsByThreadID.keys)
-
-        return threadIDs.compactMap { threadID in
-            let messages = (threadMessages[threadID] ?? []).sorted { $0.timestamp < $1.timestamp }
-            let tasks = (threadTasks[threadID] ?? []).sorted { $0.createdAt < $1.createdAt }
-            let contextSamples = threadContextSamples[threadID] ?? []
-            let activityDates = messages.map(\.timestamp)
-                + tasks.map { $0.completedAt ?? $0.startedAt ?? $0.createdAt }
-            guard let lastActivityAt = activityDates.max() else { return nil }
-            guard let latestContext = contextSamples.max(by: { lhs, rhs in
-                if lhs.activityAt == rhs.activityAt {
-                    return lhs.context.threadID < rhs.context.threadID
-                }
-                return lhs.activityAt < rhs.activityAt
-            })?.context else {
-                return nil
-            }
-
-            let preferredThreadMode = WorkbenchThreadSemanticMode.preferredMode(
-                from: contextSamples.map(\.context.threadMode)
-            ) ?? latestContext.threadMode
-            let threadStateRecord = threadStateRecordsByThreadID[threadID]
-            let derivedInteractionMode = threadStateRecord?.resolvedInteractionMode ?? latestContext.interactionMode
-            let derivedThreadMode = threadStateRecord?.resolvedThreadMode ?? preferredThreadMode
-            let derivedThreadType = RuntimeSessionSemanticType.preferredWorkbenchThreadType(
-                from: contextSamples.map(\.context.threadType)
-            ) ?? latestContext.threadType
-            let conversationState = workbenchConversationState(
-                interactionMode: derivedInteractionMode,
-                threadMode: derivedThreadMode,
-                messages: messages,
-                tasks: tasks,
-                contextSamples: contextSamples,
-                activeRunRecord: activeRunsByThreadID[threadID],
-                explicitStateRecord: threadStateRecord
-            )
-
-            let latestUserPrompt = messages
-                .last(where: { ($0.inferredRole ?? "").lowercased() == "user" })?
-                .content
-                .compactSingleLinePreview(limit: 52)
-            let latestAssistantReply = messages
-                .last(where: { ($0.inferredRole ?? "").lowercased() == "assistant" })?
-                .summaryText
-                .compactSingleLinePreview(limit: 72)
-            let latestTaskTitle = tasks.last?.title.compactSingleLinePreview(limit: 52)
-
-            let title = latestUserPrompt
-                ?? latestTaskTitle
-                ?? latestAssistantReply
-                ?? "\(derivedThreadMode.displayTitle) with \(latestContext.agentName)"
-            let preview = latestAssistantReply
-                ?? latestUserPrompt
-                ?? tasks.last?.description.compactSingleLinePreview(limit: 72)
-                ?? latestContext.gatewaySessionKey.compactSingleLinePreview(limit: 72)
-
-            return WorkbenchThreadSummary(
-                id: threadID,
-                workflowID: workflow.id,
-                title: title,
-                subtitle: workbenchThreadSubtitle(
-                    threadMode: derivedThreadMode,
-                    agentName: latestContext.agentName
-                ),
-                preview: preview,
-                lastActivityAt: lastActivityAt,
-                conversationState: conversationState,
-                activeRunStatus: activeRunsByThreadID[threadID]?.status,
-                interactionMode: derivedInteractionMode,
-                threadType: derivedThreadType,
-                threadMode: derivedThreadMode,
-                entryAgentName: latestContext.agentName,
-                messageCount: messages.count,
-                taskCount: tasks.count
-            )
-        }
-        .sorted { lhs, rhs in
-            if lhs.lastActivityAt != rhs.lastActivityAt {
-                return lhs.lastActivityAt > rhs.lastActivityAt
-            }
-            return lhs.id > rhs.id
-        }
-    }
-
-    private func workbenchThreadSubtitle(
-        threadMode: WorkbenchThreadSemanticMode,
-        agentName: String
-    ) -> String {
-        [threadMode.displayTitle, agentName].joined(separator: " · ")
-    }
-
-    private func workbenchConversationState(
-        interactionMode: WorkbenchInteractionMode,
-        threadMode: WorkbenchThreadSemanticMode,
-        messages: [Message],
-        tasks: [Task],
-        contextSamples: [WorkbenchThreadContextSample],
-        activeRunRecord: WorkbenchActiveRunRecord?,
-        explicitStateRecord: WorkbenchThreadStateRecord?
-    ) -> WorkbenchConversationState {
-        let latestTask = tasks.last
-        let latestUserMessage = messages.last(where: { ($0.inferredRole ?? "").lowercased() == "user" })
-        let latestAssistantMessage = messages.last(where: { ($0.inferredRole ?? "").lowercased() == "assistant" })
-        let hasRunActivity = interactionMode == .run
-            || threadMode != .autonomousConversation
-            || contextSamples.contains(where: { sample in
-                sample.context.interactionMode == .run
-                    || sample.context.threadMode != .autonomousConversation
-                    || sample.context.threadType == .workflowControlled
-            })
-
-        return WorkbenchConversationStateResolver.resolve(
-            WorkbenchConversationStateDerivationInput(
-                interactionMode: interactionMode,
-                threadMode: threadMode,
-                latestTaskStatus: latestTask?.status,
-                latestUserMessageAt: latestUserMessage?.timestamp,
-                latestAssistantMessageAt: latestAssistantMessage?.timestamp,
-                latestAssistantThinking: latestAssistantMessage?.metadata["thinking"]?.lowercased() == "true",
-                latestAssistantOutputType: latestAssistantMessage?.inferredOutputType,
-                hasRunActivity: hasRunActivity,
-                activeRunStatus: activeRunRecord?.status,
-                explicitState: explicitStateRecord?.state
-            )
+        return workbenchThreadStateCoordinator.summarizeThreads(
+            workflowID: workflow.id,
+            threadMessages: threadMessages,
+            threadTasks: threadTasks,
+            threadContextSamples: threadContextSamples,
+            activeRunsByThreadID: activeRunsByThreadID,
+            threadStateRecordsByThreadID: threadStateRecordsByThreadID
         )
-    }
-
-    private func resolvedWorkbenchThreadTransition(
-        _ transition: WorkbenchThreadTransition,
-        interactionMode: WorkbenchInteractionMode,
-        threadMode: WorkbenchThreadSemanticMode
-    ) -> WorkbenchThreadTransitionResolution {
-        WorkbenchThreadTransitionResolver.resolve(
-            transition,
-            interactionMode: interactionMode,
-            threadMode: threadMode
-        )
+        .map(WorkbenchThreadSummary.init)
     }
 
     private func transitionWorkbenchThread(
@@ -6633,20 +6480,14 @@ class AppState: ObservableObject {
         _ transition: WorkbenchThreadTransition,
         at timestamp: Date = Date()
     ) {
-        let resolution = resolvedWorkbenchThreadTransition(
-            transition,
-            interactionMode: context.interactionMode,
-            threadMode: context.threadMode
-        )
         guard var project = currentProject else { return }
-        updateWorkbenchThreadState(
+        workbenchThreadStateCoordinator.transitionThread(
             in: &project.runtimeState,
             workflowID: context.workflowID,
             threadID: context.threadID,
-            interactionMode: resolution.interactionMode,
-            threadMode: resolution.threadMode,
-            state: resolution.state,
-            errorMessage: resolution.errorMessage,
+            interactionMode: context.interactionMode,
+            threadMode: context.threadMode,
+            transition: transition,
             at: timestamp
         )
         project.updatedAt = timestamp
@@ -6658,20 +6499,14 @@ class AppState: ObservableObject {
         _ transition: WorkbenchThreadTransition,
         at timestamp: Date = Date()
     ) {
-        let resolution = resolvedWorkbenchThreadTransition(
-            transition,
-            interactionMode: summary.interactionMode,
-            threadMode: summary.threadMode
-        )
         guard var project = currentProject else { return }
-        updateWorkbenchThreadState(
+        workbenchThreadStateCoordinator.transitionThread(
             in: &project.runtimeState,
             workflowID: summary.workflowID,
             threadID: summary.id,
-            interactionMode: resolution.interactionMode,
-            threadMode: resolution.threadMode,
-            state: resolution.state,
-            errorMessage: resolution.errorMessage,
+            interactionMode: summary.interactionMode,
+            threadMode: summary.threadMode,
+            transition: transition,
             at: timestamp
         )
         project.updatedAt = timestamp
@@ -6687,19 +6522,13 @@ class AppState: ObservableObject {
         _ transition: WorkbenchThreadTransition,
         at timestamp: Date = Date()
     ) {
-        let resolution = resolvedWorkbenchThreadTransition(
-            transition,
-            interactionMode: interactionMode,
-            threadMode: threadMode
-        )
-        updateWorkbenchThreadState(
+        workbenchThreadStateCoordinator.transitionThread(
             in: &runtimeState,
             workflowID: workflowID,
             threadID: threadID,
-            interactionMode: resolution.interactionMode,
-            threadMode: resolution.threadMode,
-            state: resolution.state,
-            errorMessage: resolution.errorMessage,
+            interactionMode: interactionMode,
+            threadMode: threadMode,
+            transition: transition,
             at: timestamp
         )
     }
@@ -6784,86 +6613,16 @@ class AppState: ObservableObject {
         }
     }
 
-    private func updateWorkbenchThreadState(
-        in runtimeState: inout RuntimeState,
-        workflowID: UUID,
-        threadID: String,
-        interactionMode: WorkbenchInteractionMode,
-        threadMode: WorkbenchThreadSemanticMode,
-        state: WorkbenchConversationState,
-        errorMessage: String? = nil,
-        at timestamp: Date = Date()
-    ) {
-        let normalizedErrorMessage = errorMessage?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedErrorMessage = normalizedErrorMessage?.isEmpty == false ? normalizedErrorMessage : nil
-
-        if let index = runtimeState.workbenchThreadStates.firstIndex(where: { $0.threadID == threadID }) {
-            let previousRecord = runtimeState.workbenchThreadStates[index]
-            let stateChanged = previousRecord.state != state
-                || previousRecord.interactionMode != interactionMode.rawValue
-                || previousRecord.threadMode != threadMode.rawValue
-                || previousRecord.lastErrorMessage != resolvedErrorMessage
-            runtimeState.workbenchThreadStates[index].workflowID = workflowID.uuidString
-            runtimeState.workbenchThreadStates[index].interactionMode = interactionMode.rawValue
-            runtimeState.workbenchThreadStates[index].threadMode = threadMode.rawValue
-            runtimeState.workbenchThreadStates[index].state = state
-            runtimeState.workbenchThreadStates[index].lastErrorMessage = resolvedErrorMessage
-            runtimeState.workbenchThreadStates[index].updatedAt = timestamp
-            if stateChanged {
-                runtimeState.workbenchThreadStates[index].lastTransitionAt = timestamp
-            }
-        } else {
-            runtimeState.workbenchThreadStates.append(
-                WorkbenchThreadStateRecord(
-                    threadID: threadID,
-                    workflowID: workflowID.uuidString,
-                    interactionMode: interactionMode,
-                    threadMode: threadMode,
-                    state: state,
-                    lastErrorMessage: resolvedErrorMessage,
-                    lastTransitionAt: timestamp,
-                    updatedAt: timestamp
-                )
-            )
-        }
-
-        runtimeState.lastUpdated = timestamp
-    }
-
     private func markActiveWorkbenchThreadStatesFailed(
         in runtimeState: inout RuntimeState,
         reason: String,
         at timestamp: Date = Date()
     ) {
-        let activeThreadIDs = Set(runtimeState.activeWorkbenchRuns.map(\.threadID))
-        guard !activeThreadIDs.isEmpty else { return }
-
-        for threadID in activeThreadIDs {
-            let existingRecord = runtimeState.workbenchThreadStates.first(where: { $0.threadID == threadID })
-            let activeRunRecord = runtimeState.activeWorkbenchRuns.first(where: { $0.threadID == threadID })
-            let interactionMode: WorkbenchInteractionMode
-            if let resolvedInteractionMode = existingRecord?.resolvedInteractionMode {
-                interactionMode = resolvedInteractionMode
-            } else if activeRunRecord?.executionIntent == OpenClawRuntimeExecutionIntent.workflowControlled.rawValue {
-                interactionMode = .run
-            } else {
-                interactionMode = .chat
-            }
-            let threadMode = existingRecord?.resolvedThreadMode
-                ?? (interactionMode == .run ? .controlledRun : .autonomousConversation)
-            let workflowIDString = existingRecord?.workflowID ?? activeRunRecord?.workflowID ?? ""
-            let workflowID = UUID(uuidString: workflowIDString)
-            transitionWorkbenchThread(
-                in: &runtimeState,
-                workflowID: workflowID ?? UUID(),
-                threadID: threadID,
-                interactionMode: interactionMode,
-                threadMode: threadMode,
-                .disconnected(reason: reason),
-                at: timestamp
-            )
-        }
+        workbenchThreadStateCoordinator.markActiveThreadStatesFailed(
+            in: &runtimeState,
+            reason: reason,
+            at: timestamp
+        )
     }
 
     private func latestWorkbenchThreadContext(
@@ -6961,7 +6720,8 @@ class AppState: ObservableObject {
             threadMode: resolvedWorkbenchThreadMode(from: message.metadata) ?? .autonomousConversation,
             entryAgent: agent,
             projectSessionID: message.metadata[WorkbenchMetadataKey.workbenchProjectSessionID]
-                ?? project.runtimeState.sessionID
+                ?? project.runtimeState.sessionID,
+            gatewaySessionKey: resolvedWorkbenchGatewaySessionKey(from: message.metadata)
         )
     }
 
@@ -6985,7 +6745,8 @@ class AppState: ObservableObject {
             threadMode: resolvedWorkbenchThreadMode(from: task.metadata) ?? .autonomousConversation,
             entryAgent: agent,
             projectSessionID: task.metadata[WorkbenchMetadataKey.workbenchProjectSessionID]
-                ?? project.runtimeState.sessionID
+                ?? project.runtimeState.sessionID,
+            gatewaySessionKey: resolvedWorkbenchGatewaySessionKey(from: task.metadata)
         )
     }
 
@@ -7008,7 +6769,8 @@ class AppState: ObservableObject {
                 threadType: mode.threadType,
                 threadMode: reusesExistingMode ? existingContext.threadMode : .conversationToRun,
                 entryAgent: leadAgent,
-                projectSessionID: existingContext.projectSessionID
+                projectSessionID: existingContext.projectSessionID,
+                gatewaySessionKey: existingContext.gatewaySessionKey
             )
         }
 
@@ -7046,19 +6808,24 @@ class AppState: ObservableObject {
         threadType: RuntimeSessionSemanticType,
         threadMode: WorkbenchThreadSemanticMode,
         entryAgent: Agent,
-        projectSessionID: String
+        projectSessionID: String,
+        gatewaySessionKey: String? = nil
     ) -> WorkbenchThreadContext {
         let agentIdentifier = resolvedWorkbenchAgentIdentifier(for: entryAgent)
-        let gatewaySessionKey = workbenchGatewaySessionKey(
-            sessionID: sessionID,
-            agentIdentifier: agentIdentifier
-        )
+        let resolvedGatewaySessionKey = gatewaySessionKey?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+            ? gatewaySessionKey!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : workbenchGatewaySessionKey(
+                sessionID: sessionID,
+                agentIdentifier: agentIdentifier
+            )
         return WorkbenchThreadContext(
             workflowID: workflow.id,
             projectSessionID: projectSessionID,
             threadID: threadID,
             sessionID: sessionID,
-            gatewaySessionKey: gatewaySessionKey,
+            gatewaySessionKey: resolvedGatewaySessionKey,
             interactionMode: interactionMode,
             threadType: threadType,
             threadMode: threadMode,
@@ -7226,6 +6993,44 @@ class AppState: ObservableObject {
             )
             messageManager.appendMessage(appendedMessage)
             existingDigests.insert(digest)
+        }
+    }
+
+    private func persistWorkbenchGatewaySessionKey(
+        _ gatewaySessionKey: String?,
+        for context: WorkbenchThreadContext
+    ) {
+        guard let gatewaySessionKey else { return }
+
+        let normalizedGatewaySessionKey = gatewaySessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedGatewaySessionKey.isEmpty,
+              normalizedGatewaySessionKey != context.gatewaySessionKey else {
+            return
+        }
+
+        let messageIDs = messageManager.messages.compactMap { message -> UUID? in
+            guard message.metadata[WorkbenchMetadataKey.channel] == "workbench",
+                  message.metadata[WorkbenchMetadataKey.workflowID] == context.workflowID.uuidString,
+                  resolvedWorkbenchThreadID(from: message.metadata) == context.threadID else {
+                return nil
+            }
+            return message.id
+        }
+
+        for messageID in messageIDs {
+            messageManager.updateMessage(messageID) { message in
+                message.metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = normalizedGatewaySessionKey
+            }
+        }
+
+        let threadTasks = taskManager.tasks.filter { task in
+            task.metadata[WorkbenchMetadataKey.workflowID] == context.workflowID.uuidString
+                && resolvedWorkbenchThreadID(from: task.metadata) == context.threadID
+        }
+
+        for var task in threadTasks {
+            task.metadata[WorkbenchMetadataKey.workbenchGatewaySessionKey] = normalizedGatewaySessionKey
+            taskManager.updateTask(task)
         }
     }
 

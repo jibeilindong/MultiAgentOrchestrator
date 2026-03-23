@@ -9,6 +9,10 @@
 
 本文档关注的是“怎么落地”，不重复展开完整产品设计结论。
 
+Assist Store 的数据结构细化见：
+
+- [openclaw-assist-store-design-zh-2026-03-23.md](/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Documentation/openclaw-assist-store-design-zh-2026-03-23.md)
+
 ## 2. 执行目标
 
 本次执行的目标不是简单增加一个按钮，而是完成 7 个方向的整体落地：
@@ -67,6 +71,7 @@
 - V1 是否只做一个全责 agent 入口
 - 是否将 Assist 明确放入模板体系但设为系统模板
 - 是否同时建立“系统通道”和“workflow 适配通道”
+- 是否明确建立系统级 Assist Store，并禁止默认写入项目数据
 - 哪些场景必须进入 V1，哪些延后
 
 验收标准：
@@ -90,6 +95,7 @@
 - `AssistCapabilityGrant`
 - `AssistUndoCheckpoint`
 - `AssistMutationGateway`
+- `AssistStore`
 - `AssistState`
 
 建议修改范围：
@@ -105,6 +111,7 @@
 - 定义 proposal 结构与 change item 结构
 - 定义写入回执与撤销快照
 - 定义 capability grant 与 mutation gateway contract
+- 定义 Assist Store 与系统级索引模型
 - 明确 `conversation.assisted` 与 `inspection.readonly` 的使用边界
 - 明确 workflow 中的 Assist 节点如何发起 scoped mutation request
 
@@ -114,6 +121,7 @@
 - `applied` 不会被误解为 `saved` 或 `applied_to_runtime`
 - 诊断型请求默认只读
 - 系统级写入具备独立的 gateway 契约，不依赖普通聊天输出反推
+- request / proposal / receipt / undo 默认落在系统层，而不是项目数据
 
 ### Phase 2：统一 Assist 编排基座
 
@@ -130,6 +138,7 @@
 - `AssistApplyService`
 - `AssistUndoService`
 - `AssistWorkflowAdapter`
+- `AssistStoreIndex`
 
 建议修改范围：
 
@@ -146,6 +155,7 @@
 - 记录 receipt 与 undo checkpoint
 - 强制保留关键动作的确认与回退链路
 - 明确 workflow 节点调用与系统调用的分流逻辑
+- 将所有 Assist 运行记录统一写入系统级 Assist Store
 
 验收标准：
 
@@ -154,6 +164,7 @@
 - 不需要为每种功能单独造一个新的交互框架
 - 不会出现“生成建议后未经确认直接改动关键对象”的默认行为
 - 系统通道与 workflow 适配通道都能挂接到同一 proposal / receipt 模型
+- 项目保存与导出不包含完整 Assist 历史
 
 ### Phase 3：Workbench Assist 模式与结果面板
 
@@ -223,6 +234,7 @@
 - 常见高频任务不需要先进入独立页面
 - 就近入口不会绕开统一的 proposal / receipt 流程
 - 不会直接落写 runtime
+- 就近入口只消费 Assist 结果，不把 Assist 历史写回项目
 
 ### Phase 5：V1 能力落地
 
@@ -355,6 +367,7 @@ V1 建议只包含：
 - proposal / receipt / undo 持久化方案
 - 单元测试、集成测试、回归用例
 - 灰度启用与 fallback 方案
+- 系统级数据清理与保留策略
 
 建议修改范围：
 
@@ -369,6 +382,7 @@ V1 建议只包含：
 - 设计历史恢复与异常恢复
 - 增加 feature flag
 - 定义禁用 Assist 时的系统退化行为
+- 增加系统级数据索引、清理、压缩与导出策略
 
 验收标准：
 
@@ -511,7 +525,21 @@ Assist 的实施依赖以下已有能力保持稳定：
 - 将系统通道明确设计为 typed path
 - 将 workflow 适配通道与系统通道分离
 
-### R6. 默认自动执行带来的信任失控
+### R6. Assist 数据被错误写入项目数据
+
+表现：
+
+- `.maoproj` 或项目托管目录混入大量 request / proposal / receipt / undo
+- 项目导入导出携带大量无关 Assist 历史
+- Assist 无法形成跨项目统一视图
+
+应对：
+
+- 默认建立系统级 Assist Store
+- 项目仅保留最终结果，不保留 Assist 运行全过程
+- 使用项目引用索引，而不是项目内存储
+
+### R7. 默认自动执行带来的信任失控
 
 表现：
 
@@ -524,7 +552,7 @@ Assist 的实施依赖以下已有能力保持稳定：
 - 结果面板必须先展示 proposal，再允许写入
 - 每次写入都生成 receipt 和 undo checkpoint
 
-### R7. 信任感建立失败
+### R8. 信任感建立失败
 
 表现：
 
@@ -565,6 +593,7 @@ Assist 的实施依赖以下已有能力保持稳定：
 - Assist 不破坏 node-local managed workspace
 - Assist 不在默认路径下越过确认直接执行关键操作
 - Assist 的系统通道明显优于普通源 agent 路径，而不是只是另一层聊天壳
+- Assist 的运行历史默认不进入项目导出物
 
 ### 9.4 手工验收场景
 
