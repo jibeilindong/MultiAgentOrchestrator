@@ -943,6 +943,7 @@ class OpenClawManager: ObservableObject {
         project: MAProject?
     ) throws -> ConnectedSessionPreparationResult {
         try beginSession(for: projectID)
+        try ensureSessionDeploymentBackup()
 
         guard let project else {
             return ConnectedSessionPreparationResult(stageNote: nil, reconcileNote: nil)
@@ -1035,36 +1036,37 @@ class OpenClawManager: ObservableObject {
         let previousSessionLifecycle = sessionLifecycle
         let previousProjectAttachment = projectAttachment
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        _Concurrency.Task { [self] in
             do {
-                if let sessionContext = self.sessionContext,
-                   sessionContext.projectID != project.id {
-                    self.endSession(restoreOriginalState: true)
+                let message = try await MainActor.run { () throws -> String in
+                    if let sessionContext = self.sessionContext,
+                       sessionContext.projectID != project.id {
+                        self.endSession(restoreOriginalState: true)
+                    }
+
+                    let preparationResult = try self.prepareConnectedSession(
+                        for: project.id,
+                        project: project
+                    )
+
+                    return self.connectionCompletionMessage(
+                        baseMessage: "当前项目已附着到 OpenClaw 运行时。",
+                        stageNote: preparationResult.stageNote,
+                        reconcileNote: preparationResult.reconcileNote
+                    )
                 }
-
-                let preparationResult = try self.prepareConnectedSession(
-                    for: project.id,
-                    project: project
-                )
-
-                let message = self.connectionCompletionMessage(
-                    baseMessage: "当前项目已附着到 OpenClaw 运行时。",
-                    stageNote: preparationResult.stageNote,
-                    reconcileNote: preparationResult.reconcileNote
-                )
-
-                DispatchQueue.main.async {
+                await MainActor.run {
                     completion(true, message)
                 }
             } catch {
-                if self.sessionContext?.projectID == project.id {
-                    self.endSession(restoreOriginalState: true)
-                }
-                self.pendingSoulReconcileResult = nil
-                self.projectAttachment = previousProjectAttachment
-                self.sessionLifecycle = previousSessionLifecycle
+                await MainActor.run {
+                    if self.sessionContext?.projectID == project.id {
+                        self.endSession(restoreOriginalState: true)
+                    }
+                    self.pendingSoulReconcileResult = nil
+                    self.projectAttachment = previousProjectAttachment
+                    self.sessionLifecycle = previousSessionLifecycle
 
-                DispatchQueue.main.async {
                     completion(false, "附着当前项目失败：\(error.localizedDescription)")
                 }
             }
@@ -4816,6 +4818,13 @@ class OpenClawManager: ObservableObject {
     ) -> URL? {
         let resolvedConfig = config ?? self.config
         guard resolvedConfig.deploymentKind == .local else { return nil }
+        if resolvedConfig.usesManagedLocalRuntime,
+           let runtimeRootPath = managedRuntimeStatus.runtimeRootPath?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+           !runtimeRootPath.isEmpty {
+            return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
+                .appendingPathComponent("openclaw.json", isDirectory: false)
+        }
         return host.resolveLocalOpenClawConfigURL(
             using: resolvedConfig,
             allowFallback: allowFallback
@@ -4824,6 +4833,12 @@ class OpenClawManager: ObservableObject {
 
     func localOpenClawRootURL(using config: OpenClawConfig? = nil) -> URL {
         let resolvedConfig = config ?? self.config
+        if resolvedConfig.usesManagedLocalRuntime,
+           let runtimeRootPath = managedRuntimeStatus.runtimeRootPath?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+           !runtimeRootPath.isEmpty {
+            return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
+        }
         return resolveLocalOpenClawConfigURL(using: resolvedConfig)?
             .deletingLastPathComponent() ?? fallbackLocalOpenClawRootURL()
     }
@@ -8067,7 +8082,9 @@ class OpenClawManager: ObservableObject {
 
     private struct ConfigInspection {
         let name: String
+        let identifier: String?
         let configPath: String?
+        let agentDirPath: String?
         let workspacePath: String?
         let statePath: String?
     }
@@ -8145,13 +8162,43 @@ class OpenClawManager: ObservableObject {
             configInspections = inspectAgentConfigCandidates(at: resolvedConfigURL)
         }
 
-        let directoryMap = Dictionary(uniqueKeysWithValues: directoryInspections.map { (normalizeAgentKey($0.name), $0) })
-        let configMap = Dictionary(uniqueKeysWithValues: configInspections.map { (normalizeAgentKey($0.name), $0) })
-        let mergedKeys = Set(directoryMap.keys).union(configMap.keys).sorted()
+        var unmatchedDirectories = directoryInspections
+        var inspectionPairs: [(directory: DirectoryInspection?, config: ConfigInspection?)] = []
 
-        let records = mergedKeys.map { key in
-            let directory = directoryMap[key]
-            let configCandidate = configMap[key]
+        for configCandidate in configInspections {
+            let matchedDirectoryIndex = unmatchedDirectories.firstIndex { directory in
+                if let configAgentDirPath = canonicalInspectionPath(configCandidate.agentDirPath),
+                   canonicalInspectionPath(directory.path) == configAgentDirPath {
+                    return true
+                }
+
+                if let configWorkspacePath = canonicalInspectionPath(configCandidate.workspacePath),
+                   canonicalInspectionPath(directory.workspacePath) == configWorkspacePath {
+                    return true
+                }
+
+                let normalizedDirectoryName = normalizeAgentKey(directory.name)
+                if normalizedDirectoryName == normalizeAgentKey(configCandidate.name) {
+                    return true
+                }
+
+                if let identifier = configCandidate.identifier,
+                   normalizedDirectoryName == normalizeAgentKey(identifier) {
+                    return true
+                }
+
+                return false
+            }
+
+            let matchedDirectory = matchedDirectoryIndex.map { unmatchedDirectories.remove(at: $0) }
+            inspectionPairs.append((directory: matchedDirectory, config: configCandidate))
+        }
+
+        inspectionPairs.append(contentsOf: unmatchedDirectories.map { (directory: $0, config: nil) })
+
+        let records = inspectionPairs.map { pair in
+            let directory = pair.directory
+            let configCandidate = pair.config
             var issues: [String] = []
             let workspacePath = configCandidate?.workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
             let workspaceURL = (workspacePath?.isEmpty == false)
@@ -8180,7 +8227,10 @@ class OpenClawManager: ObservableObject {
                 issues.append("openclaw.json 中未找到匹配项")
             }
 
-            let name = configCandidate?.name ?? directory?.name ?? key
+            let name = configCandidate?.name
+                ?? configCandidate?.identifier
+                ?? directory?.name
+                ?? "unknown-agent"
             let recordID = [
                 name,
                 directory?.path ?? "",
@@ -8262,8 +8312,10 @@ class OpenClawManager: ObservableObject {
 
         func walk(_ value: Any, path: [String]) {
             if let dict = value as? [String: Any] {
-                let name = stringValue(dict, keys: ["name", "agentName", "agentIdentifier", "identifier", "id"])
+                let identifier = stringValue(dict, keys: ["id", "agentID", "agentId", "identifier", "agentIdentifier"])
+                let name = stringValue(dict, keys: ["name", "agentName"]) ?? identifier
                 let configPath = stringValue(dict, keys: ["configPath", "path", "filePath"])
+                let agentDirPath = stringValue(dict, keys: ["agentDir", "agentDirPath", "directory", "agentDirectory"])
                 let workspacePath = stringValue(dict, keys: ["workspacePath", "workspace", "workPath", "workdir"])
                 let statePath = stringValue(dict, keys: ["statePath", "statusPath", "privatePath", "state", "private"])
 
@@ -8271,7 +8323,9 @@ class OpenClawManager: ObservableObject {
                     candidates.append(
                         ConfigInspection(
                             name: name,
+                            identifier: identifier,
                             configPath: configPath ?? configURL.path,
+                            agentDirPath: agentDirPath,
                             workspacePath: workspacePath,
                             statePath: statePath
                         )
@@ -8295,6 +8349,14 @@ class OpenClawManager: ObservableObject {
             unique[normalizeAgentKey(candidate.name)] = candidate
         }
         return Array(unique.values).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func canonicalInspectionPath(_ path: String?) -> String? {
+        let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed, isDirectory: true)
+            .standardizedFileURL
+            .path
     }
 
     private func readOpenClawConfigRecord(at configURL: URL) -> [String: Any]? {

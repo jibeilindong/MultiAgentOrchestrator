@@ -187,7 +187,7 @@ final class OpenClawHost {
     private let managedRuntimeRootURL: URL?
     private let homeDirectory: URL
 
-    nonisolated init(
+    init(
         fileManager: FileManager = .default,
         bundleResourceURL: URL? = Bundle.main.resourceURL,
         managedRuntimeRootURL: URL? = nil,

@@ -205,7 +205,7 @@ enum WorkbenchConversationState: String, Codable, CaseIterable, Sendable {
     }
 }
 
-enum WorkbenchThreadTransition: Sendable {
+enum WorkbenchThreadTransition: Sendable, Equatable {
     case chatSubmitted
     case runSubmitted
     case escalatedToBackgroundRun

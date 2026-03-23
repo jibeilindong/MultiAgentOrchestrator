@@ -105,13 +105,16 @@ final class OpenClawManagedRuntimeSupervisor {
 
     nonisolated init(
         fileManager: FileManager = .default,
-        host: OpenClawHost = OpenClawHost(fileManager: .default),
+        host: OpenClawHost? = nil,
         managedRuntimeRootURL: URL? = OpenClawManagedRuntimeInstaller.shared.managedRuntimeRootURL(),
         supervisorRootURL: URL? = nil,
         dateProvider: @escaping () -> Date = Date.init
     ) {
         self.fileManager = fileManager
-        self.host = host
+        self.host = host ?? OpenClawHost(
+            fileManager: fileManager,
+            managedRuntimeRootURL: managedRuntimeRootURL
+        )
         self.managedRuntimeRootURL = managedRuntimeRootURL
         self.supervisorRootURL = supervisorRootURL
         self.dateProvider = dateProvider
