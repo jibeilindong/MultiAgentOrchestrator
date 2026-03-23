@@ -729,6 +729,21 @@ class AppState: ObservableObject {
 
     private typealias WorkbenchRemoteSessionContext = WorkbenchThreadContext
 
+    struct WorkbenchThreadSummary: Identifiable, Hashable, Sendable {
+        let id: String
+        let workflowID: UUID
+        let title: String
+        let subtitle: String
+        let preview: String
+        let lastActivityAt: Date
+        let interactionMode: WorkbenchInteractionMode
+        let threadType: RuntimeSessionSemanticType
+        let threadMode: WorkbenchThreadSemanticMode
+        let entryAgentName: String
+        let messageCount: Int
+        let taskCount: Int
+    }
+
     struct AgentRuntimePreparationState {
         let agentID: UUID
         let nodeID: UUID?
@@ -6484,6 +6499,88 @@ class AppState: ObservableObject {
             return nil
         }
         return latestWorkbenchThreadContext(for: workflow, project: project)?.threadID
+    }
+
+    func workbenchThreadSummaries(for workflowID: UUID?) -> [WorkbenchThreadSummary] {
+        guard let project = currentProject,
+              let workflow = self.workflow(for: workflowID) ?? project.workflows.first else {
+            return []
+        }
+
+        var threadContexts: [String: WorkbenchRemoteSessionContext] = [:]
+        var threadMessages: [String: [Message]] = [:]
+        var threadTasks: [String: [Task]] = [:]
+
+        for message in messageManager.messages where
+            message.metadata[WorkbenchMetadataKey.channel] == "workbench"
+            && message.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
+        {
+            guard let threadID = resolvedWorkbenchThreadID(from: message.metadata) else { continue }
+            threadMessages[threadID, default: []].append(message)
+            if threadContexts[threadID] == nil,
+               let context = workbenchThreadContext(for: message, workflow: workflow, project: project) {
+                threadContexts[threadID] = context
+            }
+        }
+
+        for task in taskManager.tasks where
+            task.metadata[WorkbenchMetadataKey.workflowID] == workflow.id.uuidString
+        {
+            guard let threadID = resolvedWorkbenchThreadID(from: task.metadata) else { continue }
+            threadTasks[threadID, default: []].append(task)
+            if threadContexts[threadID] == nil,
+               let context = workbenchThreadContext(for: task, workflow: workflow, project: project) {
+                threadContexts[threadID] = context
+            }
+        }
+
+        return threadContexts.compactMap { threadID, context in
+            let messages = (threadMessages[threadID] ?? []).sorted { $0.timestamp < $1.timestamp }
+            let tasks = (threadTasks[threadID] ?? []).sorted { $0.createdAt < $1.createdAt }
+            let activityDates = messages.map(\.timestamp)
+                + tasks.map { $0.completedAt ?? $0.startedAt ?? $0.createdAt }
+            guard let lastActivityAt = activityDates.max() else { return nil }
+
+            let latestUserPrompt = messages
+                .last(where: { ($0.inferredRole ?? "").lowercased() == "user" })?
+                .content
+                .compactSingleLinePreview(limit: 52)
+            let latestAssistantReply = messages
+                .last(where: { ($0.inferredRole ?? "").lowercased() == "assistant" })?
+                .summaryText
+                .compactSingleLinePreview(limit: 72)
+            let latestTaskTitle = tasks.last?.title.compactSingleLinePreview(limit: 52)
+
+            let title = latestUserPrompt
+                ?? latestTaskTitle
+                ?? latestAssistantReply
+                ?? "\(context.interactionMode.title) with \(context.agentName)"
+            let preview = latestAssistantReply
+                ?? latestUserPrompt
+                ?? tasks.last?.description.compactSingleLinePreview(limit: 72)
+                ?? context.gatewaySessionKey.compactSingleLinePreview(limit: 72)
+
+            return WorkbenchThreadSummary(
+                id: threadID,
+                workflowID: workflow.id,
+                title: title,
+                subtitle: "\(context.interactionMode.title) · \(context.agentName)",
+                preview: preview,
+                lastActivityAt: lastActivityAt,
+                interactionMode: context.interactionMode,
+                threadType: context.threadType,
+                threadMode: context.threadMode,
+                entryAgentName: context.agentName,
+                messageCount: messages.count,
+                taskCount: tasks.count
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.lastActivityAt != rhs.lastActivityAt {
+                return lhs.lastActivityAt > rhs.lastActivityAt
+            }
+            return lhs.id > rhs.id
+        }
     }
 
     private func latestWorkbenchThreadContext(

@@ -86,6 +86,7 @@ struct WorkbenchConversationView: View {
 
     @State private var selectedWorkflowID: UUID?
     @State private var selectedThreadID: String?
+    @State private var isPreparingFreshThread = false
     @State private var dashboardLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var lastCombinedLayout: WorkbenchDashboardLayout = .sideBySide
     @State private var runtimeConfigPanelMode: WorkbenchRuntimeConfigPanelMode = .storedDefault
@@ -297,18 +298,47 @@ struct WorkbenchConversationView: View {
     }
 
     private var workbenchMessages: [Message] {
-        messageManager.workbenchMessages(
+        if isPreparingFreshThread {
+            return []
+        }
+        return messageManager.workbenchMessages(
             workflowID: selectedWorkflow?.id,
             threadID: effectiveSelectedThreadID
         )
     }
 
+    private var workbenchThreadSummaries: [AppState.WorkbenchThreadSummary] {
+        appState.workbenchThreadSummaries(for: selectedWorkflow?.id)
+    }
+
     private var effectiveSelectedThreadID: String? {
+        if isPreparingFreshThread {
+            return nil
+        }
         if let selectedThreadID,
            !selectedThreadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return selectedThreadID
         }
         return appState.latestWorkbenchThreadID(for: selectedWorkflow?.id)
+    }
+
+    private var activeThreadSummary: AppState.WorkbenchThreadSummary? {
+        guard let effectiveSelectedThreadID else { return nil }
+        return workbenchThreadSummaries.first { $0.id == effectiveSelectedThreadID }
+    }
+
+    private var threadPickerTitle: String {
+        if isPreparingFreshThread {
+            return "New Thread"
+        }
+        return activeThreadSummary?.title ?? "Latest Thread"
+    }
+
+    private var threadPickerSubtitle: String {
+        if isPreparingFreshThread {
+            return "Next send will create a fresh thread"
+        }
+        return activeThreadSummary?.subtitle ?? "Select a thread to continue"
     }
 
     private var lastWorkbenchMessageSignature: String {
@@ -461,6 +491,7 @@ struct WorkbenchConversationView: View {
             if selectedWorkflowID == nil {
                 selectedWorkflowID = workflows.first?.id
             }
+            isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
             appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded()
@@ -470,16 +501,19 @@ struct WorkbenchConversationView: View {
             if selectedWorkflowID == nil || !newValue.contains(selectedWorkflowID ?? firstID) {
                 selectedWorkflowID = firstID
             }
+            isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
             appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: effectiveSelectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: selectedWorkflowID) { _, newValue in
+            isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: newValue)
             appState.refreshWorkbenchHistory(for: newValue, threadID: selectedThreadID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: selectedThreadID) { _, newValue in
+            guard !isPreparingFreshThread else { return }
             appState.refreshWorkbenchHistory(for: selectedWorkflowID, threadID: newValue)
         }
         .onChange(of: appState.openClawManager.canReadSessionHistory) { _, canReadSessionHistory in
@@ -490,6 +524,7 @@ struct WorkbenchConversationView: View {
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
         .onChange(of: appState.currentProject?.id) { _, _ in
+            isPreparingFreshThread = false
             selectedThreadID = appState.latestWorkbenchThreadID(for: selectedWorkflowID)
             refreshRuntimeConfigurationDataIfNeeded(force: true)
         }
@@ -550,6 +585,9 @@ struct WorkbenchConversationView: View {
             workflowPicker
                 .frame(width: 220)
 
+            threadPicker
+                .frame(width: 260)
+
             layoutPicker
                 .frame(width: 170)
 
@@ -577,6 +615,9 @@ struct WorkbenchConversationView: View {
 
             HStack(spacing: 10) {
                 workflowPicker
+                    .frame(maxWidth: .infinity)
+
+                threadPicker
                     .frame(maxWidth: .infinity)
 
                 layoutPicker
@@ -615,6 +656,57 @@ struct WorkbenchConversationView: View {
             }
         }
         .pickerStyle(.segmented)
+    }
+
+    private var threadPicker: some View {
+        Menu {
+            Button("New Thread") {
+                beginFreshThreadDraft()
+            }
+
+            if !workbenchThreadSummaries.isEmpty {
+                Divider()
+                ForEach(workbenchThreadSummaries) { thread in
+                    Button {
+                        selectThread(thread.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(thread.title)
+                            Text(thread.subtitle)
+                                .font(.caption)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isPreparingFreshThread ? "plus.bubble" : "text.bubble")
+                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(threadPickerTitle)
+                        .lineLimit(1)
+                    Text(threadPickerSubtitle)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                if let activeThreadSummary, !isPreparingFreshThread {
+                    Text(activeThreadSummary.lastActivityAt, style: .relative)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
     }
 
     private var dashboardLayoutButtons: some View {
@@ -1246,6 +1338,23 @@ struct WorkbenchConversationView: View {
                             .foregroundColor(.secondary)
                     }
 
+                    if isPreparingFreshThread {
+                        Text("Next message will start a new thread for this workflow.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else if let activeThreadSummary {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(activeThreadSummary.title)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                            Text(activeThreadSummary.preview)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+
                     TextField(
                         LocalizedString.text("workbench_prompt_placeholder"),
                         text: $prompt,
@@ -1472,12 +1581,24 @@ struct WorkbenchConversationView: View {
         }
 
         selectedThreadID = threadID
+        isPreparingFreshThread = false
         prompt = ""
     }
 
     private func stopActiveRemoteConversation() {
         errorText = nil
         appState.openClawService.abortActiveRemoteConversation(threadID: effectiveSelectedThreadID)
+    }
+
+    private func selectThread(_ threadID: String) {
+        guard !threadID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        isPreparingFreshThread = false
+        selectedThreadID = threadID
+    }
+
+    private func beginFreshThreadDraft() {
+        errorText = nil
+        isPreparingFreshThread = true
     }
 
     private func scheduleAutoScroll(

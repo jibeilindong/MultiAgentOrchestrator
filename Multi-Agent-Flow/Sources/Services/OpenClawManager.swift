@@ -71,6 +71,7 @@ class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
     private let fileManager: FileManager
     private let host: OpenClawHost
+    private let managedRuntimeSupervisor: OpenClawManagedRuntimeSupervisor
     private let notificationCenter: NotificationCenter
     private let gatewayClient = OpenClawGatewayClient()
     private var gatewayDisconnectObserver: NSObjectProtocol?
@@ -87,6 +88,7 @@ class OpenClawManager: ObservableObject {
     @Published var projectAttachment: OpenClawProjectAttachmentSnapshot = OpenClawProjectAttachmentSnapshot()
     @Published var sessionLifecycle: OpenClawSessionLifecycleSnapshot = OpenClawSessionLifecycleSnapshot()
     @Published var lastProbeReport: OpenClawProbeReportSnapshot?
+    @Published var managedRuntimeStatus: OpenClawManagedRuntimeStatusSnapshot = OpenClawManagedRuntimeStatusSnapshot(state: .unmanaged)
     private var cachedLocalWorkspaceMap: [String: String] = [:]
     private var cachedLocalWorkspaceConfigModificationDate: Date?
     private var cachedLocalGatewayConfig: OpenClawConfig?
@@ -821,10 +823,13 @@ class OpenClawManager: ObservableObject {
     init(
         notificationCenter: NotificationCenter = .default,
         fileManager: FileManager = .default,
-        host: OpenClawHost? = nil
+        host: OpenClawHost? = nil,
+        managedRuntimeSupervisor: OpenClawManagedRuntimeSupervisor? = nil
     ) {
         self.fileManager = fileManager
         self.host = host ?? OpenClawHost(fileManager: fileManager)
+        self.managedRuntimeSupervisor = managedRuntimeSupervisor
+            ?? OpenClawManagedRuntimeSupervisor(fileManager: fileManager, host: self.host)
         self.notificationCenter = notificationCenter
         // 创建备份目录
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
@@ -832,6 +837,7 @@ class OpenClawManager: ObservableObject {
             phase: .idle,
             deploymentKind: config.deploymentKind
         )
+        self.managedRuntimeStatus = self.managedRuntimeSupervisor.refreshStatus(using: config)
         gatewayDisconnectObserver = notificationCenter.addObserver(
             forName: OpenClawGatewayClient.disconnectNotificationName,
             object: nil,
@@ -880,22 +886,55 @@ class OpenClawManager: ObservableObject {
 
         let cleanupResult = cleanupStalePluginInstallStageArtifactsIfNeeded(using: config)
         let cleanupNote: String? = cleanupResult.success ? nil : cleanupResult.message
+        let resolvedConfig = config
 
-        confirmConnection(using: config) { [weak self] success, message in
-            guard let self else { return }
-            guard success else {
-                self.pendingSoulReconcileResult = nil
-                completion?(false, self.connectionCompletionMessage(baseMessage: message, cleanupNote: cleanupNote))
-                return
-            }
+        let proceedWithConnectionConfirmation = {
+            self.confirmConnection(using: resolvedConfig) { [weak self] success, message in
+                guard let self else { return }
+                guard success else {
+                    self.pendingSoulReconcileResult = nil
+                    completion?(false, self.connectionCompletionMessage(baseMessage: message, cleanupNote: cleanupNote))
+                    return
+                }
 
-            completion?(
-                true,
-                self.connectionCompletionMessage(
-                    baseMessage: message,
-                    cleanupNote: cleanupNote
+                completion?(
+                    true,
+                    self.connectionCompletionMessage(
+                        baseMessage: message,
+                        cleanupNote: cleanupNote
+                    )
                 )
-            )
+            }
+        }
+
+        guard resolvedConfig.usesManagedLocalRuntime else {
+            proceedWithConnectionConfirmation()
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let runtimeStatus = try self.managedRuntimeSupervisor.ensureRunning(using: resolvedConfig)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = runtimeStatus
+                    proceedWithConnectionConfirmation()
+                }
+            } catch {
+                let failureMessage = "启动托管 OpenClaw Runtime 失败：\(error.localizedDescription)"
+                let runtimeStatus = self.managedRuntimeSupervisor.markGatewayDisconnect(message: failureMessage)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = runtimeStatus
+                    self.pendingSoulReconcileResult = nil
+                    self.failConnectionPreparation(using: resolvedConfig, message: failureMessage)
+                    completion?(
+                        false,
+                        self.connectionCompletionMessage(
+                            baseMessage: failureMessage,
+                            cleanupNote: cleanupNote
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -1141,6 +1180,13 @@ class OpenClawManager: ObservableObject {
                 self.isConnected = success
                 self.status = success ? .connected : .error(message)
                 self.recordProbeResult(using: config, success: success, message: message, agentNames: agentNames)
+                if config.usesManagedLocalRuntime {
+                    self.managedRuntimeStatus = success
+                        ? self.managedRuntimeSupervisor.markGatewayHeartbeatSucceeded(message: "托管 OpenClaw Gateway 已连通。")
+                        : self.managedRuntimeSupervisor.markGatewayDisconnect(message: message)
+                } else {
+                    self.managedRuntimeStatus = self.managedRuntimeSupervisor.refreshStatus(using: config)
+                }
                 if !success {
                     self.activeAgents.removeAll()
                     self.resetAgentRuntimeChannels()
@@ -1255,6 +1301,99 @@ class OpenClawManager: ObservableObject {
             runRemoteConnectionTest(config: config, completion: completion)
         }
     }
+
+    @discardableResult
+    func refreshManagedRuntimeStatus(using config: OpenClawConfig? = nil) -> OpenClawManagedRuntimeStatusSnapshot {
+        let resolvedConfig = config ?? self.config
+        let snapshot = managedRuntimeSupervisor.refreshStatus(using: resolvedConfig)
+        managedRuntimeStatus = snapshot
+        return snapshot
+    }
+
+    func startManagedRuntime(completion: ((Bool, String) -> Void)? = nil) {
+        let resolvedConfig = config
+        guard resolvedConfig.usesManagedLocalRuntime else {
+            let snapshot = refreshManagedRuntimeStatus(using: resolvedConfig)
+            completion?(false, snapshot.lastMessage ?? "当前配置未启用托管 OpenClaw Runtime。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let snapshot = try self.managedRuntimeSupervisor.start(using: resolvedConfig)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = snapshot
+                    completion?(true, snapshot.lastMessage ?? "托管 OpenClaw Runtime 已启动。")
+                }
+            } catch {
+                let snapshot = self.managedRuntimeSupervisor.markGatewayDisconnect(message: error.localizedDescription)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = snapshot
+                    completion?(false, "启动托管 OpenClaw Runtime 失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func stopManagedRuntime(completion: ((Bool, String) -> Void)? = nil) {
+        let resolvedConfig = config
+        guard resolvedConfig.usesManagedLocalRuntime else {
+            let snapshot = refreshManagedRuntimeStatus(using: resolvedConfig)
+            completion?(false, snapshot.lastMessage ?? "当前配置未启用托管 OpenClaw Runtime。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let snapshot = try self.managedRuntimeSupervisor.stop(using: resolvedConfig)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = snapshot
+                    self.resetGatewayConnection()
+                    self.isConnected = false
+                    self.activeAgents.removeAll()
+                    self.resetAgentRuntimeChannels()
+                    self.status = .disconnected
+                    completion?(true, snapshot.lastMessage ?? "托管 OpenClaw Runtime 已停止。")
+                }
+            } catch {
+                let snapshot = self.managedRuntimeSupervisor.markGatewayDisconnect(message: error.localizedDescription)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = snapshot
+                    completion?(false, "停止托管 OpenClaw Runtime 失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func restartManagedRuntime(completion: ((Bool, String) -> Void)? = nil) {
+        let resolvedConfig = config
+        guard resolvedConfig.usesManagedLocalRuntime else {
+            let snapshot = refreshManagedRuntimeStatus(using: resolvedConfig)
+            completion?(false, snapshot.lastMessage ?? "当前配置未启用托管 OpenClaw Runtime。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let snapshot = try self.managedRuntimeSupervisor.restart(using: resolvedConfig)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = snapshot
+                    self.resetGatewayConnection()
+                    self.isConnected = false
+                    self.activeAgents.removeAll()
+                    self.resetAgentRuntimeChannels()
+                    self.status = .disconnected
+                    completion?(true, snapshot.lastMessage ?? "托管 OpenClaw Runtime 已重启。")
+                }
+            } catch {
+                let snapshot = self.managedRuntimeSupervisor.markGatewayDisconnect(message: error.localizedDescription)
+                DispatchQueue.main.async {
+                    self.managedRuntimeStatus = snapshot
+                    completion?(false, "重启托管 OpenClaw Runtime 失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
     
     // 断开连接
     func disconnect() {
@@ -1272,6 +1411,9 @@ class OpenClawManager: ObservableObject {
         resetAgentRuntimeChannels()
         resetGatewayConnection()
         status = .disconnected
+        managedRuntimeStatus = config.usesManagedLocalRuntime
+            ? managedRuntimeSupervisor.markGatewayDisconnect(message: "应用已断开 OpenClaw 会话；托管 Runtime 保持运行。")
+            : managedRuntimeSupervisor.refreshStatus(using: config)
         markProjectDetached()
         var health = connectionState.health
         health.degradationReason = nil
@@ -3132,6 +3274,9 @@ class OpenClawManager: ObservableObject {
         isConnected = false
         activeAgents.removeAll()
         status = .error(finalMessage)
+        if config.usesManagedLocalRuntime {
+            managedRuntimeStatus = managedRuntimeSupervisor.markGatewayDisconnect(message: finalMessage)
+        }
 
         var capabilities = connectionState.capabilities
         capabilities.gatewayReachable = false

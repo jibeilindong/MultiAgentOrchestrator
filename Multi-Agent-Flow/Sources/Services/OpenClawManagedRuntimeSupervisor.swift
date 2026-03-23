@@ -168,7 +168,9 @@ final class OpenClawManagedRuntimeSupervisor {
 
             var nextSnapshot = statusSnapshot
             nextSnapshot.runtimeRootPath = managedRuntimeRootURL?.path
-            nextSnapshot.supervisorRootPath = try? resolvedSupervisorRootURL(required: false)?.path
+            if let resolvedSupervisorRootURL = try? resolvedSupervisorRootURL(required: false) {
+                nextSnapshot.supervisorRootPath = resolvedSupervisorRootURL.path
+            }
             nextSnapshot.lastStatusCheckAt = now
             nextSnapshot.port = config.port
 
@@ -273,7 +275,7 @@ final class OpenClawManagedRuntimeSupervisor {
         process.standardError = logHandle
         process.standardInput = FileHandle.nullDevice
 
-        updateStatusSnapshot {
+        _ = updateStatusSnapshot {
             $0.state = .starting
             $0.launchStrategy = commandPlan.launchStrategy
             $0.binaryPath = executablePath
@@ -367,7 +369,7 @@ final class OpenClawManagedRuntimeSupervisor {
             }
         }
 
-        updateStatusSnapshot {
+        _ = updateStatusSnapshot {
             $0.state = .stopping
             $0.lastStatusCheckAt = dateProvider()
             $0.lastMessage = "正在停止托管 OpenClaw Runtime..."
@@ -394,7 +396,7 @@ final class OpenClawManagedRuntimeSupervisor {
 
         let previousRestartCount = currentStatusSnapshot().restartCount
         _ = try stop(using: config)
-        let restarted = try start(using: config)
+        _ = try start(using: config)
         return updateStatusSnapshot {
             $0.restartCount = previousRestartCount + 1
             $0.lastMessage = "托管 OpenClaw Runtime 已重启。"
@@ -453,7 +455,13 @@ final class OpenClawManagedRuntimeSupervisor {
     }
 
     private func persistProcessState(_ state: PersistedProcessState) throws {
-        let url = try processStateURL(required: true)
+        guard let url = try processStateURL(required: true) else {
+            throw NSError(
+                domain: "OpenClawManagedRuntimeSupervisor",
+                code: 4105,
+                userInfo: [NSLocalizedDescriptionKey: "无法写入托管 Runtime 进程状态文件。"]
+            )
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(state).write(to: url, options: .atomic)
@@ -461,7 +469,6 @@ final class OpenClawManagedRuntimeSupervisor {
 
     private func loadPersistedProcessState() -> PersistedProcessState? {
         guard let processStateURL = try? processStateURL(required: false),
-              let processStateURL,
               fileManager.fileExists(atPath: processStateURL.path),
               let data = try? Data(contentsOf: processStateURL) else {
             return nil
@@ -471,7 +478,7 @@ final class OpenClawManagedRuntimeSupervisor {
     }
 
     private func removePersistedProcessState() {
-        guard let processStateURL = try? processStateURL(required: false), let processStateURL else { return }
+        guard let processStateURL = try? processStateURL(required: false) else { return }
         try? fileManager.removeItem(at: processStateURL)
     }
 
