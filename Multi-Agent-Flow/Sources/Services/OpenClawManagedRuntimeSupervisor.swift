@@ -130,8 +130,6 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         )
     }
 
-    nonisolated deinit {}
-
     func currentStatusSnapshot() -> OpenClawManagedRuntimeStatusSnapshot {
         locked { statusSnapshot }
     }

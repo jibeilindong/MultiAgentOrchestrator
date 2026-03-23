@@ -20,7 +20,7 @@ struct WorkbenchThreadContextSample: Sendable {
     let activityAt: Date
 }
 
-struct WorkbenchThreadSummaryDescriptor: Hashable, Sendable {
+struct WorkbenchThreadSummaryDescriptor: Sendable {
     let id: String
     let workflowID: UUID
     let title: String
@@ -90,8 +90,8 @@ final class WorkbenchThreadStateCoordinator {
             threadMessages: summaryCollections.threadMessages,
             threadTasks: summaryCollections.threadTasks,
             threadContextSamples: summaryCollections.threadContextSamples,
-            activeRunsByThreadID: activeRunRecords.reduce(into: [String: WorkbenchActiveRunRecord]()) {
-                $0[$1.threadID] = $1
+            activeRunsByThreadID: activeRunRecords.reduce(into: [String: [WorkbenchActiveRunRecord]]()) {
+                $0[$1.threadID, default: []].append($1)
             },
             threadStateRecordsByThreadID: threadStateRecords.reduce(into: [String: WorkbenchThreadStateRecord]()) {
                 $0[$1.threadID] = $1
@@ -104,7 +104,7 @@ final class WorkbenchThreadStateCoordinator {
         threadMessages: [String: [Message]],
         threadTasks: [String: [Task]],
         threadContextSamples: [String: [WorkbenchThreadContextSample]],
-        activeRunsByThreadID: [String: WorkbenchActiveRunRecord],
+        activeRunsByThreadID: [String: [WorkbenchActiveRunRecord]],
         threadStateRecordsByThreadID: [String: WorkbenchThreadStateRecord]
     ) -> [WorkbenchThreadSummaryDescriptor] {
         let threadIDs = Set(threadMessages.keys)
@@ -119,7 +119,7 @@ final class WorkbenchThreadStateCoordinator {
                 messages: threadMessages[threadID] ?? [],
                 tasks: threadTasks[threadID] ?? [],
                 contextSamples: threadContextSamples[threadID] ?? [],
-                activeRunRecord: activeRunsByThreadID[threadID],
+                activeRunRecords: activeRunsByThreadID[threadID] ?? [],
                 explicitStateRecord: threadStateRecordsByThreadID[threadID]
             )
         }
@@ -214,11 +214,13 @@ final class WorkbenchThreadStateCoordinator {
 
         for threadID in activeThreadIDs {
             let existingRecord = runtimeState.workbenchThreadStates.first(where: { $0.threadID == threadID })
-            let activeRunRecord = runtimeState.activeWorkbenchRuns.first(where: { $0.threadID == threadID })
+            let activeRunRecords = runtimeState.activeWorkbenchRuns.filter { $0.threadID == threadID }
             let interactionMode: WorkbenchInteractionMode
             if let resolvedInteractionMode = existingRecord?.resolvedInteractionMode {
                 interactionMode = resolvedInteractionMode
-            } else if activeRunRecord?.executionIntent == OpenClawRuntimeExecutionIntent.workflowControlled.rawValue {
+            } else if activeRunRecords.contains(where: {
+                $0.executionIntent == OpenClawRuntimeExecutionIntent.workflowControlled.rawValue
+            }) {
                 interactionMode = .run
             } else {
                 interactionMode = .chat
@@ -226,7 +228,9 @@ final class WorkbenchThreadStateCoordinator {
 
             let threadMode = existingRecord?.resolvedThreadMode
                 ?? (interactionMode == .run ? .controlledRun : .autonomousConversation)
-            let workflowIDString = existingRecord?.workflowID ?? activeRunRecord?.workflowID ?? ""
+            let workflowIDString = existingRecord?.workflowID
+                ?? preferredActiveRunRecord(from: activeRunRecords)?.workflowID
+                ?? ""
             let workflowID = UUID(uuidString: workflowIDString) ?? UUID()
 
             transitionThread(
@@ -247,9 +251,10 @@ final class WorkbenchThreadStateCoordinator {
         messages: [Message],
         tasks: [Task],
         contextSamples: [WorkbenchThreadContextSample],
-        activeRunRecord: WorkbenchActiveRunRecord?,
+        activeRunRecords: [WorkbenchActiveRunRecord],
         explicitStateRecord: WorkbenchThreadStateRecord?
     ) -> WorkbenchThreadSummaryDescriptor? {
+        print("[WorkbenchThreadStateCoordinator] summarizeThread:start", threadID)
         let sortedMessages = messages.sorted { $0.timestamp < $1.timestamp }
         let sortedTasks = tasks.sorted { $0.createdAt < $1.createdAt }
         let activityDates = sortedMessages.map(\.timestamp)
@@ -272,15 +277,18 @@ final class WorkbenchThreadStateCoordinator {
         let derivedThreadType = RuntimeSessionSemanticType.preferredWorkbenchThreadType(
             from: contextSamples.map(\.context.threadType)
         ) ?? latestContext.threadType
+        print("[WorkbenchThreadStateCoordinator] summarizeThread:derived", threadID)
+        let activeRunStatus = aggregatedActiveRunStatus(from: activeRunRecords)
         let conversationState = workbenchConversationState(
             interactionMode: derivedInteractionMode,
             threadMode: derivedThreadMode,
             messages: sortedMessages,
             tasks: sortedTasks,
             contextSamples: contextSamples,
-            activeRunRecord: activeRunRecord,
+            activeRunStatus: activeRunStatus,
             explicitStateRecord: explicitStateRecord
         )
+        print("[WorkbenchThreadStateCoordinator] summarizeThread:conversationState", threadID, conversationState.rawValue)
 
         let latestUserPrompt = sortedMessages
             .last(where: { ($0.inferredRole ?? "").lowercased() == "user" })?
@@ -300,6 +308,7 @@ final class WorkbenchThreadStateCoordinator {
             ?? latestUserPrompt
             ?? sortedTasks.last?.description.compactSingleLinePreview(limit: 72)
             ?? latestContext.gatewaySessionKey.compactSingleLinePreview(limit: 72)
+        print("[WorkbenchThreadStateCoordinator] summarizeThread:return", threadID)
 
         return WorkbenchThreadSummaryDescriptor(
             id: threadID,
@@ -312,7 +321,7 @@ final class WorkbenchThreadStateCoordinator {
             preview: preview,
             lastActivityAt: lastActivityAt,
             conversationState: conversationState,
-            activeRunStatus: activeRunRecord?.status,
+            activeRunStatus: activeRunStatus,
             interactionMode: derivedInteractionMode,
             threadType: derivedThreadType,
             threadMode: derivedThreadMode,
@@ -335,7 +344,7 @@ final class WorkbenchThreadStateCoordinator {
         messages: [Message],
         tasks: [Task],
         contextSamples: [WorkbenchThreadContextSample],
-        activeRunRecord: WorkbenchActiveRunRecord?,
+        activeRunStatus: WorkbenchActiveRunStatus?,
         explicitStateRecord: WorkbenchThreadStateRecord?
     ) -> WorkbenchConversationState {
         let latestTask = tasks.last
@@ -359,9 +368,32 @@ final class WorkbenchThreadStateCoordinator {
                 latestAssistantThinking: latestAssistantMessage?.metadata["thinking"]?.lowercased() == "true",
                 latestAssistantOutputType: latestAssistantMessage?.inferredOutputType,
                 hasRunActivity: hasRunActivity,
-                activeRunStatus: activeRunRecord?.status,
+                activeRunStatus: activeRunStatus,
                 explicitState: explicitStateRecord?.state
             )
         )
+    }
+
+    private func preferredActiveRunRecord(
+        from records: [WorkbenchActiveRunRecord]
+    ) -> WorkbenchActiveRunRecord? {
+        records.max { lhs, rhs in
+            if lhs.updatedAt == rhs.updatedAt {
+                return lhs.id < rhs.id
+            }
+            return lhs.updatedAt < rhs.updatedAt
+        }
+    }
+
+    private func aggregatedActiveRunStatus(
+        from records: [WorkbenchActiveRunRecord]
+    ) -> WorkbenchActiveRunStatus? {
+        if records.contains(where: { $0.status == .stopping }) {
+            return .stopping
+        }
+        if records.contains(where: { $0.status == .running }) {
+            return .running
+        }
+        return nil
     }
 }

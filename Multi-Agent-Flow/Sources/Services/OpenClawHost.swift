@@ -55,8 +55,6 @@ nonisolated final class OpenClawHost {
         self.homeDirectory = homeDirectory
     }
 
-    nonisolated deinit {}
-
     func resolveLocalBinaryPath(for config: OpenClawConfig) -> String {
         let candidates = Self.localBinaryPathCandidates(
             for: config,

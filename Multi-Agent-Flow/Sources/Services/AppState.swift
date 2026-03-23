@@ -662,6 +662,40 @@ private struct WorkbenchSubmissionRouting {
     let entryAgentIDs: Set<UUID>
 }
 
+private struct WorkbenchChatExecutionContext {
+    let prompt: String
+    let workflow: Workflow
+    let project: MAProject
+    let routing: WorkbenchSubmissionRouting
+    let session: WorkbenchSubmissionSession
+    let thinkingLevel: AgentThinkingLevel
+}
+
+private struct WorkbenchRunExecutionContext {
+    let prompt: String
+    let workflow: Workflow
+    let project: MAProject
+    let routing: WorkbenchSubmissionRouting
+    let session: WorkbenchSubmissionSession
+    let statusMessageID: UUID
+}
+
+private struct WorkbenchExecutionCompletionContext {
+    let workflowID: UUID
+    let taskID: UUID
+    let prompt: String
+    let context: WorkbenchThreadContext
+    let leadAgent: Agent
+    let startedAt: Date
+}
+
+private struct WorkbenchAssistantMessageContext {
+    let workflowID: UUID
+    let taskID: UUID
+    let agent: Agent
+    let context: WorkbenchThreadContext
+}
+
 private struct WorkbenchRecordQuery {
     let workflowID: UUID
     let threadID: String?
@@ -5420,25 +5454,15 @@ class AppState: ObservableObject {
         routing: WorkbenchSubmissionRouting,
         preferredThreadID: String?
     ) -> String? {
-        let workbenchThinkingLevel = workbenchThinkingLevel(for: prompt)
-        let session = prepareWorkbenchSubmission(
+        let executionContext = prepareWorkbenchChatExecutionContext(
             prompt: prompt,
             workflow: workflow,
             project: project,
             routing: routing,
-            mode: .chat,
-            preferredThreadID: preferredThreadID,
-            thinkingLevel: workbenchThinkingLevel
+            preferredThreadID: preferredThreadID
         )
-        executeWorkbenchChatEntry(
-            workflow: workflow,
-            project: project,
-            prompt: prompt,
-            routing: routing,
-            session: session,
-            thinkingLevel: workbenchThinkingLevel
-        )
-        return session.context.threadID
+        executeWorkbenchChatEntry(executionContext)
+        return executionContext.session.context.threadID
     }
 
     @discardableResult
@@ -5449,48 +5473,34 @@ class AppState: ObservableObject {
         routing: WorkbenchSubmissionRouting,
         preferredThreadID: String?
     ) -> String? {
-        let session = prepareWorkbenchSubmission(
+        let executionContext = prepareWorkbenchRunExecutionContext(
             prompt: prompt,
             workflow: workflow,
             project: project,
             routing: routing,
-            mode: .run,
             preferredThreadID: preferredThreadID
-        )
-        let statusMessageID = beginWorkbenchRunExecution(
-            workflowID: workflow.id,
-            workflowName: workflow.name,
-            taskID: session.taskID,
-            agent: routing.leadAgent,
-            context: session.context
         )
 
         executeWorkbenchWorkflow(
-            workflow,
-            agents: project.agents,
-            prompt: prompt,
-            projectID: project.id,
-            threadContext: session.context,
+            executionContext.workflow,
+            agents: executionContext.project.agents,
+            prompt: executionContext.prompt,
+            projectID: executionContext.project.id,
+            threadContext: executionContext.session.context,
             agentOutputMode: .structuredJSON,
         ) { [weak self] results in
             guard let self else { return }
             let completedAt = Date()
             let runPresentation = self.workbenchFlowLifecycleCoordinator.workflowRunPresentation(for: results)
             self.completeWorkbenchRunExecution(
-                taskID: session.taskID,
-                prompt: prompt,
-                statusMessageID: statusMessageID,
-                workflowID: workflow.id,
-                agent: routing.leadAgent,
-                context: session.context,
-                startedAt: session.startedAt,
+                executionContext,
                 completedAt: completedAt,
                 results: results,
                 presentation: runPresentation
             )
         }
 
-        return session.context.threadID
+        return executionContext.session.context.threadID
     }
 
     func requestStopWorkbenchConversation(_ summary: WorkbenchThreadSummary?) {
@@ -6341,6 +6351,116 @@ class AppState: ObservableObject {
         )
     }
 
+    private func prepareWorkbenchRunExecutionContext(
+        prompt: String,
+        workflow: Workflow,
+        project: MAProject,
+        routing: WorkbenchSubmissionRouting,
+        preferredThreadID: String?
+    ) -> WorkbenchRunExecutionContext {
+        let session = prepareWorkbenchSubmission(
+            prompt: prompt,
+            workflow: workflow,
+            project: project,
+            routing: routing,
+            mode: .run,
+            preferredThreadID: preferredThreadID
+        )
+        let messageContext = WorkbenchAssistantMessageContext(
+            workflowID: workflow.id,
+            taskID: session.taskID,
+            agent: routing.leadAgent,
+            context: session.context
+        )
+        let statusMessageID = beginWorkbenchRunExecution(
+            workflowName: workflow.name,
+            messageContext: messageContext
+        )
+        return WorkbenchRunExecutionContext(
+            prompt: prompt,
+            workflow: workflow,
+            project: project,
+            routing: routing,
+            session: session,
+            statusMessageID: statusMessageID
+        )
+    }
+
+    private func prepareWorkbenchChatExecutionContext(
+        prompt: String,
+        workflow: Workflow,
+        project: MAProject,
+        routing: WorkbenchSubmissionRouting,
+        preferredThreadID: String?
+    ) -> WorkbenchChatExecutionContext {
+        let thinkingLevel = workbenchThinkingLevel(for: prompt)
+        let session = prepareWorkbenchSubmission(
+            prompt: prompt,
+            workflow: workflow,
+            project: project,
+            routing: routing,
+            mode: .chat,
+            preferredThreadID: preferredThreadID,
+            thinkingLevel: thinkingLevel
+        )
+        return WorkbenchChatExecutionContext(
+            prompt: prompt,
+            workflow: workflow,
+            project: project,
+            routing: routing,
+            session: session,
+            thinkingLevel: thinkingLevel
+        )
+    }
+
+    private func workbenchExecutionCompletionContext(
+        for executionContext: WorkbenchChatExecutionContext
+    ) -> WorkbenchExecutionCompletionContext {
+        WorkbenchExecutionCompletionContext(
+            workflowID: executionContext.workflow.id,
+            taskID: executionContext.session.taskID,
+            prompt: executionContext.prompt,
+            context: executionContext.session.context,
+            leadAgent: executionContext.routing.leadAgent,
+            startedAt: executionContext.session.startedAt
+        )
+    }
+
+    private func workbenchExecutionCompletionContext(
+        for executionContext: WorkbenchRunExecutionContext
+    ) -> WorkbenchExecutionCompletionContext {
+        WorkbenchExecutionCompletionContext(
+            workflowID: executionContext.workflow.id,
+            taskID: executionContext.session.taskID,
+            prompt: executionContext.prompt,
+            context: executionContext.session.context,
+            leadAgent: executionContext.routing.leadAgent,
+            startedAt: executionContext.session.startedAt
+        )
+    }
+
+    private func workbenchAssistantMessageContext(
+        for executionContext: WorkbenchChatExecutionContext
+    ) -> WorkbenchAssistantMessageContext {
+        WorkbenchAssistantMessageContext(
+            workflowID: executionContext.workflow.id,
+            taskID: executionContext.session.taskID,
+            agent: executionContext.routing.leadAgent,
+            context: executionContext.session.context
+        )
+    }
+
+    private func workbenchAssistantMessageContext(
+        for completionContext: WorkbenchExecutionCompletionContext
+    ) -> WorkbenchAssistantMessageContext {
+        WorkbenchAssistantMessageContext(
+            workflowID: completionContext.workflowID,
+            taskID: completionContext.taskID,
+            agent: completionContext.leadAgent,
+            context: completionContext.context
+        )
+    }
+
     private func beginWorkbenchSubmissionSession(
         prompt: String,
         workflow: Workflow,
@@ -6516,39 +6636,24 @@ class AppState: ObservableObject {
     }
 
     private func executeWorkbenchChatEntry(
-        workflow: Workflow,
-        project: MAProject,
-        prompt: String,
-        routing: WorkbenchSubmissionRouting,
-        session: WorkbenchSubmissionSession,
-        thinkingLevel: AgentThinkingLevel
+        _ executionContext: WorkbenchChatExecutionContext
     ) {
-        let otherEntryNodes = routing.entryAgentNodes.filter { $0.id != routing.leadNode.id }
-        let replyTracker = makeWorkbenchEntryReplyTracker(
-            workflowID: workflow.id,
-            taskID: session.taskID,
-            agent: routing.leadAgent,
-            context: session.context,
-            thinkingLevel: thinkingLevel
-        )
+        let otherEntryNodes = executionContext.routing.entryAgentNodes.filter {
+            $0.id != executionContext.routing.leadNode.id
+        }
+        let replyTracker = makeWorkbenchEntryReplyTracker(executionContext)
 
-        prepareWorkbenchEntryExecution(
-            leadNodeID: routing.leadNode.id,
-            totalSteps: max(routing.entryAgentNodes.count, 1),
-            sessionID: session.context.sessionID,
-            agent: routing.leadAgent,
-            thinkingLevel: thinkingLevel
-        )
+        prepareWorkbenchEntryExecution(executionContext)
 
         openClawService.executeWorkbenchEntryNode(
-            node: routing.leadNode,
-            workflow: workflow,
-            agents: project.agents,
-            prompt: prompt,
-            projectID: project.id,
-            sessionID: session.context.sessionID,
-            threadID: session.context.threadID,
-            thinkingLevel: thinkingLevel,
+            node: executionContext.routing.leadNode,
+            workflow: executionContext.workflow,
+            agents: executionContext.project.agents,
+            prompt: executionContext.prompt,
+            projectID: executionContext.project.id,
+            sessionID: executionContext.session.context.sessionID,
+            threadID: executionContext.session.context.threadID,
+            thinkingLevel: executionContext.thinkingLevel,
             onStream: { [weak self] chunk in
                 guard let self else { return }
                 guard !chunk.isEmpty,
@@ -6557,12 +6662,12 @@ class AppState: ObservableObject {
                 self.appendWorkbenchEntryStreamChunk(
                     chunk,
                     to: replyTracker,
-                    workflowID: workflow.id,
-                    taskID: session.taskID,
-                    agent: routing.leadAgent,
-                    context: session.context,
-                    thinkingLevel: thinkingLevel,
-                    startedAt: session.startedAt
+                    workflowID: executionContext.workflow.id,
+                    taskID: executionContext.session.taskID,
+                    agent: executionContext.routing.leadAgent,
+                    context: executionContext.session.context,
+                    thinkingLevel: executionContext.thinkingLevel,
+                    startedAt: executionContext.session.startedAt
                 )
             },
             onDispatched: { [weak self] dispatchEvent in
@@ -6582,14 +6687,31 @@ class AppState: ObservableObject {
             self.handleWorkbenchEntryExecutionCompletion(
                 entryExecution,
                 replyTracker: replyTracker,
-                prompt: prompt,
-                workflow: workflow,
-                project: project,
-                leadNode: routing.leadNode,
-                leadAgent: routing.leadAgent,
-                otherEntryNodes: otherEntryNodes,
-                thinkingLevel: thinkingLevel,
-                session: session
+                executionContext: executionContext,
+                otherEntryNodes: otherEntryNodes
+            )
+        }
+    }
+
+    private func executeWorkbenchRun(
+        _ executionContext: WorkbenchRunExecutionContext
+    ) {
+        executeWorkbenchWorkflow(
+            executionContext.workflow,
+            agents: executionContext.project.agents,
+            prompt: executionContext.prompt,
+            projectID: executionContext.project.id,
+            threadContext: executionContext.session.context,
+            agentOutputMode: .structuredJSON,
+        ) { [weak self] results in
+            guard let self else { return }
+            let completedAt = Date()
+            let runPresentation = self.workbenchFlowLifecycleCoordinator.workflowRunPresentation(for: results)
+            self.completeWorkbenchRunExecution(
+                executionContext,
+                completedAt: completedAt,
+                results: results,
+                presentation: runPresentation
             )
         }
     }
@@ -6635,24 +6757,14 @@ class AppState: ObservableObject {
     private func handleWorkbenchEntryExecutionCompletion(
         _ entryExecution: WorkbenchEntryExecution,
         replyTracker: WorkbenchEntryReplyTracker,
-        prompt: String,
-        workflow: Workflow,
-        project: MAProject,
-        leadNode: WorkflowNode,
-        leadAgent: Agent,
-        otherEntryNodes: [WorkflowNode],
-        thinkingLevel: AgentThinkingLevel,
-        session: WorkbenchSubmissionSession
+        executionContext: WorkbenchChatExecutionContext,
+        otherEntryNodes: [WorkflowNode]
     ) {
         let entryResult = entryExecution.result
         persistAndCompleteWorkbenchEntryReply(
             entryResult,
             tracker: replyTracker,
-            workflowID: workflow.id,
-            taskID: session.taskID,
-            leadAgent: leadAgent,
-            session: session,
-            thinkingLevel: thinkingLevel,
+            executionContext: executionContext
         )
 
         let backgroundNodes = orderedUniqueWorkflowNodes(otherEntryNodes + entryExecution.downstreamNodes)
@@ -6660,38 +6772,29 @@ class AppState: ObservableObject {
             entryResult: entryResult,
             backgroundNodes: backgroundNodes,
             replyTracker: replyTracker,
-            prompt: prompt,
-            workflow: workflow,
-            project: project,
-            leadNode: leadNode,
-            leadAgent: leadAgent,
             otherEntryNodes: otherEntryNodes,
-            session: session
+            executionContext: executionContext
         )
     }
 
     private func persistAndCompleteWorkbenchEntryReply(
         _ entryResult: ExecutionResult,
         tracker: WorkbenchEntryReplyTracker,
-        workflowID: UUID,
-        taskID: UUID,
-        leadAgent: Agent,
-        session: WorkbenchSubmissionSession,
-        thinkingLevel: AgentThinkingLevel
+        executionContext: WorkbenchChatExecutionContext
     ) {
         persistWorkbenchGatewaySessionKey(
             entryResult.sessionID,
-            for: session.context
+            for: executionContext.session.context
         )
         completeWorkbenchEntryReply(
             with: entryResult,
             tracker: tracker,
-            workflowID: workflowID,
-            taskID: taskID,
-            agent: leadAgent,
-            context: session.context,
-            thinkingLevel: thinkingLevel,
-            startedAt: session.startedAt
+            workflowID: executionContext.workflow.id,
+            taskID: executionContext.session.taskID,
+            agent: executionContext.routing.leadAgent,
+            context: executionContext.session.context,
+            thinkingLevel: executionContext.thinkingLevel,
+            startedAt: executionContext.session.startedAt
         )
     }
 
@@ -6699,14 +6802,10 @@ class AppState: ObservableObject {
         entryResult: ExecutionResult,
         backgroundNodes: [WorkflowNode],
         replyTracker: WorkbenchEntryReplyTracker,
-        prompt: String,
-        workflow: Workflow,
-        project: MAProject,
-        leadNode: WorkflowNode,
-        leadAgent: Agent,
         otherEntryNodes: [WorkflowNode],
-        session: WorkbenchSubmissionSession
+        executionContext: WorkbenchChatExecutionContext
     ) {
+        let completionContext = workbenchExecutionCompletionContext(for: executionContext)
         switch workbenchFlowLifecycleCoordinator.chatEntryDisposition(
             for: entryResult,
             hasBackgroundNodes: !backgroundNodes.isEmpty
@@ -6714,12 +6813,8 @@ class AppState: ObservableObject {
         case let .failed(errorMessage):
             completeWorkbenchChatExecution(
                 replyTracker: replyTracker,
-                taskID: session.taskID,
-                prompt: prompt,
-                dispatchEventID: session.userRuntimeEventID,
-                context: session.context,
-                leadAgentID: leadAgent.id,
-                startedAt: session.startedAt,
+                completionContext: completionContext,
+                dispatchEventID: executionContext.session.userRuntimeEventID,
                 results: [entryResult],
                 terminalTransition: .failed(errorMessage: errorMessage)
             )
@@ -6727,40 +6822,32 @@ class AppState: ObservableObject {
             openClawService.addLog(
                 .info,
                 "Workbench reply completed with no additional workflow nodes queued.",
-                sessionID: session.context.sessionID,
-                agentID: leadAgent.id
+                sessionID: completionContext.context.sessionID,
+                agentID: completionContext.leadAgent.id
             )
             completeWorkbenchChatExecution(
                 replyTracker: replyTracker,
-                taskID: session.taskID,
-                prompt: prompt,
-                dispatchEventID: session.userRuntimeEventID,
-                context: session.context,
-                leadAgentID: leadAgent.id,
-                startedAt: session.startedAt,
+                completionContext: completionContext,
+                dispatchEventID: executionContext.session.userRuntimeEventID,
                 results: [entryResult],
                 terminalTransition: .readyToRun
             )
         case .continueInBackground:
             continueWorkbenchExecutionInBackground(
-                workflow: workflow,
-                project: project,
-                prompt: prompt,
-                threadContext: session.context,
-                leadAgent: leadAgent,
-                leadNode: leadNode,
+                workflow: executionContext.workflow,
+                project: executionContext.project,
+                prompt: executionContext.prompt,
+                threadContext: executionContext.session.context,
+                leadAgent: executionContext.routing.leadAgent,
+                leadNode: executionContext.routing.leadNode,
                 otherEntryNodes: otherEntryNodes,
                 entryResult: entryResult,
                 backgroundNodes: backgroundNodes
             ) { results in
                 self.completeWorkbenchChatExecution(
                     replyTracker: replyTracker,
-                    taskID: session.taskID,
-                    prompt: prompt,
-                    dispatchEventID: session.userRuntimeEventID,
-                    context: session.context,
-                    leadAgentID: leadAgent.id,
-                    startedAt: session.startedAt,
+                    completionContext: completionContext,
+                    dispatchEventID: executionContext.session.userRuntimeEventID,
                     results: results,
                     terminalTransition: self.workbenchFlowLifecycleCoordinator
                         .backgroundWorkflowTerminalTransition(for: results)
@@ -6770,28 +6857,24 @@ class AppState: ObservableObject {
     }
 
     private func prepareWorkbenchEntryExecution(
-        leadNodeID: UUID,
-        totalSteps: Int,
-        sessionID: String,
-        agent: Agent,
-        thinkingLevel: AgentThinkingLevel
+        _ executionContext: WorkbenchChatExecutionContext
     ) {
         openClawService.isExecuting = true
-        openClawService.currentNodeID = leadNodeID
+        openClawService.currentNodeID = executionContext.routing.leadNode.id
         openClawService.currentStep = 0
-        openClawService.totalSteps = totalSteps
+        openClawService.totalSteps = max(executionContext.routing.entryAgentNodes.count, 1)
         openClawService.lastError = nil
         openClawService.addLog(
             .info,
-            "Workbench is generating the first reply from entry agent \(agent.name).",
-            sessionID: sessionID,
-            agentID: agent.id
+            "Workbench is generating the first reply from entry agent \(executionContext.routing.leadAgent.name).",
+            sessionID: executionContext.session.context.sessionID,
+            agentID: executionContext.routing.leadAgent.id
         )
         openClawService.addLog(
             .info,
-            "Workbench entry thinking level selected: \(thinkingLevel.rawValue).",
-            sessionID: sessionID,
-            agentID: agent.id
+            "Workbench entry thinking level selected: \(executionContext.thinkingLevel.rawValue).",
+            sessionID: executionContext.session.context.sessionID,
+            agentID: executionContext.routing.leadAgent.id
         )
     }
 
@@ -6807,57 +6890,63 @@ class AppState: ObservableObject {
 
     private func completeWorkbenchChatExecution(
         replyTracker: WorkbenchEntryReplyTracker,
-        taskID: UUID,
-        prompt: String,
+        completionContext: WorkbenchExecutionCompletionContext,
         dispatchEventID: String?,
-        context: WorkbenchThreadContext,
-        leadAgentID: UUID,
-        startedAt: Date,
         results: [ExecutionResult],
+        terminalTransition: WorkbenchThreadTransition
+    ) {
+        completeTrackedWorkbenchExecution(
+            replyTracker: replyTracker,
+            completionContext: completionContext,
+            taskStatus: workbenchTaskStatus(for: results),
+            results: results,
+            dispatchEventID: dispatchEventID,
+            terminalTransition: terminalTransition
+        )
+    }
+
+    private func completeTrackedWorkbenchExecution(
+        replyTracker: WorkbenchEntryReplyTracker,
+        completionContext: WorkbenchExecutionCompletionContext,
+        taskStatus: TaskStatus,
+        results: [ExecutionResult],
+        dispatchEventID: String?,
         terminalTransition: WorkbenchThreadTransition
     ) {
         recordWorkbenchEntryLatencyIfNeeded(
             replyTracker,
-            taskID: taskID,
+            taskID: completionContext.taskID,
             key: "fullWorkflowMs",
             label: "full_workflow",
-            since: startedAt,
-            sessionID: context.sessionID,
-            agentID: leadAgentID,
+            since: completionContext.startedAt,
+            sessionID: completionContext.context.sessionID,
+            agentID: completionContext.leadAgent.id,
             kind: .fullWorkflow
         )
-        completeWorkbenchExecution(
-            taskID: taskID,
-            taskStatus: workbenchTaskStatus(for: results),
-            results,
-            removingQueuedPrompt: prompt,
-            removingDispatchEventID: dispatchEventID,
-            context: context,
+        finalizeWorkbenchExecution(
+            completionContext: completionContext,
+            taskStatus: taskStatus,
+            results: results,
+            dispatchEventID: dispatchEventID,
             terminalTransition: terminalTransition
         )
     }
 
     private func beginWorkbenchRunExecution(
-        workflowID: UUID,
         workflowName: String,
-        taskID: UUID,
-        agent: Agent,
-        context: WorkbenchThreadContext
+        messageContext: WorkbenchAssistantMessageContext
     ) -> UUID {
         openClawService.addLog(
             .info,
             "Workbench run mode selected. Executing workflow \(workflowName) under workflowControlled semantics.",
-            sessionID: context.sessionID,
-            agentID: agent.id
+            sessionID: messageContext.context.sessionID,
+            agentID: messageContext.agent.id
         )
         return appendWorkbenchAssistantMessage(
-            workflowID: workflowID,
-            taskID: taskID,
-            agent: agent,
+            messageContext: messageContext,
             content: "运行已提交，正在执行工作流...",
             type: .notification,
             outputType: .runtimeLog,
-            context: context,
             isThinking: true
         )
     }
@@ -6869,22 +6958,16 @@ class AppState: ObservableObject {
     }
 
     private func makeWorkbenchEntryReplyTracker(
-        workflowID: UUID,
-        taskID: UUID,
-        agent: Agent,
-        context: WorkbenchThreadContext,
-        thinkingLevel: AgentThinkingLevel
+        _ executionContext: WorkbenchChatExecutionContext
     ) -> WorkbenchEntryReplyTracker {
+        let messageContext = workbenchAssistantMessageContext(for: executionContext)
         let messageID = appendWorkbenchAssistantMessage(
-            workflowID: workflowID,
-            taskID: taskID,
-            agent: agent,
+            messageContext: messageContext,
             content: "已收到，正在生成回复...",
             type: .notification,
             outputType: .runtimeLog,
-            context: context,
             isThinking: true,
-            thinkingLevel: thinkingLevel,
+            thinkingLevel: executionContext.thinkingLevel,
             isEntryReply: true,
             isStreamed: true
         )
@@ -6901,16 +6984,19 @@ class AppState: ObservableObject {
         thinkingLevel: AgentThinkingLevel,
         startedAt: Date
     ) {
-        tracker.streamingContent += chunk
-        updateWorkbenchAssistantMessage(
-            tracker.messageID,
+        let messageContext = WorkbenchAssistantMessageContext(
             workflowID: workflowID,
             taskID: taskID,
             agent: agent,
+            context: context
+        )
+        tracker.streamingContent += chunk
+        updateWorkbenchAssistantMessage(
+            tracker.messageID,
+            messageContext: messageContext,
             content: tracker.streamingContent,
             type: .notification,
             outputType: .agentFinalResponse,
-            context: context,
             isThinking: true,
             thinkingLevel: thinkingLevel,
             isEntryReply: true,
@@ -6938,17 +7024,20 @@ class AppState: ObservableObject {
         thinkingLevel: AgentThinkingLevel,
         startedAt: Date
     ) {
+        let messageContext = WorkbenchAssistantMessageContext(
+            workflowID: workflowID,
+            taskID: taskID,
+            agent: agent,
+            context: context
+        )
         let visibleOutput = entryResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
         if !visibleOutput.isEmpty {
             updateWorkbenchAssistantMessage(
                 tracker.messageID,
-                workflowID: workflowID,
-                taskID: taskID,
-                agent: agent,
+                messageContext: messageContext,
                 content: visibleOutput.isEmpty ? tracker.streamingContent : visibleOutput,
                 type: entryResult.status == .completed ? .notification : .data,
                 outputType: entryResult.outputType,
-                context: context,
                 isThinking: false,
                 thinkingLevel: thinkingLevel,
                 isEntryReply: true,
@@ -7009,46 +7098,89 @@ class AppState: ObservableObject {
     }
 
     private func completeWorkbenchRunExecution(
-        taskID: UUID,
-        prompt: String,
-        statusMessageID: UUID,
-        workflowID: UUID,
-        agent: Agent,
-        context: WorkbenchThreadContext,
-        startedAt: Date,
+        _ executionContext: WorkbenchRunExecutionContext,
         completedAt: Date,
         results: [ExecutionResult],
         presentation: WorkbenchWorkflowRunPresentation
     ) {
-        recordWorkbenchLatency(
-            taskID: taskID,
-            messageID: statusMessageID,
-            key: "fullWorkflowMs",
-            label: "full_workflow",
-            since: startedAt,
-            sessionID: context.sessionID,
-            agentID: agent.id,
-            at: completedAt
-        )
-        completeWorkbenchExecution(
-            taskID: taskID,
+        let completionContext = workbenchExecutionCompletionContext(for: executionContext)
+        completeWorkbenchExecutionWithLatency(
+            completionContext: completionContext,
+            latencyMessageID: executionContext.statusMessageID,
+            completedAt: completedAt,
             taskStatus: presentation.taskStatus,
-            results,
-            removingQueuedPrompt: prompt,
-            context: context,
-            terminalTransition: presentation.terminalTransition,
-            at: completedAt
+            results: results,
+            terminalTransition: presentation.terminalTransition
         )
+        updateWorkbenchRunStatusMessage(
+            completionContext,
+            statusMessageID: executionContext.statusMessageID,
+            presentation: presentation
+        )
+    }
+
+    private func updateWorkbenchRunStatusMessage(
+        _ completionContext: WorkbenchExecutionCompletionContext,
+        statusMessageID: UUID,
+        presentation: WorkbenchWorkflowRunPresentation
+    ) {
+        let messageContext = workbenchAssistantMessageContext(for: completionContext)
         updateWorkbenchAssistantMessage(
             statusMessageID,
-            workflowID: workflowID,
-            taskID: taskID,
-            agent: agent,
+            messageContext: messageContext,
             content: presentation.summaryText,
             type: presentation.messageType,
             outputType: presentation.outputType,
-            context: context,
             isThinking: false
+        )
+    }
+
+    private func completeWorkbenchExecutionWithLatency(
+        completionContext: WorkbenchExecutionCompletionContext,
+        latencyMessageID: UUID?,
+        completedAt: Date,
+        taskStatus: TaskStatus,
+        results: [ExecutionResult],
+        terminalTransition: WorkbenchThreadTransition,
+        dispatchEventID: String? = nil
+    ) {
+        recordWorkbenchLatency(
+            taskID: completionContext.taskID,
+            messageID: latencyMessageID,
+            key: "fullWorkflowMs",
+            label: "full_workflow",
+            since: completionContext.startedAt,
+            sessionID: completionContext.context.sessionID,
+            agentID: completionContext.leadAgent.id,
+            at: completedAt
+        )
+        finalizeWorkbenchExecution(
+            completionContext: completionContext,
+            taskStatus: taskStatus,
+            results: results,
+            dispatchEventID: dispatchEventID,
+            terminalTransition: terminalTransition,
+            at: completedAt
+        )
+    }
+
+    private func finalizeWorkbenchExecution(
+        completionContext: WorkbenchExecutionCompletionContext,
+        taskStatus: TaskStatus,
+        results: [ExecutionResult],
+        dispatchEventID: String? = nil,
+        terminalTransition: WorkbenchThreadTransition,
+        at completedAt: Date = Date()
+    ) {
+        completeWorkbenchExecution(
+            taskID: completionContext.taskID,
+            taskStatus: taskStatus,
+            results,
+            removingQueuedPrompt: completionContext.prompt,
+            removingDispatchEventID: dispatchEventID,
+            context: completionContext.context,
+            terminalTransition: terminalTransition,
+            at: completedAt
         )
     }
 
@@ -7614,13 +7746,10 @@ class AppState: ObservableObject {
 
     @discardableResult
     private func appendWorkbenchAssistantMessage(
-        workflowID: UUID,
-        taskID: UUID,
-        agent: Agent,
+        messageContext: WorkbenchAssistantMessageContext,
         content: String,
         type: MessageType,
         outputType: ExecutionOutputType,
-        context: WorkbenchThreadContext,
         isThinking: Bool,
         thinkingLevel: AgentThinkingLevel? = nil,
         isEntryReply: Bool = false,
@@ -7628,19 +7757,19 @@ class AppState: ObservableObject {
         runtimeEvent: OpenClawRuntimeEvent? = nil
     ) -> UUID {
         var message = Message(
-            from: agent.id,
-            to: agent.id,
+            from: messageContext.agent.id,
+            to: messageContext.agent.id,
             type: type,
             content: content
         )
         message.status = .read
         applyWorkbenchAssistantMessageMetadata(
             &message,
-            workflowID: workflowID,
-            taskID: taskID,
-            agent: agent,
+            workflowID: messageContext.workflowID,
+            taskID: messageContext.taskID,
+            agent: messageContext.agent,
             outputType: outputType,
-            context: context,
+            context: messageContext.context,
             isThinking: isThinking,
             thinkingLevel: thinkingLevel,
             isEntryReply: isEntryReply,
@@ -7653,13 +7782,10 @@ class AppState: ObservableObject {
 
     private func updateWorkbenchAssistantMessage(
         _ messageID: UUID,
-        workflowID: UUID,
-        taskID: UUID,
-        agent: Agent,
+        messageContext: WorkbenchAssistantMessageContext,
         content: String,
         type: MessageType,
         outputType: ExecutionOutputType,
-        context: WorkbenchThreadContext,
         isThinking: Bool,
         thinkingLevel: AgentThinkingLevel? = nil,
         isEntryReply: Bool = false,
@@ -7672,11 +7798,11 @@ class AppState: ObservableObject {
             message.type = type
             self.applyWorkbenchAssistantMessageMetadata(
                 &message,
-                workflowID: workflowID,
-                taskID: taskID,
-                agent: agent,
+                workflowID: messageContext.workflowID,
+                taskID: messageContext.taskID,
+                agent: messageContext.agent,
                 outputType: outputType,
-                context: context,
+                context: messageContext.context,
                 isThinking: isThinking,
                 thinkingLevel: thinkingLevel,
                 isEntryReply: isEntryReply,

@@ -124,7 +124,14 @@ struct WorkbenchActiveRunRecord: Codable, Identifiable, Hashable {
         updatedAt: Date = Date(),
         status: WorkbenchActiveRunStatus = .running
     ) {
-        self.id = id ?? threadID
+        let normalizedThreadID = threadID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedRunID = runID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSessionKey = sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.id = id ?? Self.defaultIdentifier(
+            threadID: normalizedThreadID,
+            runID: normalizedRunID,
+            sessionKey: normalizedSessionKey
+        )
         self.threadID = threadID
         self.workflowID = workflowID
         self.runID = runID
@@ -134,6 +141,18 @@ struct WorkbenchActiveRunRecord: Codable, Identifiable, Hashable {
         self.startedAt = startedAt
         self.updatedAt = updatedAt
         self.status = status
+    }
+
+    private static func defaultIdentifier(
+        threadID: String,
+        runID: String,
+        sessionKey: String
+    ) -> String {
+        let components = [threadID, runID, sessionKey].filter { !$0.isEmpty }
+        if components.isEmpty {
+            return UUID().uuidString
+        }
+        return components.joined(separator: "::")
     }
 }
 

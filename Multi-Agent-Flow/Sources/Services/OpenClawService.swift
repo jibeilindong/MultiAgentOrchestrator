@@ -865,6 +865,58 @@ class OpenClawService: ObservableObject {
         return "session:\(normalizedSessionKey)"
     }
 
+    private func activeGatewayConversationMatches(
+        _ conversation: ActiveGatewayConversation,
+        threadID: String?,
+        sessionKey: String?
+    ) -> Bool {
+        let normalizedThreadID = normalizedActiveGatewayConversationThreadID(
+            threadID,
+            sessionKey: sessionKey
+        )
+        let normalizedSessionKey = sessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if let normalizedThreadID {
+            return conversation.threadID == normalizedThreadID
+        }
+
+        if !normalizedSessionKey.isEmpty {
+            return conversation.sessionKey.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedSessionKey
+        }
+
+        return true
+    }
+
+    private func preferredActiveGatewayConversation(
+        from conversations: [ActiveGatewayConversation]
+    ) -> ActiveGatewayConversation? {
+        conversations.max { lhs, rhs in
+            if lhs.record.updatedAt == rhs.record.updatedAt {
+                if lhs.startedAt == rhs.startedAt {
+                    return lhs.record.id < rhs.record.id
+                }
+                return lhs.startedAt < rhs.startedAt
+            }
+            return lhs.record.updatedAt < rhs.record.updatedAt
+        }
+    }
+
+    @MainActor
+    private func activeGatewayConversations(threadID: String?) -> [ActiveGatewayConversation] {
+        let matches = activeGatewayConversations.values.filter {
+            activeGatewayConversationMatches($0, threadID: threadID, sessionKey: nil)
+        }
+        return matches.sorted { lhs, rhs in
+            if lhs.record.updatedAt != rhs.record.updatedAt {
+                return lhs.record.updatedAt > rhs.record.updatedAt
+            }
+            if lhs.startedAt != rhs.startedAt {
+                return lhs.startedAt > rhs.startedAt
+            }
+            return lhs.record.id > rhs.record.id
+        }
+    }
+
     @MainActor
     private func syncActiveGatewayConversationSnapshot() {
         activeWorkbenchRuns = activeGatewayConversations.values
@@ -876,12 +928,9 @@ class OpenClawService: ObservableObject {
                 return lhs.id > rhs.id
             }
 
-        if let latestConversation = activeGatewayConversations.values.max(by: { lhs, rhs in
-            if lhs.startedAt == rhs.startedAt {
-                return lhs.threadID < rhs.threadID
-            }
-            return lhs.startedAt < rhs.startedAt
-        }) {
+        if let latestConversation = preferredActiveGatewayConversation(
+            from: Array(activeGatewayConversations.values)
+        ) {
             activeGatewayRunID = latestConversation.runID
             activeGatewaySessionKey = latestConversation.sessionKey
             isAbortingActiveGatewayRun = latestConversation.isAborting
@@ -895,23 +944,14 @@ class OpenClawService: ObservableObject {
     @MainActor
     private func restoreActiveGatewayConversations(from records: [WorkbenchActiveRunRecord]) {
         activeGatewayConversations = records.reduce(into: [:]) { partialResult, record in
-            partialResult[record.threadID] = ActiveGatewayConversation(record: record)
+            partialResult[record.id] = ActiveGatewayConversation(record: record)
         }
         syncActiveGatewayConversationSnapshot()
     }
 
     @MainActor
     private func activeGatewayConversation(threadID: String?) -> ActiveGatewayConversation? {
-        if let normalizedThreadID = normalizedActiveGatewayConversationThreadID(threadID) {
-            return activeGatewayConversations[normalizedThreadID]
-        }
-
-        return activeGatewayConversations.values.max(by: { lhs, rhs in
-            if lhs.startedAt == rhs.startedAt {
-                return lhs.threadID < rhs.threadID
-            }
-            return lhs.startedAt < rhs.startedAt
-        })
+        preferredActiveGatewayConversation(from: activeGatewayConversations(threadID: threadID))
     }
 
     @MainActor
@@ -933,31 +973,33 @@ class OpenClawService: ObservableObject {
             return
         }
 
-        activeGatewayConversations[normalizedThreadID] = ActiveGatewayConversation(
-            record: WorkbenchActiveRunRecord(
-                threadID: normalizedThreadID,
-                workflowID: workflowID?.uuidString ?? "",
-                runID: runID,
-                sessionKey: sessionKey,
-                transportKind: transportKind,
-                executionIntent: executionIntent.rawValue,
-                startedAt: Date(),
-                updatedAt: Date(),
-                status: .running
-            )
+        let record = WorkbenchActiveRunRecord(
+            threadID: normalizedThreadID,
+            workflowID: workflowID?.uuidString ?? "",
+            runID: runID,
+            sessionKey: sessionKey,
+            transportKind: transportKind,
+            executionIntent: executionIntent.rawValue,
+            startedAt: Date(),
+            updatedAt: Date(),
+            status: .running
         )
+        activeGatewayConversations[record.id] = ActiveGatewayConversation(record: record)
         syncActiveGatewayConversationSnapshot()
     }
 
     @MainActor
     private func clearActiveGatewayConversation(threadID: String? = nil, sessionKey: String? = nil) {
-        if let normalizedThreadID = normalizedActiveGatewayConversationThreadID(
-            threadID,
-            sessionKey: sessionKey
-        ) {
-            activeGatewayConversations.removeValue(forKey: normalizedThreadID)
-        } else {
+        if threadID == nil && sessionKey == nil {
             activeGatewayConversations.removeAll()
+        } else {
+            activeGatewayConversations = activeGatewayConversations.filter { _, conversation in
+                !activeGatewayConversationMatches(
+                    conversation,
+                    threadID: threadID,
+                    sessionKey: sessionKey
+                )
+            }
         }
         syncActiveGatewayConversationSnapshot()
     }
@@ -971,7 +1013,7 @@ class OpenClawService: ObservableObject {
             return nil
         }
 
-        activeGatewayConversations[conversation.threadID] = ActiveGatewayConversation(
+        activeGatewayConversations[conversation.record.id] = ActiveGatewayConversation(
             record: WorkbenchActiveRunRecord(
                 id: conversation.record.id,
                 threadID: conversation.record.threadID,
@@ -986,17 +1028,22 @@ class OpenClawService: ObservableObject {
             )
         )
         syncActiveGatewayConversationSnapshot()
-        return activeGatewayConversations[conversation.threadID]
+        return activeGatewayConversations[conversation.record.id]
     }
 
     @MainActor
     func hasActiveRemoteConversation(threadID: String?) -> Bool {
-        activeGatewayConversation(threadID: threadID) != nil
+        !activeGatewayConversations(threadID: threadID).isEmpty
     }
 
     @MainActor
     func isAbortingRemoteConversation(threadID: String?) -> Bool {
-        activeGatewayConversation(threadID: threadID)?.isAborting ?? false
+        activeGatewayConversations(threadID: threadID).contains(where: \.isAborting)
+    }
+
+    @MainActor
+    func activeWorkbenchRunRecords(threadID: String?) -> [WorkbenchActiveRunRecord] {
+        activeGatewayConversations(threadID: threadID).map(\.record)
     }
 
     @MainActor
