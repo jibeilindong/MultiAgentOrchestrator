@@ -11,28 +11,31 @@
 
 ## 2. 执行目标
 
-本次执行的目标不是简单增加一个按钮，而是完成 6 个方向的整体落地：
+本次执行的目标不是简单增加一个按钮，而是完成 7 个方向的整体落地：
 
 1. 建立统一的 Assist 产品入口
-2. 建立 Assist 的上下文、proposal、receipt、undo 数据结构
-3. 将 Assist 安全接入现有设计态编辑系统
-4. 优先落地模板 / 文案 / 配置检查等高价值场景
-5. 再逐步扩展到工作流布局与性能诊断
-6. 让 Assist 的全过程可观测、可回退、可验收
+2. 建立 Assist 的低损耗系统调用路径
+3. 建立 Assist 的上下文、proposal、receipt、undo、grant 数据结构
+4. 将 Assist 安全接入现有设计态编辑系统
+5. 优先落地模板 / 文案 / 配置检查等高价值场景
+6. 再逐步扩展到 workflow 节点调用、布局优化与性能诊断
+7. 让 Assist 的全过程可观测、可回退、可验收
 
 ## 3. 总体执行策略
 
 建议采用以下顺序推进：
 
 1. 先收口产品语义与数据对象
-2. 再搭建统一 Assist 基座
-3. 再接入文本与模板场景
-4. 再接入布局和诊断场景
-5. 最后补齐可观测性、回退、测试与灰度发布
+2. 先打通低损耗系统通道
+3. 再搭建统一 Assist 基座
+4. 再接入文本与模板场景
+5. 再接入 workflow 适配通道、布局和诊断场景
+6. 最后补齐可观测性、回退、测试与灰度发布
 
 原因：
 
 - 如果先切 UI，没有稳定的 proposal / receipt / scope 模型，后续很容易返工。
+- 如果没有独立的低损耗系统通道，Assist 很容易退化成普通源 agent 套壳。
 - 如果先做复杂场景，如布局或性能诊断，产品体验和验收标准会先失控。
 - 模板和文案场景最贴近当前已有能力，适合作为第一批真实落地入口。
 
@@ -62,6 +65,8 @@
 
 - 是否统一使用 `Assist`
 - V1 是否只做一个全责 agent 入口
+- 是否将 Assist 明确放入模板体系但设为系统模板
+- 是否同时建立“系统通道”和“workflow 适配通道”
 - 哪些场景必须进入 V1，哪些延后
 
 验收标准：
@@ -82,7 +87,9 @@
 - `AssistContextPack`
 - `AssistProposal`
 - `AssistExecutionReceipt`
+- `AssistCapabilityGrant`
 - `AssistUndoCheckpoint`
+- `AssistMutationGateway`
 - `AssistState`
 
 建议修改范围：
@@ -97,13 +104,16 @@
 - 定义 Assist 请求类型与作用域类型
 - 定义 proposal 结构与 change item 结构
 - 定义写入回执与撤销快照
+- 定义 capability grant 与 mutation gateway contract
 - 明确 `conversation.assisted` 与 `inspection.readonly` 的使用边界
+- 明确 workflow 中的 Assist 节点如何发起 scoped mutation request
 
 验收标准：
 
 - Assist 可以独立表示“生成建议”和“应用建议”
 - `applied` 不会被误解为 `saved` 或 `applied_to_runtime`
 - 诊断型请求默认只读
+- 系统级写入具备独立的 gateway 契约，不依赖普通聊天输出反推
 
 ### Phase 2：统一 Assist 编排基座
 
@@ -119,6 +129,7 @@
 - `AssistProposalBuilder`
 - `AssistApplyService`
 - `AssistUndoService`
+- `AssistWorkflowAdapter`
 
 建议修改范围：
 
@@ -131,9 +142,10 @@
 - 从当前页面解析上下文
 - 按请求类型选择处理模块
 - 生成统一 proposal
-- 统一提交到 draft / managed workspace / mirror
+- 统一提交到 mutation gateway，再写入 draft / managed workspace / mirror
 - 记录 receipt 与 undo checkpoint
 - 强制保留关键动作的确认与回退链路
+- 明确 workflow 节点调用与系统调用的分流逻辑
 
 验收标准：
 
@@ -141,6 +153,7 @@
 - 文本类、模板类、诊断类请求都能走同一条 Assist 管线
 - 不需要为每种功能单独造一个新的交互框架
 - 不会出现“生成建议后未经确认直接改动关键对象”的默认行为
+- 系统通道与 workflow 适配通道都能挂接到同一 proposal / receipt 模型
 
 ### Phase 3：Workbench Assist 模式与结果面板
 
@@ -169,6 +182,7 @@
 - 在结果面板中展示 `diff / preview / warnings`
 - 支持“继续追问”和“应用到草稿”
 - 明确区分“建议已生成”和“改动已写入”
+- 禁止普通聊天 agent 通道直接触发系统级写入
 
 验收标准：
 
@@ -202,6 +216,7 @@
 - 将当前选中文本 / 当前文件 / 当前节点打包为上下文
 - 支持“从当前页面发起后，在结果面板确认”
 - 避免就近入口绕过确认与回退机制
+- 为 Assist 系统模板预留只读展示与权限控制位
 
 验收标准：
 
@@ -272,6 +287,30 @@ V1 建议只包含：
 - 布局调整先有预览
 - 用户确认后才写入 workflow 结构
 - 布局 proposal 与普通文本 proposal 使用同一 Assist 管线
+
+### Phase 6.5：Workflow 节点调用落地
+
+目标：
+
+- 让 Assist 可以作为普通 workflow 节点被调用，同时不丢失系统级权限边界
+
+交付物：
+
+- Assist workflow node adapter
+- scoped mutation request
+- workflow-to-gateway handoff
+
+关键任务：
+
+- 允许 workflow 中插入 Assist 节点
+- 允许 Assist 节点输出建议与诊断工件
+- 需要系统级写入时，转交 mutation gateway 做二次确认
+
+验收标准：
+
+- Assist 节点可被 workflow 调用
+- 普通 workflow 调用不会天然获得系统级写入权限
+- 系统级改动仍可追踪到 grant / receipt / undo
 
 ### Phase 7：V3 扩展到性能与效率诊断
 
@@ -458,7 +497,21 @@ Assist 的实施依赖以下已有能力保持稳定：
 - 服务层写入必须只落 draft / mirror
 - 禁止 Assist 直接触发 Apply
 
-### R5. 默认自动执行带来的信任失控
+### R5. Assist 退化成普通源 agent 套壳
+
+表现：
+
+- 仍然依赖 prompt 拼装上下文
+- 仍然依赖自然语言回推结构化改动
+- 低损耗优势无法体现
+
+应对：
+
+- 先建设 context resolver 与 mutation gateway
+- 将系统通道明确设计为 typed path
+- 将 workflow 适配通道与系统通道分离
+
+### R6. 默认自动执行带来的信任失控
 
 表现：
 
@@ -471,7 +524,7 @@ Assist 的实施依赖以下已有能力保持稳定：
 - 结果面板必须先展示 proposal，再允许写入
 - 每次写入都生成 receipt 和 undo checkpoint
 
-### R6. 信任感建立失败
+### R7. 信任感建立失败
 
 表现：
 
@@ -511,6 +564,7 @@ Assist 的实施依赖以下已有能力保持稳定：
 - Assist 不绕开 Draft / Save / Apply
 - Assist 不破坏 node-local managed workspace
 - Assist 不在默认路径下越过确认直接执行关键操作
+- Assist 的系统通道明显优于普通源 agent 路径，而不是只是另一层聊天壳
 
 ### 9.4 手工验收场景
 
