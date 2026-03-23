@@ -259,6 +259,38 @@ struct OpsCenterTaskDigest: Identifiable {
     let timestamp: Date
 }
 
+struct OpsCenterTurnDigest: Identifiable {
+    let id: UUID
+    let role: String
+    let agentName: String?
+    let status: MessageStatus
+    let mode: String?
+    let summary: String
+    let timestamp: Date
+}
+
+struct OpsCenterDelegationDigest: Identifiable {
+    let id: String
+    let sourceName: String
+    let targetName: String
+    let status: RuntimeDispatchStatus
+    let transportKind: String
+    let summary: String
+    let errorText: String?
+    let timestamp: Date
+}
+
+struct OpsCenterSpanDigest: Identifiable {
+    let id: UUID
+    let nodeTitle: String
+    let agentName: String?
+    let status: ExecutionStatus
+    let transportKind: String?
+    let summary: String
+    let duration: TimeInterval?
+    let timestamp: Date
+}
+
 struct OpsCenterSessionInvestigation: Identifiable {
     var id: String { session.sessionID }
     let session: OpsCenterSessionSummary
@@ -268,6 +300,9 @@ struct OpsCenterSessionInvestigation: Identifiable {
     let receipts: [OpsCenterReceiptDigest]
     let messages: [OpsCenterMessageDigest]
     let tasks: [OpsCenterTaskDigest]
+    let turns: [OpsCenterTurnDigest]
+    let delegations: [OpsCenterDelegationDigest]
+    let spans: [OpsCenterSpanDigest]
 }
 
 struct OpsCenterNodeInvestigation: Identifiable {
@@ -350,6 +385,9 @@ struct OpsCenterThreadInvestigation: Identifiable {
     let receipts: [OpsCenterReceiptDigest]
     let messages: [OpsCenterMessageDigest]
     let tasks: [OpsCenterTaskDigest]
+    let turns: [OpsCenterTurnDigest]
+    let delegations: [OpsCenterDelegationDigest]
+    let spans: [OpsCenterSpanDigest]
 }
 
 struct OpsCenterCronInvestigation: Identifiable {
@@ -780,7 +818,18 @@ enum OpsCenterSnapshotBuilder {
                 agentNamesByID: agentNamesByID
             ),
             messages: buildMessageDigests(sessionMessages, agentNamesByID: agentNamesByID),
-            tasks: buildTaskDigests(sessionTasks, agentNamesByID: agentNamesByID)
+            tasks: buildTaskDigests(sessionTasks, agentNamesByID: agentNamesByID),
+            turns: buildTurnDigests(sessionMessages, agentNamesByID: agentNamesByID),
+            delegations: buildDelegationDigests(
+                sessionDispatches,
+                sessionEvents: sessionEvents,
+                agentNamesByID: agentNamesByID
+            ),
+            spans: buildSpanDigests(
+                sessionReceipts,
+                nodeTitlesByID: nodeTitlesByID,
+                agentNamesByID: agentNamesByID
+            )
         )
     }
 
@@ -1299,7 +1348,22 @@ enum OpsCenterSnapshotBuilder {
             dispatches: sessionInvestigation?.dispatches ?? [],
             receipts: sessionInvestigation?.receipts ?? [],
             messages: buildMessageDigests(workbenchMessages, agentNamesByID: agentNamesByID),
-            tasks: buildTaskDigests(workbenchTasks, agentNamesByID: agentNamesByID)
+            tasks: buildTaskDigests(workbenchTasks, agentNamesByID: agentNamesByID),
+            turns: buildTurnDigests(workbenchMessages, agentNamesByID: agentNamesByID),
+            delegations: sessionInvestigation?.delegations ?? buildDelegationDigests(
+                allDispatches(from: project.runtimeState).filter {
+                    normalizedSessionID($0.sessionKey) == normalizedTargetThreadID
+                },
+                sessionEvents: project.runtimeState.runtimeEvents.filter {
+                    normalizedSessionID($0.sessionKey) == normalizedTargetThreadID
+                },
+                agentNamesByID: agentNamesByID
+            ),
+            spans: sessionInvestigation?.spans ?? buildSpanDigests(
+                executionResults.filter { normalizedSessionID($0.sessionID) == normalizedTargetThreadID },
+                nodeTitlesByID: Dictionary(uniqueKeysWithValues: workflow?.nodes.map { ($0.id, $0.title) } ?? []),
+                agentNamesByID: agentNamesByID
+            )
         )
     }
 
@@ -1695,6 +1759,97 @@ enum OpsCenterSnapshotBuilder {
                     status: task.status,
                     priority: task.priority,
                     timestamp: task.completedAt ?? task.startedAt ?? task.createdAt
+                )
+            }
+    }
+
+    private static func buildTurnDigests(
+        _ messages: [Message],
+        agentNamesByID: [UUID: String]
+    ) -> [OpsCenterTurnDigest] {
+        messages
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+            .map { message in
+                let role = message.inferredRole ?? message.metadata["role"] ?? "assistant"
+                let agentName: String?
+                if role == "user" {
+                    agentName = "User"
+                } else {
+                    agentName = agentNamesByID[message.fromAgentID]
+                        ?? message.runtimeEvent?.source.agentName
+                        ?? message.metadata["agentName"]
+                }
+
+                return OpsCenterTurnDigest(
+                    id: message.id,
+                    role: role,
+                    agentName: agentName,
+                    status: message.status,
+                    mode: message.metadata["workbenchMode"],
+                    summary: compactPreview(message.summaryText, limit: 160),
+                    timestamp: message.timestamp
+                )
+            }
+    }
+
+    private static func buildDelegationDigests(
+        _ dispatches: [RuntimeDispatchRecord],
+        sessionEvents: [OpenClawRuntimeEvent],
+        agentNamesByID: [UUID: String]
+    ) -> [OpsCenterDelegationDigest] {
+        let eventsByID = Dictionary(uniqueKeysWithValues: sessionEvents.map { ($0.id, $0) })
+
+        return dispatches
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.id > rhs.id
+            }
+            .map { dispatch in
+                let event = eventsByID[dispatch.eventID]
+                return OpsCenterDelegationDigest(
+                    id: dispatch.id,
+                    sourceName: event?.source.agentName ?? agentName(for: dispatch.sourceAgentID, using: agentNamesByID),
+                    targetName: event?.target.agentName ?? agentName(for: dispatch.targetAgentID, using: agentNamesByID),
+                    status: dispatch.status,
+                    transportKind: dispatch.transportKind.rawValue,
+                    summary: compactPreview(dispatch.summary, limit: 160),
+                    errorText: dispatch.errorMessage.map { compactPreview($0, limit: 140) },
+                    timestamp: dispatch.updatedAt
+                )
+            }
+    }
+
+    private static func buildSpanDigests(
+        _ receipts: [ExecutionResult],
+        nodeTitlesByID: [UUID: String],
+        agentNamesByID: [UUID: String]
+    ) -> [OpsCenterSpanDigest] {
+        receipts
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.completedAt ?? lhs.startedAt
+                let rhsDate = rhs.completedAt ?? rhs.startedAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+            .map { receipt in
+                OpsCenterSpanDigest(
+                    id: receipt.id,
+                    nodeTitle: nodeTitlesByID[receipt.nodeID] ?? "Unknown Node",
+                    agentName: agentNamesByID[receipt.agentID],
+                    status: receipt.status,
+                    transportKind: receipt.transportKind,
+                    summary: compactPreview(receipt.summaryText, limit: 160),
+                    duration: receipt.duration,
+                    timestamp: receipt.completedAt ?? receipt.startedAt
                 )
             }
     }

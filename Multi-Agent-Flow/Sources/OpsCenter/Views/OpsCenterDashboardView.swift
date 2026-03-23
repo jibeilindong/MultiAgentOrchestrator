@@ -514,7 +514,10 @@ struct OpsCenterDashboardView: View {
                     dispatches: [],
                     receipts: [],
                     messages: [],
-                    tasks: []
+                    tasks: [],
+                    turns: [],
+                    delegations: [],
+                    spans: []
                 )
             )
         }
@@ -828,7 +831,10 @@ struct OpsCenterDashboardView: View {
                 dispatches: mergedDispatchDigests(live.dispatches, archive.dispatches),
                 receipts: mergedReceiptDigests(live.receipts, archive.receipts),
                 messages: mergedMessageDigests(live.messages, archive.messages),
-                tasks: mergedTaskDigests(live.tasks, archive.tasks)
+                tasks: mergedTaskDigests(live.tasks, archive.tasks),
+                turns: mergedTurnDigests(live.turns, archive.turns),
+                delegations: mergedDelegationDigests(live.delegations, archive.delegations),
+                spans: mergedSpanDigests(live.spans, archive.spans)
             )
         case let (live?, nil):
             return live
@@ -919,7 +925,10 @@ struct OpsCenterDashboardView: View {
                 dispatches: mergedDispatchDigests(live.dispatches, archive.dispatches),
                 receipts: mergedReceiptDigests(live.receipts, archive.receipts),
                 messages: mergedMessageDigests(live.messages, archive.messages),
-                tasks: mergedTaskDigests(live.tasks, archive.tasks)
+                tasks: mergedTaskDigests(live.tasks, archive.tasks),
+                turns: mergedTurnDigests(live.turns, archive.turns),
+                delegations: mergedDelegationDigests(live.delegations, archive.delegations),
+                spans: mergedSpanDigests(live.spans, archive.spans)
             )
         case let (live?, nil):
             return live
@@ -1161,6 +1170,63 @@ struct OpsCenterDashboardView: View {
                 return
             }
             partial[task.id] = task
+        }
+
+        return merged.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            return lhs.id.uuidString > rhs.id.uuidString
+        }
+    }
+
+    private func mergedTurnDigests(
+        _ lhs: [OpsCenterTurnDigest],
+        _ rhs: [OpsCenterTurnDigest]
+    ) -> [OpsCenterTurnDigest] {
+        let merged = (lhs + rhs).reduce(into: [UUID: OpsCenterTurnDigest]()) { partial, turn in
+            if let existing = partial[turn.id], existing.timestamp >= turn.timestamp {
+                return
+            }
+            partial[turn.id] = turn
+        }
+
+        return merged.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            return lhs.id.uuidString > rhs.id.uuidString
+        }
+    }
+
+    private func mergedDelegationDigests(
+        _ lhs: [OpsCenterDelegationDigest],
+        _ rhs: [OpsCenterDelegationDigest]
+    ) -> [OpsCenterDelegationDigest] {
+        let merged = (lhs + rhs).reduce(into: [String: OpsCenterDelegationDigest]()) { partial, delegation in
+            if let existing = partial[delegation.id], existing.timestamp >= delegation.timestamp {
+                return
+            }
+            partial[delegation.id] = delegation
+        }
+
+        return merged.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp
+            }
+            return lhs.id > rhs.id
+        }
+    }
+
+    private func mergedSpanDigests(
+        _ lhs: [OpsCenterSpanDigest],
+        _ rhs: [OpsCenterSpanDigest]
+    ) -> [OpsCenterSpanDigest] {
+        let merged = (lhs + rhs).reduce(into: [UUID: OpsCenterSpanDigest]()) { partial, span in
+            if let existing = partial[span.id], existing.timestamp >= span.timestamp {
+                return
+            }
+            partial[span.id] = span
         }
 
         return merged.values.sorted { lhs, rhs in
@@ -7339,6 +7405,36 @@ private struct OpsCenterInvestigationPanel: View {
                 }
             }
         }
+
+        opsInvestigationSection("Turns", detail: "Workbench turn-level audit trail for this session.") {
+            if investigation.turns.isEmpty {
+                opsInlineEmptyState("No turn audit records available.")
+            } else {
+                ForEach(investigation.turns.prefix(12)) { turn in
+                    OpsCenterTurnDigestCard(turn: turn)
+                }
+            }
+        }
+
+        opsInvestigationSection("Delegations", detail: "Delegation and dispatch evidence linked to this session.") {
+            if investigation.delegations.isEmpty {
+                opsInlineEmptyState("No delegation audit records available.")
+            } else {
+                ForEach(investigation.delegations.prefix(12)) { delegation in
+                    OpsCenterDelegationDigestCard(delegation: delegation)
+                }
+            }
+        }
+
+        opsInvestigationSection("Spans", detail: "Node-level execution spans recovered from session receipts.") {
+            if investigation.spans.isEmpty {
+                opsInlineEmptyState("No span audit records available.")
+            } else {
+                ForEach(investigation.spans.prefix(10)) { span in
+                    OpsCenterSpanDigestCard(span: span)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -7584,6 +7680,36 @@ private struct OpsCenterInvestigationPanel: View {
             } else {
                 ForEach(investigation.events.prefix(10)) { event in
                     OpsCenterEventDigestCard(event: event)
+                }
+            }
+        }
+
+        opsInvestigationSection("Turns", detail: "Conversation turns recovered for this workbench thread.") {
+            if investigation.turns.isEmpty {
+                opsInlineEmptyState("No turn audit records available.")
+            } else {
+                ForEach(investigation.turns.prefix(12)) { turn in
+                    OpsCenterTurnDigestCard(turn: turn)
+                }
+            }
+        }
+
+        opsInvestigationSection("Delegations", detail: "Delegation records that connect this thread to runtime dispatches.") {
+            if investigation.delegations.isEmpty {
+                opsInlineEmptyState("No delegation audit records available.")
+            } else {
+                ForEach(investigation.delegations.prefix(12)) { delegation in
+                    OpsCenterDelegationDigestCard(delegation: delegation)
+                }
+            }
+        }
+
+        opsInvestigationSection("Spans", detail: "Receipt-derived execution spans associated with this thread.") {
+            if investigation.spans.isEmpty {
+                opsInlineEmptyState("No span audit records available.")
+            } else {
+                ForEach(investigation.spans.prefix(10)) { span in
+                    OpsCenterSpanDigestCard(span: span)
                 }
             }
         }
@@ -8707,6 +8833,118 @@ private struct OpsCenterTaskDigestCard: View {
             Text(task.timestamp.formatted(date: .abbreviated, time: .shortened))
                 .font(.caption2)
                 .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct OpsCenterTurnDigestCard: View {
+    let turn: OpsCenterTurnDigest
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(turn.role.uppercased()) • \(turn.agentName ?? "Unknown")")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                opsStatusPill(title: opsMessageStatusTitle(turn.status), color: turn.status.color)
+            }
+
+            Text(turn.summary)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(3)
+
+            HStack {
+                if let mode = turn.mode, !mode.isEmpty {
+                    Text(mode)
+                }
+                Spacer()
+                Text(turn.timestamp.formatted(date: .abbreviated, time: .shortened))
+            }
+            .font(.caption2)
+            .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct OpsCenterDelegationDigestCard: View {
+    let delegation: OpsCenterDelegationDigest
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(delegation.sourceName) -> \(delegation.targetName)")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                opsStatusPill(title: opsDispatchStatusTitle(delegation.status), color: opsDispatchStatusColor(delegation.status))
+            }
+
+            Text(delegation.summary)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(3)
+
+            if let errorText = delegation.errorText, !errorText.isEmpty {
+                Text(errorText)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+            }
+
+            HStack {
+                Text(delegation.transportKind)
+                Spacer()
+                Text(delegation.timestamp.formatted(date: .abbreviated, time: .shortened))
+            }
+            .font(.caption2)
+            .foregroundColor(.secondary)
+        }
+        .padding(10)
+        .background(Color(.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct OpsCenterSpanDigestCard: View {
+    let span: OpsCenterSpanDigest
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(span.nodeTitle)
+                        .font(.caption.weight(.medium))
+                    Text(span.agentName ?? LocalizedString.text("investigation_unknown_agent"))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                opsStatusPill(title: opsExecutionStatusTitle(span.status), color: opsExecutionStatusColor(span.status))
+            }
+
+            Text(span.summary)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(3)
+
+            HStack {
+                if let transportKind = span.transportKind, !transportKind.isEmpty {
+                    Text(transportKind)
+                }
+                Spacer()
+                if let duration = span.duration {
+                    Text(opsDurationText(duration))
+                }
+                Text(span.timestamp.formatted(date: .abbreviated, time: .shortened))
+            }
+            .font(.caption2)
+            .foregroundColor(.secondary)
         }
         .padding(10)
         .background(Color(.controlBackgroundColor))

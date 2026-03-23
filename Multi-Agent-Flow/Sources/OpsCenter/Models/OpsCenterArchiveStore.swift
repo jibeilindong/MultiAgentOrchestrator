@@ -87,6 +87,85 @@ private struct OpsCenterArchiveThreadInvestigationDocument: Codable {
     let latestTaskID: UUID?
 }
 
+private struct OpsCenterArchiveTurnAuditDocument: Codable {
+    let turnID: UUID
+    let threadID: String
+    let sessionID: String
+    let workflowID: UUID?
+    let taskID: UUID?
+    let messageID: UUID
+    let role: String
+    let kind: String
+    let status: String
+    let agentID: UUID?
+    let agentName: String?
+    let executionIntent: String?
+    let threadType: String?
+    let threadMode: String?
+    let interactionMode: String?
+    let outputType: String?
+    let tokenEstimate: Int?
+    let summary: String
+    let timestamp: Date
+}
+
+private struct OpsCenterArchiveDelegationAuditDocument: Codable {
+    let delegationID: String
+    let threadID: String
+    let sessionID: String
+    let workflowID: String?
+    let nodeID: String?
+    let parentDelegationID: String?
+    let sourceAgentID: String
+    let sourceAgentName: String?
+    let targetAgentID: String
+    let targetAgentName: String?
+    let status: String
+    let eventType: String?
+    let executionIntent: String?
+    let threadType: String?
+    let threadMode: String?
+    let transportKind: String
+    let attempt: Int
+    let allowRetry: Bool
+    let maxRetries: Int?
+    let summary: String
+    let errorMessage: String?
+    let queuedAt: Date
+    let updatedAt: Date
+    let completedAt: Date?
+}
+
+private struct OpsCenterArchiveSpanAuditDocument: Codable {
+    let spanID: UUID
+    let sessionID: String
+    let threadID: String?
+    let workflowID: UUID?
+    let nodeID: UUID
+    let agentID: UUID
+    let agentName: String?
+    let status: String
+    let executionIntent: String?
+    let transportKind: String?
+    let outputType: String
+    let linkedEventIDs: [String]
+    let primaryEventID: String?
+    let parentEventID: String?
+    let routingAction: String?
+    let routingTargets: [String]
+    let requestedRoutingAction: String?
+    let requestedRoutingTargets: [String]
+    let protocolRepairCount: Int
+    let protocolRepairTypes: [String]
+    let protocolSafeDegradeApplied: Bool
+    let summary: String
+    let startedAt: Date
+    let completedAt: Date?
+    let duration: TimeInterval?
+    let firstChunkLatencyMs: Int?
+    let completionLatencyMs: Int?
+}
+
 private struct OpsCenterArchiveSessionPayload {
     let summary: OpsCenterSessionSummary
     let relatedNodeIDs: Set<UUID>
@@ -95,6 +174,9 @@ private struct OpsCenterArchiveSessionPayload {
     let receipts: [OpsCenterReceiptDigest]
     let messages: [OpsCenterMessageDigest]
     let tasks: [OpsCenterTaskDigest]
+    let turns: [OpsCenterTurnDigest]
+    let delegations: [OpsCenterDelegationDigest]
+    let spans: [OpsCenterSpanDigest]
 }
 
 enum OpsCenterArchiveStore {
@@ -131,7 +213,10 @@ enum OpsCenterArchiveStore {
             dispatches: payload.dispatches,
             receipts: payload.receipts,
             messages: payload.messages,
-            tasks: payload.tasks
+            tasks: payload.tasks,
+            turns: payload.turns,
+            delegations: payload.delegations,
+            spans: payload.spans
         )
     }
 
@@ -505,7 +590,10 @@ enum OpsCenterArchiveStore {
             dispatches: payload?.dispatches ?? [],
             receipts: payload?.receipts ?? [],
             messages: payload?.messages ?? [],
-            tasks: payload?.tasks ?? []
+            tasks: payload?.tasks ?? [],
+            turns: payload?.turns ?? [],
+            delegations: payload?.delegations ?? [],
+            spans: payload?.spans ?? []
         )
     }
 
@@ -560,6 +648,18 @@ enum OpsCenterArchiveStore {
         let messages = decodeNDJSON(
             Message.self,
             from: threadURL.appendingPathComponent("dialog.ndjson", isDirectory: false)
+        )
+        let turns = decodeNDJSON(
+            OpsCenterArchiveTurnAuditDocument.self,
+            from: threadURL.appendingPathComponent("turns.ndjson", isDirectory: false)
+        )
+        let delegations = decodeNDJSON(
+            OpsCenterArchiveDelegationAuditDocument.self,
+            from: threadURL.appendingPathComponent("delegation.ndjson", isDirectory: false)
+        )
+        let spans = decodeNDJSON(
+            OpsCenterArchiveSpanAuditDocument.self,
+            from: sessionRootURL.appendingPathComponent("spans.ndjson", isDirectory: false)
         )
         let threadContext = decode(
             OpsCenterArchiveThreadContextDocument.self,
@@ -714,6 +814,76 @@ enum OpsCenterArchiveStore {
                     timestamp: task.completedAt ?? task.startedAt ?? task.createdAt
                 )
             }
+        let turnDigests = turns
+            .filter { turn in
+                guard let workflowScopeID else { return true }
+                return turn.workflowID == nil || turn.workflowID?.uuidString == workflowScopeID
+            }
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.turnID.uuidString > rhs.turnID.uuidString
+            }
+            .map { turn in
+                OpsCenterTurnDigest(
+                    id: turn.turnID,
+                    role: turn.role,
+                    agentName: turn.agentName,
+                    status: archiveMessageStatus(from: turn.status),
+                    mode: turn.interactionMode ?? turn.threadMode,
+                    summary: compactPreview(turn.summary, limit: 160),
+                    timestamp: turn.timestamp
+                )
+            }
+        let delegationDigests = delegations
+            .filter { delegation in
+                guard let workflowScopeID else { return true }
+                return delegation.workflowID == nil || delegation.workflowID == workflowScopeID
+            }
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.delegationID > rhs.delegationID
+            }
+            .map { delegation in
+                OpsCenterDelegationDigest(
+                    id: delegation.delegationID,
+                    sourceName: delegation.sourceAgentName ?? agentName(for: delegation.sourceAgentID, namesByID: agentNamesByID),
+                    targetName: delegation.targetAgentName ?? agentName(for: delegation.targetAgentID, namesByID: agentNamesByID),
+                    status: archiveDispatchStatus(from: delegation.status),
+                    transportKind: delegation.transportKind,
+                    summary: compactPreview(delegation.summary, limit: 160),
+                    errorText: delegation.errorMessage.map { compactPreview($0, limit: 140) },
+                    timestamp: delegation.updatedAt
+                )
+            }
+        let spanDigests = spans
+            .filter { span in
+                guard let scopedWorkflow else { return true }
+                return scopedWorkflow.nodes.contains(where: { $0.id == span.nodeID })
+            }
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.completedAt ?? lhs.startedAt
+                let rhsDate = rhs.completedAt ?? rhs.startedAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.spanID.uuidString > rhs.spanID.uuidString
+            }
+            .map { span in
+                OpsCenterSpanDigest(
+                    id: span.spanID,
+                    nodeTitle: nodeTitleByID[span.nodeID] ?? "Unknown Node",
+                    agentName: span.agentName ?? agentNamesByID[span.agentID],
+                    status: archiveExecutionStatus(from: span.status),
+                    transportKind: span.transportKind,
+                    summary: compactPreview(span.summary, limit: 160),
+                    duration: span.duration,
+                    timestamp: span.completedAt ?? span.startedAt
+                )
+            }
         return OpsCenterArchiveSessionPayload(
             summary: summary,
             relatedNodeIDs: relatedNodeIDs,
@@ -721,7 +891,10 @@ enum OpsCenterArchiveStore {
             events: eventDigests,
             receipts: receiptDigests,
             messages: messageDigests,
-            tasks: taskDigests
+            tasks: taskDigests,
+            turns: turnDigests.isEmpty ? deriveTurnDigests(from: scopedMessages, namesByID: agentNamesByID) : turnDigests,
+            delegations: delegationDigests.isEmpty ? deriveDelegationDigests(from: scopedDispatches, namesByID: agentNamesByID) : delegationDigests,
+            spans: spanDigests.isEmpty ? deriveSpanDigests(from: scopedReceipts, nodeTitleByID: nodeTitleByID, agentNamesByID: agentNamesByID) : spanDigests
         )
     }
 
@@ -1150,6 +1323,39 @@ enum OpsCenterArchiveStore {
             }
     }
 
+    private static func mergeTurnDigests(_ items: [OpsCenterTurnDigest]) -> [OpsCenterTurnDigest] {
+        Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            .values
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+    }
+
+    private static func mergeDelegationDigests(_ items: [OpsCenterDelegationDigest]) -> [OpsCenterDelegationDigest] {
+        Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            .values
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id > rhs.id
+            }
+    }
+
+    private static func mergeSpanDigests(_ items: [OpsCenterSpanDigest]) -> [OpsCenterSpanDigest] {
+        Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            .values
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+    }
+
     private static func archiveThreadStatus(
         messages: [OpsCenterMessageDigest],
         tasks: [OpsCenterTaskDigest],
@@ -1227,6 +1433,99 @@ enum OpsCenterArchiveStore {
             return "\(agentName ?? "Unassigned") • \(compactPreview(trimmedDescription, limit: 140))"
         }
         return "Assigned to \(agentName ?? "Unassigned")"
+    }
+
+    private static func archiveMessageStatus(from rawValue: String) -> MessageStatus {
+        MessageStatus(rawValue: rawValue) ?? .read
+    }
+
+    private static func archiveDispatchStatus(from rawValue: String) -> RuntimeDispatchStatus {
+        RuntimeDispatchStatus(rawValue: rawValue) ?? .created
+    }
+
+    private static func archiveExecutionStatus(from rawValue: String) -> ExecutionStatus {
+        ExecutionStatus(rawValue: rawValue) ?? .idle
+    }
+
+    private static func deriveTurnDigests(
+        from messages: [Message],
+        namesByID: [UUID: String]
+    ) -> [OpsCenterTurnDigest] {
+        messages
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp {
+                    return lhs.timestamp > rhs.timestamp
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+            .map { message in
+                let role = (message.inferredRole ?? message.metadata["role"] ?? "assistant")
+                let agentName = role == "user"
+                    ? "User"
+                    : namesByID[message.fromAgentID] ?? message.runtimeEvent?.source.agentName ?? message.metadata["agentName"]
+                return OpsCenterTurnDigest(
+                    id: message.id,
+                    role: role,
+                    agentName: agentName,
+                    status: message.status,
+                    mode: message.metadata["workbenchMode"] ?? message.metadata["workbenchThreadMode"],
+                    summary: compactPreview(message.summaryText, limit: 160),
+                    timestamp: message.timestamp
+                )
+            }
+    }
+
+    private static func deriveDelegationDigests(
+        from dispatches: [OpsCenterArchiveRuntimeDispatchEnvelopeDocument],
+        namesByID: [UUID: String]
+    ) -> [OpsCenterDelegationDigest] {
+        dispatches
+            .sorted { lhs, rhs in
+                if lhs.record.updatedAt != rhs.record.updatedAt {
+                    return lhs.record.updatedAt > rhs.record.updatedAt
+                }
+                return lhs.record.id > rhs.record.id
+            }
+            .map { envelope in
+                OpsCenterDelegationDigest(
+                    id: envelope.record.id,
+                    sourceName: agentName(for: envelope.record.sourceAgentID, namesByID: namesByID),
+                    targetName: agentName(for: envelope.record.targetAgentID, namesByID: namesByID),
+                    status: envelope.record.status,
+                    transportKind: envelope.record.transportKind.rawValue,
+                    summary: compactPreview(envelope.record.summary, limit: 160),
+                    errorText: envelope.record.errorMessage.map { compactPreview($0, limit: 140) },
+                    timestamp: envelope.record.updatedAt
+                )
+            }
+    }
+
+    private static func deriveSpanDigests(
+        from receipts: [ExecutionResult],
+        nodeTitleByID: [UUID: String],
+        agentNamesByID: [UUID: String]
+    ) -> [OpsCenterSpanDigest] {
+        receipts
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.completedAt ?? lhs.startedAt
+                let rhsDate = rhs.completedAt ?? rhs.startedAt
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+            .map { receipt in
+                OpsCenterSpanDigest(
+                    id: receipt.id,
+                    nodeTitle: nodeTitleByID[receipt.nodeID] ?? "Unknown Node",
+                    agentName: agentNamesByID[receipt.agentID],
+                    status: receipt.status,
+                    transportKind: receipt.transportKind,
+                    summary: compactPreview(receipt.summaryText, limit: 160),
+                    duration: receipt.duration,
+                    timestamp: receipt.completedAt ?? receipt.startedAt
+                )
+            }
     }
 
     private static func agentName(for rawAgentID: String, namesByID: [UUID: String]) -> String {

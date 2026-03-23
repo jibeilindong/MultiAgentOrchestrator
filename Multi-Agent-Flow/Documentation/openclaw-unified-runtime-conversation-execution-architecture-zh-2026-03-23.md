@@ -75,6 +75,7 @@ Execution Plane
   - `collaboration/workbench/threads/<thread>/turns.ndjson`
   - `collaboration/workbench/threads/<thread>/delegation.ndjson`
   - `runtime/sessions/<session>/spans.ndjson`
+- Ops Center 的 session/thread investigation 已开始读取并展示 turn / delegation / span 审计证据。
 
 这意味着当前系统已经从“方案设计阶段”进入“运行时宿主抽象与控制面下沉阶段”。
 
@@ -876,6 +877,7 @@ Workbench 输入框旁建议固定显示：
 - 已部分落地
 - `thread.json` / `context.json` / `session.json` / `transport-plan.json` / `dispatches.ndjson` / `events.ndjson` / `receipts.ndjson` 已存在
 - 本轮已新增 `turns.ndjson` / `delegation.ndjson` / `spans.ndjson`
+- session/thread investigation 已能直接消费这些新增审计文件
 - 下一阶段重点应放在基于这些审计文件做恢复游标、增量回放和 Ops Center 深层调查入口
 
 ## Phase 5：Projection 与 Ops Center 升级
