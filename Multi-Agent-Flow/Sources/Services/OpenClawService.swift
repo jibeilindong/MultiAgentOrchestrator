@@ -562,11 +562,13 @@ struct ExecutionState: Codable {
 
 class OpenClawService: ObservableObject {
     private struct ActiveGatewayConversation: Sendable {
-        let threadID: String
-        let runID: String
-        let sessionKey: String
-        let startedAt: Date
-        let isAborting: Bool
+        let record: WorkbenchActiveRunRecord
+
+        var threadID: String { record.threadID }
+        var runID: String { record.runID }
+        var sessionKey: String { record.sessionKey }
+        var startedAt: Date { record.startedAt }
+        var isAborting: Bool { record.status == .stopping }
     }
 
     @Published var executionResults: [ExecutionResult] = []
@@ -583,6 +585,7 @@ class OpenClawService: ObservableObject {
     @Published var activeGatewaySessionKey: String?
     @Published var isAbortingActiveGatewayRun = false
     @Published private var activeGatewayConversations: [String: ActiveGatewayConversation] = [:]
+    @Published private(set) var activeWorkbenchRuns: [WorkbenchActiveRunRecord] = []
     @Published var isRunningTransportBenchmark = false
     @Published var transportBenchmarkReport: TransportBenchmarkReport?
     @Published var transportBenchmarkError: String?
@@ -726,7 +729,8 @@ class OpenClawService: ObservableObject {
     func restoreExecutionSnapshot(
         results: [ExecutionResult],
         logs: [ExecutionLogEntry],
-        state: ExecutionState? = nil
+        state: ExecutionState? = nil,
+        activeWorkbenchRuns: [WorkbenchActiveRunRecord] = []
     ) {
         executionResults = results
         executionLogs = logs
@@ -736,7 +740,7 @@ class OpenClawService: ObservableObject {
         totalSteps = 0
         currentNodeID = nil
         lastError = nil
-        clearActiveGatewayConversation()
+        restoreActiveGatewayConversations(from: activeWorkbenchRuns)
     }
 
     func resetExecutionSnapshot() {
@@ -840,6 +844,15 @@ class OpenClawService: ObservableObject {
 
     @MainActor
     private func syncActiveGatewayConversationSnapshot() {
+        activeWorkbenchRuns = activeGatewayConversations.values
+            .map(\.record)
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.id > rhs.id
+            }
+
         if let latestConversation = activeGatewayConversations.values.max(by: { lhs, rhs in
             if lhs.startedAt == rhs.startedAt {
                 return lhs.threadID < rhs.threadID
@@ -857,6 +870,14 @@ class OpenClawService: ObservableObject {
     }
 
     @MainActor
+    private func restoreActiveGatewayConversations(from records: [WorkbenchActiveRunRecord]) {
+        activeGatewayConversations = records.reduce(into: [:]) { partialResult, record in
+            partialResult[record.threadID] = ActiveGatewayConversation(record: record)
+        }
+        syncActiveGatewayConversationSnapshot()
+    }
+
+    @MainActor
     private func activeGatewayConversation(threadID: String?) -> ActiveGatewayConversation? {
         if let normalizedThreadID = normalizedActiveGatewayConversationThreadID(threadID) {
             return activeGatewayConversations[normalizedThreadID]
@@ -871,7 +892,14 @@ class OpenClawService: ObservableObject {
     }
 
     @MainActor
-    private func setActiveGatewayConversation(threadID: String?, runID: String, sessionKey: String) {
+    private func setActiveGatewayConversation(
+        threadID: String?,
+        workflowID: UUID?,
+        runID: String,
+        sessionKey: String,
+        transportKind: String,
+        executionIntent: OpenClawRuntimeExecutionIntent
+    ) {
         guard let normalizedThreadID = normalizedActiveGatewayConversationThreadID(
             threadID,
             sessionKey: sessionKey
@@ -883,11 +911,17 @@ class OpenClawService: ObservableObject {
         }
 
         activeGatewayConversations[normalizedThreadID] = ActiveGatewayConversation(
-            threadID: normalizedThreadID,
-            runID: runID,
-            sessionKey: sessionKey,
-            startedAt: Date(),
-            isAborting: false
+            record: WorkbenchActiveRunRecord(
+                threadID: normalizedThreadID,
+                workflowID: workflowID?.uuidString ?? "",
+                runID: runID,
+                sessionKey: sessionKey,
+                transportKind: transportKind,
+                executionIntent: executionIntent.rawValue,
+                startedAt: Date(),
+                updatedAt: Date(),
+                status: .running
+            )
         )
         syncActiveGatewayConversationSnapshot()
     }
@@ -915,11 +949,18 @@ class OpenClawService: ObservableObject {
         }
 
         activeGatewayConversations[conversation.threadID] = ActiveGatewayConversation(
-            threadID: conversation.threadID,
-            runID: conversation.runID,
-            sessionKey: conversation.sessionKey,
-            startedAt: conversation.startedAt,
-            isAborting: isAborting
+            record: WorkbenchActiveRunRecord(
+                id: conversation.record.id,
+                threadID: conversation.record.threadID,
+                workflowID: conversation.record.workflowID,
+                runID: conversation.record.runID,
+                sessionKey: conversation.record.sessionKey,
+                transportKind: conversation.record.transportKind,
+                executionIntent: conversation.record.executionIntent,
+                startedAt: conversation.record.startedAt,
+                updatedAt: Date(),
+                status: isAborting ? .stopping : .running
+            )
         )
         syncActiveGatewayConversationSnapshot()
         return activeGatewayConversations[conversation.threadID]
@@ -933,6 +974,11 @@ class OpenClawService: ObservableObject {
     @MainActor
     func isAbortingRemoteConversation(threadID: String?) -> Bool {
         activeGatewayConversation(threadID: threadID)?.isAborting ?? false
+    }
+
+    @MainActor
+    func activeWorkbenchRunRecord(threadID: String?) -> WorkbenchActiveRunRecord? {
+        activeGatewayConversation(threadID: threadID)?.record
     }
     
     // MARK: - 回滚机制（刑部任务）
@@ -3228,8 +3274,11 @@ class OpenClawService: ObservableObject {
                                         _Concurrency.Task { @MainActor in
                                             service.setActiveGatewayConversation(
                                                 threadID: threadID,
+                                                workflowID: workflowID,
                                                 runID: runID,
-                                                sessionKey: sessionKey
+                                                sessionKey: sessionKey,
+                                                transportKind: transportKind,
+                                                executionIntent: executionIntent
                                             )
                                         }
                                     },

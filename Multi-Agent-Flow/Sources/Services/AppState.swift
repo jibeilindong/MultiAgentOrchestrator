@@ -736,6 +736,7 @@ class AppState: ObservableObject {
         let subtitle: String
         let preview: String
         let lastActivityAt: Date
+        let activeRunStatus: WorkbenchActiveRunStatus?
         let interactionMode: WorkbenchInteractionMode
         let threadType: RuntimeSessionSemanticType
         let threadMode: WorkbenchThreadSemanticMode
@@ -1239,6 +1240,12 @@ class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        openClawService.$activeWorkbenchRuns
+            .sink { [weak self] _ in
+                self?.syncCurrentProjectFromManagers()
+            }
+            .store(in: &cancellables)
+
         openClawManager.$config
             .sink { [weak self] _ in
                 self?.syncCurrentProjectFromManagers()
@@ -1305,6 +1312,7 @@ class AppState: ObservableObject {
         project.openClaw = projectedOpenClawSnapshot()
         normalizeManagedSessionSnapshotPaths(in: &project)
         project.taskData.lastUpdatedAt = Date()
+        project.runtimeState.activeWorkbenchRuns = openClawService.activeWorkbenchRuns
         project.workspaceIndex = ensureWorkspaceIndex(
             for: project.id,
             workspaceRootPath: project.taskData.workspaceRootPath,
@@ -1326,6 +1334,7 @@ class AppState: ObservableObject {
             confirmedProject.memoryData = project.memoryData
             confirmedProject.runtimeState.sessionID = project.runtimeState.sessionID
             confirmedProject.runtimeState.messageQueue = project.runtimeState.messageQueue
+            confirmedProject.runtimeState.activeWorkbenchRuns = project.runtimeState.activeWorkbenchRuns
             confirmedProject.runtimeState.dispatchQueue = project.runtimeState.dispatchQueue
             confirmedProject.runtimeState.inflightDispatches = project.runtimeState.inflightDispatches
             confirmedProject.runtimeState.completedDispatches = project.runtimeState.completedDispatches
@@ -1370,6 +1379,7 @@ class AppState: ObservableObject {
 
         if var project = currentProject {
             project.runtimeState.messageQueue.removeAll()
+            project.runtimeState.activeWorkbenchRuns.removeAll()
             project.runtimeState.dispatchQueue.removeAll()
             project.runtimeState.inflightDispatches.removeAll()
             project.runtimeState.completedDispatches.removeAll()
@@ -1389,7 +1399,8 @@ class AppState: ObservableObject {
         openClawService.restoreExecutionSnapshot(
             results: openClawService.executionResults,
             logs: openClawService.executionLogs,
-            state: nil
+            state: nil,
+            activeWorkbenchRuns: []
         )
     }
 
@@ -1817,7 +1828,11 @@ class AppState: ObservableObject {
         currentProjectFileURL = url
         taskManager.replaceTasks(project.tasks)
         messageManager.replaceMessages(project.messages)
-        openClawService.restoreExecutionSnapshot(results: project.executionResults, logs: project.executionLogs)
+        openClawService.restoreExecutionSnapshot(
+            results: project.executionResults,
+            logs: project.executionLogs,
+            activeWorkbenchRuns: project.runtimeState.activeWorkbenchRuns
+        )
         openClawManager.restore(from: project.openClaw)
 
         var hydratedProject = project
@@ -6510,6 +6525,9 @@ class AppState: ObservableObject {
         var threadContexts: [String: WorkbenchRemoteSessionContext] = [:]
         var threadMessages: [String: [Message]] = [:]
         var threadTasks: [String: [Task]] = [:]
+        let activeRunsByThreadID = project.runtimeState.activeWorkbenchRuns.reduce(into: [String: WorkbenchActiveRunRecord]()) {
+            $0[$1.threadID] = $1
+        }
 
         for message in messageManager.messages where
             message.metadata[WorkbenchMetadataKey.channel] == "workbench"
@@ -6564,9 +6582,14 @@ class AppState: ObservableObject {
                 id: threadID,
                 workflowID: workflow.id,
                 title: title,
-                subtitle: "\(context.interactionMode.title) · \(context.agentName)",
+                subtitle: workbenchThreadSubtitle(
+                    interactionMode: context.interactionMode,
+                    agentName: context.agentName,
+                    activeRunStatus: activeRunsByThreadID[threadID]?.status
+                ),
                 preview: preview,
                 lastActivityAt: lastActivityAt,
+                activeRunStatus: activeRunsByThreadID[threadID]?.status,
                 interactionMode: context.interactionMode,
                 threadType: context.threadType,
                 threadMode: context.threadMode,
@@ -6581,6 +6604,18 @@ class AppState: ObservableObject {
             }
             return lhs.id > rhs.id
         }
+    }
+
+    private func workbenchThreadSubtitle(
+        interactionMode: WorkbenchInteractionMode,
+        agentName: String,
+        activeRunStatus: WorkbenchActiveRunStatus?
+    ) -> String {
+        var components = [interactionMode.title, agentName]
+        if let activeRunStatus {
+            components.append(activeRunStatus == .stopping ? "stopping" : "running")
+        }
+        return components.joined(separator: " · ")
     }
 
     private func latestWorkbenchThreadContext(

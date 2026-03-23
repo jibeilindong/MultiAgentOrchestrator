@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_ROOT="$(cd "$SELF_DIR/.." && pwd)"
+
+if [[ -x "$RUNTIME_ROOT/libexec/openclaw" ]]; then
+  exec "$RUNTIME_ROOT/libexec/openclaw" "$@"
+fi
+
+if [[ -f "$RUNTIME_ROOT/dist/cli.js" ]]; then
+  exec /usr/bin/env node "$RUNTIME_ROOT/dist/cli.js" "$@"
+fi
+
+if [[ -n "${OPENCLAW_MANAGED_UPSTREAM_ENTRYPOINT:-}" ]] && [[ -f "${OPENCLAW_MANAGED_UPSTREAM_ENTRYPOINT}" ]]; then
+  exec /usr/bin/env node "${OPENCLAW_MANAGED_UPSTREAM_ENTRYPOINT}" "$@"
+fi
+
+cat >&2 <<'EOF'
+The managed OpenClaw runtime payload is installed, but the upstream CLI artifacts
+have not been hydrated into this bundle yet.
+
+Expected one of:
+- libexec/openclaw
+- dist/cli.js
+
+Next step:
+- vendor the packaged OpenClaw build outputs into managed-runtime/openclaw
+- run bash ./scripts/sync-openclaw-managed-runtime.sh
+EOF
+
+exit 72
