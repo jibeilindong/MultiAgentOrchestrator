@@ -32,63 +32,62 @@ final class WorkbenchThreadStateTests: XCTestCase {
         XCTAssertTrue(service.isAbortingActiveGatewayRun)
     }
 
-    @MainActor
-    func testWorkbenchThreadSummariesExposeActiveRunStatus() {
-        let appState = AppState()
-        let agent = Agent(name: "planner-agent-1")
-        var project = MAProject(name: "Workbench Thread Summary Test")
-        project.agents = [agent]
-
-        let workflowID = try! XCTUnwrap(project.workflows.first?.id)
-        let threadID = "thread-summary-running"
-        let sessionID = "session-summary-running"
-        let gatewaySessionKey = "agent:planner-agent-1:thread-summary-running"
-
-        appState.currentProject = project
-        appState.openClawService.restoreExecutionSnapshot(
-            results: [],
-            logs: [],
-            activeWorkbenchRuns: [
-                WorkbenchActiveRunRecord(
-                    threadID: threadID,
-                    workflowID: workflowID.uuidString,
-                    runID: "run-summary-running",
-                    sessionKey: gatewaySessionKey,
-                    transportKind: "gateway_chat",
-                    executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
-                    startedAt: Date(timeIntervalSince1970: 1_710_000_000),
-                    updatedAt: Date(timeIntervalSince1970: 1_710_000_060),
-                    status: .running
-                )
-            ]
+    func testConversationStateResolverPrefersActiveRunStatusOverAssistantMessages() {
+        let state = WorkbenchConversationStateResolver.resolve(
+            WorkbenchConversationStateDerivationInput(
+                interactionMode: .chat,
+                threadMode: .autonomousConversation,
+                latestTaskStatus: nil,
+                latestUserMessageAt: Date(timeIntervalSince1970: 1_710_000_000),
+                latestAssistantMessageAt: Date(timeIntervalSince1970: 1_710_000_060),
+                latestAssistantThinking: false,
+                latestAssistantOutputType: nil,
+                hasRunActivity: false,
+                activeRunStatus: .running,
+                explicitState: .readyToRun
+            )
         )
 
-        var message = Message(from: agent.id, to: agent.id, type: .task, content: "Assess the current workbench state")
-        message.status = .read
-        message.timestamp = Date(timeIntervalSince1970: 1_710_000_120)
-        message.metadata = [
-            WorkbenchMetadataKey.channel: "workbench",
-            WorkbenchMetadataKey.workflowID: workflowID.uuidString,
-            WorkbenchMetadataKey.workbenchSessionID: sessionID,
-            WorkbenchMetadataKey.workbenchThreadID: threadID,
-            WorkbenchMetadataKey.workbenchThreadType: RuntimeSessionSemanticType.conversationAutonomous.rawValue,
-            WorkbenchMetadataKey.workbenchThreadMode: WorkbenchThreadSemanticMode.autonomousConversation.rawValue,
-            WorkbenchMetadataKey.workbenchEntryAgentID: agent.id.uuidString,
-            WorkbenchMetadataKey.workbenchProjectSessionID: project.runtimeState.sessionID,
-            WorkbenchMetadataKey.workbenchGatewaySessionKey: gatewaySessionKey,
-            WorkbenchMetadataKey.workbenchMode: WorkbenchInteractionMode.chat.rawValue,
-            "role": "user",
-            "kind": "input"
-        ]
-        appState.messageManager.replaceMessages([message])
+        XCTAssertEqual(state, .running)
+    }
 
-        let summaries = appState.workbenchThreadSummaries(for: workflowID)
-        let summary = try! XCTUnwrap(summaries.first)
+    func testConversationStateResolverReturnsReadyToRunAfterAssistantReply() {
+        let state = WorkbenchConversationStateResolver.resolve(
+            WorkbenchConversationStateDerivationInput(
+                interactionMode: .chat,
+                threadMode: .autonomousConversation,
+                latestTaskStatus: nil,
+                latestUserMessageAt: Date(timeIntervalSince1970: 1_710_000_000),
+                latestAssistantMessageAt: Date(timeIntervalSince1970: 1_710_000_060),
+                latestAssistantThinking: false,
+                latestAssistantOutputType: nil,
+                hasRunActivity: false,
+                activeRunStatus: nil,
+                explicitState: nil
+            )
+        )
 
-        XCTAssertEqual(summary.id, threadID)
-        XCTAssertEqual(summary.activeRunStatus, .running)
-        XCTAssertTrue(summary.subtitle.contains("running"))
-        XCTAssertEqual(summary.entryAgentName, agent.name)
-        XCTAssertEqual(summary.messageCount, 1)
+        XCTAssertEqual(state, .readyToRun)
+    }
+
+    func testPreferredThreadModePromotesMixedChatAndRunHistoryToConversationToRun() {
+        let preferredMode = WorkbenchThreadSemanticMode.preferredMode(
+            from: [.autonomousConversation, .controlledRun]
+        )
+
+        XCTAssertEqual(preferredMode, .conversationToRun)
+    }
+
+    func testThreadTransitionResolverMarksStopRequestedThreadsAsStopping() {
+        let resolution = WorkbenchThreadTransitionResolver.resolve(
+            .stopRequested,
+            interactionMode: .chat,
+            threadMode: .conversationToRun
+        )
+
+        XCTAssertEqual(resolution.interactionMode, .chat)
+        XCTAssertEqual(resolution.threadMode, .conversationToRun)
+        XCTAssertEqual(resolution.state, .stopping)
+        XCTAssertNil(resolution.errorMessage)
     }
 }

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_ROOT="$(cd "$SELF_DIR/.." && pwd)"
+
+if [[ -x "$RUNTIME_ROOT/libexec/openclaw" ]]; then
+  exec "$RUNTIME_ROOT/libexec/openclaw" "$@"
+fi
+
+NODE_CANDIDATES=(
+  "$RUNTIME_ROOT/runtime/node/bin/node"
+  "$RUNTIME_ROOT/node/bin/node"
+  "${OPENCLAW_MANAGED_NODE_EXECUTABLE:-}"
+)
+
+resolve_node() {
+  local candidate
+  for candidate in "${NODE_CANDIDATES[@]}"; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_js_entrypoint() {
+  local candidate
+  for candidate in \
+    "$RUNTIME_ROOT/openclaw.mjs" \
+    "$RUNTIME_ROOT/dist/cli.js"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if JS_ENTRYPOINT="$(resolve_js_entrypoint)"; then
+  if NODE_EXECUTABLE="$(resolve_node)"; then
+    exec "$NODE_EXECUTABLE" "$JS_ENTRYPOINT" "$@"
+  fi
+
+  cat >&2 <<EOF
+The managed OpenClaw runtime payload contains a JavaScript entrypoint, but no
+bundled Node runtime is available and no system node executable was found.
+
+Missing launcher target:
+- $JS_ENTRYPOINT
+
+Expected one of:
+- runtime/node/bin/node
+- node/bin/node
+- OPENCLAW_MANAGED_NODE_EXECUTABLE
+EOF
+  exit 73
+fi
+
+if [[ -n "${OPENCLAW_MANAGED_UPSTREAM_ENTRYPOINT:-}" ]] && [[ -f "${OPENCLAW_MANAGED_UPSTREAM_ENTRYPOINT}" ]]; then
+  if NODE_EXECUTABLE="$(resolve_node)"; then
+    exec "$NODE_EXECUTABLE" "${OPENCLAW_MANAGED_UPSTREAM_ENTRYPOINT}" "$@"
+  fi
+fi
+
+cat >&2 <<'EOF'
+The managed OpenClaw runtime payload is installed, but the upstream CLI artifacts
+have not been hydrated into this bundle yet.
+
+Expected one of:
+- libexec/openclaw
+- openclaw.mjs plus dist/entry.js and runtime/node/bin/node
+- dist/cli.js plus runtime/node/bin/node
+
+Next step:
+- hydrate the packaged OpenClaw build outputs into managed-runtime/openclaw
+- run bash ./scripts/hydrate-openclaw-managed-runtime.sh --source /path/to/openclaw-build --sync
+EOF
+
+exit 72

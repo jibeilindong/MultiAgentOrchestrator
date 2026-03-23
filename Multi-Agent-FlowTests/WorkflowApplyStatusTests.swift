@@ -169,4 +169,25 @@ final class WorkflowApplyStatusTests: XCTestCase {
 
         XCTAssertEqual(decoded.activeWorkbenchRuns, [runRecord])
     }
+
+    func testRuntimeStatePersistsWorkbenchThreadStates() throws {
+        let stateRecord = WorkbenchThreadStateRecord(
+            threadID: "thread-1",
+            workflowID: UUID().uuidString,
+            interactionMode: .run,
+            threadMode: .conversationToRun,
+            state: .stopping,
+            lastErrorMessage: "operator requested stop",
+            lastTransitionAt: Date(timeIntervalSince1970: 1_710_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_710_000_030)
+        )
+
+        var runtimeState = RuntimeState()
+        runtimeState.workbenchThreadStates = [stateRecord]
+
+        let data = try JSONEncoder().encode(runtimeState)
+        let decoded = try JSONDecoder().decode(RuntimeState.self, from: data)
+
+        XCTAssertEqual(decoded.workbenchThreadStates, [stateRecord])
+    }
 }

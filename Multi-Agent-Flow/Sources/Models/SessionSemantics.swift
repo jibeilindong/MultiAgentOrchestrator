@@ -201,6 +201,155 @@ enum WorkbenchConversationState: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum WorkbenchThreadTransition: Sendable {
+    case chatSubmitted
+    case runSubmitted
+    case escalatedToBackgroundRun
+    case readyToRun
+    case completed(interactionMode: WorkbenchInteractionMode? = nil, threadMode: WorkbenchThreadSemanticMode? = nil)
+    case failed(
+        errorMessage: String? = nil,
+        interactionMode: WorkbenchInteractionMode? = nil,
+        threadMode: WorkbenchThreadSemanticMode? = nil
+    )
+    case stopRequested
+    case disconnected(reason: String)
+}
+
+struct WorkbenchThreadTransitionResolution: Sendable {
+    let interactionMode: WorkbenchInteractionMode
+    let threadMode: WorkbenchThreadSemanticMode
+    let state: WorkbenchConversationState
+    let errorMessage: String?
+}
+
+enum WorkbenchThreadTransitionResolver {
+    static func resolve(
+        _ transition: WorkbenchThreadTransition,
+        interactionMode: WorkbenchInteractionMode,
+        threadMode: WorkbenchThreadSemanticMode
+    ) -> WorkbenchThreadTransitionResolution {
+        switch transition {
+        case .chatSubmitted:
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: .chat,
+                threadMode: threadMode,
+                state: .responding,
+                errorMessage: nil
+            )
+        case .runSubmitted:
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: .run,
+                threadMode: threadMode,
+                state: .running,
+                errorMessage: nil
+            )
+        case .escalatedToBackgroundRun:
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: .run,
+                threadMode: .conversationToRun,
+                state: .running,
+                errorMessage: nil
+            )
+        case .readyToRun:
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: interactionMode,
+                threadMode: threadMode,
+                state: .readyToRun,
+                errorMessage: nil
+            )
+        case let .completed(interactionModeOverride, threadModeOverride):
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: interactionModeOverride ?? interactionMode,
+                threadMode: threadModeOverride ?? threadMode,
+                state: .completed,
+                errorMessage: nil
+            )
+        case let .failed(errorMessage, interactionModeOverride, threadModeOverride):
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: interactionModeOverride ?? interactionMode,
+                threadMode: threadModeOverride ?? threadMode,
+                state: .failed,
+                errorMessage: errorMessage
+            )
+        case .stopRequested:
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: interactionMode,
+                threadMode: threadMode,
+                state: .stopping,
+                errorMessage: nil
+            )
+        case let .disconnected(reason):
+            return WorkbenchThreadTransitionResolution(
+                interactionMode: interactionMode,
+                threadMode: threadMode,
+                state: .failed,
+                errorMessage: reason
+            )
+        }
+    }
+}
+
+struct WorkbenchConversationStateDerivationInput: Sendable {
+    var interactionMode: WorkbenchInteractionMode
+    var threadMode: WorkbenchThreadSemanticMode
+    var latestTaskStatus: TaskStatus?
+    var latestUserMessageAt: Date?
+    var latestAssistantMessageAt: Date?
+    var latestAssistantThinking: Bool
+    var latestAssistantOutputType: String?
+    var hasRunActivity: Bool
+    var activeRunStatus: WorkbenchActiveRunStatus?
+    var explicitState: WorkbenchConversationState?
+}
+
+enum WorkbenchConversationStateResolver {
+    static func resolve(_ input: WorkbenchConversationStateDerivationInput) -> WorkbenchConversationState {
+        if let activeRunStatus = input.activeRunStatus {
+            switch activeRunStatus {
+            case .running:
+                return .running
+            case .stopping:
+                return .stopping
+            }
+        }
+
+        if let explicitState = input.explicitState {
+            return explicitState
+        }
+
+        let normalizedOutputType = input.latestAssistantOutputType?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if input.latestTaskStatus == .blocked || normalizedOutputType == ExecutionOutputType.errorSummary.rawValue {
+            return .failed
+        }
+
+        if input.latestAssistantThinking {
+            return input.interactionMode == .run ? .running : .responding
+        }
+
+        if let latestUserAt = input.latestUserMessageAt,
+           latestUserAt > (input.latestAssistantMessageAt ?? .distantPast) {
+            return input.interactionMode == .run ? .running : .responding
+        }
+
+        if input.hasRunActivity {
+            if input.latestTaskStatus == .done {
+                return .completed
+            }
+            if input.latestTaskStatus == .inProgress {
+                return .running
+            }
+        }
+
+        if input.latestAssistantMessageAt != nil {
+            return .readyToRun
+        }
+
+        return .idle
+    }
+}
+
 extension OpenClawRuntimeExecutionIntent {
     var semanticType: RuntimeSessionSemanticType {
         switch self {

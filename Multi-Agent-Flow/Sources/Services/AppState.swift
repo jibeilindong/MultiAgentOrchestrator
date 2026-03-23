@@ -683,6 +683,34 @@ class AppState: ObservableObject {
     // OpenClaw 执行服务
     @Published var openClawService = OpenClawService()
     let opsAnalytics = OpsAnalyticsService()
+    private lazy var workbenchRuntimeMutationCoordinator = WorkbenchRuntimeMutationCoordinator(
+        appendRuntimeEvents: { [unowned self] events, runtimeState in
+            self.appendRuntimeEvents(events, to: &runtimeState)
+        },
+        enqueueRuntimeDispatch: { [unowned self] event, runtimeState in
+            self.enqueueRuntimeDispatch(event, in: &runtimeState)
+        },
+        promoteRuntimeDispatchToInflight: { [unowned self] event, runtimeState in
+            self.promoteRuntimeDispatchToInflight(event, in: &runtimeState)
+        },
+        promoteRuntimeDispatchToRunning: { [unowned self] event, runtimeState in
+            self.promoteRuntimeDispatchToRunning(event, in: &runtimeState)
+        },
+        makeRuntimeDispatchRecord: { [unowned self] event, status, completedAt, errorMessage in
+            self.makeRuntimeDispatchRecord(
+                from: event,
+                status: status,
+                completedAt: completedAt,
+                errorMessage: errorMessage
+            )
+        },
+        removeSupersededFailedDispatches: { [unowned self] records, runtimeState in
+            self.removeSupersededFailedDispatches(for: records, in: &runtimeState)
+        },
+        recordProtocolOutcome: { [unowned self] result, project in
+            self.recordProtocolOutcome(for: result, in: &project)
+        }
+    )
     @Published var canvasDisplaySettings = CanvasDisplaySettings()
     @Published var orderedToolbarItems = ContentToolbarItem.defaultOrder
     @Published var visibleToolbarItems = Set(ContentToolbarItem.defaultOrder)
@@ -5296,7 +5324,6 @@ class AppState: ObservableObject {
             guard let self else { return }
             let workbenchStart = Date()
             let workbenchThinkingLevel = self.workbenchThinkingLevel(for: trimmedPrompt)
-            var didEscalateToBackgroundRun = false
 
             var task = Task(
                 title: workbenchTaskTitle(from: trimmedPrompt),
@@ -5315,9 +5342,9 @@ class AppState: ObservableObject {
             task.metadata["workbenchThinkingLevel"] = workbenchThinkingLevel.rawValue
             self.applyWorkbenchThreadMetadata(&task.metadata, context: threadContext)
             self.taskManager.addTask(task)
-            self.updateWorkbenchThreadState(
+            self.transitionWorkbenchThread(
                 context: threadContext,
-                state: .responding,
+                .chatSubmitted,
                 at: workbenchStart
             )
 
@@ -5357,16 +5384,11 @@ class AppState: ObservableObject {
                 agentID: leadAgent.id
             )
 
-            if var mutableProject = self.currentProject {
-                mutableProject.runtimeState.messageQueue.append(trimmedPrompt)
-                if let runtimeEvent = userMessage.runtimeEvent {
-                    self.appendRuntimeEvents([runtimeEvent], to: &mutableProject.runtimeState)
-                }
-                mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
-                mutableProject.runtimeState.lastUpdated = Date()
-                mutableProject.updatedAt = Date()
-                self.currentProject = mutableProject
-            }
+            self.recordWorkbenchSubmission(
+                prompt: trimmedPrompt,
+                userRuntimeEvent: userMessage.runtimeEvent,
+                leadAgentID: leadAgent.id
+            )
 
             let otherEntryNodes = entryAgentNodes.filter { $0.id != leadNode.id }
             var streamingMessageID: UUID?
@@ -5471,9 +5493,7 @@ class AppState: ObservableObject {
 
             func completeWorkbenchExecution(
                 results: [ExecutionResult],
-                terminalState: WorkbenchConversationState,
-                terminalThreadMode: WorkbenchThreadSemanticMode? = nil,
-                errorMessage: String? = nil
+                terminalTransition: WorkbenchThreadTransition
             ) {
                 if fullWorkflowAt == nil {
                     let finishedAt = Date()
@@ -5485,71 +5505,15 @@ class AppState: ObservableObject {
                 let finalStatus: TaskStatus = results.isEmpty ? .blocked : (failedCount == 0 ? .done : .blocked)
                 self.taskManager.moveTask(task.id, to: finalStatus)
 
-                if var mutableProject = self.currentProject {
-                    if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: trimmedPrompt) {
-                        mutableProject.runtimeState.messageQueue.remove(at: queueIndex)
-                    }
-                    if let dispatchEventID = userMessage.runtimeEvent?.id {
-                        mutableProject.runtimeState.dispatchQueue.removeAll { $0.id == dispatchEventID }
-                        mutableProject.runtimeState.inflightDispatches.removeAll { inflight in
-                            inflight.id == dispatchEventID || inflight.parentEventID == dispatchEventID
-                        }
-                    }
+                self.recordWorkbenchExecutionResults(
+                    results,
+                    removingQueuedPrompt: trimmedPrompt,
+                    removingDispatchEventID: userMessage.runtimeEvent?.id
+                )
 
-                    for result in results {
-                        mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
-                        self.recordProtocolOutcome(for: result, in: &mutableProject)
-                    }
-                    let completedAt = Date()
-                    let terminalDispatches = results
-                        .flatMap(\.runtimeEvents)
-                        .filter { event in
-                            event.eventType == .taskResult || event.eventType == .taskError
-                        }
-                        .map { event in
-                            self.makeRuntimeDispatchRecord(
-                                from: event,
-                                status: event.eventType == .taskError ? .failed : .completed,
-                                completedAt: completedAt,
-                                errorMessage: event.eventType == .taskError ? event.payload["message"] : nil
-                            )
-                        }
-                    let failedIDs = Set(
-                        terminalDispatches
-                            .filter { $0.status == .failed || $0.status == .aborted || $0.status == .expired }
-                            .map(\.id)
-                    )
-                    let completedDispatches = terminalDispatches.filter { !failedIDs.contains($0.id) }
-                    let failedDispatches = terminalDispatches.filter { failedIDs.contains($0.id) }
-                    let terminalParentIDs = Set(terminalDispatches.compactMap(\.parentEventID))
-                    if !terminalParentIDs.isEmpty {
-                        mutableProject.runtimeState.inflightDispatches.removeAll { terminalParentIDs.contains($0.id) }
-                    }
-                    if !completedDispatches.isEmpty {
-                        self.removeSupersededFailedDispatches(
-                            for: completedDispatches,
-                            in: &mutableProject.runtimeState
-                        )
-                        let completedIDs = Set(completedDispatches.map(\.id))
-                        mutableProject.runtimeState.completedDispatches.removeAll { completedIDs.contains($0.id) }
-                        mutableProject.runtimeState.completedDispatches.append(contentsOf: completedDispatches)
-                    }
-                    if !failedDispatches.isEmpty {
-                        let failedRecordIDs = Set(failedDispatches.map(\.id))
-                        mutableProject.runtimeState.failedDispatches.removeAll { failedRecordIDs.contains($0.id) }
-                        mutableProject.runtimeState.failedDispatches.append(contentsOf: failedDispatches)
-                    }
-                    self.appendRuntimeEvents(results.flatMap(\.runtimeEvents), to: &mutableProject.runtimeState)
-                    mutableProject.runtimeState.lastUpdated = Date()
-                    mutableProject.updatedAt = Date()
-                    self.currentProject = mutableProject
-                }
-
-                self.updateWorkbenchThreadState(
+                self.transitionWorkbenchThread(
                     context: threadContext,
-                    state: terminalState,
-                    threadMode: terminalThreadMode ?? (didEscalateToBackgroundRun ? .conversationToRun : threadContext.threadMode),
-                    errorMessage: errorMessage
+                    terminalTransition
                 )
 
                 self.openClawService.isExecuting = false
@@ -5610,39 +5574,15 @@ class AppState: ObservableObject {
                 },
                 onDispatched: { [weak self] dispatchEvent in
                     guard let self else { return }
-                    if var mutableProject = self.currentProject {
-                        self.enqueueRuntimeDispatch(
-                            dispatchEvent,
-                            in: &mutableProject.runtimeState
-                        )
-                        mutableProject.runtimeState.lastUpdated = Date()
-                        mutableProject.updatedAt = Date()
-                        self.currentProject = mutableProject
-                    }
+                    self.handleWorkbenchDispatchEvent(dispatchEvent)
                 },
                 onAccepted: { [weak self] acceptedEvent in
                     guard let self else { return }
-                    if var mutableProject = self.currentProject {
-                        self.promoteRuntimeDispatchToInflight(
-                            acceptedEvent,
-                            in: &mutableProject.runtimeState
-                        )
-                        mutableProject.runtimeState.lastUpdated = Date()
-                        mutableProject.updatedAt = Date()
-                        self.currentProject = mutableProject
-                    }
+                    self.handleWorkbenchAcceptedEvent(acceptedEvent)
                 },
                 onProgress: { [weak self] progressEvent in
                     guard let self else { return }
-                    if var mutableProject = self.currentProject {
-                        self.promoteRuntimeDispatchToRunning(
-                            progressEvent,
-                            in: &mutableProject.runtimeState
-                        )
-                        mutableProject.runtimeState.lastUpdated = Date()
-                        mutableProject.updatedAt = Date()
-                        self.currentProject = mutableProject
-                    }
+                    self.handleWorkbenchProgressEvent(progressEvent)
                 }
             ) { [weak self] entryExecution in
                 guard let self else { return }
@@ -5674,8 +5614,7 @@ class AppState: ObservableObject {
                     self.openClawService.executionResults = [entryResult]
                     completeWorkbenchExecution(
                         results: [entryResult],
-                        terminalState: .failed,
-                        errorMessage: entryResult.summaryText
+                        terminalTransition: .failed(errorMessage: entryResult.summaryText)
                     )
                     return
                 }
@@ -5691,17 +5630,15 @@ class AppState: ObservableObject {
                     )
                     completeWorkbenchExecution(
                         results: [entryResult],
-                        terminalState: .readyToRun
+                        terminalTransition: .readyToRun
                     )
                     return
                 }
 
                 let backgroundEntryNodeIDs = Set(otherEntryNodes.map(\.id))
-                didEscalateToBackgroundRun = true
-                self.updateWorkbenchThreadState(
+                self.transitionWorkbenchThread(
                     context: threadContext,
-                    state: .running,
-                    threadMode: .conversationToRun
+                    .escalatedToBackgroundRun
                 )
                 self.openClawService.addLog(
                     .info,
@@ -5725,51 +5662,32 @@ class AppState: ObservableObject {
                     agentOutputMode: .plainStreaming,
                     onNodeDispatched: { [weak self] dispatchEvent in
                         guard let self else { return }
-                        if var mutableProject = self.currentProject {
-                            self.enqueueRuntimeDispatch(
-                                dispatchEvent,
-                                in: &mutableProject.runtimeState
-                            )
-                            mutableProject.runtimeState.lastUpdated = Date()
-                            mutableProject.updatedAt = Date()
-                            self.currentProject = mutableProject
-                        }
+                        self.handleWorkbenchDispatchEvent(dispatchEvent)
                     },
                     onNodeAccepted: { [weak self] acceptedEvent in
                         guard let self else { return }
-                        if var mutableProject = self.currentProject {
-                            self.promoteRuntimeDispatchToInflight(
-                                acceptedEvent,
-                                in: &mutableProject.runtimeState
-                            )
-                            mutableProject.runtimeState.lastUpdated = Date()
-                            mutableProject.updatedAt = Date()
-                            self.currentProject = mutableProject
-                        }
+                        self.handleWorkbenchAcceptedEvent(acceptedEvent)
                     },
                     onNodeProgress: { [weak self] progressEvent in
                         guard let self else { return }
-                        if var mutableProject = self.currentProject {
-                            self.promoteRuntimeDispatchToRunning(
-                                progressEvent,
-                                in: &mutableProject.runtimeState
-                            )
-                            mutableProject.runtimeState.lastUpdated = Date()
-                            mutableProject.updatedAt = Date()
-                            self.currentProject = mutableProject
-                        }
+                        self.handleWorkbenchProgressEvent(progressEvent)
                     }
                 ) { [weak self] results in
                     guard self != nil else { return }
                     let failureSummary = results.first(where: { $0.status == .failed })?.summaryText
-                    let terminalState: WorkbenchConversationState = results.isEmpty
-                        ? .failed
-                        : (results.contains(where: { $0.status == .failed }) ? .failed : .completed)
+                    let terminalTransition: WorkbenchThreadTransition = results.isEmpty || results.contains(where: { $0.status == .failed })
+                        ? .failed(
+                            errorMessage: failureSummary,
+                            interactionMode: .run,
+                            threadMode: .conversationToRun
+                        )
+                        : .completed(
+                            interactionMode: .run,
+                            threadMode: .conversationToRun
+                        )
                     completeWorkbenchExecution(
                         results: results,
-                        terminalState: terminalState,
-                        terminalThreadMode: .conversationToRun,
-                        errorMessage: failureSummary
+                        terminalTransition: terminalTransition
                     )
                 }
             }
@@ -5816,9 +5734,9 @@ class AppState: ObservableObject {
         task.metadata["entryNodeAgentIDs"] = entryAgentIDs.map(\.uuidString).sorted().joined(separator: ",")
         applyWorkbenchThreadMetadata(&task.metadata, context: threadContext)
         taskManager.addTask(task)
-        updateWorkbenchThreadState(
+        transitionWorkbenchThread(
             context: threadContext,
-            state: .running,
+            .runSubmitted,
             at: workbenchStart
         )
 
@@ -5906,16 +5824,11 @@ class AppState: ObservableObject {
             agentID: leadAgent.id
         )
 
-        if var mutableProject = currentProject {
-            mutableProject.runtimeState.messageQueue.append(prompt)
-            if let runtimeEvent = userMessage.runtimeEvent {
-                appendRuntimeEvents([runtimeEvent], to: &mutableProject.runtimeState)
-            }
-            mutableProject.runtimeState.agentStates[leadAgent.id.uuidString] = "queued"
-            mutableProject.runtimeState.lastUpdated = Date()
-            mutableProject.updatedAt = Date()
-            currentProject = mutableProject
-        }
+        recordWorkbenchSubmission(
+            prompt: prompt,
+            userRuntimeEvent: userMessage.runtimeEvent,
+            leadAgentID: leadAgent.id
+        )
 
         openClawService.executeWorkflow(
             workflow,
@@ -5928,30 +5841,15 @@ class AppState: ObservableObject {
             agentOutputMode: .structuredJSON,
             onNodeDispatched: { [weak self] dispatchEvent in
                 guard let self else { return }
-                if var mutableProject = self.currentProject {
-                    self.enqueueRuntimeDispatch(dispatchEvent, in: &mutableProject.runtimeState)
-                    mutableProject.runtimeState.lastUpdated = Date()
-                    mutableProject.updatedAt = Date()
-                    self.currentProject = mutableProject
-                }
+                self.handleWorkbenchDispatchEvent(dispatchEvent)
             },
             onNodeAccepted: { [weak self] acceptedEvent in
                 guard let self else { return }
-                if var mutableProject = self.currentProject {
-                    self.promoteRuntimeDispatchToInflight(acceptedEvent, in: &mutableProject.runtimeState)
-                    mutableProject.runtimeState.lastUpdated = Date()
-                    mutableProject.updatedAt = Date()
-                    self.currentProject = mutableProject
-                }
+                self.handleWorkbenchAcceptedEvent(acceptedEvent)
             },
             onNodeProgress: { [weak self] progressEvent in
                 guard let self else { return }
-                if var mutableProject = self.currentProject {
-                    self.promoteRuntimeDispatchToRunning(progressEvent, in: &mutableProject.runtimeState)
-                    mutableProject.runtimeState.lastUpdated = Date()
-                    mutableProject.updatedAt = Date()
-                    self.currentProject = mutableProject
-                }
+                self.handleWorkbenchProgressEvent(progressEvent)
             }
         ) { [weak self] results in
             guard let self else { return }
@@ -5964,59 +5862,17 @@ class AppState: ObservableObject {
             let finalStatus: TaskStatus = failedResults.isEmpty ? .done : .blocked
             self.taskManager.moveTask(task.id, to: finalStatus)
 
-            if var mutableProject = self.currentProject {
-                if let queueIndex = mutableProject.runtimeState.messageQueue.firstIndex(of: prompt) {
-                    mutableProject.runtimeState.messageQueue.remove(at: queueIndex)
-                }
-                for result in results {
-                    mutableProject.runtimeState.agentStates[result.agentID.uuidString] = result.status.rawValue.lowercased()
-                    self.recordProtocolOutcome(for: result, in: &mutableProject)
-                }
-                let terminalDispatches = results
-                    .flatMap(\.runtimeEvents)
-                    .filter { event in
-                        event.eventType == .taskResult || event.eventType == .taskError
-                    }
-                    .map { event in
-                        self.makeRuntimeDispatchRecord(
-                            from: event,
-                            status: event.eventType == .taskError ? .failed : .completed,
-                            completedAt: completedAt,
-                            errorMessage: event.eventType == .taskError ? event.payload["message"] : nil
-                        )
-                    }
-                let failedIDs = Set(
-                    terminalDispatches
-                        .filter { $0.status == .failed || $0.status == .aborted || $0.status == .expired }
-                        .map(\.id)
-                )
-                let completedDispatches = terminalDispatches.filter { !failedIDs.contains($0.id) }
-                let failedDispatches = terminalDispatches.filter { failedIDs.contains($0.id) }
-                let terminalParentIDs = Set(terminalDispatches.compactMap(\.parentEventID))
-                if !terminalParentIDs.isEmpty {
-                    mutableProject.runtimeState.inflightDispatches.removeAll { terminalParentIDs.contains($0.id) }
-                }
-                if !completedDispatches.isEmpty {
-                    self.removeSupersededFailedDispatches(for: completedDispatches, in: &mutableProject.runtimeState)
-                    let completedIDs = Set(completedDispatches.map(\.id))
-                    mutableProject.runtimeState.completedDispatches.removeAll { completedIDs.contains($0.id) }
-                    mutableProject.runtimeState.completedDispatches.append(contentsOf: completedDispatches)
-                }
-                if !failedDispatches.isEmpty {
-                    let failedRecordIDs = Set(failedDispatches.map(\.id))
-                    mutableProject.runtimeState.failedDispatches.removeAll { failedRecordIDs.contains($0.id) }
-                    mutableProject.runtimeState.failedDispatches.append(contentsOf: failedDispatches)
-                }
-                self.appendRuntimeEvents(results.flatMap(\.runtimeEvents), to: &mutableProject.runtimeState)
-                mutableProject.runtimeState.lastUpdated = Date()
-                mutableProject.updatedAt = Date()
-                self.currentProject = mutableProject
-            }
+            self.recordWorkbenchExecutionResults(
+                results,
+                removingQueuedPrompt: prompt,
+                at: completedAt
+            )
 
-            self.updateWorkbenchThreadState(
+            self.transitionWorkbenchThread(
                 context: threadContext,
-                state: results.isEmpty ? .failed : (failedResults.isEmpty ? .completed : .failed),
-                errorMessage: failedResults.first?.summaryText
+                results.isEmpty || !failedResults.isEmpty
+                    ? .failed(errorMessage: failedResults.first?.summaryText)
+                    : .completed()
             )
 
             let summaryLine = (
@@ -6049,10 +5905,7 @@ class AppState: ObservableObject {
 
     func requestStopWorkbenchConversation(_ summary: WorkbenchThreadSummary?) {
         if let summary {
-            updateWorkbenchThreadState(
-                from: summary,
-                state: .stopping
-            )
+            transitionWorkbenchThread(from: summary, .stopRequested)
             openClawService.abortActiveRemoteConversation(threadID: summary.id)
             return
         }
@@ -6738,24 +6591,9 @@ class AppState: ObservableObject {
         activeRunRecord: WorkbenchActiveRunRecord?,
         explicitStateRecord: WorkbenchThreadStateRecord?
     ) -> WorkbenchConversationState {
-        if let activeRunRecord {
-            switch activeRunRecord.status {
-            case .running:
-                return .running
-            case .stopping:
-                return .stopping
-            }
-        }
-
-        if let explicitStateRecord {
-            return explicitStateRecord.state
-        }
-
         let latestTask = tasks.last
         let latestUserMessage = messages.last(where: { ($0.inferredRole ?? "").lowercased() == "user" })
         let latestAssistantMessage = messages.last(where: { ($0.inferredRole ?? "").lowercased() == "assistant" })
-        let latestAssistantThinking = latestAssistantMessage?.metadata["thinking"]?.lowercased() == "true"
-        let latestAssistantOutputType = latestAssistantMessage?.inferredOutputType?.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasRunActivity = interactionMode == .run
             || threadMode != .autonomousConversation
             || contextSamples.contains(where: { sample in
@@ -6764,77 +6602,188 @@ class AppState: ObservableObject {
                     || sample.context.threadType == .workflowControlled
             })
 
-        if latestTask?.status == .blocked || latestAssistantOutputType == ExecutionOutputType.errorSummary.rawValue {
-            return .failed
-        }
-
-        if latestAssistantThinking {
-            return interactionMode == .run ? .running : .responding
-        }
-
-        if let latestUserAt = latestUserMessage?.timestamp,
-           latestUserAt > (latestAssistantMessage?.timestamp ?? .distantPast) {
-            return interactionMode == .run ? .running : .responding
-        }
-
-        if hasRunActivity {
-            if latestTask?.status == .done {
-                return .completed
-            }
-            if latestTask?.status == .inProgress {
-                return .running
-            }
-        }
-
-        if latestAssistantMessage != nil {
-            return .readyToRun
-        }
-
-        return .idle
+        return WorkbenchConversationStateResolver.resolve(
+            WorkbenchConversationStateDerivationInput(
+                interactionMode: interactionMode,
+                threadMode: threadMode,
+                latestTaskStatus: latestTask?.status,
+                latestUserMessageAt: latestUserMessage?.timestamp,
+                latestAssistantMessageAt: latestAssistantMessage?.timestamp,
+                latestAssistantThinking: latestAssistantMessage?.metadata["thinking"]?.lowercased() == "true",
+                latestAssistantOutputType: latestAssistantMessage?.inferredOutputType,
+                hasRunActivity: hasRunActivity,
+                activeRunStatus: activeRunRecord?.status,
+                explicitState: explicitStateRecord?.state
+            )
+        )
     }
 
-    private func updateWorkbenchThreadState(
+    private func resolvedWorkbenchThreadTransition(
+        _ transition: WorkbenchThreadTransition,
+        interactionMode: WorkbenchInteractionMode,
+        threadMode: WorkbenchThreadSemanticMode
+    ) -> WorkbenchThreadTransitionResolution {
+        WorkbenchThreadTransitionResolver.resolve(
+            transition,
+            interactionMode: interactionMode,
+            threadMode: threadMode
+        )
+    }
+
+    private func transitionWorkbenchThread(
         context: WorkbenchThreadContext,
-        state: WorkbenchConversationState,
-        interactionMode: WorkbenchInteractionMode? = nil,
-        threadMode: WorkbenchThreadSemanticMode? = nil,
-        errorMessage: String? = nil,
+        _ transition: WorkbenchThreadTransition,
         at timestamp: Date = Date()
     ) {
+        let resolution = resolvedWorkbenchThreadTransition(
+            transition,
+            interactionMode: context.interactionMode,
+            threadMode: context.threadMode
+        )
         guard var project = currentProject else { return }
         updateWorkbenchThreadState(
             in: &project.runtimeState,
             workflowID: context.workflowID,
             threadID: context.threadID,
-            interactionMode: interactionMode ?? context.interactionMode,
-            threadMode: threadMode ?? context.threadMode,
-            state: state,
-            errorMessage: errorMessage,
+            interactionMode: resolution.interactionMode,
+            threadMode: resolution.threadMode,
+            state: resolution.state,
+            errorMessage: resolution.errorMessage,
             at: timestamp
         )
         project.updatedAt = timestamp
         currentProject = project
     }
 
-    private func updateWorkbenchThreadState(
+    private func transitionWorkbenchThread(
         from summary: WorkbenchThreadSummary,
-        state: WorkbenchConversationState,
-        errorMessage: String? = nil,
+        _ transition: WorkbenchThreadTransition,
         at timestamp: Date = Date()
     ) {
+        let resolution = resolvedWorkbenchThreadTransition(
+            transition,
+            interactionMode: summary.interactionMode,
+            threadMode: summary.threadMode
+        )
         guard var project = currentProject else { return }
         updateWorkbenchThreadState(
             in: &project.runtimeState,
             workflowID: summary.workflowID,
             threadID: summary.id,
-            interactionMode: summary.interactionMode,
-            threadMode: summary.threadMode,
-            state: state,
-            errorMessage: errorMessage,
+            interactionMode: resolution.interactionMode,
+            threadMode: resolution.threadMode,
+            state: resolution.state,
+            errorMessage: resolution.errorMessage,
             at: timestamp
         )
         project.updatedAt = timestamp
         currentProject = project
+    }
+
+    private func transitionWorkbenchThread(
+        in runtimeState: inout RuntimeState,
+        workflowID: UUID,
+        threadID: String,
+        interactionMode: WorkbenchInteractionMode,
+        threadMode: WorkbenchThreadSemanticMode,
+        _ transition: WorkbenchThreadTransition,
+        at timestamp: Date = Date()
+    ) {
+        let resolution = resolvedWorkbenchThreadTransition(
+            transition,
+            interactionMode: interactionMode,
+            threadMode: threadMode
+        )
+        updateWorkbenchThreadState(
+            in: &runtimeState,
+            workflowID: workflowID,
+            threadID: threadID,
+            interactionMode: resolution.interactionMode,
+            threadMode: resolution.threadMode,
+            state: resolution.state,
+            errorMessage: resolution.errorMessage,
+            at: timestamp
+        )
+    }
+
+    private func mutateCurrentProject(
+        at timestamp: Date = Date(),
+        _ updates: (inout MAProject) -> Void
+    ) {
+        guard var project = currentProject else { return }
+        updates(&project)
+        project.runtimeState.lastUpdated = timestamp
+        project.updatedAt = timestamp
+        currentProject = project
+    }
+
+    private func recordWorkbenchSubmission(
+        prompt: String,
+        userRuntimeEvent: OpenClawRuntimeEvent?,
+        leadAgentID: UUID,
+        at timestamp: Date = Date()
+    ) {
+        mutateCurrentProject(at: timestamp) { project in
+            self.workbenchRuntimeMutationCoordinator.recordSubmission(
+                project: &project,
+                prompt: prompt,
+                userRuntimeEvent: userRuntimeEvent,
+                leadAgentID: leadAgentID
+            )
+        }
+    }
+
+    private func handleWorkbenchDispatchEvent(
+        _ dispatchEvent: OpenClawRuntimeEvent,
+        at timestamp: Date = Date()
+    ) {
+        mutateCurrentProject(at: timestamp) { project in
+            self.workbenchRuntimeMutationCoordinator.handleDispatchEvent(
+                project: &project,
+                dispatchEvent: dispatchEvent
+            )
+        }
+    }
+
+    private func handleWorkbenchAcceptedEvent(
+        _ acceptedEvent: OpenClawRuntimeEvent,
+        at timestamp: Date = Date()
+    ) {
+        mutateCurrentProject(at: timestamp) { project in
+            self.workbenchRuntimeMutationCoordinator.handleAcceptedEvent(
+                project: &project,
+                acceptedEvent: acceptedEvent
+            )
+        }
+    }
+
+    private func handleWorkbenchProgressEvent(
+        _ progressEvent: OpenClawRuntimeEvent,
+        at timestamp: Date = Date()
+    ) {
+        mutateCurrentProject(at: timestamp) { project in
+            self.workbenchRuntimeMutationCoordinator.handleProgressEvent(
+                project: &project,
+                progressEvent: progressEvent
+            )
+        }
+    }
+
+    private func recordWorkbenchExecutionResults(
+        _ results: [ExecutionResult],
+        removingQueuedPrompt prompt: String,
+        removingDispatchEventID dispatchEventID: String? = nil,
+        at completedAt: Date = Date()
+    ) {
+        mutateCurrentProject(at: completedAt) { project in
+            self.workbenchRuntimeMutationCoordinator.recordExecutionResults(
+                project: &project,
+                results: results,
+                removingQueuedPrompt: prompt,
+                removingDispatchEventID: dispatchEventID,
+                at: completedAt
+            )
+        }
     }
 
     private func updateWorkbenchThreadState(
@@ -6907,14 +6856,13 @@ class AppState: ObservableObject {
                 ?? (interactionMode == .run ? .controlledRun : .autonomousConversation)
             let workflowIDString = existingRecord?.workflowID ?? activeRunRecord?.workflowID ?? ""
             let workflowID = UUID(uuidString: workflowIDString)
-            updateWorkbenchThreadState(
+            transitionWorkbenchThread(
                 in: &runtimeState,
                 workflowID: workflowID ?? UUID(),
                 threadID: threadID,
                 interactionMode: interactionMode,
                 threadMode: threadMode,
-                state: .failed,
-                errorMessage: reason,
+                .disconnected(reason: reason),
                 at: timestamp
             )
         }

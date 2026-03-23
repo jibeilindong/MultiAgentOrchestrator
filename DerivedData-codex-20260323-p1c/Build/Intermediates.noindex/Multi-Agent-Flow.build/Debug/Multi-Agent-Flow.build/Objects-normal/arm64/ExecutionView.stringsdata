@@ -1,0 +1,72 @@
+{
+  "source": "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/ExecutionView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Benchmarking...",
+        "location": {
+          "startingColumn": 70,
+          "startingLine": 57
+        }
+      },
+      {
+        "comment": "",
+        "key": "Run Benchmark",
+        "location": {
+          "startingColumn": 90,
+          "startingLine": 57
+        }
+      },
+      {
+        "comment": "",
+        "key": "Agent: %@ | Iterations: %lld",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 319
+        }
+      },
+      {
+        "comment": "",
+        "key": "Transport Benchmark",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 307
+        }
+      },
+      {
+        "comment": "",
+        "key": "Vs CLI",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 325
+        }
+      },
+      {
+        "comment": "",
+        "key": "Success %lld/%lld",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 372
+        }
+      },
+      {
+        "comment": "",
+        "key": "First %@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 377
+        }
+      },
+      {
+        "comment": "",
+        "key": "Total %@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 382
+        }
+      }
+    ]
+  },
+  "version": 1
+}
