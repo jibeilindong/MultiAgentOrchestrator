@@ -988,7 +988,6 @@ private struct QuickChatSessionRow: View {
                     }
                     .animation(.easeInOut(duration: 0.14), value: isTrailingHover)
                     .opacity(isHovered || isTrailingHover ? 1 : 0.001)
-                }
             }
         }
         .contentShape(Rectangle())

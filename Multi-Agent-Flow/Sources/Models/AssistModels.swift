@@ -360,6 +360,69 @@ struct AssistWorkflowNodePlacement: Codable, Hashable, Sendable {
     }
 }
 
+enum AssistTextMutationKind: String, Codable, CaseIterable, Sendable {
+    case replaceFile = "replace_file"
+}
+
+struct AssistTextMutationPlan: Codable, Hashable, Sendable {
+    var kind: AssistTextMutationKind
+    var relativeFilePath: String
+    var workspaceSurface: AssistWorkspaceSurface
+    var templateID: String?
+    var templateName: String?
+    var sourceDidExist: Bool
+    var sourceContent: String?
+    var resultingContent: String
+    var summary: String?
+    var rationale: String?
+    var warnings: [String]
+
+    init(
+        kind: AssistTextMutationKind = .replaceFile,
+        relativeFilePath: String,
+        workspaceSurface: AssistWorkspaceSurface = .draft,
+        templateID: String? = nil,
+        templateName: String? = nil,
+        sourceDidExist: Bool,
+        sourceContent: String? = nil,
+        resultingContent: String,
+        summary: String? = nil,
+        rationale: String? = nil,
+        warnings: [String] = []
+    ) {
+        self.kind = kind
+        self.relativeFilePath = relativeFilePath
+        self.workspaceSurface = workspaceSurface
+        self.templateID = templateID
+        self.templateName = templateName
+        self.sourceDidExist = sourceDidExist
+        self.sourceContent = sourceContent
+        self.resultingContent = resultingContent
+        self.summary = summary
+        self.rationale = rationale
+        self.warnings = warnings
+    }
+}
+
+struct AssistTemplateDraftFileSnapshot: Codable, Hashable, Sendable {
+    var templateID: String
+    var relativeFilePath: String
+    var fileExisted: Bool
+    var contents: String?
+
+    init(
+        templateID: String,
+        relativeFilePath: String,
+        fileExisted: Bool,
+        contents: String? = nil
+    ) {
+        self.templateID = templateID
+        self.relativeFilePath = relativeFilePath
+        self.fileExisted = fileExisted
+        self.contents = contents
+    }
+}
+
 struct AssistSnapshotRef: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var targetRef: AssistMutationTargetRef
