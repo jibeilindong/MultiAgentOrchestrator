@@ -171,11 +171,8 @@ struct CanvasContentView: View {
             let visibleSharedEdgeHitLayouts = sharedEdgeHitLayouts.filter { $0.bounds.intersects(visibleCanvasRect) }
             let visiblePreviewLineLayouts = previewLineLayouts.filter { previewLineBounds(for: $0).intersects(visibleCanvasRect) }
             let canvasLayer = ZStack {
-                GridBackground()
-                    .frame(width: geometry.size.width * 10, height: geometry.size.height * 10)
-                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                    .scaleEffect(scale)
-                    .offset(offset)
+                GridBackground(scale: scale, offset: offset)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                     .opacity(isDraggingOverCanvas ? 0.6 : 1.0)
 
                 if isDraggingOverCanvas {
@@ -1120,7 +1117,7 @@ private func transformTranslationDelta(
     )
 }
 
-private func workflowCanvasNodeSize(
+func workflowCanvasNodeSize(
     for nodeType: WorkflowNode.NodeType,
     outgoingConnections: Int
 ) -> CGSize {

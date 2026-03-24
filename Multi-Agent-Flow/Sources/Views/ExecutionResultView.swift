@@ -108,7 +108,7 @@ struct ExecutionResultView: View {
     }
 
     private var hasRoutingDetails: Bool {
-        result.routingAction != nil || !result.routingTargets.isEmpty || result.routingReason != nil
+        result.hasVisibleRoutingDetails
     }
 
     private var hasTransportDetails: Bool {
@@ -125,7 +125,7 @@ struct ExecutionResultView: View {
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(.orange)
-                if let action = result.routingAction {
+                if let action = result.visibleRoutingAction {
                     Text(routingActionLabel(action))
                         .font(.caption2)
                         .padding(.horizontal, 8)
@@ -136,13 +136,13 @@ struct ExecutionResultView: View {
                 }
             }
 
-            if !result.routingTargets.isEmpty {
-                Text("Targets: \(result.routingTargets.joined(separator: ", "))")
+            if !result.visibleRoutingTargets.isEmpty {
+                Text("Targets: \(result.visibleRoutingTargets.joined(separator: ", "))")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
 
-            if let reason = result.routingReason,
+            if let reason = result.visibleRoutingReason,
                !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("Reason: \(reason)")
                     .font(.caption2)

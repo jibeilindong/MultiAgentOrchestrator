@@ -214,18 +214,15 @@ nonisolated final class OpenClawHost {
                 rootURL.appendingPathComponent("openclaw", isDirectory: false).path
             ]
         }
-        let systemCandidates = [
-            homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
-            "/usr/local/bin/openclaw",
-            "/opt/homebrew/bin/openclaw",
-            "/usr/bin/openclaw"
-        ]
-
-        if !configured.isEmpty {
-            return deduplicatedLocalBinaryPaths([configured] + bundleCandidates + managedCandidates + systemCandidates)
+        if config.usesManagedLocalRuntime {
+            return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates)
         }
 
-        return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates + systemCandidates)
+        if !configured.isEmpty {
+            return deduplicatedLocalBinaryPaths([configured])
+        }
+
+        return deduplicatedLocalBinaryPaths([configured] + bundleCandidates + managedCandidates)
     }
 
     func buildOpenClawCommandPlan(
@@ -401,6 +398,15 @@ nonisolated final class OpenClawHost {
         allowFallback: Bool = true
     ) -> URL? {
         guard config.deploymentKind == .local else { return nil }
+
+        if config.usesManagedLocalRuntime {
+            guard let managedRootURL = managedRuntimeRootURL ?? Self.defaultManagedLocalRuntimeRootURL(fileManager: fileManager) else {
+                return nil
+            }
+
+            let managedConfigURL = managedRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+            return managedConfigURL
+        }
 
         let fallbackURL = fallbackLocalOpenClawRootURL()
             .appendingPathComponent("openclaw.json", isDirectory: false)

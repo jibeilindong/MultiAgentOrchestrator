@@ -3,7 +3,6 @@ import Foundation
 enum WorkbenchChatEntryDisposition: Equatable {
     case failed(errorMessage: String?)
     case readyToRun
-    case continueInBackground
 }
 
 struct WorkbenchWorkflowRunPresentation {
@@ -16,24 +15,13 @@ struct WorkbenchWorkflowRunPresentation {
 
 final class WorkbenchFlowLifecycleCoordinator {
     func chatEntryDisposition(
-        for entryResult: ExecutionResult,
-        hasBackgroundNodes: Bool
+        for entryResult: ExecutionResult
     ) -> WorkbenchChatEntryDisposition {
         guard entryResult.status == .completed else {
             return .failed(errorMessage: entryResult.summaryText)
         }
 
-        return hasBackgroundNodes ? .continueInBackground : .readyToRun
-    }
-
-    func backgroundWorkflowTerminalTransition(
-        for results: [ExecutionResult]
-    ) -> WorkbenchThreadTransition {
-        terminalTransition(
-            for: results,
-            successInteractionMode: .run,
-            successThreadMode: .conversationToRun
-        )
+        return .readyToRun
     }
 
     func workflowRunPresentation(

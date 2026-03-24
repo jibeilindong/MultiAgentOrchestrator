@@ -872,6 +872,23 @@ class AppState: ObservableObject {
         }
     }
 
+    enum WorkbenchSubmissionBlocker: String, Equatable, Sendable {
+        case busy
+        case threadResponding = "thread_responding"
+        case threadStopping = "thread_stopping"
+
+        var localizedMessage: String {
+            switch self {
+            case .busy:
+                return LocalizedString.text("workbench_error_busy")
+            case .threadResponding:
+                return LocalizedString.text("workbench_error_thread_responding")
+            case .threadStopping:
+                return LocalizedString.text("workbench_error_thread_stopping")
+            }
+        }
+    }
+
     struct AgentRuntimePreparationState {
         let agentID: UUID
         let nodeID: UUID?
@@ -1133,6 +1150,41 @@ class AppState: ObservableObject {
         }
     }
 
+    var openClawRuntimeSourceDescriptor: OpenClawRuntimeSourceDescriptor {
+        openClawManager.runtimeSourceDescriptor()
+    }
+
+    var openClawRuntimeSourceBadgeTitle: String {
+        openClawRuntimeSourceDescriptor.badgeTitle
+    }
+
+    var openClawRuntimeSourceSummary: String {
+        openClawRuntimeSourceDescriptor.summary
+    }
+
+    var openClawRuntimeSourceDetail: String {
+        openClawRuntimeSourceDescriptor.detail
+    }
+
+    var openClawRuntimeSourceEndpoint: String? {
+        openClawRuntimeSourceDescriptor.endpoint
+    }
+
+    var openClawRuntimeSourceBinaryPath: String? {
+        openClawRuntimeSourceDescriptor.binaryPath
+    }
+
+    var openClawRuntimeSourceColor: Color {
+        switch openClawManager.config.deploymentKind {
+        case .local:
+            return openClawManager.config.runtimeOwnership == .appManaged ? .green : .orange
+        case .container:
+            return .blue
+        case .remoteServer:
+            return .purple
+        }
+    }
+
     var hasPendingOpenClawSessionSync: Bool {
         isCurrentProjectAttachedToOpenClaw
             && pendingOpenClawRuntimeSyncRevisionDelta > 0
@@ -1223,11 +1275,28 @@ class AppState: ObservableObject {
             publishDetail = "当前项目已经绑定，但仍未执行最终 Publish。"
         }
 
+        let activeConversationExecutionCount = openClawService.activeLocalExecutionActivities.reduce(into: 0) { count, activity in
+            if activity.executionIntent == .conversationAutonomous {
+                count += 1
+            }
+        }
+        let hasActiveConversationExecution = activeConversationExecutionCount > 0
+
         let executeStatus: OpenClawRuntimeControlPlaneGateStatus
         let executeDetail: String
-        if openClawService.isExecuting {
+        if openClawService.hasActiveWorkflowExecution {
             executeStatus = .active
-            executeDetail = "OpenClaw 正在执行当前工作流或聊天请求。"
+            executeDetail = "OpenClaw 正在执行 workflow run。"
+        } else if hasActiveConversationExecution {
+            executeStatus = .active
+            if activeConversationExecutionCount == 1 {
+                executeDetail = "OpenClaw 正在回复 1 个聊天线程；run.controlled 会等待当前回复完成后再继续。"
+            } else {
+                executeDetail = "OpenClaw 正在回复 \(activeConversationExecutionCount) 个聊天线程；run.controlled 会等待这些本地回复结束后再继续。"
+            }
+        } else if openClawService.hasAnyLocalExecutionActivity {
+            executeStatus = .active
+            executeDetail = "OpenClaw 正在执行本地运行时活动（例如 launch verification 或只读检查）。"
         } else if openClawManager.canRunConversation || openClawManager.canRunWorkflow {
             executeStatus = .ready
             if let blockingMessage = openClawRunControlledBlockingMessage {
@@ -1984,7 +2053,7 @@ class AppState: ObservableObject {
     }
 
     func shutdown() {
-        openClawManager.disconnect()
+        openClawManager.shutdownForApplicationTermination()
         if currentProject != nil {
             syncCurrentProjectFromManagers()
             persistCurrentProjectSilently()
@@ -5024,8 +5093,8 @@ class AppState: ObservableObject {
             return false
         }
 
-        guard !openClawService.isExecuting else {
-            openClawService.addLog(.warning, "Launch verification is unavailable while another workflow execution is in progress.")
+        guard !openClawService.hasAnyLocalExecutionActivity else {
+            openClawService.addLog(.warning, "Launch verification is unavailable while another local runtime activity is in progress.")
             return false
         }
 
@@ -5413,9 +5482,17 @@ class AppState: ObservableObject {
     ) -> String? {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty,
-              !openClawService.isExecuting,
               let project = currentProject,
               let workflow = self.workflow(for: workflowID) else {
+            return nil
+        }
+
+        if let blockingMessage = workbenchSubmissionBlockingMessage(
+            workflowID: workflow.id,
+            mode: mode,
+            preferredThreadID: preferredThreadID
+        ) {
+            openClawService.addLog(.warning, "Workbench publish blocked: \(blockingMessage)")
             return nil
         }
 
@@ -6044,6 +6121,78 @@ class AppState: ObservableObject {
         return latestWorkbenchThreadContext(for: workflow, project: project)?.threadID
     }
 
+    static func workbenchSubmissionBlocker(
+        mode: WorkbenchInteractionMode,
+        hasAnyLocalExecution: Bool,
+        hasExecutingWorkflow: Bool,
+        hasExecutingConversationInThread: Bool,
+        threadConversationState: WorkbenchConversationState?,
+        threadActiveRunStatus: WorkbenchActiveRunStatus?,
+        isPreparingFreshThread: Bool
+    ) -> WorkbenchSubmissionBlocker? {
+        switch mode {
+        case .run:
+            return hasAnyLocalExecution ? .busy : nil
+        case .chat:
+            if hasExecutingWorkflow {
+                return .busy
+            }
+            guard !isPreparingFreshThread else { return nil }
+            if threadConversationState == .stopping || threadActiveRunStatus == .stopping {
+                return .threadStopping
+            }
+            if hasExecutingConversationInThread || threadConversationState == .responding {
+                return .threadResponding
+            }
+            return nil
+        }
+    }
+
+    func workbenchSubmissionBlocker(
+        workflowID: UUID?,
+        mode: WorkbenchInteractionMode,
+        preferredThreadID: String? = nil,
+        isPreparingFreshThread: Bool = false
+    ) -> WorkbenchSubmissionBlocker? {
+        let threadSummary: WorkbenchThreadSummary?
+        if let threadID = preferredThreadID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !threadID.isEmpty {
+            threadSummary = workbenchThreadSummaries(for: workflowID).first { $0.id == threadID }
+        } else if isPreparingFreshThread {
+            threadSummary = nil
+        } else {
+            threadSummary = latestWorkbenchThreadID(for: workflowID).flatMap { threadID in
+                workbenchThreadSummaries(for: workflowID).first { $0.id == threadID }
+            }
+        }
+
+        return Self.workbenchSubmissionBlocker(
+            mode: mode,
+            hasAnyLocalExecution: openClawService.hasAnyLocalExecutionActivity,
+            hasExecutingWorkflow: openClawService.hasActiveWorkflowExecution,
+            hasExecutingConversationInThread: openClawService.hasActiveConversationExecution(
+                threadID: threadSummary?.id
+            ),
+            threadConversationState: threadSummary?.conversationState,
+            threadActiveRunStatus: threadSummary?.activeRunStatus,
+            isPreparingFreshThread: isPreparingFreshThread
+        )
+    }
+
+    func workbenchSubmissionBlockingMessage(
+        workflowID: UUID?,
+        mode: WorkbenchInteractionMode,
+        preferredThreadID: String? = nil,
+        isPreparingFreshThread: Bool = false
+    ) -> String? {
+        workbenchSubmissionBlocker(
+            workflowID: workflowID,
+            mode: mode,
+            preferredThreadID: preferredThreadID,
+            isPreparingFreshThread: isPreparingFreshThread
+        )?.localizedMessage
+    }
+
     func workbenchThreadSummaries(for workflowID: UUID?) -> [WorkbenchThreadSummary] {
         guard let project = currentProject,
               let workflow = self.workflow(for: workflowID) ?? project.workflows.first else {
@@ -6638,12 +6787,9 @@ class AppState: ObservableObject {
     private func executeWorkbenchChatEntry(
         _ executionContext: WorkbenchChatExecutionContext
     ) {
-        let otherEntryNodes = executionContext.routing.entryAgentNodes.filter {
-            $0.id != executionContext.routing.leadNode.id
-        }
         let replyTracker = makeWorkbenchEntryReplyTracker(executionContext)
 
-        prepareWorkbenchEntryExecution(executionContext)
+        let localExecutionActivityID = prepareWorkbenchEntryExecution(executionContext)
 
         openClawService.executeWorkbenchEntryNode(
             node: executionContext.routing.leadNode,
@@ -6686,9 +6832,9 @@ class AppState: ObservableObject {
             guard let self else { return }
             self.handleWorkbenchEntryExecutionCompletion(
                 entryExecution,
+                localExecutionActivityID: localExecutionActivityID,
                 replyTracker: replyTracker,
-                executionContext: executionContext,
-                otherEntryNodes: otherEntryNodes
+                executionContext: executionContext
             )
         }
     }
@@ -6716,63 +6862,23 @@ class AppState: ObservableObject {
         }
     }
 
-    private func continueWorkbenchExecutionInBackground(
-        workflow: Workflow,
-        project: MAProject,
-        prompt: String,
-        threadContext: WorkbenchThreadContext,
-        leadAgent: Agent,
-        leadNode: WorkflowNode,
-        otherEntryNodes: [WorkflowNode],
-        entryResult: ExecutionResult,
-        backgroundNodes: [WorkflowNode],
-        completion: @escaping ([ExecutionResult]) -> Void
-    ) {
-        let backgroundEntryNodeIDs = Set(otherEntryNodes.map(\.id))
-        transitionWorkbenchThread(
-            context: threadContext,
-            .escalatedToBackgroundRun
-        )
-        openClawService.addLog(
-            .info,
-            "Workbench reply completed. Continuing workflow in background with \(backgroundNodes.count) queued node(s).",
-            sessionID: threadContext.sessionID,
-            agentID: leadAgent.id
-        )
-        executeWorkbenchWorkflow(
-            workflow,
-            agents: project.agents,
-            prompt: prompt,
-            projectID: project.id,
-            threadContext: threadContext,
-            startingNodes: backgroundNodes,
-            entryNodeIDsOverride: backgroundEntryNodeIDs,
-            preloadedResults: [entryResult],
-            precompletedNodeIDs: [leadNode.id],
-            agentOutputMode: .plainStreaming,
-            completion: completion
-        )
-    }
-
     private func handleWorkbenchEntryExecutionCompletion(
         _ entryExecution: WorkbenchEntryExecution,
+        localExecutionActivityID: String,
         replyTracker: WorkbenchEntryReplyTracker,
-        executionContext: WorkbenchChatExecutionContext,
-        otherEntryNodes: [WorkflowNode]
+        executionContext: WorkbenchChatExecutionContext
     ) {
         let entryResult = entryExecution.result
+        openClawService.endLocalExecutionActivity(localExecutionActivityID)
         persistAndCompleteWorkbenchEntryReply(
             entryResult,
             tracker: replyTracker,
             executionContext: executionContext
         )
 
-        let backgroundNodes = orderedUniqueWorkflowNodes(otherEntryNodes + entryExecution.downstreamNodes)
         handleWorkbenchChatEntryDisposition(
             entryResult: entryResult,
-            backgroundNodes: backgroundNodes,
             replyTracker: replyTracker,
-            otherEntryNodes: otherEntryNodes,
             executionContext: executionContext
         )
     }
@@ -6800,16 +6906,11 @@ class AppState: ObservableObject {
 
     private func handleWorkbenchChatEntryDisposition(
         entryResult: ExecutionResult,
-        backgroundNodes: [WorkflowNode],
         replyTracker: WorkbenchEntryReplyTracker,
-        otherEntryNodes: [WorkflowNode],
         executionContext: WorkbenchChatExecutionContext
     ) {
         let completionContext = workbenchExecutionCompletionContext(for: executionContext)
-        switch workbenchFlowLifecycleCoordinator.chatEntryDisposition(
-            for: entryResult,
-            hasBackgroundNodes: !backgroundNodes.isEmpty
-        ) {
+        switch workbenchFlowLifecycleCoordinator.chatEntryDisposition(for: entryResult) {
         case let .failed(errorMessage):
             completeWorkbenchChatExecution(
                 replyTracker: replyTracker,
@@ -6821,7 +6922,7 @@ class AppState: ObservableObject {
         case .readyToRun:
             openClawService.addLog(
                 .info,
-                "Workbench reply completed with no additional workflow nodes queued.",
+                "Workbench chat turn completed and remains in ready-to-run conversation state.",
                 sessionID: completionContext.context.sessionID,
                 agentID: completionContext.leadAgent.id
             )
@@ -6832,37 +6933,18 @@ class AppState: ObservableObject {
                 results: [entryResult],
                 terminalTransition: .readyToRun
             )
-        case .continueInBackground:
-            continueWorkbenchExecutionInBackground(
-                workflow: executionContext.workflow,
-                project: executionContext.project,
-                prompt: executionContext.prompt,
-                threadContext: executionContext.session.context,
-                leadAgent: executionContext.routing.leadAgent,
-                leadNode: executionContext.routing.leadNode,
-                otherEntryNodes: otherEntryNodes,
-                entryResult: entryResult,
-                backgroundNodes: backgroundNodes
-            ) { results in
-                self.completeWorkbenchChatExecution(
-                    replyTracker: replyTracker,
-                    completionContext: completionContext,
-                    dispatchEventID: executionContext.session.userRuntimeEventID,
-                    results: results,
-                    terminalTransition: self.workbenchFlowLifecycleCoordinator
-                        .backgroundWorkflowTerminalTransition(for: results)
-                )
-            }
         }
     }
 
     private func prepareWorkbenchEntryExecution(
         _ executionContext: WorkbenchChatExecutionContext
-    ) {
-        openClawService.isExecuting = true
-        openClawService.currentNodeID = executionContext.routing.leadNode.id
-        openClawService.currentStep = 0
-        openClawService.totalSteps = max(executionContext.routing.entryAgentNodes.count, 1)
+    ) -> String {
+        let activityID = openClawService.beginLocalExecutionActivity(
+            executionIntent: .conversationAutonomous,
+            threadID: executionContext.session.context.threadID,
+            workflowID: executionContext.workflow.id,
+            sessionID: executionContext.session.context.sessionID
+        )
         openClawService.lastError = nil
         openClawService.addLog(
             .info,
@@ -6876,6 +6958,7 @@ class AppState: ObservableObject {
             sessionID: executionContext.session.context.sessionID,
             agentID: executionContext.routing.leadAgent.id
         )
+        return activityID
     }
 
     private func orderedUniqueWorkflowNodes(_ nodes: [WorkflowNode]) -> [WorkflowNode] {
@@ -7226,8 +7309,6 @@ class AppState: ObservableObject {
             terminalTransition
         )
         openClawService.executionResults = results
-        openClawService.isExecuting = false
-        openClawService.currentNodeID = nil
     }
 
     private func markActiveWorkbenchThreadStatesFailed(

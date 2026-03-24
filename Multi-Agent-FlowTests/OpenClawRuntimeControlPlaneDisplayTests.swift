@@ -119,6 +119,70 @@ final class OpenClawRuntimeControlPlaneDisplayTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testExecuteSummaryDistinguishesActiveConversationRepliesFromWorkflowRuns() {
+        let appState = sharedOpenClawRuntimeControlPlaneTestAppState
+        let manager = appState.openClawManager
+
+        let originalConfig = manager.config
+        let originalConnectionState = manager.connectionState
+        let originalProjectAttachment = manager.projectAttachment
+        let originalSessionLifecycle = manager.sessionLifecycle
+        let originalProject = appState.currentProject
+
+        defer {
+            manager.config = originalConfig
+            manager.connectionState = originalConnectionState
+            manager.projectAttachment = originalProjectAttachment
+            manager.sessionLifecycle = originalSessionLifecycle
+            appState.currentProject = originalProject
+        }
+
+        manager.config = .default
+        manager.connectionState = OpenClawConnectionStateSnapshot(
+            phase: .ready,
+            deploymentKind: .local,
+            capabilities: OpenClawConnectionCapabilitiesSnapshot(
+                gatewayReachable: true,
+                gatewayAuthenticated: true,
+                gatewayChatAvailable: true,
+                projectAttachmentSupported: true
+            )
+        )
+
+        var project = MAProject(name: "Control Plane Chat Active")
+        project.runtimeState.workflowConfigurationRevision = 3
+        project.runtimeState.appliedToMirrorConfigurationRevision = 3
+        project.runtimeState.syncedToRuntimeConfigurationRevision = 3
+        appState.currentProject = project
+
+        manager.projectAttachment = OpenClawProjectAttachmentSnapshot(
+            state: .attached,
+            projectID: project.id,
+            attachedAt: Date()
+        )
+        manager.sessionLifecycle = OpenClawSessionLifecycleSnapshot(
+            stage: .synced,
+            hasPendingMirrorChanges: false
+        )
+
+        let activityID = appState.openClawService.beginLocalExecutionActivity(
+            executionIntent: .conversationAutonomous,
+            threadID: "thread-control-plane-chat",
+            workflowID: project.workflows.first?.id,
+            sessionID: "session-control-plane-chat"
+        )
+        defer {
+            appState.openClawService.endLocalExecutionActivity(activityID)
+        }
+
+        XCTAssertEqual(appState.currentOpenClawRuntimeControlPlaneEntry.gate, .execute)
+        XCTAssertEqual(
+            appState.openClawRuntimeControlPlaneSummary,
+            "OpenClaw 正在回复 1 个聊天线程；run.controlled 会等待当前回复完成后再继续。"
+        )
+    }
+
     private func makeBlockedSyncReceipt() -> OpenClawRuntimeSyncReceipt {
         OpenClawRuntimeSyncReceipt(
             projectID: UUID(),

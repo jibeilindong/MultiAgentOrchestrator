@@ -849,6 +849,12 @@ async function openClawRootCandidatesForConfig(config: OpenClawConfig): Promise<
     });
   }
 
+  if (config.runtimeOwnership === "appManaged") {
+    return buildOpenClawRootFallbackCandidates(config, {
+      managedRuntimeRootDirectory: path.join(app.getPath("userData"), "openclaw", "runtime")
+    });
+  }
+
   return buildOpenClawRootFallbackCandidates(config, {
     localHomeDirectory: os.homedir()
   });

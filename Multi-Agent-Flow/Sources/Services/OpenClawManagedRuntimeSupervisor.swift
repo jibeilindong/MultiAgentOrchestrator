@@ -29,12 +29,20 @@ struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
     var binaryPath: String?
     var logPath: String?
     var processID: Int32?
+    var requestedPort: Int?
     var port: Int?
     var lastStartedAt: Date?
     var lastExitAt: Date?
+    var lastUnexpectedExitAt: Date?
     var lastHeartbeatAt: Date?
     var lastStatusCheckAt: Date?
     var restartCount: Int
+    var manualRestartCount: Int
+    var automaticRecoveryCount: Int
+    var consecutiveCrashCount: Int
+    var automaticRecoveryAttempt: Int?
+    var lastRecoveryAttemptAt: Date?
+    var lastRecoverySucceededAt: Date?
     var lastMessage: String?
     var lastError: String?
 
@@ -46,12 +54,20 @@ struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
         binaryPath: String? = nil,
         logPath: String? = nil,
         processID: Int32? = nil,
+        requestedPort: Int? = nil,
         port: Int? = nil,
         lastStartedAt: Date? = nil,
         lastExitAt: Date? = nil,
+        lastUnexpectedExitAt: Date? = nil,
         lastHeartbeatAt: Date? = nil,
         lastStatusCheckAt: Date? = nil,
         restartCount: Int = 0,
+        manualRestartCount: Int = 0,
+        automaticRecoveryCount: Int = 0,
+        consecutiveCrashCount: Int = 0,
+        automaticRecoveryAttempt: Int? = nil,
+        lastRecoveryAttemptAt: Date? = nil,
+        lastRecoverySucceededAt: Date? = nil,
         lastMessage: String? = nil,
         lastError: String? = nil
     ) {
@@ -62,12 +78,20 @@ struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
         self.binaryPath = binaryPath
         self.logPath = logPath
         self.processID = processID
+        self.requestedPort = requestedPort
         self.port = port
         self.lastStartedAt = lastStartedAt
         self.lastExitAt = lastExitAt
+        self.lastUnexpectedExitAt = lastUnexpectedExitAt
         self.lastHeartbeatAt = lastHeartbeatAt
         self.lastStatusCheckAt = lastStatusCheckAt
         self.restartCount = restartCount
+        self.manualRestartCount = manualRestartCount
+        self.automaticRecoveryCount = automaticRecoveryCount
+        self.consecutiveCrashCount = consecutiveCrashCount
+        self.automaticRecoveryAttempt = automaticRecoveryAttempt
+        self.lastRecoveryAttemptAt = lastRecoveryAttemptAt
+        self.lastRecoverySucceededAt = lastRecoverySucceededAt
         self.lastMessage = lastMessage
         self.lastError = lastError
     }
@@ -76,6 +100,7 @@ struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
 nonisolated final class OpenClawManagedRuntimeSupervisor {
     private struct PersistedProcessState: Codable {
         var pid: Int32
+        var requestedPort: Int?
         var port: Int
         var executablePath: String
         var logPath: String
@@ -97,18 +122,29 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
     private let managedRuntimeRootURL: URL?
     private let supervisorRootURL: URL?
     private let dateProvider: () -> Date
+    private let automaticRecoveryDelaySeconds: TimeInterval
+    private let automaticRecoveryStableUptimeSeconds: TimeInterval
+    private let automaticRecoveryMaxConsecutiveAttempts: Int
     private let lock = NSLock()
 
     private var trackedProcess: TrackedProcess?
     private var expectedStoppedPID: Int32?
     private var statusSnapshot: OpenClawManagedRuntimeStatusSnapshot
+    private var lastManagedConfig: OpenClawConfig?
+    private var automaticRecoveryWorkItem: DispatchWorkItem?
+    private var automaticRecoveryInProgress = false
+    private var consecutiveUnexpectedExitCount = 0
+    private var statusChangeHandler: ((OpenClawManagedRuntimeStatusSnapshot) -> Void)?
 
     nonisolated init(
         fileManager: FileManager = .default,
         host: OpenClawHost? = nil,
         managedRuntimeRootURL: URL? = OpenClawManagedRuntimeInstaller.shared.managedRuntimeRootURL(),
         supervisorRootURL: URL? = nil,
-        dateProvider: @escaping () -> Date = Date.init
+        dateProvider: @escaping () -> Date = Date.init,
+        automaticRecoveryDelaySeconds: TimeInterval = 2,
+        automaticRecoveryStableUptimeSeconds: TimeInterval = 30,
+        automaticRecoveryMaxConsecutiveAttempts: Int = 3
     ) {
         self.fileManager = fileManager
         self.host = host ?? OpenClawHost(
@@ -118,6 +154,9 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         self.managedRuntimeRootURL = managedRuntimeRootURL
         self.supervisorRootURL = supervisorRootURL
         self.dateProvider = dateProvider
+        self.automaticRecoveryDelaySeconds = max(automaticRecoveryDelaySeconds, 0)
+        self.automaticRecoveryStableUptimeSeconds = max(automaticRecoveryStableUptimeSeconds, 0)
+        self.automaticRecoveryMaxConsecutiveAttempts = max(automaticRecoveryMaxConsecutiveAttempts, 1)
         let resolvedSupervisorRootURL = supervisorRootURL
             ?? managedRuntimeRootURL?
                 .deletingLastPathComponent()
@@ -132,6 +171,12 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
 
     func currentStatusSnapshot() -> OpenClawManagedRuntimeStatusSnapshot {
         locked { statusSnapshot }
+    }
+
+    func setStatusChangeHandler(_ handler: ((OpenClawManagedRuntimeStatusSnapshot) -> Void)?) {
+        locked {
+            statusChangeHandler = handler
+        }
     }
 
     func buildLaunchCommandPlan(using config: OpenClawConfig) throws -> OpenClawManagedRuntimeSupervisorCommandPlan {
@@ -156,6 +201,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
                 $0.state = .unmanaged
                 $0.launchStrategy = nil
                 $0.processID = nil
+                $0.requestedPort = nil
                 $0.port = nil
                 $0.lastStatusCheckAt = dateProvider()
                 $0.lastMessage = "当前配置未启用 App Managed OpenClaw Runtime。"
@@ -168,6 +214,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
 
         return locked {
             cleanupTrackedProcessIfNeededLocked()
+            _ = reconcileCrashRecoveryStabilityIfNeededLocked(now: now)
 
             var nextSnapshot = statusSnapshot
             nextSnapshot.runtimeRootPath = managedRuntimeRootURL?.path
@@ -175,6 +222,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
                 nextSnapshot.supervisorRootPath = resolvedSupervisorRootURL.path
             }
             nextSnapshot.lastStatusCheckAt = now
+            nextSnapshot.requestedPort = config.port
             nextSnapshot.port = config.port
 
             if let trackedProcess, isProcessAlive(pid: trackedProcess.pid) {
@@ -195,6 +243,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
                 nextSnapshot.binaryPath = persistedState.executablePath
                 nextSnapshot.logPath = persistedState.logPath
                 nextSnapshot.processID = persistedState.pid
+                nextSnapshot.requestedPort = persistedState.requestedPort ?? config.port
                 nextSnapshot.port = persistedState.port
                 nextSnapshot.lastStartedAt = persistedState.startedAt
                 nextSnapshot.lastMessage = "检测到托管 OpenClaw Runtime 仍在运行。"
@@ -221,12 +270,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         let snapshot = refreshStatus(using: config)
         guard config.usesManagedLocalRuntime else { return snapshot }
 
-        if snapshot.state == .running, snapshot.port == config.port {
+        if snapshot.state == .running {
             return snapshot
-        }
-
-        if snapshot.state == .running, snapshot.port != config.port {
-            _ = try stop(using: config)
         }
 
         return try start(using: config)
@@ -238,12 +283,30 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             return refreshStatus(using: config)
         }
 
+        let automaticRecoveryStart = locked { automaticRecoveryInProgress }
+        locked {
+            lastManagedConfig = config
+            if !automaticRecoveryStart {
+                cancelAutomaticRecoveryLocked()
+                consecutiveUnexpectedExitCount = 0
+                statusSnapshot.consecutiveCrashCount = 0
+                statusSnapshot.automaticRecoveryAttempt = nil
+            }
+        }
+
         let currentSnapshot = refreshStatus(using: config)
-        if currentSnapshot.state == .running, currentSnapshot.port == config.port {
+        if currentSnapshot.state == .running {
             return currentSnapshot
         }
 
-        let commandPlan = try buildLaunchCommandPlan(using: config)
+        var launchConfig = config
+        if config.usesManagedLocalRuntime {
+            launchConfig.port = resolveManagedRuntimePort(preferredPort: config.port, host: config.host)
+        }
+        let requestedPort = config.port
+        let didReassignPort = launchConfig.port != requestedPort
+
+        let commandPlan = try buildLaunchCommandPlan(using: launchConfig)
         let executablePath = commandPlan.executableURL.path
         guard fileManager.fileExists(atPath: executablePath) else {
             throw NSError(
@@ -263,7 +326,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         let logsRootURL = supervisorRootURL.appendingPathComponent("logs", isDirectory: true)
         try fileManager.createDirectory(at: logsRootURL, withIntermediateDirectories: true)
 
-        let logURL = logsRootURL.appendingPathComponent("gateway-\(config.port).log", isDirectory: false)
+        let logURL = logsRootURL.appendingPathComponent("gateway-\(launchConfig.port).log", isDirectory: false)
         if !fileManager.fileExists(atPath: logURL.path) {
             fileManager.createFile(atPath: logURL.path, contents: nil)
         }
@@ -283,9 +346,12 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             $0.launchStrategy = commandPlan.launchStrategy
             $0.binaryPath = executablePath
             $0.logPath = logURL.path
-            $0.port = config.port
+            $0.requestedPort = requestedPort
+            $0.port = launchConfig.port
             $0.lastStatusCheckAt = dateProvider()
-            $0.lastMessage = "正在启动托管 OpenClaw Gateway Sidecar..."
+            $0.lastMessage = didReassignPort
+                ? "首选端口 \(requestedPort) 已被占用，正在改用 \(launchConfig.port) 启动托管 OpenClaw Gateway Sidecar..."
+                : "正在启动托管 OpenClaw Gateway Sidecar..."
             $0.lastError = nil
         }
 
@@ -309,7 +375,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             process: process,
             logHandle: logHandle,
             pid: pid,
-            port: config.port,
+            port: launchConfig.port,
             logURL: logURL,
             launchStrategy: commandPlan.launchStrategy
         )
@@ -317,7 +383,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         try persistProcessState(
             PersistedProcessState(
                 pid: pid,
-                port: config.port,
+                requestedPort: requestedPort,
+                port: launchConfig.port,
                 executablePath: executablePath,
                 logPath: logURL.path,
                 launchStrategy: commandPlan.launchStrategy,
@@ -333,12 +400,12 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         }
 
         let readinessTimeout = TimeInterval(max(config.timeout, 5))
-        guard waitForGatewayReadiness(host: config.host, port: config.port, timeoutSeconds: readinessTimeout) else {
+        guard waitForGatewayReadiness(host: launchConfig.host, port: launchConfig.port, timeoutSeconds: readinessTimeout) else {
             _ = try? stopProcess(pid: pid)
             throw NSError(
                 domain: "OpenClawManagedRuntimeSupervisor",
                 code: 4102,
-                userInfo: [NSLocalizedDescriptionKey: "托管 OpenClaw Gateway 启动超时，\(Int(readinessTimeout)) 秒内未监听端口 \(config.port)。"]
+                userInfo: [NSLocalizedDescriptionKey: "托管 OpenClaw Gateway 启动超时，\(Int(readinessTimeout)) 秒内未监听端口 \(launchConfig.port)。"]
             )
         }
 
@@ -348,10 +415,13 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             $0.binaryPath = executablePath
             $0.logPath = logURL.path
             $0.processID = pid
-            $0.port = config.port
+            $0.requestedPort = requestedPort
+            $0.port = launchConfig.port
             $0.lastStartedAt = startedAt
             $0.lastStatusCheckAt = dateProvider()
-            $0.lastMessage = "托管 OpenClaw Gateway Sidecar 已启动。"
+            $0.lastMessage = didReassignPort
+                ? "首选端口 \(requestedPort) 已被占用，托管 OpenClaw Gateway Sidecar 已改用 \(launchConfig.port) 启动。"
+                : "托管 OpenClaw Gateway Sidecar 已启动。"
             $0.lastError = nil
         }
     }
@@ -362,11 +432,19 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             return refreshStatus(using: config)
         }
 
+        locked {
+            cancelAutomaticRecoveryLocked()
+            automaticRecoveryInProgress = false
+            consecutiveUnexpectedExitCount = 0
+        }
+
         let snapshot = refreshStatus(using: config)
         guard let pid = snapshot.processID else {
             return updateStatusSnapshot {
                 $0.state = .idle
                 $0.lastStatusCheckAt = dateProvider()
+                $0.consecutiveCrashCount = 0
+                $0.automaticRecoveryAttempt = nil
                 $0.lastMessage = "托管 OpenClaw Runtime 已处于停止状态。"
                 $0.lastError = nil
             }
@@ -386,6 +464,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             $0.processID = nil
             $0.lastExitAt = dateProvider()
             $0.lastStatusCheckAt = dateProvider()
+            $0.consecutiveCrashCount = 0
+            $0.automaticRecoveryAttempt = nil
             $0.lastMessage = "托管 OpenClaw Runtime 已停止。"
             $0.lastError = nil
         }
@@ -397,11 +477,14 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             return refreshStatus(using: config)
         }
 
-        let previousRestartCount = currentStatusSnapshot().restartCount
+        let currentSnapshot = currentStatusSnapshot()
+        let previousRestartCount = currentSnapshot.restartCount
+        let previousManualRestartCount = currentSnapshot.manualRestartCount
         _ = try stop(using: config)
         _ = try start(using: config)
         return updateStatusSnapshot {
             $0.restartCount = previousRestartCount + 1
+            $0.manualRestartCount = previousManualRestartCount + 1
             $0.lastMessage = "托管 OpenClaw Runtime 已重启。"
         }
     }
@@ -412,6 +495,10 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         return updateStatusSnapshot {
             if $0.state == .starting {
                 $0.state = .running
+            }
+            if self.recoveryWindowHasStabilized(now: now, snapshot: $0) {
+                self.consecutiveUnexpectedExitCount = 0
+                $0.consecutiveCrashCount = 0
             }
             $0.lastHeartbeatAt = now
             $0.lastStatusCheckAt = now
@@ -546,6 +633,18 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         return false
     }
 
+    private func resolveManagedRuntimePort(preferredPort: Int, host: String) -> Int {
+        let normalizedPreferredPort = max(preferredPort, 1)
+        for offset in 0...64 {
+            let candidatePort = normalizedPreferredPort + offset
+            if !canConnect(host: host, port: candidatePort) {
+                return candidatePort
+            }
+        }
+
+        return normalizedPreferredPort
+    }
+
     private func canConnect(host: String, port: Int) -> Bool {
         var hints = addrinfo(
             ai_flags: 0,
@@ -649,6 +748,10 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
 
     private func handleProcessTermination(pid: Int32, terminationStatus: Int32) {
         removePersistedProcessState()
+        let now = dateProvider()
+        var snapshotToPublish: OpenClawManagedRuntimeStatusSnapshot?
+        var recoveryConfig: OpenClawConfig?
+        var recoveryAttempt = 0
 
         locked {
             if let trackedProcess, trackedProcess.pid == pid {
@@ -659,21 +762,63 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             let expectedStop = expectedStoppedPID == pid
             if expectedStop {
                 expectedStoppedPID = nil
+                cancelAutomaticRecoveryLocked()
+                automaticRecoveryInProgress = false
+                consecutiveUnexpectedExitCount = 0
+            }
+
+            let uptime = statusSnapshot.lastStartedAt.map { now.timeIntervalSince($0) } ?? 0
+            if !expectedStop && uptime >= automaticRecoveryStableUptimeSeconds {
+                consecutiveUnexpectedExitCount = 0
             }
 
             statusSnapshot.processID = nil
-            statusSnapshot.lastExitAt = dateProvider()
-            statusSnapshot.lastStatusCheckAt = dateProvider()
+            statusSnapshot.lastExitAt = now
+            statusSnapshot.lastStatusCheckAt = now
 
             if expectedStop {
                 statusSnapshot.state = .idle
+                statusSnapshot.consecutiveCrashCount = 0
+                statusSnapshot.automaticRecoveryAttempt = nil
                 statusSnapshot.lastMessage = "托管 OpenClaw Runtime 已停止。"
                 statusSnapshot.lastError = nil
+            } else if let config = lastManagedConfig, config.shouldAutoRestartManagedRuntimeOnCrash {
+                consecutiveUnexpectedExitCount += 1
+                statusSnapshot.lastUnexpectedExitAt = now
+                statusSnapshot.consecutiveCrashCount = consecutiveUnexpectedExitCount
+                if consecutiveUnexpectedExitCount <= automaticRecoveryMaxConsecutiveAttempts {
+                    recoveryConfig = config
+                    recoveryAttempt = consecutiveUnexpectedExitCount
+                    statusSnapshot.state = .starting
+                    statusSnapshot.automaticRecoveryAttempt = recoveryAttempt
+                    let crashMessage = "托管 OpenClaw Runtime 进程异常退出（code \(terminationStatus)）。"
+                    statusSnapshot.lastMessage = "\(crashMessage) \(Int(automaticRecoveryDelaySeconds)) 秒后自动重启（\(recoveryAttempt)/\(automaticRecoveryMaxConsecutiveAttempts)）。"
+                    statusSnapshot.lastError = crashMessage
+                } else {
+                    statusSnapshot.state = .failed
+                    statusSnapshot.automaticRecoveryAttempt = nil
+                    statusSnapshot.lastMessage = "托管 OpenClaw Runtime 进程异常退出（code \(terminationStatus)），且已达到自动恢复上限。"
+                    statusSnapshot.lastError = statusSnapshot.lastMessage
+                }
             } else {
+                consecutiveUnexpectedExitCount += 1
                 statusSnapshot.state = .failed
+                statusSnapshot.lastUnexpectedExitAt = now
+                statusSnapshot.consecutiveCrashCount = consecutiveUnexpectedExitCount
+                statusSnapshot.automaticRecoveryAttempt = nil
                 statusSnapshot.lastMessage = "托管 OpenClaw Runtime 进程异常退出（code \(terminationStatus)）。"
                 statusSnapshot.lastError = statusSnapshot.lastMessage
             }
+
+            snapshotToPublish = statusSnapshot
+        }
+
+        if let snapshotToPublish {
+            publishStatusSnapshot(snapshotToPublish)
+        }
+
+        if let recoveryConfig {
+            scheduleAutomaticRecovery(using: recoveryConfig, attempt: recoveryAttempt)
         }
     }
 
@@ -683,18 +828,109 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         self.trackedProcess = nil
     }
 
+    private func reconcileCrashRecoveryStabilityIfNeededLocked(now: Date) -> Bool {
+        guard consecutiveUnexpectedExitCount > 0 else { return false }
+        guard !automaticRecoveryInProgress else { return false }
+        guard automaticRecoveryWorkItem == nil else { return false }
+        guard recoveryWindowHasStabilized(now: now, snapshot: statusSnapshot) else { return false }
+        consecutiveUnexpectedExitCount = 0
+        statusSnapshot.consecutiveCrashCount = 0
+        return true
+    }
+
     private func isProcessAlive(pid: Int32) -> Bool {
         guard pid > 0 else { return false }
         return kill(pid, 0) == 0 || errno == EPERM
     }
 
+    private func recoveryWindowHasStabilized(
+        now: Date,
+        snapshot: OpenClawManagedRuntimeStatusSnapshot
+    ) -> Bool {
+        guard automaticRecoveryStableUptimeSeconds > 0 else { return true }
+        guard snapshot.state == .running else { return false }
+        guard let lastStartedAt = snapshot.lastStartedAt else { return false }
+        return now.timeIntervalSince(lastStartedAt) >= automaticRecoveryStableUptimeSeconds
+    }
+
     private func updateStatusSnapshot(
         _ mutation: (inout OpenClawManagedRuntimeStatusSnapshot) -> Void
     ) -> OpenClawManagedRuntimeStatusSnapshot {
-        locked {
+        let snapshot = locked {
             mutation(&statusSnapshot)
             return statusSnapshot
         }
+        publishStatusSnapshot(snapshot)
+        return snapshot
+    }
+
+    private func scheduleAutomaticRecovery(using config: OpenClawConfig, attempt: Int) {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+
+            self.locked {
+                self.automaticRecoveryWorkItem = nil
+                self.automaticRecoveryInProgress = true
+            }
+            defer {
+                self.locked {
+                    self.automaticRecoveryInProgress = false
+                }
+            }
+
+            do {
+                let recoveryAttemptAt = self.dateProvider()
+                _ = self.updateStatusSnapshot {
+                    $0.state = .starting
+                    $0.automaticRecoveryAttempt = attempt
+                    $0.lastRecoveryAttemptAt = recoveryAttemptAt
+                    $0.lastStatusCheckAt = recoveryAttemptAt
+                    $0.lastMessage = "正在执行托管 OpenClaw Runtime 自动恢复（第 \(attempt) 次尝试）。"
+                    $0.lastError = nil
+                }
+                _ = try self.start(using: config)
+                let recoverySucceededAt = self.dateProvider()
+                _ = self.updateStatusSnapshot {
+                    $0.restartCount += 1
+                    $0.automaticRecoveryCount += 1
+                    $0.automaticRecoveryAttempt = nil
+                    $0.lastRecoverySucceededAt = recoverySucceededAt
+                    $0.lastStatusCheckAt = self.dateProvider()
+                    $0.lastMessage = "托管 OpenClaw Runtime 已自动恢复（第 \(attempt) 次重启）。"
+                    $0.lastError = nil
+                }
+            } catch {
+                let failureMessage = "托管 OpenClaw Runtime 自动恢复失败：\(error.localizedDescription)"
+                _ = self.updateStatusSnapshot {
+                    $0.state = .failed
+                    $0.automaticRecoveryAttempt = nil
+                    $0.lastExitAt = self.dateProvider()
+                    $0.lastStatusCheckAt = self.dateProvider()
+                    $0.lastMessage = failureMessage
+                    $0.lastError = failureMessage
+                }
+            }
+        }
+
+        locked {
+            cancelAutomaticRecoveryLocked()
+            automaticRecoveryWorkItem = workItem
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + automaticRecoveryDelaySeconds,
+            execute: workItem
+        )
+    }
+
+    private func cancelAutomaticRecoveryLocked() {
+        automaticRecoveryWorkItem?.cancel()
+        automaticRecoveryWorkItem = nil
+    }
+
+    private func publishStatusSnapshot(_ snapshot: OpenClawManagedRuntimeStatusSnapshot) {
+        let handler = locked { statusChangeHandler }
+        handler?(snapshot)
     }
 
     private func locked<T>(_ body: () -> T) -> T {

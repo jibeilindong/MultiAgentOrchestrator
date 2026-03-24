@@ -26,7 +26,7 @@ const baseConfig: OpenClawConfig = {
   cliLogLevel: "warning"
 };
 
-test("managed local runtime candidates prioritize bundled and managed roots before system paths", () => {
+test("managed local runtime candidates prioritize bundled and managed roots", () => {
   const candidates = buildManagedLocalOpenClawBinaryCandidates({
     platform: "darwin",
     homeDirectory: "/Users/tester",
@@ -35,7 +35,7 @@ test("managed local runtime candidates prioritize bundled and managed roots befo
     userDataPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow"
   });
 
-  assert.deepEqual(candidates.slice(0, 7), [
+  assert.deepEqual(candidates, [
     "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
     "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/openclaw",
     "/Users/tester/dev/MultiAgentOrchestrator/apps/desktop/resources/openclaw/bin/openclaw",
@@ -44,10 +44,9 @@ test("managed local runtime candidates prioritize bundled and managed roots befo
     "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/openclaw",
     "/Users/tester/dev/MultiAgentOrchestrator/apps/desktop/node_modules/.bin/openclaw"
   ]);
-  assert.equal(candidates.at(-1), "openclaw");
 });
 
-test("managed local runtime resolution ignores legacy explicit paths and prefers discovered managed/system binaries", () => {
+test("managed local runtime resolution ignores legacy explicit paths and stays inside app-managed candidates", () => {
   const resolved = resolveLocalOpenClawBinaryPath(
     {
       ...baseConfig,
@@ -59,11 +58,11 @@ test("managed local runtime resolution ignores legacy explicit paths and prefers
       resourcesPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources",
       appPath: "/Users/tester/dev/MultiAgentOrchestrator/apps/desktop",
       userDataPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow",
-      pathExists: (candidate) => candidate === "/usr/local/bin/openclaw"
+      pathExists: () => false
     }
   );
 
-  assert.equal(resolved, "/usr/local/bin/openclaw");
+  assert.equal(resolved, "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw");
 });
 
 test("externally managed local runtime stays pinned to the user-provided binary path", () => {

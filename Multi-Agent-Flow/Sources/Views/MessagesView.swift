@@ -277,6 +277,19 @@ struct WorkbenchConversationView: View {
         }
     }
 
+    private var hasActiveWorkflowExecution: Bool {
+        appState.openClawService.hasActiveWorkflowExecution
+    }
+
+    private var workbenchSubmissionBlockingMessage: String? {
+        appState.workbenchSubmissionBlockingMessage(
+            workflowID: selectedWorkflowID,
+            mode: submitMode,
+            preferredThreadID: effectiveSelectedThreadID,
+            isPreparingFreshThread: isPreparingFreshThread
+        )
+    }
+
     private var openClawRuntimeBadgeTitle: String {
         if appState.openClawManager.isConnected {
             return LocalizedString.text("openclaw_connected")
@@ -383,7 +396,7 @@ struct WorkbenchConversationView: View {
     }
 
     private var currentExecutingNodeID: UUID? {
-        guard appState.openClawService.isExecuting else { return nil }
+        guard hasActiveWorkflowExecution else { return nil }
         return appState.openClawService.executionLogs
             .reversed()
             .first(where: { $0.nodeID != nil && $0.message.hasPrefix("Executing node") })?
@@ -779,8 +792,8 @@ struct WorkbenchConversationView: View {
                 color: appState.openClawRuntimeControlPlaneBadgeColor
             )
             statusBadge(
-                title: appState.openClawService.isExecuting ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
-                color: appState.openClawService.isExecuting ? .orange : .secondary
+                title: hasActiveWorkflowExecution ? LocalizedString.text("workflow_running") : LocalizedString.text("workflow_idle"),
+                color: hasActiveWorkflowExecution ? .orange : .secondary
             )
         }
     }
@@ -1477,7 +1490,7 @@ struct WorkbenchConversationView: View {
                 }
                 .disabled(
                     prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || appState.openClawService.isExecuting
+                            || workbenchSubmissionBlockingMessage != nil
                             || !hasExecutableWorkflow
                             || !canSubmitCurrentMode
                     )
@@ -1646,9 +1659,8 @@ struct WorkbenchConversationView: View {
             mode: submitMode,
             preferredThreadID: effectiveSelectedThreadID
         ) else {
-            errorText = appState.openClawService.isExecuting
-                ? LocalizedString.text("workbench_error_busy")
-                : LocalizedString.text("workbench_error_submit_failed")
+            errorText = workbenchSubmissionBlockingMessage
+                ?? LocalizedString.text("workbench_error_submit_failed")
             return
         }
 

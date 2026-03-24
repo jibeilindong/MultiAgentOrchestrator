@@ -21,7 +21,7 @@ final class OpenClawPathResolutionTests: XCTestCase {
             homeDirectory: homeDirectory
         )
 
-        XCTAssertEqual(Array(candidates.prefix(6)), [
+        XCTAssertEqual(candidates, [
             "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw/bin/openclaw",
             "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
             "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw/openclaw",
@@ -29,7 +29,6 @@ final class OpenClawPathResolutionTests: XCTestCase {
             "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/bin/openclaw",
             "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/openclaw"
         ])
-        XCTAssertFalse(candidates.contains("/legacy/external/openclaw"))
     }
 
     func testLocalBinaryPathCandidatesStayExplicitWhenRuntimeIsExternallyManaged() {

@@ -3,10 +3,17 @@
 //  Multi-Agent-Flow
 //
 
+import AppKit
 import Combine
 import SwiftUI
 
 struct OpenClawConfigView: View {
+    private struct ManagedRuntimeRecommendation {
+        let title: String
+        let detail: String
+        let color: Color
+    }
+
     @EnvironmentObject var appState: AppState
     @ObservedObject private var openClawManager = OpenClawManager.shared
     @State private var config: OpenClawConfig = .default
@@ -53,6 +60,20 @@ struct OpenClawConfigView: View {
                                     }
                                 }
                                 .pickerStyle(.segmented)
+                            }
+
+                            if config.usesManagedLocalRuntime {
+                                Toggle(
+                                    "应用退出时停止托管 Runtime",
+                                    isOn: stopManagedRuntimeOnApplicationTerminationBinding
+                                )
+                                .toggleStyle(.switch)
+
+                                Toggle(
+                                    "Runtime 崩溃后自动拉起",
+                                    isOn: $config.managedRuntimeAutoRestartOnCrash
+                                )
+                                .toggleStyle(.switch)
                             }
                         }
 
@@ -339,6 +360,151 @@ struct OpenClawConfigView: View {
         }
     }
 
+    private var managedRuntimeTerminationBehaviorText: String {
+        switch config.managedRuntimeTerminationBehavior {
+        case .stopWithApplication:
+            return "应用退出即停止"
+        case .keepRunning:
+            return "应用退出后保持运行"
+        }
+    }
+
+    private var managedRuntimeCrashRecoveryText: String {
+        config.managedRuntimeAutoRestartOnCrash ? "自动恢复已启用" : "需要手动恢复"
+    }
+
+    private var managedRuntimeOwnershipSummaryText: String {
+        switch config.runtimeOwnership {
+        case .appManaged:
+            return "应用私有 Runtime，不复用 ~/.openclaw 或系统 PATH 中的 openclaw。"
+        case .externalLocal:
+            return "显式使用用户指定的本地 openclaw 二进制。"
+        }
+    }
+
+    private var managedRuntimeRestartSummaryText: String {
+        "总计 \(managedRuntimeSnapshot.restartCount) 次，手动 \(managedRuntimeSnapshot.manualRestartCount) 次，自动恢复 \(managedRuntimeSnapshot.automaticRecoveryCount) 次"
+    }
+
+    private var managedRuntimeEndpointText: String {
+        let scheme = config.useSSL ? "wss" : "ws"
+        let port = managedRuntimeSnapshot.port ?? config.port
+        return "\(scheme)://\(config.host):\(port)"
+    }
+
+    private var managedRuntimePortResolutionText: String? {
+        guard let requestedPort = managedRuntimeSnapshot.requestedPort else { return nil }
+        let actualPort = managedRuntimeSnapshot.port ?? config.port
+        guard requestedPort != actualPort else { return nil }
+        return "首选端口 \(requestedPort) 已避让，当前实际使用 \(actualPort)"
+    }
+
+    private var managedRuntimeRecoveryProgressText: String? {
+        guard let attempt = managedRuntimeSnapshot.automaticRecoveryAttempt else { return nil }
+        return "正在进行第 \(attempt) 次自动恢复"
+    }
+
+    private var managedRuntimeCrashSummaryText: String? {
+        guard managedRuntimeSnapshot.consecutiveCrashCount > 0 else { return nil }
+        return "当前连续异常退出 \(managedRuntimeSnapshot.consecutiveCrashCount) 次"
+    }
+
+    private var managedRuntimeRecommendation: ManagedRuntimeRecommendation? {
+        if managedRuntimeSnapshot.state == .failed && managedRuntimeSnapshot.consecutiveCrashCount > 0 {
+            return ManagedRuntimeRecommendation(
+                title: "Runtime 进入异常恢复阶段",
+                detail: "检测到连续异常退出，建议优先打开日志或导出诊断，再决定是否继续手动重启。",
+                color: .red
+            )
+        }
+
+        if managedRuntimeSnapshot.state == .starting,
+           managedRuntimeSnapshot.automaticRecoveryAttempt != nil {
+            return ManagedRuntimeRecommendation(
+                title: "Supervisor 正在自动恢复",
+                detail: "当前 sidecar 正在执行自动恢复，建议先等待本轮恢复完成，再观察是否需要人工介入。",
+                color: .orange
+            )
+        }
+
+        if managedRuntimeSnapshot.state == .running && !openClawManager.isConnected {
+            return ManagedRuntimeRecommendation(
+                title: "Runtime 已运行，但控制面未连通",
+                detail: "sidecar 已经启动成功，现在最有价值的下一步是连接控制面，确认 Gateway 探测与能力协商是否完成。",
+                color: .orange
+            )
+        }
+
+        if managedRuntimeSnapshot.state == .running && appState.isCurrentProjectAttachedToOpenClaw && canSyncCurrentSession {
+            return ManagedRuntimeRecommendation(
+                title: "当前项目已接入，可继续同步",
+                detail: "如果你刚修改了本地 agents、workspace 或 SOUL，建议立即同步当前会话，把变更推送到运行时侧。",
+                color: .blue
+            )
+        }
+
+        if managedRuntimeSnapshot.state == .running && canAttachCurrentProject {
+            return ManagedRuntimeRecommendation(
+                title: "控制面已就绪，可附加当前项目",
+                detail: "当前 Runtime 已具备接管项目上下文的条件，下一步建议执行附加，让聊天/执行共用同一个运行时视角。",
+                color: .green
+            )
+        }
+
+        if managedRuntimeSnapshot.state == .idle {
+            return ManagedRuntimeRecommendation(
+                title: "Runtime 尚未启动",
+                detail: "当前是 sidecar 托管模式，建议直接启动 Runtime，让应用进入“可连接、可附加、可同步”的完整控制面流程。",
+                color: .secondary
+            )
+        }
+
+        return nil
+    }
+
+    private var managedRuntimeLogURL: URL? {
+        existingItemURL(from: managedRuntimeSnapshot.logPath)
+    }
+
+    private var managedRuntimeRootURL: URL? {
+        existingItemURL(from: managedRuntimeSnapshot.runtimeRootPath)
+    }
+
+    private var managedRuntimeSupervisorRootURL: URL? {
+        existingItemURL(from: managedRuntimeSnapshot.supervisorRootPath)
+    }
+
+    private var managedRuntimeDiagnosticSummary: String {
+        openClawManager.managedRuntimeDiagnosticSummary(using: managedRuntimeSnapshot)
+    }
+
+    private var runtimeSourceDescriptor: OpenClawRuntimeSourceDescriptor {
+        openClawManager.runtimeSourceDescriptor(
+            using: managedRuntimeSnapshot,
+            config: config
+        )
+    }
+
+    private var runtimeSourceColor: Color {
+        switch config.deploymentKind {
+        case .local:
+            return config.runtimeOwnership == .appManaged ? .green : .orange
+        case .container:
+            return .blue
+        case .remoteServer:
+            return .purple
+        }
+    }
+
+    private var stopManagedRuntimeOnApplicationTerminationBinding: Binding<Bool> {
+        Binding(
+            get: { config.managedRuntimeTerminationBehavior == .stopWithApplication },
+            set: { shouldStop in
+                config.managedRuntimeTerminationBehavior = shouldStop ? .stopWithApplication : .keepRunning
+            }
+        )
+    }
+
     private var sessionLifecycleHint: String {
         appState.openClawRuntimeControlPlaneSummary
     }
@@ -425,6 +591,10 @@ struct OpenClawConfigView: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if let recommendation = managedRuntimeRecommendation {
+                    managedRuntimeRecommendationCard(recommendation)
+                }
+
                 if let lastError = managedRuntimeSnapshot.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !lastError.isEmpty,
                    lastError != managedRuntimeSummary {
@@ -437,11 +607,72 @@ struct OpenClawConfigView: View {
                 if let logPath = managedRuntimeSnapshot.logPath, !logPath.isEmpty {
                     infoLine(label: "日志", value: logPath)
                 }
+                if let binaryPath = managedRuntimeSnapshot.binaryPath, !binaryPath.isEmpty {
+                    infoLine(label: "Binary", value: binaryPath)
+                }
                 if let runtimeRootPath = managedRuntimeSnapshot.runtimeRootPath, !runtimeRootPath.isEmpty {
                     infoLine(label: "Runtime Root", value: runtimeRootPath)
                 }
                 if let supervisorRootPath = managedRuntimeSnapshot.supervisorRootPath, !supervisorRootPath.isEmpty {
                     infoLine(label: "Supervisor Root", value: supervisorRootPath)
+                }
+                infoLine(label: "Gateway Endpoint", value: managedRuntimeEndpointText)
+                infoLine(label: "隔离模式", value: managedRuntimeOwnershipSummaryText)
+                infoLine(label: "退出策略", value: managedRuntimeTerminationBehaviorText)
+                infoLine(label: "崩溃恢复", value: managedRuntimeCrashRecoveryText)
+                infoLine(label: "重启统计", value: managedRuntimeRestartSummaryText)
+
+                if let portResolution = managedRuntimePortResolutionText {
+                    infoLine(label: "端口避让", value: portResolution)
+                }
+
+                if let recoveryProgress = managedRuntimeRecoveryProgressText {
+                    infoLine(label: "恢复进度", value: recoveryProgress)
+                }
+
+                if let crashSummary = managedRuntimeCrashSummaryText {
+                    infoLine(label: "崩溃状态", value: crashSummary)
+                }
+
+                if let lastUnexpectedExitAt = managedRuntimeSnapshot.lastUnexpectedExitAt {
+                    infoLine(label: "最近异常退出", value: formattedTimestamp(lastUnexpectedExitAt))
+                }
+
+                if let lastRecoveryAttemptAt = managedRuntimeSnapshot.lastRecoveryAttemptAt {
+                    infoLine(label: "最近恢复尝试", value: formattedTimestamp(lastRecoveryAttemptAt))
+                }
+
+                if let lastRecoverySucceededAt = managedRuntimeSnapshot.lastRecoverySucceededAt {
+                    infoLine(label: "最近恢复成功", value: formattedTimestamp(lastRecoverySucceededAt))
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("快速操作")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+
+                    HStack(spacing: 12) {
+                        Button("打开日志", action: openManagedRuntimeLog)
+                            .disabled(managedRuntimeLogURL == nil)
+
+                        Button("在 Finder 显示日志", action: revealManagedRuntimeLog)
+                            .disabled(managedRuntimeLogURL == nil)
+
+                        Button("打开 Runtime Root") {
+                            openManagedRuntimeDirectory(managedRuntimeRootURL, label: "Runtime Root")
+                        }
+                        .disabled(managedRuntimeRootURL == nil)
+
+                        Button("打开 Supervisor Root") {
+                            openManagedRuntimeDirectory(managedRuntimeSupervisorRootURL, label: "Supervisor Root")
+                        }
+                        .disabled(managedRuntimeSupervisorRootURL == nil)
+                    }
+
+                    HStack(spacing: 12) {
+                        Button("复制诊断", action: copyManagedRuntimeDiagnostics)
+                        Button("导出诊断", action: exportManagedRuntimeDiagnostics)
+                    }
                 }
 
                 HStack(spacing: 12) {
@@ -498,12 +729,41 @@ struct OpenClawConfigView: View {
                     value: appState.openClawRuntimeControlPlaneBadgeTitle,
                     color: appState.openClawRuntimeControlPlaneBadgeColor
                 )
+                statusPill(
+                    label: "来源",
+                    value: runtimeSourceDescriptor.badgeTitle,
+                    color: runtimeSourceColor
+                )
             }
 
             Text(sessionLifecycleHint)
                 .font(.footnote)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Text(runtimeSourceDescriptor.summary)
+                .font(.caption)
+                .foregroundColor(runtimeSourceColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(runtimeSourceDescriptor.detail)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let endpoint = runtimeSourceDescriptor.endpoint {
+                Text("当前 Endpoint: \(endpoint)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let binaryPath = runtimeSourceDescriptor.binaryPath, !binaryPath.isEmpty {
+                Text("当前 Binary: \(binaryPath)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if sessionLifecycleHint != appState.openClawAttachmentStatusDetail {
                 Text(appState.openClawAttachmentStatusDetail)
@@ -644,6 +904,27 @@ struct OpenClawConfigView: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    @ViewBuilder
+    private func managedRuntimeRecommendationCard(_ recommendation: ManagedRuntimeRecommendation) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(recommendation.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(recommendation.color)
+
+            Text(recommendation.detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(recommendation.color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func formattedTimestamp(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .standard)
     }
 
     private var statusTitle: String {
@@ -797,6 +1078,64 @@ struct OpenClawConfigView: View {
         config.save()
     }
 
+    private func copyManagedRuntimeDiagnostics() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+
+        if pasteboard.setString(managedRuntimeDiagnosticSummary, forType: .string) {
+            testResult = "已复制 Managed Runtime 诊断信息。"
+            statusMessage = "Managed Runtime 诊断已复制到剪贴板，可直接粘贴给开发者或附到问题单。"
+            statusTone = .success
+        } else {
+            testResult = "复制 Managed Runtime 诊断失败。"
+            statusMessage = "无法写入系统剪贴板，请稍后重试。"
+            statusTone = .error
+        }
+    }
+
+    private func exportManagedRuntimeDiagnostics() {
+        let panel = NSSavePanel()
+        panel.title = "导出 OpenClaw Managed Runtime 诊断"
+        panel.nameFieldStringValue = "openclaw-managed-runtime-diagnostics-\(Date().formatted(date: .numeric, time: .omitted)).txt"
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+
+            do {
+                try managedRuntimeDiagnosticSummary.write(to: url, atomically: true, encoding: .utf8)
+                testResult = "已导出 Managed Runtime 诊断。"
+                statusMessage = "诊断文件已导出到 \(url.path)。"
+                statusTone = .success
+            } catch {
+                testResult = "导出 Managed Runtime 诊断失败：\(error.localizedDescription)"
+                statusMessage = "诊断导出失败，请检查目录权限或稍后重试。"
+                statusTone = .error
+            }
+        }
+    }
+
+    private func openManagedRuntimeLog() {
+        openManagedRuntimeFile(managedRuntimeLogURL, label: "日志文件")
+    }
+
+    private func revealManagedRuntimeLog() {
+        guard let logURL = managedRuntimeLogURL else {
+            testResult = "当前没有可显示的 Runtime 日志。"
+            statusMessage = "日志文件尚未生成，通常需要先启动一次 Runtime。"
+            statusTone = .error
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([logURL])
+        testResult = "已在 Finder 中显示 Runtime 日志。"
+        statusMessage = "你可以直接查看日志内容或复制给开发者分析。"
+        statusTone = .success
+    }
+
+    private func openManagedRuntimeDirectory(_ directoryURL: URL?, label: String) {
+        openManagedRuntimeFile(directoryURL, label: label)
+    }
+
     private func managedRuntimeStatusUpdate(_ action: () -> Bool) {
         guard !isMutatingManagedRuntime else { return }
         isMutatingManagedRuntime = true
@@ -804,10 +1143,39 @@ struct OpenClawConfigView: View {
         isMutatingManagedRuntime = false
     }
 
+    private func openManagedRuntimeFile(_ url: URL?, label: String) {
+        guard let url else {
+            testResult = "\(label) 当前不可用。"
+            statusMessage = "相关路径尚未生成，请先启动 Runtime 或刷新状态。"
+            statusTone = .error
+            return
+        }
+
+        guard NSWorkspace.shared.open(url) else {
+            testResult = "打开 \(label) 失败。"
+            statusMessage = "系统暂时无法打开 \(label)，请检查路径是否仍然存在。"
+            statusTone = .error
+            return
+        }
+
+        testResult = "已打开 \(label)。"
+        statusMessage = "\(label) 已在系统中打开。"
+        statusTone = .success
+    }
+
+    private func existingItemURL(from rawPath: String?) -> URL? {
+        let trimmed = rawPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        guard FileManager.default.fileExists(atPath: trimmed) else { return nil }
+        return URL(fileURLWithPath: trimmed)
+    }
+
     private func configFingerprint(_ config: OpenClawConfig) -> String {
         [
             config.deploymentKind.rawValue,
             config.runtimeOwnership.rawValue,
+            config.managedRuntimeTerminationBehavior.rawValue,
+            config.managedRuntimeAutoRestartOnCrash ? "auto-restart-on" : "auto-restart-off",
             config.host,
             "\(config.port)",
             config.useSSL ? "ssl" : "plain",

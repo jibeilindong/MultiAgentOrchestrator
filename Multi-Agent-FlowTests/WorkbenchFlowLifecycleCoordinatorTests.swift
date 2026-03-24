@@ -2,12 +2,12 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class WorkbenchFlowLifecycleCoordinatorTests: XCTestCase {
-    func testChatEntryDispositionReturnsReadyToRunWhenEntryCompletesWithoutBackgroundNodes() {
+    func testChatEntryDispositionReturnsReadyToRunWhenEntryCompletes() {
         let coordinator = WorkbenchFlowLifecycleCoordinator()
         let result = makeExecutionResult(status: .completed, output: "done", summary: "Entry complete")
         WorkbenchFlowLifecycleTestRetention.retain(coordinator: coordinator, results: [result])
 
-        let disposition = coordinator.chatEntryDisposition(for: result, hasBackgroundNodes: false)
+        let disposition = coordinator.chatEntryDisposition(for: result)
 
         if case .readyToRun = disposition {
         } else {
@@ -20,45 +20,12 @@ final class WorkbenchFlowLifecycleCoordinatorTests: XCTestCase {
         let result = makeExecutionResult(status: .failed, output: "error", summary: "Entry failed")
         WorkbenchFlowLifecycleTestRetention.retain(coordinator: coordinator, results: [result])
 
-        let disposition = coordinator.chatEntryDisposition(for: result, hasBackgroundNodes: true)
+        let disposition = coordinator.chatEntryDisposition(for: result)
 
         if case let .failed(errorMessage) = disposition {
             XCTAssertEqual(errorMessage, "Entry failed")
         } else {
             XCTFail("Expected failed disposition")
-        }
-    }
-
-    func testBackgroundWorkflowTerminalTransitionUsesConversationToRunOnSuccess() {
-        let coordinator = WorkbenchFlowLifecycleCoordinator()
-        let results = [
-            makeExecutionResult(status: .completed, output: "ok", summary: "Node A complete"),
-            makeExecutionResult(status: .completed, output: "ok", summary: "Node B complete")
-        ]
-
-        let transition = coordinator.backgroundWorkflowTerminalTransition(for: results)
-        WorkbenchFlowLifecycleTestRetention.retain(
-            coordinator: coordinator,
-            results: results,
-            transition: transition
-        )
-
-        if case let .completed(interactionMode, threadMode) = transition {
-            switch interactionMode {
-            case .run:
-                break
-            default:
-                XCTFail("Expected run interaction mode")
-            }
-
-            switch threadMode {
-            case .conversationToRun:
-                break
-            default:
-                XCTFail("Expected conversationToRun thread mode")
-            }
-        } else {
-            XCTFail("Expected completed background transition")
         }
     }
 

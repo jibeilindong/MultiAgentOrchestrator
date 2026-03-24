@@ -20,6 +20,7 @@
     "validate:openclaw-runtime-governance": "npm run validate:runtime-governance --workspace @multi-agent-flow/core",
     "validate:openclaw-runtime-security": "npm run validate:runtime-security --workspace @multi-agent-flow/core",
     "validate:openclaw-runtime": "./scripts/validate-openclaw-runtime.sh",
+    "validate:openclaw-coexistence": "./scripts/validate-openclaw-runtime-coexistence.sh",
     "validate:desktop-container-governance": "bash ./scripts/validate-desktop-container-governance.sh",
     "validate:workflow-hot-path": "bash ./scripts/validate-workflow-hot-path.sh",
     "benchmark:live": "bash ./scripts/run-live-transport-benchmark-test.sh",

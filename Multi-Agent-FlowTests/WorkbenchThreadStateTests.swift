@@ -76,6 +76,40 @@ final class WorkbenchThreadStateTests: XCTestCase {
         XCTAssertTrue(service.isAbortingRemoteConversation(threadID: "thread-shared"))
     }
 
+    @MainActor
+    func testOpenClawServiceLocalExecutionRegistryTracksThreadScopedConversationActivities() {
+        let service = OpenClawService()
+
+        let firstActivityID = service.beginLocalExecutionActivity(
+            executionIntent: .conversationAutonomous,
+            threadID: "thread-a",
+            workflowID: UUID(),
+            sessionID: "session-a"
+        )
+        let secondActivityID = service.beginLocalExecutionActivity(
+            executionIntent: .conversationAutonomous,
+            threadID: "thread-b",
+            workflowID: UUID(),
+            sessionID: "session-b"
+        )
+
+        XCTAssertTrue(service.isExecuting)
+        XCTAssertTrue(service.hasActiveConversationExecution(threadID: "thread-a"))
+        XCTAssertTrue(service.hasActiveConversationExecution(threadID: "thread-b"))
+        XCTAssertFalse(service.hasActiveWorkflowExecution)
+
+        service.endLocalExecutionActivity(firstActivityID)
+
+        XCTAssertTrue(service.isExecuting)
+        XCTAssertFalse(service.hasActiveConversationExecution(threadID: "thread-a"))
+        XCTAssertTrue(service.hasActiveConversationExecution(threadID: "thread-b"))
+
+        service.endLocalExecutionActivity(secondActivityID)
+
+        XCTAssertFalse(service.isExecuting)
+        XCTAssertFalse(service.hasActiveConversationExecution(threadID: "thread-b"))
+    }
+
     func testConversationStateResolverPrefersActiveRunStatusOverAssistantMessages() {
         let state = WorkbenchConversationStateResolver.resolve(
             WorkbenchConversationStateDerivationInput(
@@ -136,116 +170,120 @@ final class WorkbenchThreadStateTests: XCTestCase {
     }
 
     func testThreadSummaryAggregatesMultipleActiveRunStatusesPerThread() {
-        do {
-            let workflowID = UUID()
-            let threadID = "thread-aggregate"
-            do {
-                let coordinator = Self.sharedThreadStateCoordinator
-                do {
-                    let context = WorkbenchThreadContext(
-                        workflowID: workflowID,
-                        projectSessionID: "project-session",
-                        threadID: threadID,
-                        sessionID: "session-1",
-                        gatewaySessionKey: "agent:planner:thread-aggregate",
-                        interactionMode: .chat,
-                        threadType: .conversationAutonomous,
-                        threadMode: .conversationToRun,
-                        executionIntent: .conversationAutonomous,
-                        origin: "workbench_chat",
-                        agentID: UUID(),
-                        agentName: "Planner"
+        let workflowID = UUID()
+        let threadID = "thread-aggregate"
+        let coordinator = Self.sharedThreadStateCoordinator
+        let context = WorkbenchThreadContext(
+            workflowID: workflowID,
+            projectSessionID: "project-session",
+            threadID: threadID,
+            sessionID: "session-1",
+            gatewaySessionKey: "agent:planner:thread-aggregate",
+            interactionMode: .chat,
+            threadType: .conversationAutonomous,
+            threadMode: .conversationToRun,
+            executionIntent: .conversationAutonomous,
+            origin: "workbench_chat",
+            agentID: UUID(),
+            agentName: "Planner"
+        )
+        var task = Task(
+            title: "升级到受控执行",
+            description: "将当前对话线程切换到 workflow controlled run",
+            status: .inProgress,
+            priority: .high
+        )
+        task.createdAt = Date(timeIntervalSince1970: 1_710_000_100)
+        task.startedAt = task.createdAt
+
+        let runningRecord = WorkbenchActiveRunRecord(
+            threadID: threadID,
+            workflowID: workflowID.uuidString,
+            runID: "run-chat",
+            sessionKey: "agent:planner:thread-aggregate",
+            transportKind: "gateway_chat",
+            executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_110),
+            updatedAt: Date(timeIntervalSince1970: 1_710_000_110),
+            status: .running
+        )
+        let stoppingRecord = WorkbenchActiveRunRecord(
+            threadID: threadID,
+            workflowID: workflowID.uuidString,
+            runID: "run-controlled",
+            sessionKey: "agent:planner:thread-aggregate:run",
+            transportKind: "gateway_agent",
+            executionIntent: OpenClawRuntimeExecutionIntent.workflowControlled.rawValue,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_120),
+            updatedAt: Date(timeIntervalSince1970: 1_710_000_130),
+            status: .stopping
+        )
+
+        let summaryCollections = coordinator.collectSummaryCollections(
+            messageRecords: [],
+            taskRecords: [
+                WorkbenchThreadSummaryTaskRecord(
+                    threadID: threadID,
+                    task: task,
+                    contextSample: WorkbenchThreadContextSample(
+                        context: context,
+                        activityAt: task.createdAt
                     )
+                )
+            ]
+        )
 
-                    do {
-                        var task = Task(
-                            title: "升级到受控执行",
-                            description: "将当前对话线程切换到 workflow controlled run",
-                            status: .inProgress,
-                            priority: .high
-                        )
-                        task.createdAt = Date(timeIntervalSince1970: 1_710_000_100)
-                        task.startedAt = task.createdAt
-                        do {
-                            let runningRecord = WorkbenchActiveRunRecord(
-                                threadID: threadID,
-                                workflowID: workflowID.uuidString,
-                                runID: "run-chat",
-                                sessionKey: "agent:planner:thread-aggregate",
-                                transportKind: "gateway_chat",
-                                executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
-                                startedAt: Date(timeIntervalSince1970: 1_710_000_110),
-                                updatedAt: Date(timeIntervalSince1970: 1_710_000_110),
-                                status: .running
-                            )
-                            let stoppingRecord = WorkbenchActiveRunRecord(
-                                threadID: threadID,
-                                workflowID: workflowID.uuidString,
-                                runID: "run-controlled",
-                                sessionKey: "agent:planner:thread-aggregate:run",
-                                transportKind: "gateway_agent",
-                                executionIntent: OpenClawRuntimeExecutionIntent.workflowControlled.rawValue,
-                                startedAt: Date(timeIntervalSince1970: 1_710_000_120),
-                                updatedAt: Date(timeIntervalSince1970: 1_710_000_130),
-                                status: .stopping
-                            )
+        let summaries = coordinator.summarizeThreads(
+            workflowID: workflowID,
+            summaryCollections: summaryCollections,
+            activeRunRecords: [runningRecord, stoppingRecord],
+            threadStateRecords: []
+        )
 
-                            let summaryCollections = coordinator.collectSummaryCollections(
-                                messageRecords: [],
-                                taskRecords: [
-                                    WorkbenchThreadSummaryTaskRecord(
-                                        threadID: threadID,
-                                        task: task,
-                                        contextSample: WorkbenchThreadContextSample(
-                                            context: context,
-                                            activityAt: task.createdAt
-                                        )
-                                    )
-                                ]
-                            )
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries.first?.threadMode, .conversationToRun)
+        XCTAssertEqual(summaries.first?.activeRunStatus, .stopping)
+        XCTAssertEqual(summaries.first?.conversationState, .stopping)
+    }
 
-                            do {
-                                let summaries = coordinator.summarizeThreads(
-                                    workflowID: workflowID,
-                                    summaryCollections: summaryCollections,
-                                    activeRunRecords: [runningRecord, stoppingRecord],
-                                    threadStateRecords: []
-                                )
+    func testWorkbenchSubmissionBlockerAllowsChatAcrossThreadsWhileBlockingCurrentThreadReply() {
+        let blocker = AppState.workbenchSubmissionBlocker(
+            mode: .chat,
+            hasAnyLocalExecution: true,
+            hasExecutingWorkflow: false,
+            hasExecutingConversationInThread: true,
+            threadConversationState: .responding,
+            threadActiveRunStatus: nil,
+            isPreparingFreshThread: false
+        )
 
-                                print("[WorkbenchThreadStateTests] summaries.count", summaries.count)
-                                let firstSummary = summaries.first
-                                print("[WorkbenchThreadStateTests] first.id", firstSummary?.id ?? "nil")
-                                print("[WorkbenchThreadStateTests] first.threadMode", firstSummary?.threadMode.rawValue ?? "nil")
-                                print("[WorkbenchThreadStateTests] first.activeRunStatus", firstSummary?.activeRunStatus?.rawValue ?? "nil")
-                                print("[WorkbenchThreadStateTests] first.conversationState", firstSummary?.conversationState.rawValue ?? "nil")
+        XCTAssertEqual(blocker, .threadResponding)
 
-                                print("[WorkbenchThreadStateTests] before assert count")
-                                XCTAssertEqual(summaries.count, 1)
-                                print("[WorkbenchThreadStateTests] after assert count")
-                                XCTAssertEqual(firstSummary?.threadMode, .conversationToRun)
-                                print("[WorkbenchThreadStateTests] after assert threadMode")
-                                XCTAssertEqual(firstSummary?.activeRunStatus, .stopping)
-                                print("[WorkbenchThreadStateTests] after assert activeRunStatus")
-                                XCTAssertEqual(firstSummary?.conversationState, .stopping)
-                                print("[WorkbenchThreadStateTests] after assert conversationState")
-                            }
+        let freshThreadBlocker = AppState.workbenchSubmissionBlocker(
+            mode: .chat,
+            hasAnyLocalExecution: true,
+            hasExecutingWorkflow: false,
+            hasExecutingConversationInThread: false,
+            threadConversationState: nil,
+            threadActiveRunStatus: nil,
+            isPreparingFreshThread: true
+        )
 
-                            print("[WorkbenchThreadStateTests] after summaries scope")
-                        }
+        XCTAssertNil(freshThreadBlocker)
+    }
 
-                        print("[WorkbenchThreadStateTests] after records scope")
-                    }
+    func testWorkbenchSubmissionBlockerKeepsRunModeBlockedByAnyLocalExecution() {
+        let blocker = AppState.workbenchSubmissionBlocker(
+            mode: .run,
+            hasAnyLocalExecution: true,
+            hasExecutingWorkflow: false,
+            hasExecutingConversationInThread: false,
+            threadConversationState: nil,
+            threadActiveRunStatus: nil,
+            isPreparingFreshThread: false
+        )
 
-                    print("[WorkbenchThreadStateTests] after task scope")
-                }
-
-                print("[WorkbenchThreadStateTests] after context scope")
-            }
-
-            print("[WorkbenchThreadStateTests] after coordinator scope")
-        }
-
-        print("[WorkbenchThreadStateTests] after fixture scope")
+        XCTAssertEqual(blocker, .busy)
     }
 
 }

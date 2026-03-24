@@ -57,6 +57,22 @@ enum OpenClawRuntimeOwnership: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum OpenClawManagedRuntimeTerminationBehavior: String, Codable, CaseIterable, Identifiable {
+    case stopWithApplication
+    case keepRunning
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .stopWithApplication:
+            return "Stop With App"
+        case .keepRunning:
+            return "Keep Running"
+        }
+    }
+}
+
 struct OpenClawContainerConfig: Codable, Hashable {
     var engine: String
     var containerName: String
@@ -76,6 +92,8 @@ struct OpenClawContainerConfig: Codable, Hashable {
 struct OpenClawConfig: Codable {
     var deploymentKind: OpenClawDeploymentKind
     var runtimeOwnership: OpenClawRuntimeOwnership
+    var managedRuntimeTerminationBehavior: OpenClawManagedRuntimeTerminationBehavior
+    var managedRuntimeAutoRestartOnCrash: Bool
     var host: String
     var port: Int
     var useSSL: Bool
@@ -91,6 +109,8 @@ struct OpenClawConfig: Codable {
     enum CodingKeys: String, CodingKey {
         case deploymentKind
         case runtimeOwnership
+        case managedRuntimeTerminationBehavior
+        case managedRuntimeAutoRestartOnCrash
         case host
         case port
         case useSSL
@@ -108,6 +128,8 @@ struct OpenClawConfig: Codable {
         OpenClawConfig(
             deploymentKind: .local,
             runtimeOwnership: .appManaged,
+            managedRuntimeTerminationBehavior: .stopWithApplication,
+            managedRuntimeAutoRestartOnCrash: true,
             host: "127.0.0.1",
             port: 18789,
             useSSL: false,
@@ -148,6 +170,8 @@ struct OpenClawConfig: Codable {
     init(
         deploymentKind: OpenClawDeploymentKind,
         runtimeOwnership: OpenClawRuntimeOwnership,
+        managedRuntimeTerminationBehavior: OpenClawManagedRuntimeTerminationBehavior,
+        managedRuntimeAutoRestartOnCrash: Bool,
         host: String,
         port: Int,
         useSSL: Bool,
@@ -162,6 +186,8 @@ struct OpenClawConfig: Codable {
     ) {
         self.deploymentKind = deploymentKind
         self.runtimeOwnership = runtimeOwnership
+        self.managedRuntimeTerminationBehavior = managedRuntimeTerminationBehavior
+        self.managedRuntimeAutoRestartOnCrash = managedRuntimeAutoRestartOnCrash
         self.host = host
         self.port = port
         self.useSSL = useSSL
@@ -188,6 +214,14 @@ struct OpenClawConfig: Codable {
         } else {
             runtimeOwnership = .appManaged
         }
+        managedRuntimeTerminationBehavior = try container.decodeIfPresent(
+            OpenClawManagedRuntimeTerminationBehavior.self,
+            forKey: .managedRuntimeTerminationBehavior
+        ) ?? .stopWithApplication
+        managedRuntimeAutoRestartOnCrash = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .managedRuntimeAutoRestartOnCrash
+        ) ?? true
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
         port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 18789
         useSSL = try container.decodeIfPresent(Bool.self, forKey: .useSSL) ?? false
@@ -209,6 +243,14 @@ extension OpenClawConfig {
 
     nonisolated var usesManagedLocalRuntime: Bool {
         deploymentKind == .local && runtimeOwnership == .appManaged
+    }
+
+    nonisolated var shouldStopManagedRuntimeOnApplicationTermination: Bool {
+        usesManagedLocalRuntime && managedRuntimeTerminationBehavior == .stopWithApplication
+    }
+
+    nonisolated var shouldAutoRestartManagedRuntimeOnCrash: Bool {
+        usesManagedLocalRuntime && managedRuntimeAutoRestartOnCrash
     }
 }
 

@@ -26,12 +26,26 @@ const baseConfig: OpenClawConfig = {
   cliLogLevel: "warning"
 };
 
-test("local fallback candidates resolve to the local home openclaw root", () => {
+test("local app-managed fallback candidates resolve to the app-managed runtime root", () => {
   const candidates = buildOpenClawRootFallbackCandidates(baseConfig, {
-    localHomeDirectory: "/Users/tester"
+    managedRuntimeRootDirectory: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime"
   });
 
-  assert.deepEqual(candidates, ["/Users/tester/.openclaw"]);
+  assert.deepEqual(candidates, ["/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime"]);
+});
+
+test("local app-managed fallback candidates stay inside the app-managed runtime root", () => {
+  const candidates = buildOpenClawRootFallbackCandidates(
+    {
+      ...baseConfig,
+      runtimeOwnership: "appManaged"
+    },
+    {
+      managedRuntimeRootDirectory: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime"
+    }
+  );
+
+  assert.deepEqual(candidates, ["/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime"]);
 });
 
 test("container fallback candidates prioritize deployment home before workspace mount guesses", () => {

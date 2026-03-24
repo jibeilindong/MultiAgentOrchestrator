@@ -14,7 +14,12 @@ final class WorkflowEditorSessionState: ObservableObject {
     @Published var viewMode: WorkflowEditorView.EditorViewMode = .architecture
     @Published var canvasOffset: CGSize = .zero
     @Published var canvasLastOffset: CGSize = .zero
+    @Published var canvasViewportCommand: WorkflowCanvasViewportCommand?
     @Published var selectedAgentID: UUID?
+
+    func sendCanvasViewportCommand(_ action: WorkflowCanvasViewportCommand.Action) {
+        canvasViewportCommand = WorkflowCanvasViewportCommand(action: action)
+    }
 }
 
 struct WorkflowEditorView: View {
@@ -276,7 +281,7 @@ struct WorkflowEditorView: View {
     private var retainedEditorPanes: some View {
         ZStack {
             if sessionState.viewMode != .architecture {
-                architecturePane(isActive: false)
+            architecturePane(isActive: false)
                     .modifier(BackgroundRetainedPane())
             }
 
@@ -298,6 +303,7 @@ struct WorkflowEditorView: View {
             zoomScale: $zoomScale,
             offset: $sessionState.canvasOffset,
             lastOffset: $sessionState.canvasLastOffset,
+            viewportCommand: sessionState.canvasViewportCommand,
             isConnectMode: $isConnectMode,
             connectFromAgentID: $connectFromAgentID,
             connectionType: $connectionType,
@@ -3537,6 +3543,7 @@ struct ArchitectureView: View {
     @Binding var zoomScale: CGFloat
     @Binding var offset: CGSize
     @Binding var lastOffset: CGSize
+    let viewportCommand: WorkflowCanvasViewportCommand?
     @Binding var isConnectMode: Bool
     @Binding var connectFromAgentID: UUID?
     @Binding var connectionType: WorkflowEditorView.ConnectionType
@@ -3574,6 +3581,7 @@ struct ArchitectureView: View {
             HStack(spacing: 0) {
                 CanvasView(
                     isActive: isActive,
+                    viewportCommand: viewportCommand,
                     zoomScale: $zoomScale,
                     offset: $offset,
                     lastOffset: $lastOffset,

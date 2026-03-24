@@ -69,6 +69,28 @@ enum OpenClawRuntimeExecutionIntent: String, Sendable {
     var displayName: String {
         semanticType.displayTitle
     }
+
+    var exposesWorkflowRoutingMetadata: Bool {
+        switch self {
+        case .workflowControlled:
+            return true
+        case .conversationAutonomous, .inspectionReadonly, .benchmark:
+            return false
+        }
+    }
+
+    static func exposesWorkflowRoutingMetadata(for rawValue: String?) -> Bool {
+        guard let normalized = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !normalized.isEmpty else {
+            return true
+        }
+
+        guard let intent = Self(rawValue: normalized) else {
+            return true
+        }
+
+        return intent.exposesWorkflowRoutingMetadata
+    }
 }
 
 private enum WorkflowInstructionStyle {
@@ -266,6 +288,51 @@ struct ExecutionResult: Codable, Identifiable {
 }
 
 extension ExecutionResult {
+    var resolvedExecutionIntent: OpenClawRuntimeExecutionIntent? {
+        guard let executionIntent else { return nil }
+        return OpenClawRuntimeExecutionIntent(rawValue: executionIntent)
+    }
+
+    var exposesWorkflowRoutingMetadata: Bool {
+        OpenClawRuntimeExecutionIntent.exposesWorkflowRoutingMetadata(for: executionIntent)
+    }
+
+    var visibleRoutingAction: String? {
+        guard exposesWorkflowRoutingMetadata else { return nil }
+        return routingAction
+    }
+
+    var visibleRoutingTargets: [String] {
+        guard exposesWorkflowRoutingMetadata else { return [] }
+        return routingTargets
+    }
+
+    var visibleRoutingReason: String? {
+        guard exposesWorkflowRoutingMetadata else { return nil }
+        return routingReason
+    }
+
+    var visibleRequestedRoutingAction: String? {
+        guard exposesWorkflowRoutingMetadata else { return nil }
+        return requestedRoutingAction
+    }
+
+    var visibleRequestedRoutingTargets: [String] {
+        guard exposesWorkflowRoutingMetadata else { return [] }
+        return requestedRoutingTargets
+    }
+
+    var visibleRequestedRoutingReason: String? {
+        guard exposesWorkflowRoutingMetadata else { return nil }
+        return requestedRoutingReason
+    }
+
+    var hasVisibleRoutingDetails: Bool {
+        visibleRoutingAction != nil
+            || visibleRoutingReason != nil
+            || !visibleRoutingTargets.isEmpty
+    }
+
     var runtimeRefCount: Int {
         runtimeEvents.reduce(0) { $0 + $1.refs.count }
     }
@@ -328,7 +395,6 @@ struct NodeStreamUpdate {
 
 struct WorkbenchEntryExecution {
     let result: ExecutionResult
-    let downstreamNodes: [WorkflowNode]
 }
 
 enum TransportBenchmarkKind: String, Codable, CaseIterable, Identifiable {
@@ -571,6 +637,16 @@ class OpenClawService: ObservableObject {
         var isAborting: Bool { record.status == .stopping }
     }
 
+    struct LocalExecutionActivity: Identifiable, Hashable {
+        let id: String
+        let executionIntent: OpenClawRuntimeExecutionIntent
+        let threadID: String?
+        let workflowID: UUID?
+        let sessionID: String?
+        let startedAt: Date
+        var updatedAt: Date
+    }
+
     @Published var executionResults: [ExecutionResult] = []
     @Published var executionLogs: [ExecutionLogEntry] = []
     @Published var isExecuting = false
@@ -586,6 +662,7 @@ class OpenClawService: ObservableObject {
     @Published var isAbortingActiveGatewayRun = false
     @Published private var activeGatewayConversations: [String: ActiveGatewayConversation] = [:]
     @Published private(set) var activeWorkbenchRuns: [WorkbenchActiveRunRecord] = []
+    @Published private(set) var activeLocalExecutionActivities: [LocalExecutionActivity] = []
     @Published var isRunningTransportBenchmark = false
     @Published var transportBenchmarkReport: TransportBenchmarkReport?
     @Published var transportBenchmarkError: String?
@@ -611,6 +688,7 @@ class OpenClawService: ObservableObject {
     private let logQueue = DispatchQueue(label: "com.openclaw.logs")
     private var agentCLICapabilitiesCache: [String: AgentCLICapabilities] = [:]
     private var loggedCapabilityKeys: Set<String> = []
+    private var localExecutionActivityIndex: [String: LocalExecutionActivity] = [:]
 
     private struct WorkflowRoutingDecision {
         enum Action: String, CaseIterable {
@@ -758,7 +836,7 @@ class OpenClawService: ObservableObject {
         executionResults = results
         executionLogs = logs
         executionState = state
-        isExecuting = false
+        clearLocalExecutionActivities()
         currentStep = 0
         totalSteps = 0
         currentNodeID = nil
@@ -770,7 +848,7 @@ class OpenClawService: ObservableObject {
         executionResults.removeAll()
         executionLogs.removeAll()
         executionState = nil
-        isExecuting = false
+        clearLocalExecutionActivities()
         currentStep = 0
         totalSteps = 0
         currentNodeID = nil
@@ -863,6 +941,116 @@ class OpenClawService: ObservableObject {
         let normalizedSessionKey = sessionKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !normalizedSessionKey.isEmpty else { return nil }
         return "session:\(normalizedSessionKey)"
+    }
+
+    private func localExecutionActivityIdentifier(
+        executionIntent: OpenClawRuntimeExecutionIntent,
+        threadID: String?,
+        workflowID: UUID?,
+        sessionID: String?
+    ) -> String {
+        let normalizedThreadID = threadID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedThreadID.isEmpty {
+            return "\(executionIntent.rawValue)::thread::\(normalizedThreadID)"
+        }
+
+        let normalizedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !normalizedSessionID.isEmpty {
+            return "\(executionIntent.rawValue)::session::\(normalizedSessionID)"
+        }
+
+        if let workflowID {
+            return "\(executionIntent.rawValue)::workflow::\(workflowID.uuidString)"
+        }
+
+        return "\(executionIntent.rawValue)::\(UUID().uuidString)"
+    }
+
+    private func syncLocalExecutionActivitySnapshot() {
+        activeLocalExecutionActivities = localExecutionActivityIndex.values
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.id > rhs.id
+            }
+        isExecuting = !activeLocalExecutionActivities.isEmpty
+    }
+
+    private func clearLocalExecutionActivities() {
+        localExecutionActivityIndex.removeAll()
+        syncLocalExecutionActivitySnapshot()
+    }
+
+    @discardableResult
+    func beginLocalExecutionActivity(
+        executionIntent: OpenClawRuntimeExecutionIntent,
+        threadID: String? = nil,
+        workflowID: UUID? = nil,
+        sessionID: String? = nil,
+        at timestamp: Date = Date()
+    ) -> String {
+        let activityID = localExecutionActivityIdentifier(
+            executionIntent: executionIntent,
+            threadID: threadID,
+            workflowID: workflowID,
+            sessionID: sessionID
+        )
+
+        if var existing = localExecutionActivityIndex[activityID] {
+            existing.updatedAt = timestamp
+            localExecutionActivityIndex[activityID] = existing
+        } else {
+            localExecutionActivityIndex[activityID] = LocalExecutionActivity(
+                id: activityID,
+                executionIntent: executionIntent,
+                threadID: normalizedActiveGatewayConversationThreadID(threadID, sessionKey: sessionID),
+                workflowID: workflowID,
+                sessionID: sessionID,
+                startedAt: timestamp,
+                updatedAt: timestamp
+            )
+        }
+
+        syncLocalExecutionActivitySnapshot()
+        return activityID
+    }
+
+    func endLocalExecutionActivity(_ activityID: String?) {
+        guard let activityID else { return }
+        localExecutionActivityIndex.removeValue(forKey: activityID)
+        syncLocalExecutionActivitySnapshot()
+    }
+
+    func hasLocalExecutionActivity(
+        executionIntent: OpenClawRuntimeExecutionIntent? = nil,
+        threadID: String? = nil
+    ) -> Bool {
+        let normalizedThreadID = normalizedActiveGatewayConversationThreadID(threadID, sessionKey: nil)
+        return activeLocalExecutionActivities.contains { activity in
+            if let executionIntent, activity.executionIntent != executionIntent {
+                return false
+            }
+            if let normalizedThreadID {
+                return activity.threadID == normalizedThreadID
+            }
+            return true
+        }
+    }
+
+    var hasAnyLocalExecutionActivity: Bool {
+        !activeLocalExecutionActivities.isEmpty
+    }
+
+    var hasActiveWorkflowExecution: Bool {
+        hasLocalExecutionActivity(executionIntent: .workflowControlled)
+    }
+
+    func hasActiveConversationExecution(threadID: String? = nil) -> Bool {
+        hasLocalExecutionActivity(
+            executionIntent: .conversationAutonomous,
+            threadID: threadID
+        )
     }
 
     private func activeGatewayConversationMatches(
@@ -1054,7 +1242,7 @@ class OpenClawService: ObservableObject {
     // MARK: - 回滚机制（刑部任务）
     
     func pauseExecution() {
-        guard isExecuting, let state = executionState else { return }
+        guard hasActiveWorkflowExecution, let state = executionState else { return }
         var mutableState = state
         mutableState.isPaused = true
         mutableState.canResume = true
@@ -1146,7 +1334,7 @@ class OpenClawService: ObservableObject {
     func handleDisconnection() {
         addLog(.warning, "Connection lost, attempting to reconnect...")
         
-        if isExecuting {
+        if hasActiveWorkflowExecution {
             // 保存当前状态
             pauseExecution()
             addLog(.warning, "Execution paused due to disconnection")
@@ -1258,7 +1446,12 @@ class OpenClawService: ObservableObject {
             addLog(.warning, "Runtime isolation advisory: \(message)")
         }
         
-        isExecuting = true
+        let localExecutionActivityID = beginLocalExecutionActivity(
+            executionIntent: executionIntent,
+            threadID: threadID,
+            workflowID: workflow.id,
+            sessionID: projectRuntimeSessionID
+        )
         executionResults = preloadedResults
         lastError = nil
         
@@ -1275,7 +1468,7 @@ class OpenClawService: ObservableObject {
         addLog(.info, "Starting workflow execution: \(workflow.name) with \(queuedNodes.count) queued node(s)")
 
         if queuedNodes.isEmpty {
-            isExecuting = false
+            endLocalExecutionActivity(localExecutionActivityID)
             currentNodeID = nil
             stopTimeoutTimer()
             clearExecutionState()
@@ -1290,7 +1483,7 @@ class OpenClawService: ObservableObject {
         // 设置超时监控
         startTimeoutTimer(duration: executionTimeout) { [weak self] in
             self?.addLog(.error, "Execution timeout, stopping...")
-            self?.isExecuting = false
+            self?.endLocalExecutionActivity(localExecutionActivityID)
         }
         
         // 按连接顺序执行
@@ -1313,7 +1506,7 @@ class OpenClawService: ObservableObject {
             onNodeCompleted: onNodeCompleted
         ) { nodeResults in
             self.executionResults = nodeResults
-            self.isExecuting = false
+            self.endLocalExecutionActivity(localExecutionActivityID)
             self.currentNodeID = nil
             self.stopTimeoutTimer()
             
@@ -1359,7 +1552,7 @@ class OpenClawService: ObservableObject {
                 outputType: .errorSummary,
                 executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue
             )
-            completion(WorkbenchEntryExecution(result: failedResult, downstreamNodes: []))
+            completion(WorkbenchEntryExecution(result: failedResult))
             return
         }
 
@@ -1413,23 +1606,8 @@ class OpenClawService: ObservableObject {
             onAccepted: onAccepted,
             onProgress: onProgress,
             onStream: onStream
-        ) { [weak self] result, routingDecision in
-            guard let self else { return }
-            let resolvedTargets = self.resolveRoutingTargets(
-                from: routingDecision,
-                availableTargets: downstreamTargets,
-                node: node,
-                outputType: result.outputType,
-                fallbackPolicy: workflow.fallbackRoutingPolicy,
-                sessionID: result.sessionID,
-                agentID: agent.id
-            )
-            completion(
-                WorkbenchEntryExecution(
-                    result: result,
-                    downstreamNodes: resolvedTargets.map(\.node)
-                )
-            )
+        ) { result, _ in
+            completion(WorkbenchEntryExecution(result: result))
         }
     }
 
@@ -1803,7 +1981,8 @@ class OpenClawService: ObservableObject {
         let protocolMemory = resolvedProtocolMemory(for: agent)
         let dispatchCapsule = makeProtocolDispatchCapsule(
             for: agent,
-            guardrails: effectiveGuardrails
+            guardrails: effectiveGuardrails,
+            outputMode: outputMode
         )
         let sessionProtocolDigest = makeSessionProtocolDigest(
             for: agent,
@@ -1867,6 +2046,7 @@ class OpenClawService: ObservableObject {
             protocolMemory: protocolMemory,
             protocolCapsule: dispatchCapsule,
             sessionProtocolDigest: sessionProtocolDigest,
+            outputMode: outputMode,
             style: instructionStyle
         )
 
@@ -2268,6 +2448,7 @@ class OpenClawService: ObservableObject {
         protocolMemory: OpenClawAgentProtocolMemory,
         protocolCapsule: ProtocolDispatchCapsule,
         sessionProtocolDigest: String,
+        outputMode: AgentOutputMode,
         style: WorkflowInstructionStyle
     ) -> String {
         let normalizedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -2294,12 +2475,24 @@ class OpenClawService: ObservableObject {
         }
         let writeScopeText = guardrails.writeScope.isEmpty ? "- No explicit write scope resolved." : guardrails.writeScope.map { "- \($0)" }.joined(separator: "\n")
         let toolScopeText = guardrails.toolScope.isEmpty ? "- No explicit tool scope resolved." : guardrails.toolScope.map { "- \($0)" }.joined(separator: "\n")
-        let stableRulesText = protocolMemory.stableRules.isEmpty
-            ? "- Follow the runtime protocol."
-            : protocolMemory.stableRules.map { "- \($0)" }.joined(separator: "\n")
-        let feedbackHintsText = protocolCapsule.feedbackHints.isEmpty
+        let filteredStableRules = Self.filteredProtocolGuidanceLines(
+            protocolMemory.stableRules,
+            for: outputMode
+        )
+        let stableRulesText = filteredStableRules.isEmpty
+            ? (
+                outputMode == .plainStreaming
+                    ? "- Reply with a direct visible answer and do not append workflow routing JSON."
+                    : "- Follow the runtime protocol."
+            )
+            : filteredStableRules.map { "- \($0)" }.joined(separator: "\n")
+        let filteredFeedbackHints = Self.filteredProtocolGuidanceLines(
+            protocolCapsule.feedbackHints,
+            for: outputMode
+        )
+        let feedbackHintsText = filteredFeedbackHints.isEmpty
             ? "- None."
-            : protocolCapsule.feedbackHints.map { "- \($0)" }.joined(separator: "\n")
+            : filteredFeedbackHints.map { "- \($0)" }.joined(separator: "\n")
         let allowedActionsText = protocolCapsule.allowedActions.joined(separator: ", ")
         let approvalTargetsText = protocolCapsule.approvalTargets.isEmpty
             ? "- None."
@@ -2307,6 +2500,16 @@ class OpenClawService: ObservableObject {
         let allowedTargetsText = protocolCapsule.allowedTargets.isEmpty
             ? "- None."
             : protocolCapsule.allowedTargets.map { "- \($0)" }.joined(separator: "\n")
+        let workbenchEntryCollaborationSection = Self.workbenchEntryCollaborationSection(
+            for: outputMode,
+            candidateLines: candidateLines,
+            approvalLines: approvalLines
+        )
+        let workbenchEntryRuntimeGuardrails = Self.workbenchEntryRuntimeGuardrails(
+            for: outputMode,
+            writeScopeText: writeScopeText,
+            toolScopeText: toolScopeText
+        )
 
         switch style {
         case .standard:
@@ -2400,11 +2603,19 @@ class OpenClawService: ObservableObject {
             Rules:
             - Reply to the user immediately with a practical answer.
             - Keep the visible reply concise and high-signal.
-            - If you can finish the task yourself, do not route further.
-            - Only choose downstream agents from the list below when they are truly needed.
             - Follow protocol version \(protocolCapsule.protocolVersion).
-            - Self-check the last line before sending. If invalid, rewrite only the machine tail.
-            - If uncertain, emit the smallest valid safe result instead of guessing.
+            - \(outputMode == .structuredJSON
+                ? "If you can finish the task yourself, do not route further."
+                : "Keep this turn conversational; do not convert it into workflow dispatch.")
+            - \(outputMode == .structuredJSON
+                ? "Only choose downstream agents from the list below when they are truly needed."
+                : "If specialist help seems useful, mention it naturally instead of selecting workflow targets.")
+            - \(outputMode == .structuredJSON
+                ? "Self-check the last line before sending. If invalid, rewrite only the machine tail."
+                : "Before sending, ensure the reply contains no routing JSON or machine tail.")
+            - \(outputMode == .structuredJSON
+                ? "If uncertain, emit the smallest valid safe result instead of guessing."
+                : "If uncertain, state the limitation plainly instead of inventing routing metadata.")
 
             Long-Term Protocol Memory:
             \(stableRulesText)
@@ -2420,24 +2631,26 @@ class OpenClawService: ObservableObject {
             - Fallback policy: \(protocolCapsule.fallbackPolicy)
             - Required output contract: \(protocolCapsule.requiredOutputContract)
 
-            Downstream Candidates:
-            \(candidateLines.joined(separator: "\n"))
-
-            Approval-Required Downstream Agents:
-            \(approvalLines.joined(separator: "\n"))
+            \(workbenchEntryCollaborationSection)
 
             Runtime Guardrails:
-            - Do not directly contact approval-required targets.
-            - Keep writes inside:
-            \(writeScopeText)
-            - Limit tools to:
-            \(toolScopeText)
-
-            Append exactly one JSON object as the last non-empty line:
-            {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
-            Allowed action values: "stop", "selected", "all".
-            Keep the JSON on its own line with no Markdown fence.
+            \(workbenchEntryRuntimeGuardrails)
             """
+            + (outputMode == .structuredJSON
+                ? """
+
+                Append exactly one JSON object as the last non-empty line:
+                {"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}
+                Allowed action values: "stop", "selected", "all".
+                Keep the JSON on its own line with no Markdown fence.
+                """
+                : """
+
+                Output Contract:
+                - Return a direct user-facing reply only.
+                - Do not append routing JSON, workflow_route objects, or any machine tail.
+                - If downstream help seems useful, describe it in natural language instead of emitting a route.
+                """)
         }
     }
 
@@ -2447,7 +2660,8 @@ class OpenClawService: ObservableObject {
 
     private func makeProtocolDispatchCapsule(
         for agent: Agent,
-        guardrails: RuntimeDispatchGuardrails
+        guardrails: RuntimeDispatchGuardrails,
+        outputMode: AgentOutputMode
     ) -> ProtocolDispatchCapsule {
         let allowedTargets = guardrails.directTargets.map { target in
             "\(target.agent.name) [agent_id: \(target.resolvedIdentifier), node: \(target.node.id.uuidString)]"
@@ -2455,6 +2669,7 @@ class OpenClawService: ObservableObject {
         let approvalTargets = guardrails.approvalRequiredTargets.map { target in
             "\(target.agent.name) [agent_id: \(target.resolvedIdentifier), node: \(target.node.id.uuidString)]"
         }
+        let outputContract = Self.protocolOutputContract(for: outputMode)
 
         return ProtocolDispatchCapsule(
             protocolVersion: agent.openClawDefinition.protocolMemory.protocolVersion,
@@ -2464,10 +2679,99 @@ class OpenClawService: ObservableObject {
             writeScope: guardrails.writeScope,
             toolScope: guardrails.toolScope,
             fallbackPolicy: guardrails.fallbackRoutingPolicy.rawValue,
-            requiredOutputContract: #"{"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}"#,
-            selfCheckRule: "Before sending the final answer, validate the last non-empty line. If the machine tail is invalid, rewrite only the machine tail so it becomes valid.",
-            feedbackHints: protocolFeedbackHints(for: agent)
+            requiredOutputContract: outputContract.requiredOutputContract,
+            selfCheckRule: outputContract.selfCheckRule,
+            feedbackHints: protocolFeedbackHints(for: agent, outputMode: outputMode)
         )
+    }
+
+    static func filteredProtocolGuidanceLines(
+        _ lines: [String],
+        for outputMode: AgentOutputMode
+    ) -> [String] {
+        guard outputMode == .plainStreaming else { return lines }
+        return lines.filter { line in
+            let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty else { return false }
+            return !normalized.contains("routing json")
+                && !normalized.contains("machine tail")
+                && !normalized.contains("last non-empty line")
+                && !normalized.contains("workflow_route")
+        }
+    }
+
+    static func protocolOutputContract(
+        for outputMode: AgentOutputMode
+    ) -> (requiredOutputContract: String, selfCheckRule: String) {
+        switch outputMode {
+        case .structuredJSON:
+            return (
+                requiredOutputContract: #"{"workflow_route":{"action":"stop","targets":[],"reason":"short reason"}}"#,
+                selfCheckRule: "Before sending the final answer, validate the last non-empty line. If the machine tail is invalid, rewrite only the machine tail so it becomes valid."
+            )
+        case .plainStreaming:
+            return (
+                requiredOutputContract: "Return a direct user-facing reply only. Do not append routing JSON or any machine tail.",
+                selfCheckRule: "Before sending the final answer, ensure the reply is plain user-facing text and does not append workflow routing metadata."
+            )
+        }
+    }
+
+    static func workbenchEntryCollaborationSection(
+        for outputMode: AgentOutputMode,
+        candidateLines: [String],
+        approvalLines: [String]
+    ) -> String {
+        switch outputMode {
+        case .structuredJSON:
+            return """
+            Downstream Candidates:
+            \(candidateLines.joined(separator: "\n"))
+
+            Approval-Required Downstream Agents:
+            \(approvalLines.joined(separator: "\n"))
+            """
+        case .plainStreaming:
+            return """
+            Conversation Collaboration Boundary:
+            - This chat turn does not trigger workflow dispatch or downstream node scheduling.
+            - Do not emit workflow routing metadata or select downstream workflow targets.
+            - If specialist help seems useful, describe it in natural language only.
+            - The agents below are informational context, not executable routing targets for this turn.
+
+            Available Specialists (Informational Only):
+            \(candidateLines.joined(separator: "\n"))
+
+            Approval-Required Specialists (Informational Only):
+            \(approvalLines.joined(separator: "\n"))
+            """
+        }
+    }
+
+    static func workbenchEntryRuntimeGuardrails(
+        for outputMode: AgentOutputMode,
+        writeScopeText: String,
+        toolScopeText: String
+    ) -> String {
+        switch outputMode {
+        case .structuredJSON:
+            return """
+            - Do not directly contact approval-required targets.
+            - Keep writes inside:
+            \(writeScopeText)
+            - Limit tools to:
+            \(toolScopeText)
+            """
+        case .plainStreaming:
+            return """
+            - This chat turn must remain a direct user-facing conversation reply.
+            - Do not turn workflow graph edges into direct dispatch instructions.
+            - Keep writes inside:
+            \(writeScopeText)
+            - Limit tools to:
+            \(toolScopeText)
+            """
+        }
     }
 
     private func makeSessionProtocolDigest(
@@ -2488,7 +2792,10 @@ class OpenClawService: ObservableObject {
         ].joined(separator: " | ")
     }
 
-    private func protocolFeedbackHints(for agent: Agent) -> [String] {
+    private func protocolFeedbackHints(
+        for agent: Agent,
+        outputMode: AgentOutputMode
+    ) -> [String] {
         let protocolMemory = agent.openClawDefinition.protocolMemory
         let prioritized = protocolMemory.repeatOffenses + protocolMemory.recentCorrections
         var seen = Set<String>()
@@ -2504,7 +2811,7 @@ class OpenClawService: ObservableObject {
             }
         }
 
-        return hints
+        return Self.filteredProtocolGuidanceLines(hints, for: outputMode)
     }
 
     private func runtimeDispatchGuardrails(
@@ -3518,20 +3825,15 @@ class OpenClawService: ObservableObject {
                 routingDecision: routingDecision
             )
         case .plainStreaming:
-            let text = extractVisiblePlainResponse(from: stdout)
-            let routingDecision = extractRoutingDecision(from: stdout) ?? extractRoutingDecision(from: text)
-            let sanitizedText = stripRoutingDirective(from: text)
-            let outputType: ExecutionOutputType = sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? .runtimeLog
-                : .agentFinalResponse
+            let plainStreamingOutput = Self.parsePlainStreamingVisibleOutput(from: stdout)
             return ParsedAgentOutput(
-                text: sanitizedText,
-                type: outputType,
+                text: plainStreamingOutput.text,
+                type: plainStreamingOutput.outputType,
                 sessionID: sessionID,
                 transportKind: transportKind,
                 firstChunkLatencyMs: firstChunkLatencyMs,
                 completionLatencyMs: completionLatencyMs,
-                routingDecision: routingDecision
+                routingDecision: nil
             )
         }
     }
@@ -3876,11 +4178,15 @@ class OpenClawService: ObservableObject {
     }
 
     private func extractRoutingDecision(from text: String) -> WorkflowRoutingDecision? {
-        let payloads = extractJSONPayloads(from: text)
+        Self.extractRoutingDecision(from: text)
+    }
+
+    private nonisolated static func extractRoutingDecision(from text: String) -> WorkflowRoutingDecision? {
+        let payloads = Self.extractJSONPayloads(from: text)
         for payload in payloads.reversed() {
             guard let data = payload.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data),
-                  let decision = routingDecision(from: json) else {
+                  let decision = Self.routingDecision(from: json) else {
                 continue
             }
             return decision
@@ -3889,6 +4195,10 @@ class OpenClawService: ObservableObject {
     }
 
     private func stripRoutingDirective(from text: String) -> String {
+        Self.stripRoutingDirectiveText(from: text)
+    }
+
+    private nonisolated static func stripRoutingDirectiveText(from text: String) -> String {
         let normalized = text.replacingOccurrences(of: "\r", with: "")
         let lines = normalized.components(separatedBy: .newlines)
         guard let lastIndex = lines.lastIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
@@ -3906,22 +4216,26 @@ class OpenClawService: ObservableObject {
     }
 
     private func routingDecision(from json: Any) -> WorkflowRoutingDecision? {
+        Self.routingDecision(from: json)
+    }
+
+    private nonisolated static func routingDecision(from json: Any) -> WorkflowRoutingDecision? {
         if let dict = json as? [String: Any] {
             if let nested = dict["workflow_route"] {
-                return routingDecision(fromRouteObject: nested)
+                return Self.routingDecision(fromRouteObject: nested)
             }
             if let nested = dict["route"] {
-                return routingDecision(fromRouteObject: nested)
+                return Self.routingDecision(fromRouteObject: nested)
             }
             if let nested = dict["routing"] {
-                return routingDecision(fromRouteObject: nested)
+                return Self.routingDecision(fromRouteObject: nested)
             }
-            return routingDecision(fromRouteObject: dict)
+            return Self.routingDecision(fromRouteObject: dict)
         }
 
         if let array = json as? [Any] {
             for item in array.reversed() {
-                if let decision = routingDecision(from: item) {
+                if let decision = Self.routingDecision(from: item) {
                     return decision
                 }
             }
@@ -3931,9 +4245,13 @@ class OpenClawService: ObservableObject {
     }
 
     private func routingDecision(fromRouteObject object: Any) -> WorkflowRoutingDecision? {
+        Self.routingDecision(fromRouteObject: object)
+    }
+
+    private nonisolated static func routingDecision(fromRouteObject object: Any) -> WorkflowRoutingDecision? {
         guard let dict = object as? [String: Any] else { return nil }
 
-        let rawAction = firstNonEmptyString(in: dict, keys: ["action", "mode", "decision", "type"])?.lowercased()
+        let rawAction = Self.firstNonEmptyString(in: dict, keys: ["action", "mode", "decision", "type"])?.lowercased()
         let action: WorkflowRoutingDecision.Action
         switch rawAction {
         case "all", "broadcast", "fanout":
@@ -3946,32 +4264,36 @@ class OpenClawService: ObservableObject {
             if let continueValue = dict["continue"] as? Bool {
                 action = continueValue ? .selected : .stop
             } else {
-                let nextAgents = stringArray(from: dict["targets"] ?? dict["next_agents"] ?? dict["nextAgents"])
+                let nextAgents = Self.stringArray(from: dict["targets"] ?? dict["next_agents"] ?? dict["nextAgents"])
                 action = nextAgents.isEmpty ? .stop : .selected
             }
         default:
             return nil
         }
 
-        let targets = stringArray(from: dict["targets"] ?? dict["next_agents"] ?? dict["nextAgents"] ?? dict["agents"])
-        let reason = firstNonEmptyString(in: dict, keys: ["reason", "why", "note", "summary"])
+        let targets = Self.stringArray(from: dict["targets"] ?? dict["next_agents"] ?? dict["nextAgents"] ?? dict["agents"])
+        let reason = Self.firstNonEmptyString(in: dict, keys: ["reason", "why", "note", "summary"])
         return WorkflowRoutingDecision(action: action, targets: targets, reason: reason)
     }
 
     private func stringArray(from value: Any?) -> [String] {
+        Self.stringArray(from: value)
+    }
+
+    private nonisolated static func stringArray(from value: Any?) -> [String] {
         guard let value else { return [] }
 
         if let strings = value as? [String] {
-            return strings.compactMap(normalizedNonEmpty)
+            return strings.compactMap(Self.normalizedNonEmpty)
         }
 
         if let array = value as? [Any] {
             return array.compactMap { item in
                 if let text = item as? String {
-                    return normalizedNonEmpty(text)
+                    return Self.normalizedNonEmpty(text)
                 }
                 if let dict = item as? [String: Any] {
-                    return firstNonEmptyString(in: dict, keys: ["name", "agent", "agent_id", "id", "node", "target"])
+                    return Self.firstNonEmptyString(in: dict, keys: ["name", "agent", "agent_id", "id", "node", "target"])
                 }
                 return nil
             }
@@ -3981,7 +4303,7 @@ class OpenClawService: ObservableObject {
             let parts = string
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .compactMap(normalizedNonEmpty)
+                .compactMap(Self.normalizedNonEmpty)
             return parts
         }
 
@@ -4037,9 +4359,13 @@ class OpenClawService: ObservableObject {
     }
 
     private func firstNonEmptyString(in dict: [String: Any], keys: [String]) -> String? {
+        Self.firstNonEmptyString(in: dict, keys: keys)
+    }
+
+    private nonisolated static func firstNonEmptyString(in dict: [String: Any], keys: [String]) -> String? {
         for key in keys {
             guard let value = dict[key] else { continue }
-            if let text = textValue(from: value) {
+            if let text = Self.textValue(from: value) {
                 return text
             }
         }
@@ -4047,12 +4373,16 @@ class OpenClawService: ObservableObject {
     }
 
     private func textValue(from value: Any) -> String? {
+        Self.textValue(from: value)
+    }
+
+    private nonisolated static func textValue(from value: Any) -> String? {
         if let text = value as? String {
-            return normalizedNonEmpty(text)
+            return Self.normalizedNonEmpty(text)
         }
 
         if let dict = value as? [String: Any] {
-            if let direct = firstNonEmptyString(in: dict, keys: ["content", "text", "output_text", "message", "response", "final"]) {
+            if let direct = Self.firstNonEmptyString(in: dict, keys: ["content", "text", "output_text", "message", "response", "final"]) {
                 return direct
             }
             return nil
@@ -4061,10 +4391,10 @@ class OpenClawService: ObservableObject {
         if let array = value as? [Any] {
             let chunks = array.compactMap { item -> String? in
                 if let text = item as? String {
-                    return normalizedNonEmpty(text)
+                    return Self.normalizedNonEmpty(text)
                 }
                 if let dict = item as? [String: Any] {
-                    return firstNonEmptyString(in: dict, keys: ["text", "content", "output_text"])
+                    return Self.firstNonEmptyString(in: dict, keys: ["text", "content", "output_text"])
                 }
                 return nil
             }
@@ -4076,12 +4406,27 @@ class OpenClawService: ObservableObject {
     }
 
     private func normalizedNonEmpty(_ value: String) -> String? {
+        Self.normalizedNonEmpty(value)
+    }
+
+    private nonisolated static func normalizedNonEmpty(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
     private func extractVisiblePlainResponse(from stdout: String) -> String {
         Self.extractVisiblePlainResponseText(from: stdout)
+    }
+
+    static func parsePlainStreamingVisibleOutput(
+        from stdout: String
+    ) -> (text: String, outputType: ExecutionOutputType) {
+        let text = extractVisiblePlainResponseText(from: stdout)
+        let sanitizedText = stripRoutingDirectiveText(from: text)
+        let outputType: ExecutionOutputType = sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? .runtimeLog
+            : .agentFinalResponse
+        return (sanitizedText, outputType)
     }
 
     private nonisolated static func extractVisiblePlainResponseText(from stdout: String) -> String {
@@ -4326,10 +4671,14 @@ class OpenClawService: ObservableObject {
     }
 
     private func extractFirstJSONPayload(from text: String) -> String? {
-        extractJSONPayloads(from: text).first
+        Self.extractJSONPayloads(from: text).first
     }
 
     private func extractJSONPayloads(from text: String) -> [String] {
+        Self.extractJSONPayloads(from: text)
+    }
+
+    private nonisolated static func extractJSONPayloads(from text: String) -> [String] {
         let chars = Array(text)
         var payloads: [String] = []
 

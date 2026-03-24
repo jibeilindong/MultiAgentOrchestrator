@@ -1517,6 +1517,15 @@ struct MonitoringDashboardView: View {
     private var project: MAProject? { appState.currentProject }
     private var taskStats: TaskManager.TaskStatistics { appState.taskManager.statistics }
     private var executionState: ExecutionState? { appState.openClawService.executionState }
+    private var hasAnyLocalExecution: Bool { appState.openClawService.hasAnyLocalExecutionActivity }
+    private var hasActiveWorkflowExecution: Bool { appState.openClawService.hasActiveWorkflowExecution }
+    private var activeConversationExecutionCount: Int {
+        appState.openClawService.activeLocalExecutionActivities.reduce(into: 0) { count, activity in
+            if activity.executionIntent == .conversationAutonomous {
+                count += 1
+            }
+        }
+    }
     private let metricsRefreshDebounce: TimeInterval = 0.25
     private let historyCalendar = Calendar.autoupdatingCurrent
 
@@ -1590,7 +1599,7 @@ struct MonitoringDashboardView: View {
         }
     }
     private var openClawOverviewDetailText: String {
-        let base = "\(appState.openClawManager.config.deploymentSummary) • \(appState.openClawRuntimeControlPlaneBadgeTitle) • \(appState.openClawAttachmentStatusTitle)"
+        let base = "\(appState.openClawRuntimeSourceBadgeTitle) • \(appState.openClawManager.config.deploymentSummary) • \(appState.openClawRuntimeControlPlaneBadgeTitle) • \(appState.openClawAttachmentStatusTitle)"
         if let revisionSummary = appState.openClawRevisionSummary {
             return "\(base) • \(revisionSummary)"
         }
@@ -1609,6 +1618,61 @@ struct MonitoringDashboardView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let detail, !detail.isEmpty else { return nil }
         return detail
+    }
+    private var executionOverviewValueText: String {
+        if hasActiveWorkflowExecution {
+            return LocalizedString.text("workflow_running")
+        }
+        if hasAnyLocalExecution {
+            return LocalizedString.text("running_status")
+        }
+        return LocalizedString.text("idle_status")
+    }
+    private var executionOverviewDetailText: String {
+        if hasActiveWorkflowExecution {
+            return executionProgressText
+        }
+        if activeConversationExecutionCount == 1 {
+            return LocalizedString.text("execution_detail_chat_single")
+        }
+        if activeConversationExecutionCount > 1 {
+            return LocalizedString.format("execution_detail_chat_count", activeConversationExecutionCount)
+        }
+        if hasAnyLocalExecution {
+            return LocalizedString.text("execution_detail_runtime_activity")
+        }
+        return LocalizedString.text("workflow_idle")
+    }
+    private var executionOverviewColor: Color {
+        hasAnyLocalExecution ? .orange : .secondary
+    }
+    private var executionActivityPillTitle: String {
+        if hasActiveWorkflowExecution {
+            return executionProgressText
+        }
+        if activeConversationExecutionCount == 1 {
+            return LocalizedString.text("workbench_chat_replying")
+        }
+        if activeConversationExecutionCount > 1 {
+            return LocalizedString.format("workbench_chat_replying_count", activeConversationExecutionCount)
+        }
+        if hasAnyLocalExecution {
+            return LocalizedString.text("execution_running")
+        }
+        return LocalizedString.text("workflow_idle")
+    }
+    private var executionSectionDetailText: String? {
+        guard !hasActiveWorkflowExecution else { return nil }
+        if activeConversationExecutionCount == 1 {
+            return LocalizedString.text("execution_detail_chat_single")
+        }
+        if activeConversationExecutionCount > 1 {
+            return LocalizedString.format("execution_detail_chat_count", activeConversationExecutionCount)
+        }
+        if hasAnyLocalExecution {
+            return LocalizedString.text("execution_detail_runtime_activity")
+        }
+        return nil
     }
     private var sourceHistoricalSeries: [OpsMetricHistorySeries] {
         selectedHistoryFocusMode == .project ? opsSnapshot.historicalSeries : scopedHistoricalSeries
@@ -1943,9 +2007,9 @@ struct MonitoringDashboardView: View {
                 )
                 monitoringCard(
                     title: LocalizedString.execution,
-                    value: appState.openClawService.isExecuting ? LocalizedString.text("running_status") : LocalizedString.text("idle_status"),
-                    detail: executionProgressText,
-                    color: appState.openClawService.isExecuting ? .orange : .secondary
+                    value: executionOverviewValueText,
+                    detail: executionOverviewDetailText,
+                    color: executionOverviewColor
                 )
                 monitoringCard(
                     title: LocalizedString.text("memory_backup"),
@@ -2831,19 +2895,27 @@ struct MonitoringDashboardView: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 12) {
-                ProgressView(
-                    value: Double(appState.openClawService.currentStep),
-                    total: max(Double(appState.openClawService.totalSteps), 1)
-                )
-                .progressViewStyle(.linear)
+                if hasActiveWorkflowExecution {
+                    ProgressView(
+                        value: Double(appState.openClawService.currentStep),
+                        total: max(Double(appState.openClawService.totalSteps), 1)
+                    )
+                    .progressViewStyle(.linear)
+                } else if hasAnyLocalExecution {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView(value: 0, total: 1)
+                        .progressViewStyle(.linear)
+                }
 
                 HStack(spacing: 8) {
                     monitoringPill(
-                        title: executionProgressText,
-                        color: appState.openClawService.isExecuting ? .orange : .green
+                        title: executionActivityPillTitle,
+                        color: hasAnyLocalExecution ? .orange : .green
                     )
 
-                    if let executionState, executionState.isPaused {
+                    if hasActiveWorkflowExecution, let executionState, executionState.isPaused {
                         monitoringPill(title: LocalizedString.text("paused"), color: .red)
                     }
 
@@ -2855,7 +2927,11 @@ struct MonitoringDashboardView: View {
                     }
                 }
 
-                if let workflow = project?.workflows.first {
+                if let executionSectionDetailText {
+                    Text(executionSectionDetailText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else if let workflow = project?.workflows.first {
                     Text(LocalizedString.format(
                         "workflow_runtime_summary",
                         workflow.nodes.filter { $0.type == .agent }.count,
@@ -3010,6 +3086,23 @@ struct MonitoringDashboardView: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Text(appState.openClawRuntimeSourceSummary)
+                .font(.footnote.weight(.medium))
+                .foregroundColor(appState.openClawRuntimeSourceColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(appState.openClawRuntimeSourceDetail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let endpoint = appState.openClawRuntimeSourceEndpoint {
+                Text("当前 Endpoint: \(endpoint)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
                 Text("\(LocalizedString.text("openclaw_runtime_sync_status_label")): \(runtimeSyncSummary)")
                     .font(.footnote.weight(.medium))
@@ -3069,7 +3162,7 @@ struct MonitoringDashboardView: View {
                     appState.openClawService.pauseExecution()
                 }
                 .buttonStyle(.bordered)
-                .disabled(!appState.openClawService.isExecuting)
+                .disabled(!hasActiveWorkflowExecution)
 
                 Button(LocalizedString.text("resume_execution")) {
                     appState.openClawService.resumeExecution()
@@ -4084,6 +4177,7 @@ struct MonitoringDashboardView: View {
             agentName: row.agentName,
             executionStatus: row.status,
             outputType: row.outputType,
+            executionIntent: row.executionIntent,
             routingAction: row.routingAction,
             routingReason: nil,
             routingTargets: [],
@@ -4677,6 +4771,12 @@ private struct OpsTraceDetailSheet: View {
         }
     }
 
+    private var hasRoutingDetails: Bool {
+        detail.routingAction != nil
+            || detail.routingReason != nil
+            || !detail.routingTargets.isEmpty
+    }
+
     private var filteredTimelineEntries: [OpsTraceTimelineEntry] {
         let normalizedSearch = spanSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let spans = detail.relatedSpans.filter { span in
@@ -4767,7 +4867,9 @@ private struct OpsTraceDetailSheet: View {
                     )
                     detailCard(title: "Agent", value: detail.agentName)
                     detailCard(title: "Output", value: detail.outputType.rawValue)
-                    detailCard(title: "Route", value: detail.routingAction ?? "N/A")
+                    if hasRoutingDetails {
+                        detailCard(title: "Route", value: detail.routingAction ?? "N/A")
+                    }
                     detailCard(title: "Duration", value: detail.duration.map(formatOpsDuration) ?? "N/A")
                     detailCard(title: "Started", value: detail.startedAt.formatted(date: .abbreviated, time: .standard))
                     detailCard(title: "Completed", value: detail.completedAt?.formatted(date: .abbreviated, time: .standard) ?? "In progress")

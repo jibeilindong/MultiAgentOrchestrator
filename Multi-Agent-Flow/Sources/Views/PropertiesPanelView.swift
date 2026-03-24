@@ -3733,7 +3733,11 @@ struct ProjectPropertiesView: View {
             Button(isRunningLaunchVerification ? LocalizedString.text("execution_running") : LocalizedString.text("launch_verification")) {
                 showLaunchVerificationConfirmation = true
             }
-            .disabled(selectedWorkflow == nil || isRunningLaunchVerification || appState.openClawService.isExecuting)
+            .disabled(
+                selectedWorkflow == nil
+                    || isRunningLaunchVerification
+                    || appState.openClawService.hasAnyLocalExecutionActivity
+            )
         }
     }
 

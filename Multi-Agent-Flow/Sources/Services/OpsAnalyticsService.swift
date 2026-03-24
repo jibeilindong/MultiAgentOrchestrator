@@ -43,6 +43,7 @@ struct OpsTraceSummaryRow: Identifiable {
     let status: ExecutionStatus
     let duration: TimeInterval?
     let startedAt: Date
+    let executionIntent: String?
     let routingAction: String?
     let outputType: ExecutionOutputType
     let sourceLabel: String
@@ -328,6 +329,7 @@ struct OpsTraceDetail: Identifiable {
     let agentName: String
     let executionStatus: ExecutionStatus
     let outputType: ExecutionOutputType
+    let executionIntent: String?
     let routingAction: String?
     let routingReason: String?
     let routingTargets: [String]
@@ -471,7 +473,8 @@ final class OpsAnalyticsService: ObservableObject {
                     status: result.status,
                     duration: result.duration,
                     startedAt: result.startedAt,
-                    routingAction: result.routingAction,
+                    executionIntent: result.executionIntent,
+                    routingAction: result.visibleRoutingAction,
                     outputType: result.outputType,
                     sourceLabel: "Runtime",
                     previewText: runtimePreviewText(for: result),

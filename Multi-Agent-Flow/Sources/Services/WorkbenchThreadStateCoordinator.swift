@@ -254,7 +254,6 @@ final class WorkbenchThreadStateCoordinator {
         activeRunRecords: [WorkbenchActiveRunRecord],
         explicitStateRecord: WorkbenchThreadStateRecord?
     ) -> WorkbenchThreadSummaryDescriptor? {
-        print("[WorkbenchThreadStateCoordinator] summarizeThread:start", threadID)
         let sortedMessages = messages.sorted { $0.timestamp < $1.timestamp }
         let sortedTasks = tasks.sorted { $0.createdAt < $1.createdAt }
         let activityDates = sortedMessages.map(\.timestamp)
@@ -277,7 +276,6 @@ final class WorkbenchThreadStateCoordinator {
         let derivedThreadType = RuntimeSessionSemanticType.preferredWorkbenchThreadType(
             from: contextSamples.map(\.context.threadType)
         ) ?? latestContext.threadType
-        print("[WorkbenchThreadStateCoordinator] summarizeThread:derived", threadID)
         let activeRunStatus = aggregatedActiveRunStatus(from: activeRunRecords)
         let conversationState = workbenchConversationState(
             interactionMode: derivedInteractionMode,
@@ -288,7 +286,6 @@ final class WorkbenchThreadStateCoordinator {
             activeRunStatus: activeRunStatus,
             explicitStateRecord: explicitStateRecord
         )
-        print("[WorkbenchThreadStateCoordinator] summarizeThread:conversationState", threadID, conversationState.rawValue)
 
         let latestUserPrompt = sortedMessages
             .last(where: { ($0.inferredRole ?? "").lowercased() == "user" })?
@@ -308,7 +305,6 @@ final class WorkbenchThreadStateCoordinator {
             ?? latestUserPrompt
             ?? sortedTasks.last?.description.compactSingleLinePreview(limit: 72)
             ?? latestContext.gatewaySessionKey.compactSingleLinePreview(limit: 72)
-        print("[WorkbenchThreadStateCoordinator] summarizeThread:return", threadID)
 
         return WorkbenchThreadSummaryDescriptor(
             id: threadID,

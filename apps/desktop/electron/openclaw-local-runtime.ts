@@ -76,8 +76,7 @@ export function buildManagedLocalOpenClawBinaryCandidates(
 
   return dedupeCandidates([
     ...managedCandidates,
-    ...developmentCandidates,
-    ...buildSystemLocalOpenClawBinaryCandidates(environment)
+    ...developmentCandidates
   ]);
 }
 

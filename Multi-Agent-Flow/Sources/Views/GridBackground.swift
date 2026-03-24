@@ -8,61 +8,115 @@
 import SwiftUI
 
 struct GridBackground: View {
-    let gridSize: CGFloat = 20
-    let majorStep: Int = 5
-    
+    var scale: CGFloat
+    var offset: CGSize
+
+    private let baseGridSize: CGFloat = 20
+    private let minimumScreenStep: CGFloat = 18
+    private let maximumScreenStep: CGFloat = 72
+    private let majorLineMultiple: CGFloat = 5
+
     var body: some View {
         Canvas { context, size in
-            let verticalCount = Int(ceil(size.width / gridSize))
-            let horizontalCount = Int(ceil(size.height / gridSize))
+            let resolvedScale = max(scale, CanvasViewportConfiguration.zoomScaleRange.lowerBound)
+            let worldStep = resolvedWorldStep(for: resolvedScale)
+            let minorStep = worldStep * resolvedScale
+            let majorStep = minorStep * majorLineMultiple
+            let worldOrigin = CGPoint(
+                x: size.width / 2 + offset.width,
+                y: size.height / 2 + offset.height
+            )
 
-            // 绘制网格（主网格线更明显）
-            for index in 0...verticalCount {
-                let x = CGFloat(index) * gridSize
-                let path = Path { p in
-                    p.move(to: CGPoint(x: x, y: 0))
-                    p.addLine(to: CGPoint(x: x, y: size.height))
+            drawGridLines(
+                in: size,
+                context: context,
+                spacing: minorStep,
+                origin: worldOrigin,
+                color: Color.gray.opacity(0.2),
+                lineWidth: 0.8
+            )
+            drawGridLines(
+                in: size,
+                context: context,
+                spacing: majorStep,
+                origin: worldOrigin,
+                color: Color.gray.opacity(0.32),
+                lineWidth: 1.0
+            )
+
+            if (0...size.width).contains(worldOrigin.x) {
+                let yAxis = Path { path in
+                    path.move(to: CGPoint(x: worldOrigin.x, y: 0))
+                    path.addLine(to: CGPoint(x: worldOrigin.x, y: size.height))
                 }
-                let isMajor = index.isMultiple(of: majorStep)
-                context.stroke(
-                    path,
-                    with: .color(Color.gray.opacity(isMajor ? 0.36 : 0.24)),
-                    lineWidth: isMajor ? 1.1 : 0.8
-                )
+                context.stroke(yAxis, with: .color(Color.gray.opacity(0.48)), lineWidth: 1.1)
             }
-            
-            for index in 0...horizontalCount {
-                let y = CGFloat(index) * gridSize
-                let path = Path { p in
-                    p.move(to: CGPoint(x: 0, y: y))
-                    p.addLine(to: CGPoint(x: size.width, y: y))
+
+            if (0...size.height).contains(worldOrigin.y) {
+                let xAxis = Path { path in
+                    path.move(to: CGPoint(x: 0, y: worldOrigin.y))
+                    path.addLine(to: CGPoint(x: size.width, y: worldOrigin.y))
                 }
-                let isMajor = index.isMultiple(of: majorStep)
-                context.stroke(
-                    path,
-                    with: .color(Color.gray.opacity(isMajor ? 0.36 : 0.24)),
-                    lineWidth: isMajor ? 1.1 : 0.8
-                )
+                context.stroke(xAxis, with: .color(Color.gray.opacity(0.48)), lineWidth: 1.1)
             }
-            
-            // 绘制坐标轴
-            let centerX = size.width / 2
-            let centerY = size.height / 2
-            
-            // X轴
-            let xAxis = Path { p in
-                p.move(to: CGPoint(x: 0, y: centerY))
-                p.addLine(to: CGPoint(x: size.width, y: centerY))
-            }
-            context.stroke(xAxis, with: .color(Color.gray.opacity(0.5)), lineWidth: 1)
-            
-            // Y轴
-            let yAxis = Path { p in
-                p.move(to: CGPoint(x: centerX, y: 0))
-                p.addLine(to: CGPoint(x: centerX, y: size.height))
-            }
-            context.stroke(yAxis, with: .color(Color.gray.opacity(0.5)), lineWidth: 1)
-            
         }
+    }
+
+    private func resolvedWorldStep(for scale: CGFloat) -> CGFloat {
+        var worldStep = baseGridSize
+
+        while worldStep * scale < minimumScreenStep {
+            worldStep *= 2
+        }
+
+        while worldStep > 2.5, worldStep * scale > maximumScreenStep {
+            worldStep /= 2
+        }
+
+        return worldStep
+    }
+
+    private func drawGridLines(
+        in size: CGSize,
+        context: GraphicsContext,
+        spacing: CGFloat,
+        origin: CGPoint,
+        color: Color,
+        lineWidth: CGFloat
+    ) {
+        guard spacing > 0.5 else { return }
+
+        var vertical = positiveRemainder(origin.x, spacing)
+        while vertical > 0 {
+            vertical -= spacing
+        }
+
+        while vertical <= size.width {
+            let path = Path { path in
+                path.move(to: CGPoint(x: vertical, y: 0))
+                path.addLine(to: CGPoint(x: vertical, y: size.height))
+            }
+            context.stroke(path, with: .color(color), lineWidth: lineWidth)
+            vertical += spacing
+        }
+
+        var horizontal = positiveRemainder(origin.y, spacing)
+        while horizontal > 0 {
+            horizontal -= spacing
+        }
+
+        while horizontal <= size.height {
+            let path = Path { path in
+                path.move(to: CGPoint(x: 0, y: horizontal))
+                path.addLine(to: CGPoint(x: size.width, y: horizontal))
+            }
+            context.stroke(path, with: .color(color), lineWidth: lineWidth)
+            horizontal += spacing
+        }
+    }
+
+    private func positiveRemainder(_ value: CGFloat, _ divisor: CGFloat) -> CGFloat {
+        let remainder = value.truncatingRemainder(dividingBy: divisor)
+        return remainder >= 0 ? remainder : remainder + divisor
     }
 }

@@ -80,6 +80,27 @@ final class OpsAnalyticsStore {
         self.dayFormatter = formatter
     }
 
+    private func traceExposesWorkflowRouting(attributes: [String: String]) -> Bool {
+        OpenClawRuntimeExecutionIntent.exposesWorkflowRoutingMetadata(for: attributes["execution_intent"])
+    }
+
+    private func traceRoutingAction(attributes: [String: String]) -> String? {
+        guard traceExposesWorkflowRouting(attributes: attributes) else { return nil }
+        return emptyToNil(attributes["routing_action"])
+    }
+
+    private func traceRoutingReason(attributes: [String: String]) -> String? {
+        guard traceExposesWorkflowRouting(attributes: attributes) else { return nil }
+        return emptyToNil(attributes["routing_reason"])
+    }
+
+    private func traceRoutingTargets(attributes: [String: String]) -> [String] {
+        guard traceExposesWorkflowRouting(attributes: attributes) else { return [] }
+        return emptyToNil(attributes["routing_targets"])?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
+    }
+
     func synchronize(
         project: MAProject,
         totalAgents: Int,
@@ -1076,6 +1097,12 @@ final class OpsAnalyticsStore {
             let normalizedSessionID = result.sessionID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
             let expectsWorkflowHotPath = normalizedSessionID.hasPrefix("workflow-")
             let matchedWorkflowHotPath = expectsWorkflowHotPath && (result.transportKind ?? "").lowercased() == "gateway_agent"
+            let visibleRoutingAction = result.visibleRoutingAction
+            let visibleRoutingReason = result.visibleRoutingReason
+            let visibleRoutingTargets = result.visibleRoutingTargets
+            let visibleRequestedRoutingAction = result.visibleRequestedRoutingAction
+            let visibleRequestedRoutingTargets = result.visibleRequestedRoutingTargets
+            let visibleRequestedRoutingReason = result.visibleRequestedRoutingReason
 
             let attributes: [String: String] = [
                 "agent_id": result.agentID.uuidString,
@@ -1083,33 +1110,34 @@ final class OpsAnalyticsStore {
                 "node_id": result.nodeID.uuidString,
                 "execution_status": result.status.rawValue,
                 "output_type": result.outputType.rawValue,
+                "execution_intent": result.executionIntent ?? "",
                 "session_id": result.sessionID ?? "",
                 "transport_kind": result.transportKind ?? "",
                 "first_chunk_latency_ms": result.firstChunkLatencyMs.map(String.init) ?? "",
                 "completion_latency_ms": result.completionLatencyMs.map(String.init) ?? "",
-                "routing_action": result.routingAction ?? "",
-                "routing_reason": result.routingReason ?? "",
-                "routing_targets": result.routingTargets.joined(separator: ", "),
-                "requested_routing_action": result.requestedRoutingAction ?? "",
-                "requested_routing_targets": result.requestedRoutingTargets.joined(separator: ", "),
-                "requested_routing_reason": result.requestedRoutingReason ?? "",
+                "routing_action": visibleRoutingAction ?? "",
+                "routing_reason": visibleRoutingReason ?? "",
+                "routing_targets": visibleRoutingTargets.joined(separator: ", "),
+                "requested_routing_action": visibleRequestedRoutingAction ?? "",
+                "requested_routing_targets": visibleRequestedRoutingTargets.joined(separator: ", "),
+                "requested_routing_reason": visibleRequestedRoutingReason ?? "",
                 "protocol_event_count": String(result.runtimeEvents.count),
                 "protocol_ref_count": String(result.runtimeRefCount),
                 "protocol_event_types": result.runtimeEventTypesSummary,
                 "protocol_repair_count": String(result.protocolRepairCount),
                 "protocol_repair_types": result.protocolRepairTypes.joined(separator: ", "),
                 "protocol_requested_route": [
-                    result.requestedRoutingAction,
-                    result.requestedRoutingTargets.isEmpty ? nil : result.requestedRoutingTargets.joined(separator: ", "),
-                    result.requestedRoutingReason
+                    visibleRequestedRoutingAction,
+                    visibleRequestedRoutingTargets.isEmpty ? nil : visibleRequestedRoutingTargets.joined(separator: ", "),
+                    visibleRequestedRoutingReason
                 ]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .joined(separator: " | "),
                 "protocol_sanitized_route": [
-                    result.routingAction,
-                    result.routingTargets.isEmpty ? nil : result.routingTargets.joined(separator: ", "),
-                    result.routingReason
+                    visibleRoutingAction,
+                    visibleRoutingTargets.isEmpty ? nil : visibleRoutingTargets.joined(separator: ", "),
+                    visibleRoutingReason
                 ]
                 .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -1137,12 +1165,13 @@ final class OpsAnalyticsStore {
                 eventsText: result.runtimeEventsText
             )
 
-            if result.routingAction != nil || result.routingReason != nil || !result.routingTargets.isEmpty {
+            if result.hasVisibleRoutingDetails {
                 let routingAttributes: [String: String] = [
                     "agent_name": agentNamesByID[result.agentID] ?? "Unknown Agent",
-                    "routing_action": result.routingAction ?? "",
-                    "routing_reason": result.routingReason ?? "",
-                    "routing_targets": result.routingTargets.joined(separator: ", ")
+                    "execution_intent": result.executionIntent ?? "",
+                    "routing_action": visibleRoutingAction ?? "",
+                    "routing_reason": visibleRoutingReason ?? "",
+                    "routing_targets": visibleRoutingTargets.joined(separator: ", ")
                 ]
 
                 upsertSpan(
@@ -1672,6 +1701,7 @@ final class OpsAnalyticsStore {
                     return false
                 }
             }()
+            let routingAction = traceRoutingAction(attributes: attributes)
 
             rows.append(
                 OpsTraceSummaryRow(
@@ -1680,7 +1710,8 @@ final class OpsAnalyticsStore {
                     status: executionStatus,
                     duration: durationMs.map { $0 / 1000.0 },
                     startedAt: startedAt,
-                    routingAction: emptyToNil(attributes["routing_action"]),
+                    executionIntent: emptyToNil(attributes["execution_intent"]),
+                    routingAction: routingAction,
                     outputType: outputType,
                     sourceLabel: service == "openclaw.external-session" ? "OpenClaw" : "Runtime",
                     previewText: previewText,
@@ -2154,9 +2185,10 @@ final class OpsAnalyticsStore {
 
         let executionStatus = ExecutionStatus(rawValue: attributes["execution_status"] ?? "") ?? .idle
         let outputType = ExecutionOutputType(rawValue: attributes["output_type"] ?? "") ?? .empty
-        let routingTargets = emptyToNil(attributes["routing_targets"])?
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
+        let executionIntent = emptyToNil(attributes["execution_intent"])
+        let routingAction = traceRoutingAction(attributes: attributes)
+        let routingReason = traceRoutingReason(attributes: attributes)
+        let routingTargets = traceRoutingTargets(attributes: attributes)
         let relatedSpans = loadTraceRelatedSpans(db: db, traceID: String(cString: traceCString), rootSpanID: id.uuidString)
 
         let normalizedEventsText = emptyToNil(eventsText)
@@ -2166,6 +2198,9 @@ final class OpsAnalyticsStore {
         let outputText = emptyToNil(attributes["output_text"])
             ?? normalizedEventsText
             ?? ""
+        let filteredRelatedSpans = OpenClawRuntimeExecutionIntent.exposesWorkflowRoutingMetadata(for: executionIntent)
+            ? relatedSpans
+            : relatedSpans.filter { $0.name != "Routing Decision" }
 
         return OpsTraceDetail(
             id: id,
@@ -2177,8 +2212,9 @@ final class OpsAnalyticsStore {
             agentName: attributes["agent_name"] ?? "Unknown Agent",
             executionStatus: executionStatus,
             outputType: outputType,
-            routingAction: emptyToNil(attributes["routing_action"]),
-            routingReason: emptyToNil(attributes["routing_reason"]),
+            executionIntent: executionIntent,
+            routingAction: routingAction,
+            routingReason: routingReason,
             routingTargets: routingTargets,
             nodeID: attributes["node_id"].flatMap(UUID.init(uuidString:)),
             startedAt: startedAt,
@@ -2188,7 +2224,7 @@ final class OpsAnalyticsStore {
             outputText: outputText,
             attributes: attributes,
             eventsText: normalizedEventsText,
-            relatedSpans: relatedSpans
+            relatedSpans: filteredRelatedSpans
         )
     }
 

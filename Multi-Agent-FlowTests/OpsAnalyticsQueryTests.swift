@@ -785,6 +785,65 @@ final class OpsAnalyticsQueryTests: XCTestCase {
         XCTAssertTrue(detail.eventsText?.contains("task.route | \(agent.name) -> Reviewer | Escalate for verification") == true)
     }
 
+    func testRefreshSuppressesRoutingMetadataForConversationResults() throws {
+        var project = makeProject(name: "Conversation Trace Isolation")
+        try prepareEmptyAnalyticsDatabase(for: project.id)
+
+        let agent = Agent(name: "Lead")
+        project.agents = [agent]
+
+        var node = WorkflowNode(type: .agent)
+        node.agentID = agent.id
+        node.title = "Lead Node"
+        project.workflows[0].nodes = [node]
+
+        let startedAt = Date().addingTimeInterval(-45)
+        let completedAt = startedAt.addingTimeInterval(1.2)
+        let result = ExecutionResult(
+            nodeID: node.id,
+            agentID: agent.id,
+            status: .completed,
+            output: "Natural language answer only",
+            outputType: .agentFinalResponse,
+            sessionID: "conversation-isolated-session",
+            executionIntent: OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue,
+            transportKind: "gateway_chat",
+            routingAction: "selected",
+            routingTargets: ["Reviewer"],
+            routingReason: "Legacy tail should not leak into chat",
+            requestedRoutingAction: "selected",
+            requestedRoutingTargets: ["Reviewer"],
+            requestedRoutingReason: "Legacy tail should not leak into chat",
+            startedAt: startedAt,
+            completedAt: completedAt
+        )
+
+        service.refresh(
+            project: project,
+            tasks: [],
+            executionResults: [result],
+            executionLogs: [],
+            activeAgents: [:],
+            isConnected: true
+        )
+
+        let traceRow = try XCTUnwrap(service.snapshot.traceRows.first(where: { $0.id == result.id }))
+        XCTAssertEqual(traceRow.executionIntent, OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue)
+        XCTAssertNil(traceRow.routingAction)
+
+        let detail = try XCTUnwrap(service.traceDetail(projectID: project.id, traceID: result.id))
+        XCTAssertEqual(detail.executionIntent, OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue)
+        XCTAssertNil(detail.routingAction)
+        XCTAssertNil(detail.routingReason)
+        XCTAssertTrue(detail.routingTargets.isEmpty)
+        XCTAssertEqual(detail.attributes["execution_intent"], OpenClawRuntimeExecutionIntent.conversationAutonomous.rawValue)
+        XCTAssertEqual(detail.attributes["routing_action"], "")
+        XCTAssertEqual(detail.attributes["requested_routing_action"], "")
+        XCTAssertEqual(detail.attributes["protocol_sanitized_route"], "")
+        XCTAssertEqual(detail.attributes["protocol_requested_route"], "")
+        XCTAssertFalse(detail.relatedSpans.contains(where: { $0.name == "Routing Decision" }))
+    }
+
     func testProtocolOutcomeFeedbackPromotesRepeatedRepairsIntoAgentMemory() throws {
         var project = makeProject(name: "Protocol Feedback Memory")
         let agent = Agent(name: "Planner")
@@ -2955,6 +3014,7 @@ final class OpsAnalyticsQueryTests: XCTestCase {
             status: status,
             duration: nil,
             startedAt: startedAt,
+            executionIntent: nil,
             routingAction: nil,
             outputType: .agentFinalResponse,
             sourceLabel: sourceLabel,

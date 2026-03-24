@@ -67,6 +67,14 @@ func preferredOpenClawSoulURL(
         ?? rootURL.appendingPathComponent("SOUL.md", isDirectory: false)
 }
 
+struct OpenClawRuntimeSourceDescriptor: Equatable {
+    var badgeTitle: String
+    var summary: String
+    var detail: String
+    var endpoint: String?
+    var binaryPath: String?
+}
+
 class OpenClawManager: ObservableObject {
     static let shared = OpenClawManager()
     private let fileManager: FileManager
@@ -123,6 +131,124 @@ class OpenClawManager: ObservableObject {
         projectAttachment.projectID
     }
 
+    func runtimeSourceDescriptor(
+        using snapshot: OpenClawManagedRuntimeStatusSnapshot? = nil,
+        config overrideConfig: OpenClawConfig? = nil
+    ) -> OpenClawRuntimeSourceDescriptor {
+        let config = overrideConfig ?? self.config
+        let snapshot = snapshot ?? managedRuntimeStatus
+
+        switch config.deploymentKind {
+        case .local:
+            switch config.runtimeOwnership {
+            case .appManaged:
+                let actualPort = snapshot.port ?? config.port
+                let requestedPort = snapshot.requestedPort ?? config.port
+                let endpoint = "\(config.useSSL ? "wss" : "ws")://\(config.host):\(actualPort)"
+                let portSummary = requestedPort == actualPort
+                    ? "当前通过应用私有 sidecar 提供本地 Gateway。"
+                    : "当前通过应用私有 sidecar 提供本地 Gateway，已从首选端口 \(requestedPort) 避让到 \(actualPort)。"
+                let detail = [
+                    "应用只使用私有 runtime root 和 bundled/managed binary。",
+                    "不会复用 ~/.openclaw，也不会接管系统 PATH 中的 openclaw。",
+                    portSummary
+                ].joined(separator: " ")
+                return OpenClawRuntimeSourceDescriptor(
+                    badgeTitle: "App Managed",
+                    summary: "应用私有 OpenClaw Sidecar",
+                    detail: detail,
+                    endpoint: endpoint,
+                    binaryPath: snapshot.binaryPath
+                )
+            case .externalLocal:
+                let configuredBinaryPath = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                let detail = configuredBinaryPath.isEmpty
+                    ? "当前配置为外部本地 binary 模式；需要显式指定用户本地 openclaw 路径，应用不会接管其进程或状态目录。"
+                    : "当前配置固定使用用户提供的本地 openclaw binary，应用不会切换到私有托管 runtime。"
+                return OpenClawRuntimeSourceDescriptor(
+                    badgeTitle: "External Local",
+                    summary: "用户本地 OpenClaw Binary",
+                    detail: detail,
+                    endpoint: "\(config.useSSL ? "wss" : "ws")://\(config.host):\(config.port)",
+                    binaryPath: configuredBinaryPath.isEmpty ? nil : configuredBinaryPath
+                )
+            }
+        case .container:
+            let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let runtimeName = containerName.isEmpty ? "未指定容器" : containerName
+            return OpenClawRuntimeSourceDescriptor(
+                badgeTitle: "Container",
+                summary: "容器内 OpenClaw Runtime",
+                detail: "当前通过 \(config.container.engine) 容器 \(runtimeName) 提供 Gateway，应用不会启用本地 app-managed sidecar。",
+                endpoint: "\(config.useSSL ? "wss" : "ws")://\(config.host):\(config.port)",
+                binaryPath: nil
+            )
+        case .remoteServer:
+            return OpenClawRuntimeSourceDescriptor(
+                badgeTitle: "Remote",
+                summary: "远程 OpenClaw Gateway",
+                detail: "当前直接连接远程 Gateway，应用不会管理本地 openclaw 进程、binary 或 runtime root。",
+                endpoint: "\(config.useSSL ? "wss" : "ws")://\(config.host):\(config.port)",
+                binaryPath: nil
+            )
+        }
+    }
+
+    func managedRuntimeDiagnosticSummary(using snapshot: OpenClawManagedRuntimeStatusSnapshot? = nil) -> String {
+        let snapshot = snapshot ?? managedRuntimeStatus
+        let sourceDescriptor = runtimeSourceDescriptor(using: snapshot)
+
+        let lines = [
+            "OpenClaw Managed Runtime Diagnostics",
+            "生成时间: \(diagnosticTimestamp(Date()))",
+            "控制面状态: \(diagnosticStatusText())",
+            "连接阶段: \(connectionState.phase.rawValue)",
+            "部署模式: \(config.deploymentKind.rawValue)",
+            "Runtime 所有权: \(config.runtimeOwnership.rawValue)",
+            "运行来源: \(sourceDescriptor.summary)",
+            "来源徽标: \(sourceDescriptor.badgeTitle)",
+            "来源说明: \(sourceDescriptor.detail)",
+            "Gateway Endpoint: \(diagnosticText(sourceDescriptor.endpoint))",
+            "主机: \(config.host)",
+            "请求端口: \(snapshot.requestedPort ?? config.port)",
+            "实际端口: \(snapshot.port ?? config.port)",
+            "已连接 Gateway: \(diagnosticBool(isConnected))",
+            "可运行工作流: \(diagnosticBool(canRunWorkflow))",
+            "可运行聊天: \(diagnosticBool(canRunConversation))",
+            "可附加项目: \(diagnosticBool(canAttachProject))",
+            "项目附加状态: \(projectAttachment.state.rawValue)",
+            "会话阶段: \(sessionLifecycle.stage.rawValue)",
+            "Supervisor 状态: \(snapshot.state.rawValue)",
+            "启动策略: \(diagnosticLaunchStrategyText(snapshot.launchStrategy))",
+            "PID: \(diagnosticText(snapshot.processID.map(String.init) ?? nil))",
+            "重启总数: \(snapshot.restartCount)",
+            "手动重启数: \(snapshot.manualRestartCount)",
+            "自动恢复数: \(snapshot.automaticRecoveryCount)",
+            "连续异常退出数: \(snapshot.consecutiveCrashCount)",
+            "当前自动恢复轮次: \(diagnosticText(snapshot.automaticRecoveryAttempt.map(String.init) ?? nil))",
+            "最近启动时间: \(diagnosticTimestamp(snapshot.lastStartedAt))",
+            "最近退出时间: \(diagnosticTimestamp(snapshot.lastExitAt))",
+            "最近异常退出时间: \(diagnosticTimestamp(snapshot.lastUnexpectedExitAt))",
+            "最近心跳时间: \(diagnosticTimestamp(snapshot.lastHeartbeatAt))",
+            "最近状态检查时间: \(diagnosticTimestamp(snapshot.lastStatusCheckAt))",
+            "最近恢复尝试时间: \(diagnosticTimestamp(snapshot.lastRecoveryAttemptAt))",
+            "最近恢复成功时间: \(diagnosticTimestamp(snapshot.lastRecoverySucceededAt))",
+            "Runtime Root: \(diagnosticText(snapshot.runtimeRootPath))",
+            "Supervisor Root: \(diagnosticText(snapshot.supervisorRootPath))",
+            "Binary Path: \(diagnosticText(sourceDescriptor.binaryPath ?? snapshot.binaryPath))",
+            "Log Path: \(diagnosticText(snapshot.logPath))",
+            "最近消息: \(diagnosticText(snapshot.lastMessage))",
+            "最近错误: \(diagnosticText(snapshot.lastError))",
+            "连接健康摘要: \(diagnosticText(connectionState.health.lastMessage))",
+            "退化原因: \(diagnosticText(connectionState.health.degradationReason))",
+            "最近探测时间: \(diagnosticTimestamp(connectionState.health.lastProbeAt))",
+            "最近控制面心跳: \(diagnosticTimestamp(connectionState.health.lastHeartbeatAt))",
+            "连接延迟(ms): \(diagnosticText(connectionState.health.latencyMs.map(String.init) ?? nil))"
+        ]
+
+        return lines.joined(separator: "\n")
+    }
+
     static func localBinaryPathCandidates(
         for config: OpenClawConfig,
         bundleResourceURL: URL? = Bundle.main.resourceURL,
@@ -159,21 +285,71 @@ class OpenClawManager: ObservableObject {
                 rootURL.appendingPathComponent("openclaw", isDirectory: false).path
             ]
         }
-        let systemCandidates = [
-            homeDirectory.appendingPathComponent(".local/bin/openclaw", isDirectory: false).path,
-            "/usr/local/bin/openclaw",
-            "/opt/homebrew/bin/openclaw",
-            "/usr/bin/openclaw"
-        ]
+        if config.usesManagedLocalRuntime {
+            return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates)
+        }
 
+        if !configured.isEmpty {
+            return deduplicatedLocalBinaryPaths([configured])
+        }
+
+        return deduplicatedLocalBinaryPaths([configured] + bundleCandidates + managedCandidates)
+    }
+
+    private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
         var seen = Set<String>()
-        return (bundleCandidates + managedCandidates + systemCandidates).compactMap { candidate in
+        return candidates.compactMap { candidate in
             let normalized = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !normalized.isEmpty else { return nil }
             guard seen.insert(normalized).inserted else { return nil }
             return normalized
         }
     }
+
+    private func diagnosticStatusText() -> String {
+        switch status {
+        case .connected:
+            return "connected"
+        case .connecting:
+            return "connecting"
+        case .disconnected:
+            return "disconnected"
+        case .error(let message):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "error" : "error (\(trimmed))"
+        }
+    }
+
+    private func diagnosticLaunchStrategyText(_ strategy: OpenClawManagedRuntimeLaunchStrategy?) -> String {
+        guard let strategy else { return "未记录" }
+
+        switch strategy {
+        case .foregroundGateway:
+            return "Foreground Gateway"
+        case .daemonCLI:
+            return "Daemon CLI"
+        }
+    }
+
+    private func diagnosticBool(_ value: Bool) -> String {
+        value ? "是" : "否"
+    }
+
+    private func diagnosticText(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "未记录" : trimmed
+    }
+
+    private func diagnosticTimestamp(_ date: Date?) -> String {
+        guard let date else { return "未记录" }
+        return Self.diagnosticDateFormatter.string(from: date)
+    }
+
+    private static let diagnosticDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
     
     enum OpenClawStatus {
         case disconnected
@@ -828,9 +1004,15 @@ class OpenClawManager: ObservableObject {
     ) {
         self.fileManager = fileManager
         self.host = host ?? OpenClawHost(fileManager: fileManager)
-        self.managedRuntimeSupervisor = managedRuntimeSupervisor
+        let resolvedManagedRuntimeSupervisor = managedRuntimeSupervisor
             ?? OpenClawManagedRuntimeSupervisor(fileManager: fileManager, host: self.host)
+        self.managedRuntimeSupervisor = resolvedManagedRuntimeSupervisor
         self.notificationCenter = notificationCenter
+        resolvedManagedRuntimeSupervisor.setStatusChangeHandler { [weak self] snapshot in
+            DispatchQueue.main.async {
+                self?.managedRuntimeStatus = snapshot
+            }
+        }
         // 创建备份目录
         try? FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
         connectionState = OpenClawConnectionStateSnapshot(
@@ -917,6 +1099,11 @@ class OpenClawManager: ObservableObject {
                 let runtimeStatus = try self.managedRuntimeSupervisor.ensureRunning(using: resolvedConfig)
                 DispatchQueue.main.async {
                     self.managedRuntimeStatus = runtimeStatus
+                    if resolvedConfig.usesManagedLocalRuntime,
+                       let resolvedPort = runtimeStatus.port,
+                       self.config.port != resolvedPort {
+                        self.config.port = resolvedPort
+                    }
                     proceedWithConnectionConfirmation()
                 }
             } catch {
@@ -1309,6 +1496,11 @@ class OpenClawManager: ObservableObject {
         let resolvedConfig = config ?? self.config
         let snapshot = managedRuntimeSupervisor.refreshStatus(using: resolvedConfig)
         managedRuntimeStatus = snapshot
+        if resolvedConfig.usesManagedLocalRuntime,
+           let resolvedPort = snapshot.port,
+           self.config.port != resolvedPort {
+            self.config.port = resolvedPort
+        }
         return snapshot
     }
 
@@ -1325,6 +1517,11 @@ class OpenClawManager: ObservableObject {
                 let snapshot = try self.managedRuntimeSupervisor.start(using: resolvedConfig)
                 DispatchQueue.main.async {
                     self.managedRuntimeStatus = snapshot
+                    if resolvedConfig.usesManagedLocalRuntime,
+                       let resolvedPort = snapshot.port,
+                       self.config.port != resolvedPort {
+                        self.config.port = resolvedPort
+                    }
                     completion?(true, snapshot.lastMessage ?? "托管 OpenClaw Runtime 已启动。")
                 }
             } catch {
@@ -1380,6 +1577,11 @@ class OpenClawManager: ObservableObject {
                 let snapshot = try self.managedRuntimeSupervisor.restart(using: resolvedConfig)
                 DispatchQueue.main.async {
                     self.managedRuntimeStatus = snapshot
+                    if resolvedConfig.usesManagedLocalRuntime,
+                       let resolvedPort = snapshot.port,
+                       self.config.port != resolvedPort {
+                        self.config.port = resolvedPort
+                    }
                     self.resetGatewayConnection()
                     self.isConnected = false
                     self.activeAgents.removeAll()
@@ -1396,9 +1598,43 @@ class OpenClawManager: ObservableObject {
             }
         }
     }
-    
+
     // 断开连接
     func disconnect() {
+        tearDownConnectedSessionState()
+        status = .disconnected
+        managedRuntimeStatus = config.usesManagedLocalRuntime
+            ? managedRuntimeSupervisor.markGatewayDisconnect(message: "应用已断开 OpenClaw 会话；托管 Runtime 保持运行。")
+            : managedRuntimeSupervisor.refreshStatus(using: config)
+        updateDisconnectedConnectionState(message: "OpenClaw 已断开。")
+    }
+
+    func shutdownForApplicationTermination() {
+        tearDownConnectedSessionState()
+        status = .disconnected
+
+        if config.shouldStopManagedRuntimeOnApplicationTermination {
+            do {
+                managedRuntimeStatus = try managedRuntimeSupervisor.stop(using: config)
+                updateDisconnectedConnectionState(message: "应用退出时已停止托管 OpenClaw Runtime。")
+            } catch {
+                let failureMessage = "应用退出时停止托管 OpenClaw Runtime 失败：\(error.localizedDescription)"
+                managedRuntimeStatus = managedRuntimeSupervisor.markGatewayDisconnect(message: failureMessage)
+                updateDisconnectedConnectionState(message: failureMessage)
+            }
+            return
+        }
+
+        managedRuntimeStatus = config.usesManagedLocalRuntime
+            ? managedRuntimeSupervisor.markGatewayDisconnect(message: "应用退出；托管 Runtime 保持运行。")
+            : managedRuntimeSupervisor.refreshStatus(using: config)
+        let message = config.usesManagedLocalRuntime
+            ? "应用已退出 OpenClaw 控制面；托管 Runtime 保持运行。"
+            : "应用退出时已断开 OpenClaw。"
+        updateDisconnectedConnectionState(message: message)
+    }
+
+    private func tearDownConnectedSessionState() {
         if sessionContext != nil {
             endSession(restoreOriginalState: true)
         }
@@ -1412,14 +1648,13 @@ class OpenClawManager: ObservableObject {
         clearDiscoverySnapshot()
         resetAgentRuntimeChannels()
         resetGatewayConnection()
-        status = .disconnected
-        managedRuntimeStatus = config.usesManagedLocalRuntime
-            ? managedRuntimeSupervisor.markGatewayDisconnect(message: "应用已断开 OpenClaw 会话；托管 Runtime 保持运行。")
-            : managedRuntimeSupervisor.refreshStatus(using: config)
         markProjectDetached()
+    }
+
+    private func updateDisconnectedConnectionState(message: String) {
         var health = connectionState.health
         health.degradationReason = nil
-        health.lastMessage = "OpenClaw 已断开。"
+        health.lastMessage = message
         updateConnectionState(
             phase: .detached,
             deploymentKind: config.deploymentKind,
@@ -4842,6 +5077,16 @@ class OpenClawManager: ObservableObject {
         host.fallbackLocalOpenClawRootURL()
     }
 
+    private func managedLocalOpenClawRootURL() -> URL? {
+        if let runtimeRootPath = managedRuntimeStatus.runtimeRootPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !runtimeRootPath.isEmpty {
+            return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
+        }
+
+        return OpenClawManagedRuntimeInstaller.shared.managedRuntimeRootURL()
+    }
+
     func resolveLocalOpenClawConfigURL(
         using config: OpenClawConfig? = nil,
         allowFallback: Bool = true
@@ -4849,11 +5094,8 @@ class OpenClawManager: ObservableObject {
         let resolvedConfig = config ?? self.config
         guard resolvedConfig.deploymentKind == .local else { return nil }
         if resolvedConfig.usesManagedLocalRuntime,
-           let runtimeRootPath = managedRuntimeStatus.runtimeRootPath?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-           !runtimeRootPath.isEmpty {
-            return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
-                .appendingPathComponent("openclaw.json", isDirectory: false)
+           let runtimeRootURL = managedLocalOpenClawRootURL() {
+            return runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
         }
         return host.resolveLocalOpenClawConfigURL(
             using: resolvedConfig,
@@ -4864,10 +5106,8 @@ class OpenClawManager: ObservableObject {
     func localOpenClawRootURL(using config: OpenClawConfig? = nil) -> URL {
         let resolvedConfig = config ?? self.config
         if resolvedConfig.usesManagedLocalRuntime,
-           let runtimeRootPath = managedRuntimeStatus.runtimeRootPath?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-           !runtimeRootPath.isEmpty {
-            return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
+           let runtimeRootURL = managedLocalOpenClawRootURL() {
+            return runtimeRootURL
         }
         return resolveLocalOpenClawConfigURL(using: resolvedConfig)?
             .deletingLastPathComponent() ?? fallbackLocalOpenClawRootURL()
@@ -7997,6 +8237,8 @@ class OpenClawManager: ObservableObject {
             return OpenClawConfig(
                 deploymentKind: .remoteServer,
                 runtimeOwnership: baseConfig.runtimeOwnership,
+                managedRuntimeTerminationBehavior: baseConfig.managedRuntimeTerminationBehavior,
+                managedRuntimeAutoRestartOnCrash: baseConfig.managedRuntimeAutoRestartOnCrash,
                 host: resolvedHost,
                 port: resolvedPort,
                 useSSL: useSSLFallback,
@@ -8046,6 +8288,8 @@ class OpenClawManager: ObservableObject {
         return OpenClawConfig(
             deploymentKind: .remoteServer,
             runtimeOwnership: baseConfig.runtimeOwnership,
+            managedRuntimeTerminationBehavior: baseConfig.managedRuntimeTerminationBehavior,
+            managedRuntimeAutoRestartOnCrash: baseConfig.managedRuntimeAutoRestartOnCrash,
             host: resolvedHost,
             port: port,
             useSSL: useSSLFallback,
@@ -8075,6 +8319,8 @@ class OpenClawManager: ObservableObject {
             return OpenClawConfig(
                 deploymentKind: .remoteServer,
                 runtimeOwnership: baseConfig.runtimeOwnership,
+                managedRuntimeTerminationBehavior: baseConfig.managedRuntimeTerminationBehavior,
+                managedRuntimeAutoRestartOnCrash: baseConfig.managedRuntimeAutoRestartOnCrash,
                 host: hostFallback,
                 port: baseConfig.port,
                 useSSL: baseConfig.useSSL,

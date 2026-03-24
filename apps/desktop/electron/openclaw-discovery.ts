@@ -98,11 +98,17 @@ export function buildOpenClawRootFallbackCandidates(
   config: OpenClawConfig,
   options: {
     deploymentHomeDirectory?: string | null;
+    managedRuntimeRootDirectory?: string | null;
     localHomeDirectory?: string;
   } = {}
 ): string[] {
   switch (config.deploymentKind) {
     case "local": {
+      if (config.runtimeOwnership === "appManaged") {
+        const managedRuntimeRootDirectory = trimmedNonEmpty(options.managedRuntimeRootDirectory);
+        return managedRuntimeRootDirectory ? [managedRuntimeRootDirectory] : [];
+      }
+
       const homeDirectory = trimmedNonEmpty(options.localHomeDirectory) ?? os.homedir();
       return [path.join(homeDirectory, ".openclaw")];
     }

@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var realtimePanelDragOriginWidth: CGFloat?
     @State private var hoveredPanelHandle: PanelHandleKind?
     @StateObject private var workflowEditorSessionState = WorkflowEditorSessionState()
+    @StateObject private var quickChatStore = QuickChatStore()
     @State private var openClawMessage: String?
     @State private var isConnectingOpenClaw = false
     @State private var isPresentingOpenClawImportSheet = false
@@ -63,35 +64,49 @@ struct ContentView: View {
         }
     }
 
+    private var openClawRuntimeSourceColor: Color {
+        appState.openClawRuntimeSourceColor
+    }
+
     private let sidebarWidthRange: ClosedRange<CGFloat> = 180...320
     private let realtimePanelWidthRange: ClosedRange<CGFloat> = 220...360
     private let minimumCenterWidth: CGFloat = 320
     private let defaultSidebarWidth: CGFloat = 250
     private let defaultRealtimePanelWidth: CGFloat = 280
+
+    private var showsContextSidebar: Bool {
+        selectedTab == 0
+    }
+
+    private var canUseCanvasViewportControls: Bool {
+        selectedTab == 0 && workflowEditorSessionState.viewMode == .architecture
+    }
     
     var body: some View {
         GeometryReader { geometry in
             let layout = shellLayout(
                 for: geometry.size.width,
+                showsSidebar: showsContextSidebar,
                 preferredSidebarWidth: sidebarWidth,
                 preferredRealtimePanelWidth: realtimePanelWidth
             )
 
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
-                    // 左侧：导航栏
-                    SidebarView(
-                        selectedTab: $selectedTab,
-                        sessionState: workflowEditorSessionState
-                    )
-                        .frame(width: layout.sidebarWidth)
+                    if showsContextSidebar {
+                        SidebarView(sessionState: workflowEditorSessionState)
+                            .frame(width: layout.sidebarWidth)
 
-                    panelResizeHandle(for: .sidebar, totalWidth: geometry.size.width)
-                        .gesture(sidebarResizeGesture(totalWidth: geometry.size.width))
+                        panelResizeHandle(for: .sidebar, totalWidth: geometry.size.width)
+                            .gesture(sidebarResizeGesture(totalWidth: geometry.size.width))
+                    }
 
                     // 中间：主内容区
                     VStack(spacing: 0) {
                         HStack(spacing: 12) {
+                            ProjectControlsView(style: .toolbar)
+                                .environmentObject(appState)
+
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(appState.toolbarItemsInDisplayOrder) { item in
@@ -101,33 +116,11 @@ struct ContentView: View {
                                 .padding(.vertical, 1)
                             }
                             .scrollBounceBehavior(.basedOnSize)
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             Spacer(minLength: 12)
 
-                            if selectedTab == 2 || selectedTab == 3 {
-                                HStack(spacing: 8) {
-                                    Label(
-                                        selectedTab == 2
-                                            ? LocalizedString.text("dashboard_via_sidebar")
-                                            : LocalizedString.text("template_library_via_sidebar"),
-                                        systemImage: selectedTab == 2 ? "gauge.with.dots.needle.33percent" : "shippingbox"
-                                    )
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Button(LocalizedString.text("switch_to_workbench")) {
-                                        selectedTab = 1
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
-                            } else {
-                                Picker("", selection: toolbarTabSelection) {
-                                    Label(LocalizedString.text("editor_tab"), systemImage: "square.grid.2x2").tag(0)
-                                    Label(LocalizedString.text("workbench_tab"), systemImage: "message.badge.waveform").tag(1)
-                                }
-                                .pickerStyle(.segmented)
-                                .frame(width: 230)
-                            }
+                            pageNavigationToolbar
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -137,7 +130,7 @@ struct ContentView: View {
 
                         // 主内容
                         Group {
-                            if appState.currentProject == nil && selectedTab != 3 {
+                            if selectedTab == 0 && appState.currentProject == nil {
                                 ProjectOnboardingView(selectedTab: $selectedTab)
                                     .environmentObject(appState)
                             } else {
@@ -176,6 +169,7 @@ struct ContentView: View {
 
                 bottomStatusBar
             }
+            .animation(.easeInOut(duration: 0.18), value: showsContextSidebar)
         }
         .overlay(alignment: .bottom) {
             if isConnectingOpenClaw {
@@ -212,6 +206,19 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(isPresented: Binding(
+            get: { quickChatStore.isPresented },
+            set: { newValue in
+                if newValue {
+                    quickChatStore.present(using: appState)
+                } else {
+                    quickChatStore.handleDismiss(using: appState)
+                }
+            }
+        )) {
+            QuickChatModalView(store: quickChatStore)
+                .environmentObject(appState)
+        }
         .sheet(item: $appState.workflowPackageImportPreview, onDismiss: {
             appState.cleanupWorkflowPackageImportPreview()
         }) { preview in
@@ -223,6 +230,22 @@ struct ContentView: View {
             openClawMessage = newValue
             appState.workflowPackageMessage = nil
         }
+        .onChange(of: selectedTab) { _, newValue in
+            guard newValue != 0 else { return }
+            sidebarDragOriginWidth = nil
+            if hoveredPanelHandle == .sidebar {
+                hoveredPanelHandle = nil
+                refreshPanelHandleCursor()
+            }
+        }
+        .onChange(of: appState.activeWorkflowID) { _, _ in
+            guard quickChatStore.isPresented else { return }
+            quickChatStore.refreshContext(using: appState)
+        }
+        .onChange(of: appState.currentProject?.id) { _, _ in
+            guard quickChatStore.isPresented else { return }
+            quickChatStore.refreshContext(using: appState)
+        }
     }
 
     @ViewBuilder
@@ -232,13 +255,22 @@ struct ContentView: View {
             TopToolbarGroup {
                 Menu {
                     Button(LocalizedString.zoomOut) {
-                        zoomScale = max(zoomScale / 1.25, 0.05)
+                        zoomScale = max(zoomScale / 1.25, CanvasViewportConfiguration.zoomScaleRange.lowerBound)
                     }
                     Button(LocalizedString.resetZoom) {
                         zoomScale = 1.0
                     }
                     Button(LocalizedString.zoomIn) {
-                        zoomScale = min(zoomScale * 1.25, 20.0)
+                        zoomScale = min(zoomScale * 1.25, CanvasViewportConfiguration.zoomScaleRange.upperBound)
+                    }
+                    if canUseCanvasViewportControls {
+                        Divider()
+                        Button(LocalizedString.fitToContent) {
+                            workflowEditorSessionState.sendCanvasViewportCommand(.fitToContent)
+                        }
+                        Button(LocalizedString.centerContent) {
+                            workflowEditorSessionState.sendCanvasViewportCommand(.centerContent)
+                        }
                     }
                     Divider()
                     Button(appState.showLogs ? LocalizedString.text("hide_logs") : LocalizedString.text("show_logs")) {
@@ -249,13 +281,13 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 4) {
-                    Button(action: { zoomScale = max(zoomScale / 1.25, 0.05) }) {
+                    Button(action: { zoomScale = max(zoomScale / 1.25, CanvasViewportConfiguration.zoomScaleRange.lowerBound) }) {
                         Image(systemName: "minus.magnifyingglass")
                     }
                     Text("\(Int(zoomScale * 100))%")
                         .font(.caption)
                         .frame(width: 44)
-                    Button(action: { zoomScale = min(zoomScale * 1.25, 20.0) }) {
+                    Button(action: { zoomScale = min(zoomScale * 1.25, CanvasViewportConfiguration.zoomScaleRange.upperBound) }) {
                         Image(systemName: "plus.magnifyingglass")
                     }
                 }
@@ -289,78 +321,90 @@ struct ContentView: View {
 
     private var bottomStatusBar: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(openClawStatusColor)
-                    .frame(width: 8, height: 8)
-                Text(openClawStatusBadgeTitle)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                Text(appState.openClawManager.config.deploymentSummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
+            HStack(spacing: 10) {
+                bottomStatusChip(
+                    title: openClawStatusBadgeTitle,
+                    detail: appState.openClawManager.config.deploymentSummary,
+                    color: openClawStatusColor
+                )
 
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(openClawAttachmentColor)
-                    .frame(width: 8, height: 8)
-                Text(appState.openClawAttachmentStatusTitle)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
+                bottomStatusChip(
+                    title: appState.openClawAttachmentStatusTitle,
+                    detail: nil,
+                    color: openClawAttachmentColor
+                )
+
+                bottomStatusChip(
+                    title: appState.openClawRuntimeSourceBadgeTitle,
+                    detail: appState.openClawRuntimeSourceEndpoint ?? appState.openClawRuntimeSourceSummary,
+                    color: openClawRuntimeSourceColor
+                )
             }
 
             Spacer(minLength: 12)
 
-            if appState.openClawManager.isConnected {
-                StatusBarButton(title: LocalizedString.text("disconnect_openclaw"), icon: "link.badge.minus") {
-                    appState.disconnectOpenClaw()
+            HStack(spacing: 8) {
+                runtimeActionButtons
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(width: 1, height: 24)
+
+                StatusBarButton(title: LocalizedString.text("check_connection"), icon: "arrow.triangle.2.circlepath") {
+                    appState.openClawService.checkConnection()
                 }
 
-                if let currentProject = appState.currentProject,
-                   appState.openClawManager.canAttachProject,
-                   appState.openClawManager.config.deploymentKind != .remoteServer,
-                   (
-                    !appState.openClawManager.hasAttachedProjectSession
-                    || appState.openClawManager.attachedProjectID != currentProject.id
-                   ) {
-                    StatusBarButton(title: LocalizedString.text("attach_current_project"), icon: "link.badge.plus") {
-                        appState.attachCurrentProjectToOpenClaw { _, message in
-                            openClawMessage = message
-                        }
+                StatusBarButton(title: LocalizedString.settings, icon: "gearshape") {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.controlBackgroundColor).opacity(0.86))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            LinearGradient(
+                colors: [Color(.controlBackgroundColor).opacity(0.94), Color.white.opacity(0.82)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    @ViewBuilder
+    private var runtimeActionButtons: some View {
+        if appState.openClawManager.isConnected {
+            StatusBarButton(title: LocalizedString.text("disconnect_openclaw"), icon: "link.badge.minus") {
+                appState.disconnectOpenClaw()
+            }
+
+            if let currentProject = appState.currentProject,
+               appState.openClawManager.canAttachProject,
+               appState.openClawManager.config.deploymentKind != .remoteServer,
+               (
+                !appState.openClawManager.hasAttachedProjectSession
+                || appState.openClawManager.attachedProjectID != currentProject.id
+               ) {
+                StatusBarButton(title: LocalizedString.text("attach_current_project"), icon: "link.badge.plus") {
+                    appState.attachCurrentProjectToOpenClaw { _, message in
+                        openClawMessage = message
                     }
                 }
+            }
 
-                if appState.openClawManager.config.deploymentKind != .remoteServer,
-                   appState.isCurrentProjectAttachedToOpenClaw {
-                    StatusBarButton(title: "同步会话", icon: "arrow.triangle.merge") {
-                        appState.syncOpenClawActiveSession { success, message in
-                            openClawMessage = message
-                            if !success {
-                                return
-                            }
-                            openClawMessage = message
-                        }
-                    }
-                }
-
-                StatusBarButton(title: LocalizedString.text("import_agents"), icon: "person.badge.plus") {
-                    if appState.openClawManager.discoveryResults.isEmpty {
-                        openClawMessage = LocalizedString.text("detect_agents_first")
-                        return
-                    }
-                    isPresentingOpenClawImportSheet = true
-                }
-                .disabled(appState.openClawManager.discoveryResults.isEmpty)
-            } else {
-                StatusBarButton(title: LocalizedString.text("auto_detect_agents"), icon: "dot.radiowaves.left.and.right", prominent: true) {
-                    autoDetectOpenClaw()
-                }
-
-                StatusBarButton(title: LocalizedString.text("connect_openclaw"), icon: "link.badge.plus") {
-                    appState.connectOpenClaw { success, message in
+            if appState.openClawManager.config.deploymentKind != .remoteServer,
+               appState.isCurrentProjectAttachedToOpenClaw {
+                StatusBarButton(title: "同步会话", icon: "arrow.triangle.merge") {
+                    appState.syncOpenClawActiveSession { success, message in
                         openClawMessage = message
                         if !success {
                             return
@@ -370,27 +414,54 @@ struct ContentView: View {
                 }
             }
 
-            StatusBarButton(title: LocalizedString.text("check_connection"), icon: "arrow.triangle.2.circlepath") {
-                appState.openClawService.checkConnection()
+            StatusBarButton(title: LocalizedString.text("import_agents"), icon: "person.badge.plus") {
+                if appState.openClawManager.discoveryResults.isEmpty {
+                    openClawMessage = LocalizedString.text("detect_agents_first")
+                    return
+                }
+                isPresentingOpenClawImportSheet = true
+            }
+            .disabled(appState.openClawManager.discoveryResults.isEmpty)
+        } else {
+            StatusBarButton(title: LocalizedString.text("auto_detect_agents"), icon: "dot.radiowaves.left.and.right", prominent: true) {
+                autoDetectOpenClaw()
             }
 
-            StatusBarButton(title: LocalizedString.settings, icon: "gearshape") {
-                NotificationCenter.default.post(name: .openSettings, object: nil)
+            StatusBarButton(title: LocalizedString.text("connect_openclaw"), icon: "link.badge.plus") {
+                appState.connectOpenClaw { success, message in
+                    openClawMessage = message
+                    if !success {
+                        return
+                    }
+                    openClawMessage = message
+                }
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-                .background(Color.white.opacity(0.8))
     }
 
-    private var statusBadge: some View {
+    private func bottomStatusChip(title: String, detail: String?, color: Color) -> some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(openClawStatusColor)
+                .fill(color)
                 .frame(width: 8, height: 8)
-            Text(openClawStatusText)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.controlBackgroundColor).opacity(0.72))
+        )
     }
     
     private func autoDetectOpenClaw() {
@@ -405,20 +476,105 @@ struct ContentView: View {
         }
     }
 
-    private var toolbarTabSelection: Binding<Int> {
-        Binding(
-            get: { selectedTab == 0 ? 0 : 1 },
-            set: { selectedTab = $0 }
+    private var pageNavigationToolbar: some View {
+        chromeToolbarGroup {
+            HStack(spacing: 10) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        pageNavigationButton(
+                            title: LocalizedString.text("workflow_editor_nav"),
+                            systemImage: "square.grid.2x2",
+                            tag: 0
+                        )
+
+                        pageNavigationButton(
+                            title: LocalizedString.text("workbench_nav"),
+                            systemImage: "message.badge.waveform",
+                            tag: 1
+                        )
+
+                        pageNavigationButton(
+                            title: LocalizedString.text("monitoring_dashboard_nav"),
+                            systemImage: "gauge.with.dots.needle.33percent",
+                            tag: 2
+                        )
+
+                        pageNavigationButton(
+                            title: LocalizedString.text("template_library_nav"),
+                            systemImage: "shippingbox",
+                            tag: 3
+                        )
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxWidth: 440, alignment: .trailing)
+
+                Divider()
+                    .frame(height: 22)
+
+                quickChatLauncherButton
+            }
+        }
+    }
+
+    private func pageNavigationButton(title: String, systemImage: String, tag: Int) -> some View {
+        Button(action: { selectedTab = tag }) {
+            Label(title, systemImage: systemImage)
+                .font(.caption)
+                .fontWeight(selectedTab == tag ? .semibold : .regular)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(selectedTab == tag ? Color.accentColor.opacity(0.18) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(selectedTab == tag ? .accentColor : .secondary)
+    }
+
+    private var quickChatLauncherButton: some View {
+        Button {
+            quickChatStore.present(using: appState)
+        } label: {
+            Label("Quick Chat", systemImage: "bolt.bubble.fill")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.accentColor.opacity(0.16))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.accentColor)
+        .help("打开独立弹窗快聊，不进入 Workbench 主控制台")
+    }
+
+    @ViewBuilder
+    private func chromeToolbarGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 8) {
+            content()
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.controlBackgroundColor).opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
     }
 
     private func shellLayout(
         for totalWidth: CGFloat,
+        showsSidebar: Bool,
         preferredSidebarWidth: CGFloat,
         preferredRealtimePanelWidth: CGFloat
     ) -> ContentShellLayout {
         let clampedWidth = max(totalWidth, 720)
-        let sidebarWidth = clampSidebarWidth(preferredSidebarWidth, totalWidth: clampedWidth)
+        let sidebarWidth = showsSidebar ? clampSidebarWidth(preferredSidebarWidth, totalWidth: clampedWidth) : 0
         let realtimePanelWidth = clampRealtimePanelWidth(
             preferredRealtimePanelWidth,
             totalWidth: clampedWidth,
@@ -491,7 +647,7 @@ struct ContentView: View {
                 realtimePanelWidth = clampRealtimePanelWidth(
                     originWidth - value.translation.width,
                     totalWidth: totalWidth,
-                    sidebarWidth: sidebarWidth
+                    sidebarWidth: showsContextSidebar ? sidebarWidth : 0
                 )
                 refreshPanelHandleCursor()
             }
@@ -500,7 +656,7 @@ struct ContentView: View {
                 let resolvedWidth = clampRealtimePanelWidth(
                     originWidth - value.translation.width,
                     totalWidth: totalWidth,
-                    sidebarWidth: sidebarWidth
+                    sidebarWidth: showsContextSidebar ? sidebarWidth : 0
                 )
                 realtimePanelWidth = resolvedWidth
                 realtimePanelDragOriginWidth = nil
@@ -554,7 +710,7 @@ struct ContentView: View {
                 let resolvedWidth = clampRealtimePanelWidth(
                     defaultRealtimePanelWidth,
                     totalWidth: totalWidth,
-                    sidebarWidth: sidebarWidth
+                    sidebarWidth: showsContextSidebar ? sidebarWidth : 0
                 )
                 realtimePanelWidth = resolvedWidth
                 realtimePanelDragOriginWidth = nil
@@ -883,48 +1039,121 @@ struct RealtimeInfoPanel: View {
         permissions.filter { $0.permissionType == .requireApproval }.count
     }
 
+    private var criticalLogCount: Int {
+        executionLogs.filter { $0.level == .error || $0.level == .warning }.count
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(LocalizedString.text("realtime_info"))
-                    .font(.headline)
-                Spacer()
-            }
-            .padding()
-            .background(Color(.controlBackgroundColor))
-
-            Divider()
+            panelHeader
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    DisclosureGroup(
+                    metricsStrip
+
+                    panelSection(
+                        title: LocalizedString.text("permission_matrix_summary"),
+                        count: permissions.count,
                         isExpanded: $showPermissionSummary,
-                        content: permissionSummaryContent,
-                        label: {
-                            sectionTitle(LocalizedString.text("permission_matrix_summary"), count: permissions.count)
-                        }
+                        content: permissionSummaryContent
                     )
 
-                    DisclosureGroup(
+                    panelSection(
+                        title: LocalizedString.text("pending_approval_messages"),
+                        count: pendingApprovals.count,
                         isExpanded: $showPendingApprovals,
-                        content: pendingApprovalContent,
-                        label: {
-                            sectionTitle(LocalizedString.text("pending_approval_messages"), count: pendingApprovals.count)
-                        }
+                        content: pendingApprovalContent
                     )
 
-                    DisclosureGroup(
+                    panelSection(
+                        title: LocalizedString.executionLogs,
+                        count: executionLogs.count,
                         isExpanded: $showExecutionLogs,
-                        content: executionLogsContent,
-                        label: {
-                            sectionTitle(LocalizedString.executionLogs, count: executionLogs.count)
-                        }
+                        content: executionLogsContent
                     )
                 }
-                .padding()
+                .padding(12)
             }
         }
-        .background(Color(.windowBackgroundColor))
+        .background(Color(.windowBackgroundColor).opacity(0.9))
+    }
+
+    private var panelHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(LocalizedString.text("realtime_info"))
+                        .font(.headline)
+                    Text("权限、审批和执行日志")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Image(systemName: "waveform.badge.magnifyingglass")
+                    .font(.title3)
+                    .foregroundColor(.accentColor)
+                    .padding(10)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+        .padding(14)
+        .background(
+            LinearGradient(
+                colors: [Color(.controlBackgroundColor), Color(.controlBackgroundColor).opacity(0.82)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private var metricsStrip: some View {
+        HStack(spacing: 8) {
+            panelMetric(title: LocalizedString.text("approval"), value: pendingApprovals.count, color: .orange)
+            panelMetric(title: LocalizedString.executionLogs, value: executionLogs.count, color: .blue)
+            panelMetric(title: "Alert", value: criticalLogCount, color: .red)
+        }
+    }
+
+    private func panelMetric(title: String, value: Int, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 7, height: 7)
+                Text("\(value)")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(.controlBackgroundColor).opacity(0.78))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func panelSection<Content: View>(
+        title: String,
+        count: Int,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            content()
+        } label: {
+            sectionTitle(title, count: count)
+        }
+        .padding(12)
+        .background(Color(.controlBackgroundColor).opacity(0.74))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func sectionTitle(_ title: String, count: Int) -> some View {
@@ -939,7 +1168,7 @@ struct RealtimeInfoPanel: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.secondary.opacity(0.18))
-                .cornerRadius(4)
+                .clipShape(Capsule())
         }
     }
 
@@ -976,9 +1205,6 @@ struct RealtimeInfoPanel: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color(.controlBackgroundColor))
-        .cornerRadius(8)
     }
 
     private func pendingApprovalContent() -> some View {
@@ -1011,9 +1237,6 @@ struct RealtimeInfoPanel: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color(.controlBackgroundColor))
-        .cornerRadius(8)
     }
 
     private func executionLogsContent() -> some View {
@@ -1055,9 +1278,6 @@ struct RealtimeInfoPanel: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color(.controlBackgroundColor))
-        .cornerRadius(8)
     }
 
     private func summaryPill(_ title: String, value: Int, color: Color) -> some View {

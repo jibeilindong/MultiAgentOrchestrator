@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import Darwin
 @testable import Multi_Agent_Flow
 
@@ -310,6 +311,76 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
     }
 
+    private func makeCrashOnceThenRecoverGatewayBinary(at binaryURL: URL, markerURL: URL) throws {
+        try FileManager.default.createDirectory(
+            at: binaryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        try """
+        #!/bin/sh
+        exec python3 - "$@" <<'PY'
+        import os
+        import signal
+        import socket
+        import sys
+        import threading
+        import time
+
+        marker_path = r"\(markerURL.path)"
+        port = 18789
+        args = sys.argv[1:]
+        index = 0
+        while index < len(args):
+            if args[index] == "--port" and index + 1 < len(args):
+                port = int(args[index + 1])
+                index += 2
+                continue
+            index += 1
+
+        crash_once = not os.path.exists(marker_path)
+        if crash_once:
+            with open(marker_path, "w", encoding="utf-8") as marker_file:
+                marker_file.write("crashed")
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", port))
+        server.listen(5)
+
+        def shutdown(*_args):
+            try:
+                server.close()
+            finally:
+                sys.exit(0)
+
+        signal.signal(signal.SIGTERM, shutdown)
+        signal.signal(signal.SIGINT, shutdown)
+
+        def accept_loop():
+            while True:
+                try:
+                    connection, _ = server.accept()
+                except OSError:
+                    break
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+
+        threading.Thread(target=accept_loop, daemon=True).start()
+
+        if crash_once:
+            time.sleep(0.35)
+            os._exit(1)
+
+        while True:
+            time.sleep(0.25)
+        PY
+        """.write(to: binaryURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
+    }
+
     private func makeProjectAgent(name: String, runtimeIdentifier: String) -> Agent {
         var agent = Agent(name: name)
         agent.soulMD = "# 新智能体\n这是我的配置..."
@@ -386,6 +457,38 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
         return Int(UInt16(bigEndian: resolvedAddress.sin_port))
     }
 
+    private func occupyTCPPort(_ port: Int) throws -> Int32 {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(descriptor, 0, "Unable to create TCP socket for port occupation.")
+
+        var reuseAddress: Int32 = 1
+        XCTAssertEqual(
+            setsockopt(
+                descriptor,
+                SOL_SOCKET,
+                SO_REUSEADDR,
+                &reuseAddress,
+                socklen_t(MemoryLayout<Int32>.size)
+            ),
+            0
+        )
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { reboundPointer in
+                Darwin.bind(descriptor, reboundPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bindResult, 0, "Unable to occupy requested TCP port.")
+        XCTAssertEqual(listen(descriptor, 1), 0, "Unable to listen on occupied TCP port.")
+        return descriptor
+    }
+
     func testManagerStartAndStopManagedRuntimeUpdatesApplicationState() throws {
         let tempRoot = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
@@ -454,6 +557,131 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
         }
     }
 
+    func testManagerShutdownForApplicationTerminationStopsManagedRuntimeByDefault() throws {
+        let tempRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let binaryURL = managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false)
+        try makeManagedRuntimeGatewayBinary(at: binaryURL)
+
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .appManaged
+        config.managedRuntimeTerminationBehavior = .stopWithApplication
+        config.host = "127.0.0.1"
+        config.port = try makeAvailableTCPPort()
+        config.timeout = 5
+        config.cliQuietMode = true
+        config.cliLogLevel = .warning
+        config.localBinaryPath = ""
+        manager.config = config
+
+        let startExpectation = expectation(description: "managed runtime started before app shutdown")
+        manager.startManagedRuntime { success, message in
+            XCTAssertTrue(success, message)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 10)
+
+        let runningPID = try XCTUnwrap(manager.managedRuntimeStatus.processID)
+        XCTAssertEqual(manager.managedRuntimeStatus.state, .running)
+
+        manager.shutdownForApplicationTermination()
+
+        XCTAssertEqual(manager.managedRuntimeStatus.state, .idle)
+        XCTAssertNil(manager.managedRuntimeStatus.processID)
+        XCTAssertFalse(kill(runningPID, 0) == 0 || errno == EPERM)
+        XCTAssertEqual(manager.connectionState.phase, .detached)
+        XCTAssertEqual(manager.connectionState.health.lastMessage, "应用退出时已停止托管 OpenClaw Runtime。")
+    }
+
+    func testManagerShutdownForApplicationTerminationCanKeepManagedRuntimeRunning() throws {
+        let tempRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let binaryURL = managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false)
+        try makeManagedRuntimeGatewayBinary(at: binaryURL)
+
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .appManaged
+        config.managedRuntimeTerminationBehavior = .keepRunning
+        config.host = "127.0.0.1"
+        config.port = try makeAvailableTCPPort()
+        config.timeout = 5
+        config.cliQuietMode = true
+        config.cliLogLevel = .warning
+        config.localBinaryPath = ""
+        manager.config = config
+
+        let startExpectation = expectation(description: "managed runtime started before app shutdown keep running")
+        manager.startManagedRuntime { success, message in
+            XCTAssertTrue(success, message)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 10)
+
+        let runningPID = try XCTUnwrap(manager.managedRuntimeStatus.processID)
+        XCTAssertEqual(manager.managedRuntimeStatus.state, .running)
+
+        manager.shutdownForApplicationTermination()
+
+        XCTAssertEqual(manager.managedRuntimeStatus.state, .running)
+        XCTAssertEqual(manager.managedRuntimeStatus.processID, runningPID)
+        XCTAssertTrue(kill(runningPID, 0) == 0 || errno == EPERM)
+        XCTAssertEqual(manager.connectionState.phase, .detached)
+        XCTAssertEqual(manager.connectionState.health.lastMessage, "应用已退出 OpenClaw 控制面；托管 Runtime 保持运行。")
+
+        let stopExpectation = expectation(description: "managed runtime stopped after keep-running shutdown test")
+        manager.stopManagedRuntime { success, message in
+            XCTAssertTrue(success, message)
+            stopExpectation.fulfill()
+        }
+        wait(for: [stopExpectation], timeout: 10)
+    }
+
     func testManagerRestartManagedRuntimeIncrementsRestartCount() throws {
         let tempRoot = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: tempRoot) }
@@ -509,9 +737,297 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.managedRuntimeStatus.state, .running)
         XCTAssertEqual(manager.managedRuntimeStatus.restartCount, 1)
+        XCTAssertEqual(manager.managedRuntimeStatus.manualRestartCount, 1)
+        XCTAssertEqual(manager.managedRuntimeStatus.automaticRecoveryCount, 0)
         XCTAssertEqual(manager.managedRuntimeStatus.port, config.port)
 
         let stopExpectation = expectation(description: "managed runtime stopped")
+        manager.stopManagedRuntime { success, message in
+            XCTAssertTrue(success, message)
+            stopExpectation.fulfill()
+        }
+        wait(for: [stopExpectation], timeout: 10)
+    }
+
+    func testManagerReceivesSupervisorStatusCallbackUpdates() throws {
+        let tempRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        let callbackExpectation = expectation(description: "manager observed supervisor callback")
+        var cancellables = Set<AnyCancellable>()
+        manager.$managedRuntimeStatus
+            .dropFirst()
+            .sink { snapshot in
+                guard snapshot.lastMessage == "manager callback propagation" else { return }
+                guard snapshot.lastHeartbeatAt != nil else { return }
+                callbackExpectation.fulfill()
+            }
+            .store(in: &cancellables)
+
+        let publishedSnapshot = supervisor.markGatewayHeartbeatSucceeded(message: "manager callback propagation")
+
+        wait(for: [callbackExpectation], timeout: 3)
+        XCTAssertEqual(manager.managedRuntimeStatus, publishedSnapshot)
+    }
+
+    func testManagedRuntimeDiagnosticSummaryIncludesCrashRecoveryAndPaths() throws {
+        let tempRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .appManaged
+        config.host = "127.0.0.1"
+        config.port = 28789
+        manager.config = config
+        manager.status = .error("gateway probe failed")
+        manager.isConnected = false
+        manager.connectionState = OpenClawConnectionStateSnapshot(
+            phase: .failed,
+            deploymentKind: .local,
+            capabilities: OpenClawConnectionCapabilitiesSnapshot(
+                cliAvailable: true,
+                gatewayReachable: false,
+                gatewayAuthenticated: false,
+                agentListingAvailable: false,
+                sessionHistoryAvailable: false,
+                gatewayAgentAvailable: false,
+                gatewayChatAvailable: false,
+                projectAttachmentSupported: true
+            ),
+            health: OpenClawConnectionHealthSnapshot(
+                lastProbeAt: Date(timeIntervalSince1970: 1_000),
+                lastHeartbeatAt: Date(timeIntervalSince1970: 1_100),
+                latencyMs: 420,
+                degradationReason: "gateway unreachable",
+                lastMessage: "last probe failed"
+            )
+        )
+
+        let snapshot = OpenClawManagedRuntimeStatusSnapshot(
+            state: .failed,
+            launchStrategy: .foregroundGateway,
+            runtimeRootPath: managedRuntimeRoot.path,
+            supervisorRootPath: supervisorRoot.path,
+            binaryPath: managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false).path,
+            logPath: supervisorRoot.appendingPathComponent("logs/runtime.log", isDirectory: false).path,
+            processID: 4321,
+            requestedPort: 28789,
+            port: 28790,
+            lastStartedAt: Date(timeIntervalSince1970: 1_200),
+            lastExitAt: Date(timeIntervalSince1970: 1_250),
+            lastUnexpectedExitAt: Date(timeIntervalSince1970: 1_251),
+            lastHeartbeatAt: Date(timeIntervalSince1970: 1_210),
+            lastStatusCheckAt: Date(timeIntervalSince1970: 1_260),
+            restartCount: 4,
+            manualRestartCount: 1,
+            automaticRecoveryCount: 3,
+            consecutiveCrashCount: 2,
+            automaticRecoveryAttempt: 2,
+            lastRecoveryAttemptAt: Date(timeIntervalSince1970: 1_270),
+            lastRecoverySucceededAt: Date(timeIntervalSince1970: 1_280),
+            lastMessage: "runtime crashed and is waiting for recovery",
+            lastError: "listen tcp 127.0.0.1:28789: bind: address already in use"
+        )
+        let expectedLogPath = supervisorRoot.appendingPathComponent("logs/runtime.log", isDirectory: false).path
+
+        let summary = manager.managedRuntimeDiagnosticSummary(using: snapshot)
+
+        XCTAssertTrue(summary.contains("控制面状态: error (gateway probe failed)"))
+        XCTAssertTrue(summary.contains("连接阶段: failed"))
+        XCTAssertTrue(summary.contains("运行来源: 应用私有 OpenClaw Sidecar"))
+        XCTAssertTrue(summary.contains("来源徽标: App Managed"))
+        XCTAssertTrue(summary.contains("Gateway Endpoint: ws://127.0.0.1:28790"))
+        XCTAssertTrue(summary.contains("Supervisor 状态: failed"))
+        XCTAssertTrue(summary.contains("启动策略: Foreground Gateway"))
+        XCTAssertTrue(summary.contains("PID: 4321"))
+        XCTAssertTrue(summary.contains("请求端口: 28789"))
+        XCTAssertTrue(summary.contains("实际端口: 28790"))
+        XCTAssertTrue(summary.contains("自动恢复数: 3"))
+        XCTAssertTrue(summary.contains("连续异常退出数: 2"))
+        XCTAssertTrue(summary.contains("当前自动恢复轮次: 2"))
+        XCTAssertTrue(summary.contains("Runtime Root: \(managedRuntimeRoot.path)"))
+        XCTAssertTrue(summary.contains("Supervisor Root: \(supervisorRoot.path)"))
+        XCTAssertTrue(summary.contains("Log Path: \(expectedLogPath)"))
+        XCTAssertTrue(summary.contains("最近错误: listen tcp 127.0.0.1:28789: bind: address already in use"))
+        XCTAssertTrue(summary.contains("连接健康摘要: last probe failed"))
+        XCTAssertTrue(summary.contains("退化原因: gateway unreachable"))
+        XCTAssertTrue(summary.contains("连接延迟(ms): 420"))
+    }
+
+    func testRuntimeSourceDescriptorUsesManagedSidecarSummaryForAppManagedLocalRuntime() throws {
+        let tempRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .appManaged
+        config.host = "127.0.0.1"
+        config.port = 18789
+        manager.config = config
+
+        let descriptor = manager.runtimeSourceDescriptor(
+            using: OpenClawManagedRuntimeStatusSnapshot(
+                state: .running,
+                binaryPath: managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false).path,
+                requestedPort: 18789,
+                port: 18792
+            )
+        )
+
+        XCTAssertEqual(descriptor.badgeTitle, "App Managed")
+        XCTAssertEqual(descriptor.summary, "应用私有 OpenClaw Sidecar")
+        XCTAssertEqual(descriptor.endpoint, "ws://127.0.0.1:18792")
+        XCTAssertEqual(descriptor.binaryPath, managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false).path)
+        XCTAssertTrue(descriptor.detail.contains("不会复用 ~/.openclaw"))
+        XCTAssertTrue(descriptor.detail.contains("已从首选端口 18789 避让到 18792"))
+    }
+
+    func testRuntimeSourceDescriptorUsesExplicitBinarySummaryForExternalLocalRuntime() throws {
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .externalLocal
+        config.host = "127.0.0.1"
+        config.port = 28888
+        config.localBinaryPath = "/custom/openclaw/bin/openclaw"
+        manager.config = config
+
+        let descriptor = manager.runtimeSourceDescriptor()
+
+        XCTAssertEqual(descriptor.badgeTitle, "External Local")
+        XCTAssertEqual(descriptor.summary, "用户本地 OpenClaw Binary")
+        XCTAssertEqual(descriptor.endpoint, "ws://127.0.0.1:28888")
+        XCTAssertEqual(descriptor.binaryPath, "/custom/openclaw/bin/openclaw")
+        XCTAssertTrue(descriptor.detail.contains("固定使用用户提供的本地 openclaw binary"))
+    }
+
+    func testManagerStartManagedRuntimeReassignsPortAndSyncsEffectivePort() throws {
+        let tempRoot = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let binaryURL = managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false)
+        try makeManagedRuntimeGatewayBinary(at: binaryURL)
+
+        let preferredPort = try makeAvailableTCPPort()
+        let occupiedSocket = try occupyTCPPort(preferredPort)
+        defer { close(occupiedSocket) }
+
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .appManaged
+        config.host = "127.0.0.1"
+        config.port = preferredPort
+        config.timeout = 5
+        config.cliQuietMode = true
+        config.cliLogLevel = .warning
+        config.localBinaryPath = ""
+        manager.config = config
+
+        let startExpectation = expectation(description: "managed runtime started with reassigned port")
+        manager.startManagedRuntime { success, message in
+            XCTAssertTrue(success, message)
+            startExpectation.fulfill()
+        }
+        wait(for: [startExpectation], timeout: 10)
+
+        let actualPort = try XCTUnwrap(manager.managedRuntimeStatus.port)
+        XCTAssertEqual(manager.managedRuntimeStatus.requestedPort, preferredPort)
+        XCTAssertNotEqual(actualPort, preferredPort)
+        XCTAssertGreaterThan(actualPort, preferredPort)
+        XCTAssertEqual(manager.config.port, actualPort)
+        XCTAssertTrue(manager.managedRuntimeStatus.lastMessage?.contains("首选端口 \(preferredPort) 已被占用") == true)
+        XCTAssertTrue(manager.managedRuntimeStatus.lastMessage?.contains("\(actualPort)") == true)
+
+        let stopExpectation = expectation(description: "managed runtime stopped after reassigned port test")
         manager.stopManagedRuntime { success, message in
             XCTAssertTrue(success, message)
             stopExpectation.fulfill()
