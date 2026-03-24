@@ -102,108 +102,60 @@ final class AssistOrchestrator {
     private let proposalBuilder: AssistProposalBuilder
     private let store: AssistStore
     private let mutationGateway: AssistMutationGateway
+    private let proposalContentGenerator: AssistProposalContentGenerator
 
     init(
         contextResolver: AssistContextResolver = AssistContextResolver(),
         proposalBuilder: AssistProposalBuilder = AssistProposalBuilder(),
         store: AssistStore = .shared,
-        mutationGateway: AssistMutationGateway = NoopAssistMutationGateway()
+        mutationGateway: AssistMutationGateway = NoopAssistMutationGateway(),
+        proposalContentGenerator: AssistProposalContentGenerator = NoopAssistProposalContentGenerator()
     ) {
         self.contextResolver = contextResolver
         self.proposalBuilder = proposalBuilder
         self.store = store
         self.mutationGateway = mutationGateway
+        self.proposalContentGenerator = proposalContentGenerator
     }
 
     func submit(
         _ input: AssistSubmissionInput,
         snapshot: AssistContextResolver.Snapshot
     ) throws -> AssistSubmissionResult {
-        let trimmedPrompt = input.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPrompt.isEmpty else {
-            throw AssistOrchestratorError.emptyPrompt
-        }
-
-        let resolvedThreadID = normalizedThreadID(
-            rawThreadID: input.threadID
-        ) ?? AssistRecordID.make(prefix: "thread")
-        let linkedWorkbenchThreadID = input.source == .workbenchAssist ? resolvedThreadID : nil
-
-        let contextResolution = contextResolver.resolve(
-            input: AssistContextResolver.Input(
-                source: input.source,
-                intent: input.intent,
-                scopeType: input.scopeType,
-                prompt: trimmedPrompt,
-                workflowID: input.workflowID,
-                nodeID: input.nodeID,
-                threadID: resolvedThreadID,
-                relativeFilePath: input.relativeFilePath,
-                selectionStart: input.selectionStart,
-                selectionEnd: input.selectionEnd,
-                workspaceSurface: input.workspaceSurface,
-                selectedText: input.selectedText,
-                fileContent: input.fileContent,
-                additionalMetadata: input.additionalMetadata
-            ),
+        let prepared = try prepareSubmissionState(
+            input: input,
             snapshot: snapshot
         )
 
-        var request = AssistRequest(
-            source: input.source,
-            invocationChannel: input.invocationChannel,
-            intent: input.intent,
-            scopeType: input.scopeType,
-            scopeRef: contextResolution.scopeRef,
-            prompt: trimmedPrompt,
-            constraints: input.constraints,
-            requestedAction: input.requestedAction,
-            status: .resolvingContext
+        return try finalizeSubmission(
+            prepared,
+            generatedContent: nil
         )
-        try store.saveRequest(request)
+    }
+
+    func submit(
+        _ input: AssistSubmissionInput,
+        snapshot: AssistContextResolver.Snapshot
+    ) async throws -> AssistSubmissionResult {
+        let prepared = try prepareSubmissionState(
+            input: input,
+            snapshot: snapshot
+        )
 
         do {
-            let contextPack = AssistContextPack(
-                requestID: request.id,
-                invocationChannel: input.invocationChannel,
-                scopeType: input.scopeType,
-                scopeRef: contextResolution.scopeRef,
-                entries: contextResolution.entries,
-                contentHash: hash(for: contextResolution.entries)
+            let generatedContent = try await proposalContentGenerator.generate(
+                input: input,
+                request: prepared.request,
+                contextPack: prepared.contextPack
             )
-            try store.saveContextPack(contextPack)
-
-            let proposal = proposalBuilder.build(
-                request: request,
-                contextPack: contextPack
-            )
-            try store.saveProposal(proposal, scopeRef: contextResolution.scopeRef)
-
-            request.status = proposal.requiresConfirmation ? .awaitingConfirmation : .proposalReady
-            try store.saveRequest(request)
-
-            let thread = AssistThreadRecord(
-                id: resolvedThreadID,
-                invocationChannel: input.invocationChannel,
-                source: input.source,
-                title: threadTitle(for: request, proposal: proposal),
-                linkedWorkbenchThreadID: linkedWorkbenchThreadID,
-                projectID: contextResolution.scopeRef.projectID,
-                workflowID: contextResolution.scopeRef.workflowID,
-                latestRequestID: request.id,
-                latestProposalID: proposal.id
-            )
-            try store.saveThread(thread)
-
-            return AssistSubmissionResult(
-                thread: thread,
-                request: request,
-                contextPack: contextPack,
-                proposal: proposal
+            return try finalizeSubmission(
+                prepared,
+                generatedContent: generatedContent
             )
         } catch {
-            request.status = .failed
-            try? store.saveRequest(request)
+            var failedRequest = prepared.request
+            failedRequest.status = .failed
+            try? store.saveRequest(failedRequest)
             throw error
         }
     }
@@ -398,6 +350,120 @@ final class AssistOrchestrator {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private func prepareSubmissionState(
+        input: AssistSubmissionInput,
+        snapshot: AssistContextResolver.Snapshot
+    ) throws -> PreparedSubmissionState {
+        let trimmedPrompt = input.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            throw AssistOrchestratorError.emptyPrompt
+        }
+
+        let resolvedThreadID = normalizedThreadID(
+            rawThreadID: input.threadID
+        ) ?? AssistRecordID.make(prefix: "thread")
+        let linkedWorkbenchThreadID = input.source == .workbenchAssist ? resolvedThreadID : nil
+
+        let contextResolution = contextResolver.resolve(
+            input: AssistContextResolver.Input(
+                source: input.source,
+                intent: input.intent,
+                scopeType: input.scopeType,
+                prompt: trimmedPrompt,
+                workflowID: input.workflowID,
+                nodeID: input.nodeID,
+                threadID: resolvedThreadID,
+                relativeFilePath: input.relativeFilePath,
+                selectionStart: input.selectionStart,
+                selectionEnd: input.selectionEnd,
+                workspaceSurface: input.workspaceSurface,
+                selectedText: input.selectedText,
+                fileContent: input.fileContent,
+                additionalMetadata: input.additionalMetadata
+            ),
+            snapshot: snapshot
+        )
+
+        let request = AssistRequest(
+            source: input.source,
+            invocationChannel: input.invocationChannel,
+            intent: input.intent,
+            scopeType: input.scopeType,
+            scopeRef: contextResolution.scopeRef,
+            prompt: trimmedPrompt,
+            constraints: input.constraints,
+            requestedAction: input.requestedAction,
+            status: .resolvingContext
+        )
+        try store.saveRequest(request)
+
+        let contextPack = AssistContextPack(
+            requestID: request.id,
+            invocationChannel: input.invocationChannel,
+            scopeType: input.scopeType,
+            scopeRef: contextResolution.scopeRef,
+            entries: contextResolution.entries,
+            contentHash: hash(for: contextResolution.entries)
+        )
+        try store.saveContextPack(contextPack)
+
+        let thread = AssistThreadRecord(
+            id: resolvedThreadID,
+            invocationChannel: input.invocationChannel,
+            source: input.source,
+            title: nil,
+            linkedWorkbenchThreadID: linkedWorkbenchThreadID,
+            projectID: contextResolution.scopeRef.projectID,
+            workflowID: contextResolution.scopeRef.workflowID,
+            latestRequestID: request.id,
+            latestProposalID: nil
+        )
+
+        return PreparedSubmissionState(
+            thread: thread,
+            request: request,
+            contextPack: contextPack,
+            scopeRef: contextResolution.scopeRef
+        )
+    }
+
+    private func finalizeSubmission(
+        _ prepared: PreparedSubmissionState,
+        generatedContent: AssistGeneratedProposalContent?
+    ) throws -> AssistSubmissionResult {
+        var request = prepared.request
+
+        do {
+            let proposal = proposalBuilder.build(
+                request: request,
+                contextPack: prepared.contextPack,
+                generatedContent: generatedContent
+            )
+            try store.saveProposal(proposal, scopeRef: prepared.scopeRef)
+
+            request.status = proposal.requiresConfirmation ? .awaitingConfirmation : .proposalReady
+            try store.saveRequest(request)
+
+            var thread = prepared.thread
+            thread.title = threadTitle(for: request, proposal: proposal)
+            thread.latestRequestID = request.id
+            thread.latestProposalID = proposal.id
+            thread.updatedAt = Date()
+            try store.saveThread(thread)
+
+            return AssistSubmissionResult(
+                thread: thread,
+                request: request,
+                contextPack: prepared.contextPack,
+                proposal: proposal
+            )
+        } catch {
+            request.status = .failed
+            try? store.saveRequest(request)
+            throw error
+        }
+    }
+
     private func hash(
         for entries: [AssistContextEntry]
     ) -> String? {
@@ -489,4 +555,11 @@ final class AssistOrchestrator {
             proposal: proposal
         )
     }
+}
+
+private struct PreparedSubmissionState {
+    var thread: AssistThreadRecord
+    var request: AssistRequest
+    var contextPack: AssistContextPack
+    var scopeRef: AssistScopeReference
 }

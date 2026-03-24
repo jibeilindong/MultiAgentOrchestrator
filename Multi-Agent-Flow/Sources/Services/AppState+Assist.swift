@@ -97,6 +97,40 @@ extension AppState {
         )
     }
 
+    func createAssistProposal(
+        _ draft: AssistDraft,
+        orchestrator: AssistOrchestrator? = nil
+    ) async throws -> AssistSubmissionResult {
+        let resolvedOrchestrator = orchestrator ?? AssistOrchestrator(
+            proposalContentGenerator: GatewayAssistProposalContentGenerator(
+                openClawManager: openClawManager
+            )
+        )
+
+        return try await resolvedOrchestrator.submit(
+            AssistSubmissionInput(
+                source: draft.source,
+                invocationChannel: draft.invocationChannel,
+                intent: draft.intent,
+                scopeType: draft.scopeType,
+                prompt: draft.prompt,
+                constraints: draft.constraints,
+                requestedAction: draft.requestedAction,
+                workflowID: draft.workflowID,
+                nodeID: draft.nodeID,
+                threadID: draft.threadID,
+                relativeFilePath: draft.relativeFilePath,
+                selectionStart: draft.selectionStart,
+                selectionEnd: draft.selectionEnd,
+                workspaceSurface: draft.workspaceSurface,
+                selectedText: draft.selectedText,
+                fileContent: draft.fileContent,
+                additionalMetadata: draft.additionalMetadata
+            ),
+            snapshot: assistSnapshot()
+        )
+    }
+
     func submitAssistRequest(
         _ draft: AssistDraft,
         orchestrator: AssistOrchestrator = AssistOrchestrator()
@@ -379,7 +413,7 @@ extension AppState {
             scopeType: .file,
             prompt: prompt,
             constraints: defaultAssistConstraints(),
-            requestedAction: .proposalOnly,
+            requestedAction: .applyToDraft,
             relativeFilePath: normalizedRelativePath,
             workspaceSurface: .draft,
             fileContent: fileContent,

@@ -7,19 +7,21 @@ struct AssistProposalBuilder {
 
     func build(
         request: AssistRequest,
-        contextPack: AssistContextPack
+        contextPack: AssistContextPack,
+        generatedContent: AssistGeneratedProposalContent? = nil
     ) -> AssistProposal {
-        let warnings = proposalWarnings(for: request)
+        let textMutationPlan = generatedContent?.textMutationPlan
+        let warnings = proposalWarnings(for: request, textMutationPlan: textMutationPlan)
         let layoutPlan = workflowLayoutPlan(for: request, contextPack: contextPack)
         let changeItem = AssistChangeItem(
             target: mutationTarget(for: request),
-            operation: changeOperation(for: request),
+            operation: changeOperation(for: request, textMutationPlan: textMutationPlan),
             title: changeTitle(for: request),
-            summary: changeSummary(for: request, layoutPlan: layoutPlan),
+            summary: changeSummary(for: request, layoutPlan: layoutPlan, textMutationPlan: textMutationPlan),
             relativeFilePath: request.scopeRef.relativeFilePath,
-            beforePreview: beforePreview(from: contextPack, request: request, layoutPlan: layoutPlan),
-            afterPreview: afterPreview(for: request, layoutPlan: layoutPlan),
-            patch: patchPayload(for: request, layoutPlan: layoutPlan),
+            beforePreview: beforePreview(from: contextPack, request: request, layoutPlan: layoutPlan, textMutationPlan: textMutationPlan),
+            afterPreview: afterPreview(for: request, layoutPlan: layoutPlan, textMutationPlan: textMutationPlan),
+            patch: patchPayload(for: request, layoutPlan: layoutPlan, textMutationPlan: textMutationPlan),
             warnings: warnings,
             scopeRef: request.scopeRef
         )
@@ -28,8 +30,8 @@ struct AssistProposalBuilder {
             requestID: request.id,
             contextPackID: contextPack.id,
             status: .awaitingConfirmation,
-            summary: proposalSummary(for: request, layoutPlan: layoutPlan),
-            rationale: proposalRationale(for: request, contextPack: contextPack, layoutPlan: layoutPlan),
+            summary: proposalSummary(for: request, layoutPlan: layoutPlan, textMutationPlan: textMutationPlan),
+            rationale: proposalRationale(for: request, contextPack: contextPack, layoutPlan: layoutPlan, textMutationPlan: textMutationPlan),
             warnings: warnings,
             changeItems: [changeItem],
             artifactIDs: [],
@@ -39,16 +41,26 @@ struct AssistProposalBuilder {
 
     private func proposalSummary(
         for request: AssistRequest,
-        layoutPlan: AssistWorkflowLayoutPlan?
+        layoutPlan: AssistWorkflowLayoutPlan?,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> String {
         let scopeLabel = scopeLabel(for: request.scopeRef, scopeType: request.scopeType)
 
         switch request.intent {
         case .rewriteSelection:
+            if textMutationPlan != nil {
+                return "Draft rewrite proposal prepared for \(scopeLabel)."
+            }
             return "Rewrite suggestion prepared for \(scopeLabel)."
         case .completeTemplate:
+            if textMutationPlan != nil {
+                return "Template draft completion proposal prepared for \(scopeLabel)."
+            }
             return "Template completion suggestion prepared for \(scopeLabel)."
         case .modifyManagedContent:
+            if textMutationPlan != nil {
+                return "Draft content revision proposal prepared for \(scopeLabel)."
+            }
             return "Managed content suggestion prepared for \(scopeLabel)."
         case .reorganizeWorkflow:
             if let layoutPlan {
@@ -69,7 +81,8 @@ struct AssistProposalBuilder {
     private func proposalRationale(
         for request: AssistRequest,
         contextPack: AssistContextPack,
-        layoutPlan: AssistWorkflowLayoutPlan?
+        layoutPlan: AssistWorkflowLayoutPlan?,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> String {
         let contextTitles = contextPack.entries
             .map(\.title)
@@ -86,18 +99,28 @@ struct AssistProposalBuilder {
             lines.append("Layout rationale: \(note)")
         }
 
+        if let summary = textMutationPlan?.summary, !summary.isEmpty {
+            lines.append("Generated summary: \(summary)")
+        }
+
+        if let rationale = textMutationPlan?.rationale, !rationale.isEmpty {
+            lines.append("Generated rationale: \(rationale)")
+        }
+
         return lines.joined(separator: "\n")
     }
 
     private func proposalWarnings(
-        for request: AssistRequest
+        for request: AssistRequest,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> [String] {
         var warnings = [
             "Assist is a gloved, least-privilege, rollbackable hand; confirmation is required before any change is applied.",
             "Assist never writes directly to the live runtime. Changes must stay in draft, managed workspace, mirror, or read-only diagnostic scopes."
         ]
 
-        if request.requestedAction != .proposalOnly {
+        if request.requestedAction != .proposalOnly,
+           supportsApplyPath(for: request, textMutationPlan: textMutationPlan) == false {
             warnings.append(
                 "Requested action '\(request.requestedAction.rawValue)' is captured, but the current implementation remains in proposal-only mode until the mutation gateway is enabled."
             )
@@ -106,6 +129,8 @@ struct AssistProposalBuilder {
         if request.scopeRef.workspaceSurface == .runtimeReadonly {
             warnings.append("Current scope is runtime read-only. This proposal cannot become a direct write operation.")
         }
+
+        warnings.append(contentsOf: textMutationPlan?.warnings ?? [])
 
         return warnings
     }
@@ -146,8 +171,13 @@ struct AssistProposalBuilder {
     }
 
     private func changeOperation(
-        for request: AssistRequest
+        for request: AssistRequest,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> AssistChangeOperationKind {
+        if textMutationPlan != nil {
+            return .replace
+        }
+
         switch request.intent {
         case .inspectConfiguration, .inspectPerformance, .explainIssue:
             return .suggest
@@ -185,15 +215,27 @@ struct AssistProposalBuilder {
 
     private func changeSummary(
         for request: AssistRequest,
-        layoutPlan: AssistWorkflowLayoutPlan?
+        layoutPlan: AssistWorkflowLayoutPlan?,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> String {
         let scopeLabel = scopeLabel(for: request.scopeRef, scopeType: request.scopeType)
+        let generatedSummary = textMutationPlan?.summary
+
         switch request.intent {
         case .rewriteSelection:
+            if let generatedSummary, !generatedSummary.isEmpty {
+                return generatedSummary
+            }
             return "Prepare a structured rewrite suggestion for \(scopeLabel) based on the current prompt."
         case .completeTemplate:
+            if let generatedSummary, !generatedSummary.isEmpty {
+                return generatedSummary
+            }
             return "Prepare template completion guidance for \(scopeLabel) without mutating live content."
         case .modifyManagedContent:
+            if let generatedSummary, !generatedSummary.isEmpty {
+                return generatedSummary
+            }
             return "Prepare a managed-content update suggestion for \(scopeLabel) and hold it for confirmation."
         case .reorganizeWorkflow:
             if let layoutPlan {
@@ -207,6 +249,9 @@ struct AssistProposalBuilder {
         case .explainIssue:
             return "Prepare a diagnostic explanation for \(scopeLabel) with no direct mutation."
         case .custom:
+            if let generatedSummary, !generatedSummary.isEmpty {
+                return generatedSummary
+            }
             return "Prepare a structured Assist suggestion for \(scopeLabel)."
         }
     }
@@ -214,10 +259,14 @@ struct AssistProposalBuilder {
     private func beforePreview(
         from contextPack: AssistContextPack,
         request: AssistRequest,
-        layoutPlan: AssistWorkflowLayoutPlan?
+        layoutPlan: AssistWorkflowLayoutPlan?,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> String? {
         if let layoutPlan {
             return workflowLayoutBeforePreview(for: layoutPlan)
+        }
+        if let sourceContent = textMutationPlan?.sourceContent {
+            return truncated(sourceContent, limit: 600)
         }
         if let selectedText = contextPack.entries.first(where: { $0.kind == .selectedText })?.value {
             return truncated(selectedText, limit: 280)
@@ -233,8 +282,13 @@ struct AssistProposalBuilder {
 
     private func afterPreview(
         for request: AssistRequest,
-        layoutPlan: AssistWorkflowLayoutPlan?
+        layoutPlan: AssistWorkflowLayoutPlan?,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> String {
+        if let textMutationPlan {
+            return truncated(textMutationPlan.resultingContent, limit: 600)
+        }
+
         switch request.intent {
         case .inspectConfiguration, .inspectPerformance, .explainIssue:
             return "Read-only structured report is pending user confirmation."
@@ -250,8 +304,18 @@ struct AssistProposalBuilder {
 
     private func patchPayload(
         for request: AssistRequest,
-        layoutPlan: AssistWorkflowLayoutPlan?
+        layoutPlan: AssistWorkflowLayoutPlan?,
+        textMutationPlan: AssistTextMutationPlan?
     ) -> String? {
+        if let textMutationPlan {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let data = try? encoder.encode(textMutationPlan) else {
+                return nil
+            }
+            return String(data: data, encoding: .utf8)
+        }
+
         guard request.intent == .reorganizeWorkflow,
               let layoutPlan else {
             return nil
@@ -263,6 +327,20 @@ struct AssistProposalBuilder {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    private func supportsApplyPath(
+        for request: AssistRequest,
+        textMutationPlan: AssistTextMutationPlan?
+    ) -> Bool {
+        switch mutationTarget(for: request) {
+        case .workflowLayout, .diagnosticsReport, .configuration:
+            return true
+        case .draftText:
+            return request.scopeRef.workspaceSurface == .draft && textMutationPlan != nil
+        case .managedFile, .mirror:
+            return false
+        }
     }
 
     private func workflowLayoutPlan(

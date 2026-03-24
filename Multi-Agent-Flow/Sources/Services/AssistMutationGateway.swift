@@ -10,6 +10,7 @@ enum AssistMutationGatewayError: LocalizedError {
     case unsupported
     case invalidPatch
     case workflowNotFound
+    case missingTemplateContext
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,8 @@ enum AssistMutationGatewayError: LocalizedError {
             return "Assist mutation patch is invalid or missing."
         case .workflowNotFound:
             return "Assist mutation could not find the target workflow."
+        case .missingTemplateContext:
+            return "Assist mutation could not resolve the required template draft context."
         }
     }
 }
@@ -69,15 +72,18 @@ final class AppStateAssistMutationGateway: AssistMutationGateway {
     private let appState: AppState
     private let fileSystem: AssistFileSystem
     private let appSupportRootDirectory: URL
+    private let templateLibrary: AgentTemplateLibraryStore
 
     init(
         appState: AppState,
         fileSystem: AssistFileSystem = .shared,
-        appSupportRootDirectory: URL = ProjectManager.shared.appSupportRootDirectory
+        appSupportRootDirectory: URL = ProjectManager.shared.appSupportRootDirectory,
+        templateLibrary: AgentTemplateLibraryStore = .shared
     ) {
         self.appState = appState
         self.fileSystem = fileSystem
         self.appSupportRootDirectory = appSupportRootDirectory
+        self.templateLibrary = templateLibrary
     }
 
     func apply(
@@ -122,7 +128,20 @@ final class AppStateAssistMutationGateway: AssistMutationGateway {
                 targetRefs.append(diagnosticArtifact.targetRef)
                 appliedChangeItemIDs.append(changeItem.id)
 
-            case .draftText, .managedFile, .mirror:
+            case .draftText:
+                let textResult = try applyDraftTextChange(
+                    changeItem,
+                    request: request,
+                    receiptID: receiptID
+                )
+                targetRefs.append(textResult.targetRef)
+                if let snapshotRef = textResult.snapshotRef {
+                    snapshotRefs.append(snapshotRef)
+                }
+                warningMessages.append(contentsOf: textResult.warningMessages)
+                appliedChangeItemIDs.append(changeItem.id)
+
+            case .managedFile, .mirror:
                 throw AssistMutationGatewayError.unsupported
             }
         }
@@ -161,18 +180,25 @@ final class AppStateAssistMutationGateway: AssistMutationGateway {
         undoCheckpoint: AssistUndoCheckpoint
     ) throws -> AssistExecutionReceipt {
         var targetRefs: [AssistMutationTargetRef] = []
+        var didChangeWorkflowDraft = false
 
         for snapshotRef in undoCheckpoint.snapshotRefs {
             switch snapshotRef.targetRef.target {
             case .workflowLayout:
                 try restoreWorkflowLayoutSnapshot(snapshotRef)
                 targetRefs.append(snapshotRef.targetRef)
+                didChangeWorkflowDraft = true
+            case .draftText:
+                try restoreDraftTextSnapshot(snapshotRef)
+                targetRefs.append(snapshotRef.targetRef)
             default:
                 throw AssistMutationGatewayError.unsupported
             }
         }
 
-        appState.saveDraft()
+        if didChangeWorkflowDraft {
+            appState.saveDraft()
+        }
 
         return AssistExecutionReceipt(
             requestID: undoCheckpoint.requestID,
@@ -271,6 +297,82 @@ final class AppStateAssistMutationGateway: AssistMutationGateway {
         return (targetRef, snapshotRef, [])
     }
 
+    private func applyDraftTextChange(
+        _ changeItem: AssistChangeItem,
+        request: AssistRequest,
+        receiptID: String
+    ) throws -> (targetRef: AssistMutationTargetRef, snapshotRef: AssistSnapshotRef?, warningMessages: [String]) {
+        guard request.scopeRef.workspaceSurface == .draft else {
+            throw AssistMutationGatewayError.outOfScope
+        }
+
+        guard let patch = changeItem.patch,
+              let data = patch.data(using: .utf8),
+              let plan = try? JSONDecoder().decode(AssistTextMutationPlan.self, from: data) else {
+            throw AssistMutationGatewayError.invalidPatch
+        }
+
+        guard let templateID = plan.templateID ?? request.scopeRef.additionalMetadata["templateID"],
+              !templateID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AssistMutationGatewayError.missingTemplateContext
+        }
+
+        if let scopedRelativeFilePath = request.scopeRef.relativeFilePath,
+           scopedRelativeFilePath != plan.relativeFilePath {
+            throw AssistMutationGatewayError.outOfScope
+        }
+
+        let targetRef = AssistMutationTargetRef(
+            target: .draftText,
+            projectID: request.scopeRef.projectID,
+            workflowID: request.scopeRef.workflowID,
+            nodeID: request.scopeRef.nodeID,
+            relativeFilePath: plan.relativeFilePath
+        )
+
+        if plan.sourceDidExist,
+           plan.sourceContent == plan.resultingContent {
+            return (
+                targetRef,
+                nil,
+                ["Generated content matches the current file text, so no draft file change was applied."]
+            )
+        }
+
+        let snapshot = AssistTemplateDraftFileSnapshot(
+            templateID: templateID,
+            relativeFilePath: plan.relativeFilePath,
+            fileExisted: plan.sourceDidExist,
+            contents: plan.sourceContent
+        )
+        let snapshotRelativePath = [
+            undoSnapshotDirectoryName(for: receiptID),
+            "template-draft-\(fileSystem.sanitizedIndexComponent(plan.relativeFilePath)).json"
+        ].joined(separator: "/")
+        let snapshotURL = fileSystem.undoSnapshotURL(
+            relativePath: snapshotRelativePath,
+            under: appSupportRootDirectory
+        )
+        let snapshotEncoder = JSONEncoder()
+        snapshotEncoder.outputFormatting = [.sortedKeys]
+        let snapshotData = try snapshotEncoder.encode(snapshot)
+        try fileSystem.saveData(snapshotData, to: snapshotURL)
+
+        _ = try templateLibrary.updateDraftFile(
+            for: templateID,
+            relativePath: plan.relativeFilePath,
+            contents: plan.resultingContent
+        )
+
+        let snapshotRef = AssistSnapshotRef(
+            targetRef: targetRef,
+            snapshotRelativePath: snapshotRelativePath,
+            contentHash: sha256(snapshotData)
+        )
+
+        return (targetRef, snapshotRef, [])
+    }
+
     private func restoreWorkflowLayoutSnapshot(
         _ snapshotRef: AssistSnapshotRef
     ) throws {
@@ -300,6 +402,36 @@ final class AppStateAssistMutationGateway: AssistMutationGateway {
         }
 
         appState.updateWorkflow(updatedWorkflow)
+    }
+
+    private func restoreDraftTextSnapshot(
+        _ snapshotRef: AssistSnapshotRef
+    ) throws {
+        guard let snapshotRelativePath = snapshotRef.snapshotRelativePath else {
+            throw AssistMutationGatewayError.invalidPatch
+        }
+
+        let snapshotURL = fileSystem.undoSnapshotURL(
+            relativePath: snapshotRelativePath,
+            under: appSupportRootDirectory
+        )
+        guard let snapshotData = fileSystem.loadData(from: snapshotURL),
+              let snapshot = try? JSONDecoder().decode(AssistTemplateDraftFileSnapshot.self, from: snapshotData) else {
+            throw AssistMutationGatewayError.invalidPatch
+        }
+
+        if snapshot.fileExisted {
+            _ = try templateLibrary.updateDraftFile(
+                for: snapshot.templateID,
+                relativePath: snapshot.relativeFilePath,
+                contents: snapshot.contents ?? ""
+            )
+        } else {
+            _ = try templateLibrary.removeDraftFile(
+                for: snapshot.templateID,
+                relativePath: snapshot.relativeFilePath
+            )
+        }
     }
 
     private func writeDiagnosticArtifact(

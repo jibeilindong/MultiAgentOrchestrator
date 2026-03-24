@@ -83,7 +83,6 @@ final class GatewayAssistProposalContentGenerator: AssistProposalContentGenerato
         )
 
         let payload = try decodeResponsePayload(from: result.assistantText)
-        let normalizedContent = payload.updatedContent.trimmingCharacters(in: .newlines)
 
         guard payload.updatedContent.isEmpty == false || (input.fileContent?.isEmpty ?? true) == false else {
             throw AssistProposalContentGeneratorError.emptyResult
@@ -96,7 +95,7 @@ final class GatewayAssistProposalContentGenerator: AssistProposalContentGenerato
             templateName: input.additionalMetadata["templateName"],
             sourceDidExist: input.fileContent != nil,
             sourceContent: input.fileContent,
-            resultingContent: normalizedContent.isEmpty ? payload.updatedContent : normalizedContent,
+            resultingContent: payload.updatedContent,
             summary: normalizedValue(payload.summary),
             rationale: normalizedValue(payload.rationale),
             warnings: payload.warnings.compactMap(normalizedValue)

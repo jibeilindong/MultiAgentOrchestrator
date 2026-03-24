@@ -244,6 +244,17 @@ struct TemplateWorkspaceView: View {
             resetWorkspaceState()
             bootstrapWorkspace()
         }
+        .onChange(of: draftSession) { _, newValue in
+            guard let selectedFilePath else { return }
+            guard let newValue else { return }
+
+            let touchedCurrentFile = newValue.selectedFilePath == selectedFilePath
+                || newValue.dirtyFilePaths.contains(selectedFilePath)
+            guard touchedCurrentFile else { return }
+
+            loadFile(relativePath: selectedFilePath)
+            validationState = newValue.lastValidationState
+        }
         .onChange(of: selectedFilePath) { _, newValue in
             guard let newValue else { return }
             templateLibrary.selectDraftFile(newValue, for: template.id)

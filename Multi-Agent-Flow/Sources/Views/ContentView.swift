@@ -881,21 +881,11 @@ private struct StatusBarButton: View {
 private struct CanvasDisplayToolbar: View {
     @EnvironmentObject var appState: AppState
 
-    private let lineWidthValues: [CGFloat] = [1, 2, 3, 4, 6]
     private let textScaleValues: [CGFloat] = [0.85, 1.0, 1.15, 1.3, 1.5]
 
     var body: some View {
         TopToolbarGroup {
             HStack(spacing: 10) {
-                ToolbarStepper(
-                    title: LocalizedString.text("line_width"),
-                    valueText: "\(Int(appState.canvasDisplaySettings.lineWidth))px",
-                    canDecrease: selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth) > 0,
-                    canIncrease: selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth) < lineWidthValues.count - 1,
-                    onDecrease: { shiftLineWidth(by: -1) },
-                    onIncrease: { shiftLineWidth(by: 1) }
-                )
-
                 ToolbarStepper(
                     title: LocalizedString.text("font_size"),
                     valueText: "\(Int(appState.canvasDisplaySettings.textScale * 100))%",
@@ -904,30 +894,12 @@ private struct CanvasDisplayToolbar: View {
                     onDecrease: { shiftTextScale(by: -1) },
                     onIncrease: { shiftTextScale(by: 1) }
                 )
-
-                ToolbarColorSelector(
-                    title: LocalizedString.text("line_color"),
-                    selection: appState.canvasDisplaySettings.lineColor,
-                    onSelect: { preset in
-                        appState.updateCanvasDisplaySettings { settings in
-                            settings.lineColor = preset
-                        }
-                    }
-                )
             }
         }
     }
 
     private func selectedIndex(in values: [CGFloat], for current: CGFloat) -> Int {
         values.firstIndex(where: { abs($0 - current) < 0.001 }) ?? 0
-    }
-
-    private func shiftLineWidth(by offset: Int) {
-        let currentIndex = selectedIndex(in: lineWidthValues, for: appState.canvasDisplaySettings.lineWidth)
-        let nextIndex = min(max(currentIndex + offset, 0), lineWidthValues.count - 1)
-        appState.updateCanvasDisplaySettings { settings in
-            settings.lineWidth = lineWidthValues[nextIndex]
-        }
     }
 
     private func shiftTextScale(by offset: Int) {
@@ -968,34 +940,6 @@ private struct ToolbarStepper: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(!canIncrease)
-            }
-        }
-    }
-}
-
-private struct ToolbarColorSelector: View {
-    let title: String
-    let selection: CanvasColorPreset
-    let onSelect: (CanvasColorPreset) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-            HStack(spacing: 4) {
-                ForEach(CanvasColorPreset.allCases) { preset in
-                    Button(action: { onSelect(preset) }) {
-                        Circle()
-                            .fill(preset.color)
-                            .frame(width: 12, height: 12)
-                            .overlay {
-                                Circle()
-                                    .stroke(selection == preset ? Color.primary : Color.clear, lineWidth: 2)
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
             }
         }
     }

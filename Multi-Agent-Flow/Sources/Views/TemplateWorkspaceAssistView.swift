@@ -209,16 +209,20 @@ struct TemplateWorkspaceAssistComposerSheet: View {
 
         isGeneratingProposal = true
         errorText = nil
-        defer { isGeneratingProposal = false }
-
-        do {
-            let result = try appState.createAssistProposal(draftPreview)
-            dismiss()
-            DispatchQueue.main.async {
-                onPrepared(result)
+        _Concurrency.Task {
+            do {
+                let result = try await appState.createAssistProposal(draftPreview)
+                await MainActor.run {
+                    isGeneratingProposal = false
+                    dismiss()
+                    onPrepared(result)
+                }
+            } catch {
+                await MainActor.run {
+                    isGeneratingProposal = false
+                    errorText = error.localizedDescription
+                }
             }
-        } catch {
-            errorText = error.localizedDescription
         }
     }
 

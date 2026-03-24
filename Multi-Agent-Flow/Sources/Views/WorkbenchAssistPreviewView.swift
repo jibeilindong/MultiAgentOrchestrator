@@ -31,7 +31,9 @@ struct AssistProposalPreviewSheet: View {
             switch item.target {
             case .workflowLayout, .diagnosticsReport, .configuration:
                 return true
-            case .draftText, .managedFile, .mirror:
+            case .draftText:
+                return draftTextApplyAvailable(for: item)
+            case .managedFile, .mirror:
                 return false
             }
         }
@@ -385,6 +387,19 @@ struct AssistProposalPreviewSheet: View {
             }
             return "This is a proposal-only preview. Any apply step must still be explicitly confirmed and remain outside the live runtime."
         }
+    }
+
+    private func draftTextApplyAvailable(
+        for item: AssistChangeItem
+    ) -> Bool {
+        guard request.scopeRef.workspaceSurface == .draft,
+              request.scopeRef.additionalMetadata["templateID"]?.isEmpty == false,
+              let patch = item.patch,
+              let data = patch.data(using: .utf8),
+              let plan = try? JSONDecoder().decode(AssistTextMutationPlan.self, from: data) else {
+            return false
+        }
+        return plan.templateID?.isEmpty == false && !plan.relativeFilePath.isEmpty
     }
 
     private var scopeTitle: String {

@@ -778,6 +778,29 @@ final class AgentTemplateLibraryStore: ObservableObject {
     }
 
     @discardableResult
+    func removeDraftFile(
+        for templateID: String,
+        relativePath: String
+    ) throws -> TemplateDraftSession {
+        var session = try openDraftSession(for: templateID)
+        try templateFileSystem.removeFile(
+            at: session.draftRootURL,
+            relativePath: relativePath
+        )
+
+        session.selectedFilePath = relativePath
+        session.hasUnsavedChanges = true
+        session.lastValidationState = nil
+        session.hasValidationErrors = false
+        session.dirtyFilePaths = mergedDirtyPaths(
+            session.dirtyFilePaths,
+            inserting: relativePath
+        )
+        draftSessions[templateID] = session
+        return session
+    }
+
+    @discardableResult
     func scaffoldDraftFile(
         for templateID: String,
         relativePath: String
