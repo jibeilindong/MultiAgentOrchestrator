@@ -9,6 +9,7 @@ import Darwin
 struct OpenClawHostCommandPlan {
     let executableURL: URL
     let arguments: [String]
+    let environment: [String: String]
 }
 
 nonisolated final class OpenClawHost {
@@ -75,6 +76,7 @@ nonisolated final class OpenClawHost {
     nonisolated static func executeProcessAndCaptureOutput(
         executableURL: URL,
         arguments: [String],
+        environment: [String: String] = [:],
         standardInput: FileHandle? = nil,
         timeoutSeconds: TimeInterval? = nil,
         onStdoutChunk: ((Data) -> Void)? = nil
@@ -82,6 +84,18 @@ nonisolated final class OpenClawHost {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
+        if !environment.isEmpty {
+            var mergedEnvironment = ProcessInfo.processInfo.environment
+            environment.forEach { mergedEnvironment[$0.key] = $0.value }
+            if let stateDirectory = mergedEnvironment["OPENCLAW_STATE_DIR"],
+               !stateDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try FileManager.default.createDirectory(
+                    at: URL(fileURLWithPath: stateDirectory, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+            process.environment = mergedEnvironment
+        }
         process.standardInput = standardInput
 
         let stdoutPipe = Pipe()
@@ -164,6 +178,23 @@ nonisolated final class OpenClawHost {
         return (process.terminationStatus, snapshot.stdout, snapshot.stderr)
     }
 
+    private func managedLocalRuntimeEnvironment(for config: OpenClawConfig) -> [String: String] {
+        guard config.usesManagedLocalRuntime,
+              let managedRootURL = managedRuntimeRootURL ?? Self.defaultManagedLocalRuntimeRootURL(fileManager: fileManager) else {
+            return [:]
+        }
+
+        let managedConfigURL = managedRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        let managedStateURL = managedRootURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("state", isDirectory: true)
+
+        return [
+            "OPENCLAW_CONFIG_PATH": managedConfigURL.path,
+            "OPENCLAW_STATE_DIR": managedStateURL.path
+        ]
+    }
+
     nonisolated private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
         var seen = Set<String>()
         return candidates.compactMap { candidate in
@@ -233,7 +264,8 @@ nonisolated final class OpenClawHost {
         case .local:
             return OpenClawHostCommandPlan(
                 executableURL: URL(fileURLWithPath: resolveLocalBinaryPath(for: config)),
-                arguments: arguments
+                arguments: arguments,
+                environment: managedLocalRuntimeEnvironment(for: config)
             )
         case .container:
             guard let containerName = containerName(for: config) else {
@@ -245,7 +277,8 @@ nonisolated final class OpenClawHost {
             }
             return OpenClawHostCommandPlan(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: [containerEngine(for: config), "exec", containerName, "openclaw"] + arguments
+                arguments: [containerEngine(for: config), "exec", containerName, "openclaw"] + arguments,
+                environment: [:]
             )
         case .remoteServer:
             throw NSError(
@@ -264,7 +297,8 @@ nonisolated final class OpenClawHost {
         case .local:
             return OpenClawHostCommandPlan(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: ["clawhub"] + arguments
+                arguments: ["clawhub"] + arguments,
+                environment: [:]
             )
         case .container:
             guard let containerName = containerName(for: config) else {
@@ -276,7 +310,8 @@ nonisolated final class OpenClawHost {
             }
             return OpenClawHostCommandPlan(
                 executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-                arguments: [containerEngine(for: config), "exec", containerName, "clawhub"] + arguments
+                arguments: [containerEngine(for: config), "exec", containerName, "clawhub"] + arguments,
+                environment: [:]
             )
         case .remoteServer:
             throw NSError(
@@ -301,7 +336,8 @@ nonisolated final class OpenClawHost {
 
         return OpenClawHostCommandPlan(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: [containerEngine(for: config)] + arguments
+            arguments: [containerEngine(for: config)] + arguments,
+            environment: [:]
         )
     }
 
@@ -327,7 +363,8 @@ nonisolated final class OpenClawHost {
 
         return OpenClawHostCommandPlan(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-            arguments: [containerEngine(for: config), "exec", containerName, "sh", "-lc", script]
+            arguments: [containerEngine(for: config), "exec", containerName, "sh", "-lc", script],
+            environment: [:]
         )
     }
 
@@ -342,6 +379,7 @@ nonisolated final class OpenClawHost {
         return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
+            environment: plan.environment,
             standardInput: standardInput,
             timeoutSeconds: timeoutSeconds,
             onStdoutChunk: onStdoutChunk
@@ -358,6 +396,7 @@ nonisolated final class OpenClawHost {
         return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
+            environment: plan.environment,
             standardInput: standardInput,
             timeoutSeconds: timeoutSeconds
         )
@@ -373,6 +412,7 @@ nonisolated final class OpenClawHost {
         return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
+            environment: plan.environment,
             standardInput: standardInput,
             timeoutSeconds: timeoutSeconds
         )
@@ -388,6 +428,7 @@ nonisolated final class OpenClawHost {
         return try Self.executeProcessAndCaptureOutput(
             executableURL: plan.executableURL,
             arguments: plan.arguments,
+            environment: plan.environment,
             standardInput: standardInput,
             timeoutSeconds: timeoutSeconds
         )

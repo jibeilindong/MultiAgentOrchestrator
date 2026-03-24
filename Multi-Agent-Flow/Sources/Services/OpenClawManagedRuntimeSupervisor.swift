@@ -19,6 +19,7 @@ struct OpenClawManagedRuntimeSupervisorCommandPlan: Equatable {
     var launchStrategy: OpenClawManagedRuntimeLaunchStrategy
     var executableURL: URL
     var arguments: [String]
+    var environment: [String: String]
 }
 
 struct OpenClawManagedRuntimeStatusSnapshot: Equatable {
@@ -190,7 +191,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         return OpenClawManagedRuntimeSupervisorCommandPlan(
             launchStrategy: .foregroundGateway,
             executableURL: plan.executableURL,
-            arguments: plan.arguments
+            arguments: plan.arguments,
+            environment: plan.environment
         )
     }
 
@@ -336,6 +338,18 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         let process = Process()
         process.executableURL = commandPlan.executableURL
         process.arguments = commandPlan.arguments
+        if !commandPlan.environment.isEmpty {
+            var mergedEnvironment = ProcessInfo.processInfo.environment
+            commandPlan.environment.forEach { mergedEnvironment[$0.key] = $0.value }
+            if let stateDirectory = mergedEnvironment["OPENCLAW_STATE_DIR"],
+               !stateDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try fileManager.createDirectory(
+                    at: URL(fileURLWithPath: stateDirectory, isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+            process.environment = mergedEnvironment
+        }
         process.currentDirectoryURL = managedRuntimeRootURL ?? fileManager.homeDirectoryForCurrentUser
         process.standardOutput = logHandle
         process.standardError = logHandle
@@ -401,11 +415,18 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
 
         let readinessTimeout = TimeInterval(max(config.timeout, 5))
         guard waitForGatewayReadiness(host: launchConfig.host, port: launchConfig.port, timeoutSeconds: readinessTimeout) else {
+            let processWasRunning = isProcessAlive(pid: pid)
             _ = try? stopProcess(pid: pid)
+            let failureMessage = readinessFailureMessage(
+                logURL: logURL,
+                port: launchConfig.port,
+                timeoutSeconds: readinessTimeout,
+                processWasRunning: processWasRunning
+            )
             throw NSError(
                 domain: "OpenClawManagedRuntimeSupervisor",
                 code: 4102,
-                userInfo: [NSLocalizedDescriptionKey: "托管 OpenClaw Gateway 启动超时，\(Int(readinessTimeout)) 秒内未监听端口 \(launchConfig.port)。"]
+                userInfo: [NSLocalizedDescriptionKey: failureMessage]
             )
         }
 
@@ -731,6 +752,46 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             code: 4104,
             userInfo: [NSLocalizedDescriptionKey: "无法停止托管 OpenClaw Runtime 进程（pid \(pid)）。"]
         )
+    }
+
+    private func readinessFailureMessage(
+        logURL: URL,
+        port: Int,
+        timeoutSeconds: TimeInterval,
+        processWasRunning: Bool
+    ) -> String {
+        let baseMessage: String
+        if processWasRunning {
+            baseMessage = "托管 OpenClaw Gateway 启动超时，\(Int(timeoutSeconds)) 秒内未监听端口 \(port)。"
+        } else {
+            baseMessage = "托管 OpenClaw Gateway 在监听端口 \(port) 前已退出。"
+        }
+
+        guard let excerpt = recentLogExcerpt(from: logURL) else {
+            return baseMessage
+        }
+        return "\(baseMessage)\n最近日志：\n\(excerpt)"
+    }
+
+    private func recentLogExcerpt(from logURL: URL, maxLines: Int = 12, maxCharacters: Int = 1200) -> String? {
+        guard let data = try? Data(contentsOf: logURL),
+              var text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            return nil
+        }
+
+        let lines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return nil }
+
+        text = lines.suffix(maxLines).joined(separator: "\n")
+        if text.count > maxCharacters {
+            text = String(text.suffix(maxCharacters))
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func cleanupStoppedProcess(pid: Int32) {

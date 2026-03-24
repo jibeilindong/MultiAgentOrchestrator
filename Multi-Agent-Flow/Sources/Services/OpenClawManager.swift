@@ -3822,6 +3822,7 @@ class OpenClawManager: ObservableObject {
     func executeGatewayChatCommand(
         message: String,
         sessionKey: String,
+        attachments: [OpenClawGatewayClient.ChatAttachment] = [],
         thinkingLevel: AgentThinkingLevel?,
         timeoutSeconds: Int,
         using config: OpenClawConfig? = nil,
@@ -3832,6 +3833,7 @@ class OpenClawManager: ObservableObject {
             using: config ?? self.config,
             message: message,
             sessionKey: sessionKey,
+            attachments: attachments,
             thinkingLevel: thinkingLevel,
             timeoutSeconds: timeoutSeconds,
             onRunStarted: onRunStarted,

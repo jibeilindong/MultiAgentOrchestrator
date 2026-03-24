@@ -1,6 +1,31 @@
 import Foundation
 
 extension AppState {
+    struct QuickChatAgentOption: Identifiable, Equatable, Hashable {
+        let projectID: UUID
+        let projectName: String
+        let workflowID: UUID
+        let workflowName: String
+        let agentID: UUID
+        let agentName: String
+        let agentIdentifier: String
+        let isEntryPreferred: Bool
+
+        var id: UUID { agentID }
+
+        var context: QuickChatContext {
+            QuickChatContext(
+                projectID: projectID,
+                projectName: projectName,
+                workflowID: workflowID,
+                workflowName: workflowName,
+                entryAgentID: agentID,
+                entryAgentName: agentName,
+                agentIdentifier: agentIdentifier
+            )
+        }
+    }
+
     struct QuickChatContext: Equatable {
         let projectID: UUID
         let projectName: String
@@ -12,8 +37,20 @@ extension AppState {
     }
 
     func resolveQuickChatContext() -> QuickChatContext? {
-        guard let project = currentProject else { return nil }
-        guard let workflow = workflow(for: activeWorkflowID) ?? project.workflows.first else { return nil }
+        resolveQuickChatAgentOptions().first?.context
+    }
+
+    func resolveQuickChatContext(for agentID: UUID?) -> QuickChatContext? {
+        if let agentID,
+           let option = resolveQuickChatAgentOptions().first(where: { $0.agentID == agentID }) {
+            return option.context
+        }
+        return resolveQuickChatContext()
+    }
+
+    func resolveQuickChatAgentOptions() -> [QuickChatAgentOption] {
+        guard let project = currentProject else { return [] }
+        guard let workflow = workflow(for: activeWorkflowID) ?? project.workflows.first else { return [] }
 
         let nodeByID = Dictionary(uniqueKeysWithValues: workflow.nodes.map { ($0.id, $0) })
         let sortedAgentNodes = workflow.nodes
@@ -34,21 +71,32 @@ extension AppState {
                     .first
             }
 
-        let resolvedNode = connectedEntryAgent ?? sortedAgentNodes.first
-        guard let resolvedNode,
-              let agent = getAgent(for: resolvedNode) else {
-            return nil
+        var orderedNodes: [WorkflowNode] = []
+        if let connectedEntryAgent {
+            orderedNodes.append(connectedEntryAgent)
+        }
+        orderedNodes.append(contentsOf: sortedAgentNodes.filter { node in
+            node.id != connectedEntryAgent?.id
+        })
+
+        var seenAgentIDs = Set<UUID>()
+        let options = orderedNodes.compactMap { node -> QuickChatAgentOption? in
+            guard let agent = getAgent(for: node) else { return nil }
+            guard seenAgentIDs.insert(agent.id).inserted else { return nil }
+
+            return QuickChatAgentOption(
+                projectID: project.id,
+                projectName: project.name,
+                workflowID: workflow.id,
+                workflowName: workflow.name,
+                agentID: agent.id,
+                agentName: agent.name,
+                agentIdentifier: quickChatAgentIdentifier(for: agent),
+                isEntryPreferred: node.id == connectedEntryAgent?.id
+            )
         }
 
-        return QuickChatContext(
-            projectID: project.id,
-            projectName: project.name,
-            workflowID: workflow.id,
-            workflowName: workflow.name,
-            entryAgentID: agent.id,
-            entryAgentName: agent.name,
-            agentIdentifier: quickChatAgentIdentifier(for: agent)
-        )
+        return options
     }
 
     private func quickChatAgentIdentifier(for agent: Agent) -> String {

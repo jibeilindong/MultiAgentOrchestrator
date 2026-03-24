@@ -217,6 +217,21 @@ final class OpenClawManagedRuntimeSupervisorTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
     }
 
+    private func makeFailingGatewayBinary(at binaryURL: URL) throws {
+        try FileManager.default.createDirectory(
+            at: binaryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        try """
+        #!/bin/sh
+        echo "Config invalid" >&2
+        echo "plugins.allow: plugin not found: minimax-portal-auth" >&2
+        exit 1
+        """.write(to: binaryURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
+    }
+
     func testBuildLaunchCommandPlanUsesManagedRuntimeBinaryForAppManagedConfig() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenClawManagedRuntimeSupervisorPlanTests-\(UUID().uuidString)", isDirectory: true)
@@ -251,6 +266,8 @@ final class OpenClawManagedRuntimeSupervisorTests: XCTestCase {
         XCTAssertEqual(plan.launchStrategy, .foregroundGateway)
         XCTAssertEqual(plan.executableURL.path, binaryURL.path)
         XCTAssertEqual(plan.arguments, ["gateway", "--port", "18789"])
+        XCTAssertEqual(plan.environment["OPENCLAW_CONFIG_PATH"], managedRuntimeRoot.appendingPathComponent("openclaw.json").path)
+        XCTAssertEqual(plan.environment["OPENCLAW_STATE_DIR"], tempRoot.appendingPathComponent("state", isDirectory: true).path)
     }
 
     func testRefreshStatusTreatsLivePersistedPidAsRunning() throws {
@@ -480,6 +497,43 @@ final class OpenClawManagedRuntimeSupervisorTests: XCTestCase {
         XCTAssertTrue(snapshot.logPath?.contains("gateway-\(actualPort).log") == true)
         XCTAssertTrue(snapshot.lastMessage?.contains("首选端口 \(preferredPort) 已被占用") == true)
         XCTAssertTrue(snapshot.lastMessage?.contains("\(actualPort)") == true)
+    }
+
+    func testStartSurfacesRecentGatewayLogExcerptWhenLaunchFailsBeforeReadiness() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("OpenClawManagedRuntimeSupervisorFailureTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let managedRuntimeRoot = tempRoot.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempRoot.appendingPathComponent("supervisor", isDirectory: true)
+        let binaryURL = managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false)
+        try makeFailingGatewayBinary(at: binaryURL)
+
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempRoot
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+
+        var config = OpenClawConfig.default
+        config.runtimeOwnership = .appManaged
+        config.host = "127.0.0.1"
+        config.port = 18795
+        config.timeout = 1
+
+        XCTAssertThrowsError(try supervisor.start(using: config)) { error in
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("监听端口 18795 前已退出"))
+            XCTAssertTrue(message.contains("Config invalid"))
+            XCTAssertTrue(message.contains("minimax-portal-auth"))
+        }
     }
 
     private func makePersistedProcessState(

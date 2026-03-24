@@ -1,6 +1,7 @@
 # OpenClaw 内置 Assist 全责 Agent 全周期执行计划
 
 日期：2026-03-23
+更新：2026-03-24（按当前代码基线校正）
 状态：Draft for review
 
 ## 1. 文档目的
@@ -24,6 +25,17 @@ Assist Store 的数据结构细化见：
 5. 优先落地模板 / 文案 / 配置检查等高价值场景
 6. 再逐步扩展到 workflow 节点调用、布局优化与性能诊断
 7. 让 Assist 的全过程可观测、可回退、可验收
+
+### 2.1 当前代码基线（截至 2026-03-24）
+
+本计划以下阶段拆分，以当前代码现实为基线，而不是按理想化空白工程制定：
+
+- 当前 Workbench UI 只有 `Chat / Run` 两态，`Assist` 模式尚未真正接入 [MessagesView.swift](/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/MessagesView.swift)
+- `conversation.assisted` 与 `inspection.readonly` 已经在 session semantic 中存在，因此 Assist 可以复用既有语义基础 [SessionSemantics.swift](/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/SessionSemantics.swift)
+- `MAProject.RuntimeState` 当前保存的是项目所属 runtime / workbench 状态，Assist 历史不应追加进去 [MAProject.swift](/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/MAProject.swift)
+- 项目托管目录当前通过 `ProjectFileSystem` 写入 `Application Support/Multi-Agent-Flow/Projects/...`，Assist 不能复用这个项目根保存跨项目历史
+- 系统级模板库已经采用 `Application Support/Multi-Agent-Flow/Libraries/Templates/...`；Assist Store 应与其平级落在 `Libraries/Assist/...`
+- 当前还没有完整的用户角色权限系统；V1 需要先使用内置策略、feature flag 或内部固定 grant 承接 Assist 的系统级授权
 
 ## 3. 总体执行策略
 
@@ -72,6 +84,8 @@ Assist Store 的数据结构细化见：
 - 是否将 Assist 明确放入模板体系但设为系统模板
 - 是否同时建立“系统通道”和“workflow 适配通道”
 - 是否明确建立系统级 Assist Store，并禁止默认写入项目数据
+- 是否确认 Assist Store 采用 `Application Support/Multi-Agent-Flow/Libraries/Assist/...`，而不是项目根或独立顶层 `Assist/...`
+- 是否确认当前项目 `Permission` 模型不承担 Assist 的用户授权语义
 - 哪些场景必须进入 V1，哪些延后
 
 验收标准：
@@ -113,6 +127,8 @@ Assist Store 的数据结构细化见：
 - 定义 capability grant 与 mutation gateway contract
 - 定义 Assist Store 与系统级索引模型
 - 明确 `conversation.assisted` 与 `inspection.readonly` 的使用边界
+- 明确 `MAProject.RuntimeState` 不新增 Assist request / proposal / receipt / undo 历史字段
+- 明确项目 `Permission` 模型不直接承担 Assist 的系统级授权
 - 明确 workflow 中的 Assist 节点如何发起 scoped mutation request
 
 验收标准：
@@ -122,6 +138,7 @@ Assist Store 的数据结构细化见：
 - 诊断型请求默认只读
 - 系统级写入具备独立的 gateway 契约，不依赖普通聊天输出反推
 - request / proposal / receipt / undo 默认落在系统层，而不是项目数据
+- project-owned runtime state 不因 Assist 历史而膨胀
 
 ### Phase 2：统一 Assist 编排基座
 
@@ -155,6 +172,7 @@ Assist Store 的数据结构细化见：
 - 记录 receipt 与 undo checkpoint
 - 强制保留关键动作的确认与回退链路
 - 明确 workflow 节点调用与系统调用的分流逻辑
+- 复用 `ProjectManager.shared.appSupportRootDirectory` 与现有 `Libraries/*` 组织方式，将 Assist Store 落在 `Libraries/Assist`
 - 将所有 Assist 运行记录统一写入系统级 Assist Store
 
 验收标准：
@@ -188,7 +206,7 @@ Assist Store 的数据结构细化见：
 
 关键任务：
 
-- 新增 `Assist` 模式
+- 基于当前 `Chat / Run` 两态新增 `Assist` 模式，而不是假设其已经存在
 - 区分 Assist 线程与普通聊天线程
 - 在结果面板中展示 `diff / preview / warnings`
 - 支持“继续追问”和“应用到草稿”
@@ -228,6 +246,7 @@ Assist Store 的数据结构细化见：
 - 支持“从当前页面发起后，在结果面板确认”
 - 避免就近入口绕过确认与回退机制
 - 为 Assist 系统模板预留只读展示与权限控制位
+- 在尚无完整用户系统的阶段，先以内置策略或 feature flag 控制系统级入口的可见性与写入能力
 
 验收标准：
 
@@ -382,6 +401,7 @@ V1 建议只包含：
 - 设计历史恢复与异常恢复
 - 增加 feature flag
 - 定义禁用 Assist 时的系统退化行为
+- 明确项目导出、草稿保存、项目同步都不混入 Assist 全量历史
 - 增加系统级数据索引、清理、压缩与导出策略
 
 验收标准：
@@ -535,7 +555,7 @@ Assist 的实施依赖以下已有能力保持稳定：
 
 应对：
 
-- 默认建立系统级 Assist Store
+- 默认建立系统级 Assist Store，并落在 `Application Support/Multi-Agent-Flow/Libraries/Assist/...`
 - 项目仅保留最终结果，不保留 Assist 运行全过程
 - 使用项目引用索引，而不是项目内存储
 

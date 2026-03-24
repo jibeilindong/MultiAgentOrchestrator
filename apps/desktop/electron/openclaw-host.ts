@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { OpenClawConfig } from "@multi-agent-flow/domain";
 import {
@@ -16,6 +18,7 @@ export interface OpenClawHostEnvironment extends OpenClawLocalRuntimeEnvironment
 export interface OpenClawHostCommandPlan {
   command: string;
   args: string[];
+  env: Record<string, string>;
 }
 
 export interface OpenClawHostCommandOptions {
@@ -35,11 +38,18 @@ function defaultOpenClawHostExecutor(
   plan: OpenClawHostCommandPlan,
   options?: OpenClawHostCommandOptions
 ): Promise<OpenClawHostExecResult> {
+  if (plan.env.OPENCLAW_STATE_DIR?.trim()) {
+    mkdirSync(plan.env.OPENCLAW_STATE_DIR, { recursive: true });
+  }
   return execFileAsync(plan.command, plan.args, {
     encoding: "utf8",
     timeout: options?.timeoutMs ?? 15000,
     windowsHide: true,
-    maxBuffer: 1024 * 1024
+    maxBuffer: 1024 * 1024,
+    env: {
+      ...process.env,
+      ...plan.env
+    }
   }) as Promise<OpenClawHostExecResult>;
 }
 
@@ -57,12 +67,36 @@ export class OpenClawHost {
     return resolveLocalOpenClawBinaryPath(config, this.resolveEnvironment());
   }
 
+  private resolveManagedLocalRuntimeEnvironment(config: OpenClawConfig): Record<string, string> {
+    if (config.deploymentKind !== "local" || config.runtimeOwnership !== "appManaged") {
+      return {};
+    }
+
+    const environment = this.resolveEnvironment();
+    const resolvedBinaryPath = this.resolveLocalBinaryPath(config);
+    const binaryDirectory = path.dirname(resolvedBinaryPath);
+    const inferredManagedRuntimeRoot =
+      path.basename(binaryDirectory).toLowerCase() === "bin" ? path.dirname(binaryDirectory) : binaryDirectory;
+    const managedRuntimeRoot = environment.userDataPath
+      ? path.join(environment.userDataPath, "openclaw", "runtime")
+      : inferredManagedRuntimeRoot;
+    const managedStateDir = environment.userDataPath
+      ? path.join(environment.userDataPath, "openclaw", "state")
+      : path.join(path.dirname(managedRuntimeRoot), "state");
+
+    return {
+      OPENCLAW_CONFIG_PATH: path.join(managedRuntimeRoot, "openclaw.json"),
+      OPENCLAW_STATE_DIR: managedStateDir
+    };
+  }
+
   buildDeploymentCommandPlan(config: OpenClawConfig, args: string[]): OpenClawHostCommandPlan {
     switch (config.deploymentKind) {
       case "local":
         return {
           command: this.resolveLocalBinaryPath(config),
-          args
+          args,
+          env: this.resolveManagedLocalRuntimeEnvironment(config)
         };
       case "container": {
         const engine = config.container.engine.trim() || "docker";
@@ -73,7 +107,8 @@ export class OpenClawHost {
 
         return {
           command: engine,
-          args: ["exec", containerName, "openclaw", ...args]
+          args: ["exec", containerName, "openclaw", ...args],
+          env: {}
         };
       }
       case "remoteServer":
@@ -86,7 +121,8 @@ export class OpenClawHost {
       case "local":
         return {
           command: "/bin/sh",
-          args: ["-lc", script]
+          args: ["-lc", script],
+          env: this.resolveManagedLocalRuntimeEnvironment(config)
         };
       case "container": {
         const engine = config.container.engine.trim() || "docker";
@@ -97,7 +133,8 @@ export class OpenClawHost {
 
         return {
           command: engine,
-          args: ["exec", containerName, "sh", "-lc", script]
+          args: ["exec", containerName, "sh", "-lc", script],
+          env: {}
         };
       }
       case "remoteServer":

@@ -37,7 +37,12 @@ test("openclaw host resolves app-managed local command plans through bundled run
 
   assert.deepEqual(plan, {
     command: "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
-    args: ["agents", "list"]
+    args: ["agents", "list"],
+    env: {
+      OPENCLAW_CONFIG_PATH:
+        "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/openclaw.json",
+      OPENCLAW_STATE_DIR: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/state"
+    }
   });
 });
 
@@ -61,7 +66,8 @@ test("openclaw host keeps external local command plans pinned to configured bina
 
   assert.deepEqual(plan, {
     command: "/custom/openclaw/bin/openclaw",
-    args: ["agents", "list"]
+    args: ["agents", "list"],
+    env: {}
   });
 });
 
@@ -89,7 +95,8 @@ test("openclaw host builds container shell plans through the container engine", 
 
   assert.deepEqual(plan, {
     command: "podman",
-    args: ["exec", "openclaw-runtime", "sh", "-lc", "printf %s \"$HOME\""]
+    args: ["exec", "openclaw-runtime", "sh", "-lc", "printf %s \"$HOME\""],
+    env: {}
   });
 });
 

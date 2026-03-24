@@ -36,6 +36,27 @@ actor OpenClawGatewayClient {
         let errorMessage: String?
     }
 
+    struct ChatAttachment: Hashable, Sendable {
+        let type: String
+        let mimeType: String
+        let fileName: String
+        let contentBase64: String
+
+        fileprivate var rpcPayload: [String: Any] {
+            [
+                "type": type,
+                "mimeType": mimeType,
+                "fileName": fileName,
+                "content": contentBase64,
+                "source": [
+                    "type": "base64",
+                    "media_type": mimeType,
+                    "data": contentBase64
+                ]
+            ]
+        }
+    }
+
     struct ChatSessionRecord: Hashable {
         let key: String
         let displayName: String?
@@ -43,9 +64,33 @@ actor OpenClawGatewayClient {
     }
 
     struct ChatTranscriptMessage: Hashable, Sendable {
+        struct ContentBlock: Hashable, Sendable {
+            enum Kind: String, Hashable, Sendable {
+                case text
+                case thinking
+                case image
+                case toolUse = "tool_use"
+                case toolResult = "tool_result"
+                case unknown
+            }
+
+            let kind: Kind
+            let rawType: String?
+            let text: String?
+            let language: String?
+            let toolName: String?
+            let toolArguments: String?
+            let toolOutput: String?
+            let imageURL: String?
+            let imageMimeType: String?
+            let imageByteCount: Int?
+            let isImageDataOmitted: Bool
+        }
+
         let role: String
         let text: String
         let timestamp: Double?
+        let blocks: [ContentBlock]
     }
 
     private struct ChatRunState {
@@ -357,6 +402,7 @@ actor OpenClawGatewayClient {
         using config: OpenClawConfig,
         message: String,
         sessionKey: String,
+        attachments: [ChatAttachment] = [],
         thinkingLevel: AgentThinkingLevel?,
         timeoutSeconds: Int,
         onRunStarted: (@Sendable (String, String) -> Void)? = nil,
@@ -373,6 +419,9 @@ actor OpenClawGatewayClient {
             "timeoutMs": max(1, timeoutSeconds) * 1000,
             "idempotencyKey": UUID().uuidString
         ]
+        if !attachments.isEmpty {
+            params["attachments"] = attachments.map(\.rpcPayload)
+        }
         if let thinkingLevel {
             params["thinking"] = thinkingLevel.rawValue
         }
@@ -936,13 +985,16 @@ actor OpenClawGatewayClient {
     private func extractAssistantText(fromHistoryEntry entry: Any) -> String? {
         guard let message = entry as? [String: Any] else { return nil }
         guard normalizedNonEmptyString(message["role"])?.lowercased() == "assistant" else { return nil }
-        return extractMessageText(fromHistoryEntry: message)
+        let blocks = transcriptBlocks(fromHistoryEntry: message, role: "assistant")
+        return extractMessageText(fromHistoryEntry: message, role: "assistant", blocks: blocks)
     }
 
     private func transcriptMessage(fromHistoryEntry entry: Any) -> ChatTranscriptMessage? {
         guard let message = entry as? [String: Any] else { return nil }
         guard let role = normalizedNonEmptyString(message["role"])?.lowercased() else { return nil }
-        guard let text = extractMessageText(fromHistoryEntry: message), !text.isEmpty else { return nil }
+        let blocks = transcriptBlocks(fromHistoryEntry: message, role: role)
+        let text = extractMessageText(fromHistoryEntry: message, role: role, blocks: blocks) ?? ""
+        guard !text.isEmpty || !blocks.isEmpty else { return nil }
 
         let timestampValue = message["timestamp"]
             ?? message["createdAt"]
@@ -953,36 +1005,251 @@ actor OpenClawGatewayClient {
         return ChatTranscriptMessage(
             role: role,
             text: text,
-            timestamp: normalizedHistoryTimestamp(timestampValue)
+            timestamp: normalizedHistoryTimestamp(timestampValue),
+            blocks: blocks
         )
     }
 
-    private func extractMessageText(fromHistoryEntry message: [String: Any]) -> String? {
-        if let contentItems = message["content"] as? [[String: Any]] {
-            let parts = contentItems.compactMap { item -> String? in
-                if let text = normalizedNonEmptyString(item["text"]) {
-                    return text
-                }
-                if let thinking = normalizedNonEmptyString(item["thinking"]) {
-                    return thinking
-                }
+    private func extractMessageText(
+        fromHistoryEntry message: [String: Any],
+        role: String,
+        blocks: [ChatTranscriptMessage.ContentBlock]
+    ) -> String? {
+        let preferredKinds: Set<ChatTranscriptMessage.ContentBlock.Kind> = role == "tool_result"
+            ? [.toolResult, .text]
+            : [.text]
+
+        let preferred = blocks.compactMap { block -> String? in
+            guard preferredKinds.contains(block.kind) else { return nil }
+            return normalizedDisplayText(
+                block.toolOutput
+                    ?? block.text
+                    ?? block.toolName
+            )
+        }
+        let joinedPreferred = preferred.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !joinedPreferred.isEmpty {
+            return joinedPreferred
+        }
+
+        if role == "tool_result" {
+            let fallback = normalizedNonEmptyString(message["content"])
+                ?? normalizedNonEmptyString(message["text"])
+            return fallback
+        }
+
+        let fallback = blocks.compactMap { block -> String? in
+            switch block.kind {
+            case .thinking:
+                return normalizedDisplayText(block.text)
+            case .toolUse:
+                return normalizedDisplayText(block.toolName)
+            case .toolResult:
+                return normalizedDisplayText(block.toolOutput)
+            case .image, .unknown, .text:
                 return nil
             }
-            let joined = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            return joined.isEmpty ? nil : joined
+        }
+        let joinedFallback = fallback.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joinedFallback.isEmpty ? nil : joinedFallback
+    }
+
+    private func transcriptBlocks(
+        fromHistoryEntry message: [String: Any],
+        role: String
+    ) -> [ChatTranscriptMessage.ContentBlock] {
+        var blocks: [ChatTranscriptMessage.ContentBlock] = []
+
+        if let contentItems = message["content"] as? [Any] {
+            blocks.append(contentsOf: contentItems.compactMap { contentBlock(from: $0, role: role) })
+        } else if let contentItem = message["content"] as? [String: Any],
+                  let block = contentBlock(from: contentItem, role: role) {
+            blocks.append(block)
+        } else if let content = normalizedNonEmptyString(message["content"]) {
+            let kind: ChatTranscriptMessage.ContentBlock.Kind = role == "tool_result" ? .toolResult : .text
+            blocks.append(
+                ChatTranscriptMessage.ContentBlock(
+                    kind: kind,
+                    rawType: kind.rawValue,
+                    text: kind == .text ? content : nil,
+                    language: nil,
+                    toolName: nil,
+                    toolArguments: nil,
+                    toolOutput: kind == .toolResult ? content : nil,
+                    imageURL: nil,
+                    imageMimeType: nil,
+                    imageByteCount: nil,
+                    isImageDataOmitted: false
+                )
+            )
         }
 
-        if let contentItems = message["content"] as? [String: Any] {
-            let text = normalizedNonEmptyString(contentItems["text"])
-                ?? normalizedNonEmptyString(contentItems["thinking"])
-            return text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? text : nil
+        if let text = normalizedNonEmptyString(message["text"]),
+           !blocks.contains(where: { $0.kind == .text && $0.text == text }) {
+            blocks.insert(
+                ChatTranscriptMessage.ContentBlock(
+                    kind: .text,
+                    rawType: "text",
+                    text: text,
+                    language: nil,
+                    toolName: nil,
+                    toolArguments: nil,
+                    toolOutput: nil,
+                    imageURL: nil,
+                    imageMimeType: nil,
+                    imageByteCount: nil,
+                    isImageDataOmitted: false
+                ),
+                at: 0
+            )
         }
 
-        if let content = normalizedNonEmptyString(message["content"]) {
-            return content
+        return blocks
+    }
+
+    private func contentBlock(
+        from rawValue: Any,
+        role: String
+    ) -> ChatTranscriptMessage.ContentBlock? {
+        guard let item = rawValue as? [String: Any] else { return nil }
+
+        let rawType = normalizedNonEmptyString(item["type"])?.lowercased()
+        let language = normalizedNonEmptyString(item["language"])
+            ?? normalizedNonEmptyString(item["lang"])
+
+        if let thinking = normalizedNonEmptyString(item["thinking"])
+            ?? normalizedNonEmptyString(item["summary"]),
+           rawType == "thinking" || rawType == "reasoning" || item["thinking"] != nil {
+            return ChatTranscriptMessage.ContentBlock(
+                kind: .thinking,
+                rawType: rawType ?? "thinking",
+                text: thinking,
+                language: nil,
+                toolName: nil,
+                toolArguments: nil,
+                toolOutput: nil,
+                imageURL: nil,
+                imageMimeType: nil,
+                imageByteCount: nil,
+                isImageDataOmitted: false
+            )
+        }
+
+        if rawType == "function_call"
+            || rawType == "tool_use"
+            || (normalizedNonEmptyString(item["name"]) != nil && item["arguments"] != nil)
+        {
+            return ChatTranscriptMessage.ContentBlock(
+                kind: .toolUse,
+                rawType: rawType ?? "tool_use",
+                text: normalizedNonEmptyString(item["partialJson"]),
+                language: nil,
+                toolName: normalizedNonEmptyString(item["name"]) ?? "tool",
+                toolArguments: normalizedNonEmptyString(item["arguments"])
+                    ?? normalizedNonEmptyString(item["partialJson"]),
+                toolOutput: nil,
+                imageURL: nil,
+                imageMimeType: nil,
+                imageByteCount: nil,
+                isImageDataOmitted: false
+            )
+        }
+
+        if rawType == "function_call_output"
+            || rawType == "tool_result"
+            || rawType == "tool_output"
+            || item["output"] != nil
+            || role == "tool_result"
+        {
+            return ChatTranscriptMessage.ContentBlock(
+                kind: .toolResult,
+                rawType: rawType ?? "tool_result",
+                text: nil,
+                language: language,
+                toolName: normalizedNonEmptyString(item["name"])
+                    ?? normalizedNonEmptyString(item["call_id"]),
+                toolArguments: nil,
+                toolOutput: normalizedNonEmptyString(item["output"])
+                    ?? normalizedNonEmptyString(item["text"])
+                    ?? normalizedNonEmptyString(item["content"]),
+                imageURL: nil,
+                imageMimeType: nil,
+                imageByteCount: nil,
+                isImageDataOmitted: false
+            )
+        }
+
+        if rawType == "image"
+            || rawType == "input_image"
+            || item["image"] != nil
+            || item["url"] != nil
+            || item["src"] != nil
+        {
+            return ChatTranscriptMessage.ContentBlock(
+                kind: .image,
+                rawType: rawType ?? "image",
+                text: normalizedNonEmptyString(item["alt"])
+                    ?? normalizedNonEmptyString(item["text"])
+                    ?? normalizedNonEmptyString(item["label"]),
+                language: nil,
+                toolName: nil,
+                toolArguments: nil,
+                toolOutput: nil,
+                imageURL: normalizedNonEmptyString(item["url"])
+                    ?? normalizedNonEmptyString(item["image"])
+                    ?? normalizedNonEmptyString(item["src"])
+                    ?? normalizedNonEmptyString(item["path"])
+                    ?? normalizedNonEmptyString(item["filePath"])
+                    ?? normalizedNonEmptyString(item["stagedPath"]),
+                imageMimeType: normalizedNonEmptyString(item["mimeType"])
+                    ?? normalizedNonEmptyString(item["media_type"]),
+                imageByteCount: normalizedInteger(item["bytes"])
+                    ?? normalizedInteger(item["size"])
+                    ?? normalizedInteger(item["fileSize"]),
+                isImageDataOmitted: normalizedBool(item["omitted"]) ?? false
+            )
+        }
+
+        if let text = normalizedNonEmptyString(item["text"]) {
+            return ChatTranscriptMessage.ContentBlock(
+                kind: .text,
+                rawType: rawType ?? "text",
+                text: text,
+                language: language,
+                toolName: nil,
+                toolArguments: nil,
+                toolOutput: nil,
+                imageURL: nil,
+                imageMimeType: nil,
+                imageByteCount: nil,
+                isImageDataOmitted: false
+            )
+        }
+
+        if let reasoning = normalizedNonEmptyString(item["content"]),
+           rawType == "reasoning" {
+            return ChatTranscriptMessage.ContentBlock(
+                kind: .thinking,
+                rawType: rawType,
+                text: reasoning,
+                language: nil,
+                toolName: nil,
+                toolArguments: nil,
+                toolOutput: nil,
+                imageURL: nil,
+                imageMimeType: nil,
+                imageByteCount: nil,
+                isImageDataOmitted: false
+            )
         }
 
         return nil
+    }
+
+    private func normalizedDisplayText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     nonisolated static func assistantText(fromChatPayload payload: [String: Any]) -> String? {
@@ -1222,6 +1489,39 @@ actor OpenClawGatewayClient {
         guard let value = value as? String else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func normalizedInteger(_ value: Any?) -> Int? {
+        switch value {
+        case let number as Int:
+            return number
+        case let number as NSNumber:
+            return number.intValue
+        case let string as String:
+            return Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private func normalizedBool(_ value: Any?) -> Bool? {
+        switch value {
+        case let bool as Bool:
+            return bool
+        case let number as NSNumber:
+            return number.boolValue
+        case let string as String:
+            switch string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes":
+                return true
+            case "false", "0", "no":
+                return false
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
     }
 
     private func runtimePlatformIdentifier() -> String {

@@ -1,11 +1,15 @@
-import SwiftUI
 import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
 
 struct QuickChatModalView: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject var store: QuickChatStore
 
     @State private var draft: String = ""
+    @State private var composerHeight: CGFloat = 92
+    @State private var isDropTargeted = false
+    @State private var lightboxItem: QuickChatImageLightboxItem?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,18 +19,21 @@ struct QuickChatModalView: View {
             Divider()
             composer
         }
-        .frame(minWidth: 760, idealWidth: 860, minHeight: 560, idealHeight: 680)
+        .frame(minWidth: 860, idealWidth: 960, minHeight: 620, idealHeight: 760)
         .background(Color(.windowBackgroundColor))
+        .sheet(item: $lightboxItem) { item in
+            QuickChatImageLightboxView(item: item)
+        }
         .onAppear {
             store.refreshContext(using: appState)
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
                         Image(systemName: "bolt.bubble.fill")
                             .foregroundColor(.accentColor)
                         Text("Quick Chat")
@@ -34,7 +41,7 @@ struct QuickChatModalView: View {
                             .fontWeight(.semibold)
                     }
 
-                    Text("轻量弹窗会话，不进入 Workbench 主控制链路。")
+                    Text("轻量弹窗会话，直连 Gateway chat，不进入 Workbench 主控制链路。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -44,6 +51,7 @@ struct QuickChatModalView: View {
                 HStack(spacing: 8) {
                     Button("新会话") {
                         draft = ""
+                        composerHeight = 92
                         store.startNewSession()
                     }
                     .disabled(store.isSending || store.context == nil)
@@ -57,16 +65,19 @@ struct QuickChatModalView: View {
                 }
             }
 
-            if let context = store.context {
-                HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                if let context = store.context {
                     quickChatContextPill(systemImage: "square.grid.2x2", text: context.workflowName)
-                    quickChatContextPill(systemImage: "person.crop.circle", text: context.entryAgentName)
                     quickChatContextPill(systemImage: "shippingbox", text: context.projectName)
+                } else {
+                    quickChatContextPill(systemImage: "exclamationmark.triangle", text: "当前没有可用快聊上下文")
                 }
-            } else {
-                Text("当前没有可用的快聊上下文。")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+
+                gatewayStatusPill
+
+                if !store.agentOptions.isEmpty {
+                    agentPicker
+                }
             }
 
             if let statusMessage = store.statusMessage, !statusMessage.isEmpty {
@@ -87,6 +98,60 @@ struct QuickChatModalView: View {
         .padding(20)
     }
 
+    private var gatewayStatusPill: some View {
+        let summary = gatewaySummary
+        return HStack(spacing: 8) {
+            Circle()
+                .fill(summary.color)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.title)
+                    .font(.caption)
+                    .foregroundColor(.primary)
+                if let detail = summary.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            Capsule(style: .continuous)
+                .fill(summary.color.opacity(0.12))
+        )
+    }
+
+    private var agentPicker: some View {
+        Menu {
+            ForEach(store.agentOptions) { option in
+                Button {
+                    store.selectAgent(option.agentID, using: appState)
+                } label: {
+                    HStack {
+                        Text(option.agentName)
+                        if option.isEntryPreferred {
+                            Text("入口")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("@\(selectedAgentName)", systemImage: "at")
+                .font(.caption)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+        }
+        .menuStyle(.borderlessButton)
+    }
+
     private var messagePane: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -95,8 +160,13 @@ struct QuickChatModalView: View {
                         quickChatEmptyState
                     } else {
                         ForEach(store.messages) { message in
-                            QuickChatMessageBubble(message: message)
-                                .id(message.id)
+                            QuickChatMessageBubbleView(
+                                message: message,
+                                onOpenImage: { item in
+                                    lightboxItem = item
+                                }
+                            )
+                            .id(message.id)
                         }
                     }
                 }
@@ -120,14 +190,14 @@ struct QuickChatModalView: View {
                 .fontWeight(.semibold)
 
             if let context = store.context {
-                Text("当前会话会直连 `\(context.entryAgentName)`，并使用独立 session key，不写入 Workbench 主线程。")
+                Text("当前会话会直连 `\(context.entryAgentName)`，使用独立 session key，并优先保留速度与顺滑度。")
                     .foregroundColor(.secondary)
             } else {
                 Text("请先在当前项目里准备一个带入口 Agent 的工作流，Quick Chat 才能直接启动。")
                     .foregroundColor(.secondary)
             }
 
-            Text("适合先问、先试、先拿建议；正式运行和深度观测仍然放在 Workbench。")
+            Text("支持文本、文件上传、拖拽、剪贴板导入，以及结构化消息渲染。")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
@@ -140,29 +210,68 @@ struct QuickChatModalView: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
+            if !store.attachments.isEmpty {
+                QuickChatComposerAttachmentRow(
+                    attachments: store.attachments,
+                    onRemove: { attachmentID in
+                        store.removeAttachment(attachmentID)
+                    },
+                    onOpenImage: { item in
+                        lightboxItem = item
+                    }
+                )
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    presentOpenPanel()
+                } label: {
+                    Label("上传", systemImage: "paperclip")
+                }
+
+                Button {
+                    store.importFromPasteboard()
+                } label: {
+                    Label("粘贴", systemImage: "doc.on.clipboard")
+                }
+
+                Text("文件会先 stage，再通过 Gateway `chat.send.attachments` 发送。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Spacer(minLength: 12)
+
+                Text(store.hasPendingAttachments ? "附件 stage 中" : "Enter 发送 · Shift+Enter 换行")
+                    .font(.caption)
+                    .foregroundColor(store.hasPendingAttachments ? .orange : .secondary)
+            }
+
             HStack(alignment: .bottom, spacing: 12) {
                 ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color(nsColor: .textBackgroundColor))
 
-                    if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text("输入想快速聊的问题，发送会直接走轻量 chat 路径。")
+                    if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.readyAttachmentCount == 0 {
+                        Text("输入想快速聊的问题，或直接上传文件后发送。")
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
                     }
 
-                    TextEditor(text: $draft)
-                        .font(.body)
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minHeight: 96, maxHeight: 140)
+                    QuickChatGrowingTextEditor(
+                        text: $draft,
+                        dynamicHeight: $composerHeight,
+                        onSubmit: sendCurrentDraft
+                    )
+                    .frame(height: composerHeight)
+                    .padding(.horizontal, 14)
                 }
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(isDropTargeted ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDropTargeted ? 1.5 : 1)
                 )
+                .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleDrop(providers:))
 
                 VStack(spacing: 10) {
                     Button {
@@ -172,35 +281,144 @@ struct QuickChatModalView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!store.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSubmit)
 
-                    Text(store.isSending ? "正在流式接收..." : "独立快聊会话")
+                    Text(sendStatusText)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 }
-                .frame(width: 128)
+                .frame(width: 136)
             }
 
             HStack {
-                Text("Quick Chat 优先保证速度和顺滑度，不承担正式 run 控制。")
+                Text("Quick Chat 把观察和控制压到最轻，优先保证回复速度。")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
                 Spacer(minLength: 12)
 
-                Text("建议长度：1-3 段")
+                Text(store.readyAttachmentCount > 0 ? "已就绪附件 \(store.readyAttachmentCount) 个" : "建议长度：1-3 段")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
         }
         .padding(20)
+        .onPasteCommand(of: [.fileURL, .png, .tiff]) { _ in
+            store.importFromPasteboard()
+        }
+    }
+
+    private var selectedAgentName: String {
+        store.agentOptions.first(where: { $0.agentID == store.selectedAgentID })?.agentName
+            ?? store.context?.entryAgentName
+            ?? "选择 Agent"
+    }
+
+    private var canSubmit: Bool {
+        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return store.canSend && !store.hasFailedAttachments && (hasText || store.readyAttachmentCount > 0)
+    }
+
+    private var sendStatusText: String {
+        if store.isSending {
+            return "正在流式接收..."
+        }
+        if store.hasPendingAttachments {
+            return "等待文件 stage"
+        }
+        return "独立快聊会话"
+    }
+
+    private var gatewaySummary: (title: String, detail: String?, color: Color) {
+        let state = appState.openClawManager.connectionState
+
+        if state.canRunConversation && state.capabilities.gatewayChatAvailable {
+            return (
+                title: "Gateway 已就绪",
+                detail: state.health.lastMessage,
+                color: .green
+            )
+        }
+
+        if state.capabilities.gatewayReachable && state.capabilities.gatewayAuthenticated {
+            return (
+                title: "Gateway 已连接",
+                detail: state.health.degradationReason ?? "chat 通道能力未完全就绪",
+                color: .orange
+            )
+        }
+
+        return (
+            title: "Gateway 未就绪",
+            detail: state.health.lastMessage ?? state.phase.rawValue,
+            color: .red
+        )
     }
 
     private func sendCurrentDraft() {
+        guard canSubmit else { return }
         let text = draft
         draft = ""
+        composerHeight = 92
         store.send(text, using: appState)
+    }
+
+    private func presentOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        if panel.runModal() == .OK {
+            store.importFiles(panel.urls)
+        }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        let matchingProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+
+        guard !matchingProviders.isEmpty else { return false }
+
+        let lock = NSLock()
+        var urls: [URL] = []
+        let group = DispatchGroup()
+
+        for provider in matchingProviders {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+
+                let resolvedURL: URL?
+                if let data = item as? Data {
+                    resolvedURL = NSURL(
+                        absoluteURLWithDataRepresentation: data,
+                        relativeTo: nil
+                    ) as URL?
+                } else if let url = item as? URL {
+                    resolvedURL = url
+                } else if let string = item as? String {
+                    resolvedURL = URL(string: string)
+                } else {
+                    resolvedURL = nil
+                }
+
+                if let resolvedURL {
+                    lock.lock()
+                    urls.append(resolvedURL)
+                    lock.unlock()
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            store.importFiles(urls)
+        }
+
+        return true
     }
 
     private func scrollToBottom(with proxy: ScrollViewProxy) {
@@ -213,53 +431,29 @@ struct QuickChatModalView: View {
     }
 }
 
-private struct QuickChatMessageBubble: View {
-    let message: QuickChatStore.Message
-
-    private var isUser: Bool {
-        message.role == .user
-    }
+private struct QuickChatImageLightboxView: View {
+    let item: QuickChatImageLightboxItem
 
     var body: some View {
-        HStack {
-            if isUser {
-                Spacer(minLength: 56)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(item.title)
+                    .font(.headline)
+                Spacer(minLength: 12)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Text(isUser ? "你" : "Assistant")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                    if message.isStreaming {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                }
-
-                Text(message.text.isEmpty && message.isStreaming ? "正在生成内容..." : message.text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView([.horizontal, .vertical]) {
+                Image(nsImage: item.image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(14)
-            .background(bubbleBackground)
+            .background(Color.black.opacity(0.92))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.primary.opacity(isUser ? 0.0 : 0.08), lineWidth: 1)
-            )
-
-            if !isUser {
-                Spacer(minLength: 56)
-            }
         }
-    }
-
-    private var bubbleBackground: some ShapeStyle {
-        if isUser {
-            return AnyShapeStyle(Color.accentColor.opacity(0.16))
-        }
-        return AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 520)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
