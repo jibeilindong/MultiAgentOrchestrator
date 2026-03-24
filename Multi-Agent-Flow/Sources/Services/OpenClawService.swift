@@ -2381,8 +2381,11 @@ class OpenClawService: ObservableObject {
         let runtimePublished =
             project.runtimeState.appliedToMirrorConfigurationRevision > 0
             && project.runtimeState.syncedToRuntimeConfigurationRevision >= project.runtimeState.appliedToMirrorConfigurationRevision
-            && manager.sessionLifecycle.stage == .synced
-            && !manager.sessionLifecycle.hasPendingMirrorChanges
+            && (
+                (manager.sessionLifecycle.stage == .synced
+                    && !manager.sessionLifecycle.hasPendingMirrorChanges)
+                    || project.runtimeState.latestRuntimeSyncReceipt?.isWarningOnlySuccessfulPublish == true
+            )
 
         guard runtimePublished else {
             return RuntimeExecutionAdmission(

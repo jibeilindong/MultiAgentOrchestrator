@@ -4,26 +4,10 @@
     "Localizable": [
       {
         "comment": "",
-        "key": "导入设计包",
-        "location": {
-          "startingColumn": 32,
-          "startingLine": 1178
-        }
-      },
-      {
-        "comment": "",
-        "key": "导出当前设计包",
-        "location": {
-          "startingColumn": 32,
-          "startingLine": 1179
-        }
-      },
-      {
-        "comment": "",
         "key": "Auto-detect agents from OpenClaw and generate collaboration architecture based on SOUL.md",
         "location": {
           "startingColumn": 23,
-          "startingLine": 3753
+          "startingLine": 3934
         }
       },
       {
@@ -31,7 +15,7 @@
         "key": "Generate Architecture",
         "location": {
           "startingColumn": 30,
-          "startingLine": 3746
+          "startingLine": 3927
         }
       },
       {
@@ -39,7 +23,7 @@
         "key": "%lld",
         "location": {
           "startingColumn": 22,
-          "startingLine": 4080
+          "startingLine": 4261
         }
       },
       {
@@ -47,7 +31,7 @@
         "key": "拖拽到画布可直接创建模板节点",
         "location": {
           "startingColumn": 15,
-          "startingLine": 4150
+          "startingLine": 4331
         }
       },
       {
@@ -55,7 +39,7 @@
         "key": "基于该模板创建节点",
         "location": {
           "startingColumn": 19,
-          "startingLine": 4140
+          "startingLine": 4321
         }
       },
       {
@@ -63,7 +47,7 @@
         "key": "%@: %@",
         "location": {
           "startingColumn": 34,
-          "startingLine": 4594
+          "startingLine": 4775
         }
       },
       {
@@ -71,7 +55,7 @@
         "key": "%@: %@",
         "location": {
           "startingColumn": 34,
-          "startingLine": 4595
+          "startingLine": 4776
         }
       },
       {
@@ -79,7 +63,7 @@
         "key": "%@: %@",
         "location": {
           "startingColumn": 34,
-          "startingLine": 4596
+          "startingLine": 4777
         }
       },
       {
@@ -87,7 +71,7 @@
         "key": "%@ -> %@",
         "location": {
           "startingColumn": 30,
-          "startingLine": 5711
+          "startingLine": 5892
         }
       }
     ]

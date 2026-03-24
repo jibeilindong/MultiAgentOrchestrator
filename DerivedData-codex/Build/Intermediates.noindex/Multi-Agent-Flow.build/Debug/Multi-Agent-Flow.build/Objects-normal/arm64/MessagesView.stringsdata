@@ -4,10 +4,18 @@
     "Localizable": [
       {
         "comment": "",
+        "key": "New Thread",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 733
+        }
+      },
+      {
+        "comment": "",
         "key": "%@:%@",
         "location": {
           "startingColumn": 50,
-          "startingLine": 1039
+          "startingLine": 1233
         }
       },
       {
@@ -15,7 +23,15 @@
         "key": "default",
         "location": {
           "startingColumn": 58,
-          "startingLine": 1071
+          "startingLine": 1265
+        }
+      },
+      {
+        "comment": "",
+        "key": "Next message will start a new thread for this workflow.",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 1446
         }
       },
       {
@@ -23,7 +39,7 @@
         "key": "Mode",
         "location": {
           "startingColumn": 30,
-          "startingLine": 1237
+          "startingLine": 1431
         }
       },
       {
@@ -31,7 +47,15 @@
         "key": "Mode",
         "location": {
           "startingColumn": 32,
-          "startingLine": 1240
+          "startingLine": 1434
+        }
+      },
+      {
+        "comment": "",
+        "key": "Assist",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 1535
         }
       },
       {
@@ -39,7 +63,7 @@
         "key": "%lld",
         "location": {
           "startingColumn": 22,
-          "startingLine": 1319
+          "startingLine": 1564
         }
       },
       {
@@ -47,7 +71,7 @@
         "key": "%@ → %@",
         "location": {
           "startingColumn": 42,
-          "startingLine": 1338
+          "startingLine": 1583
         }
       },
       {
@@ -55,7 +79,7 @@
         "key": "→",
         "location": {
           "startingColumn": 42,
-          "startingLine": 1351
+          "startingLine": 1596
         }
       }
     ]

@@ -2,6 +2,32 @@
 
 日期：2026-03-23
 
+## 0. 当前实施状态
+
+截至 2026-03-23，P0 主体开发已基本完成，状态如下：
+
+- 已完成：thread identity 建模
+- 已完成：Workbench 消息按 thread 过滤
+- 已完成：task/message metadata 统一写入 thread 信息
+- 已完成：transcript merge 改为非破坏式 append-first
+- 已完成：OpenClawService thread-aware active run registry
+- 已完成：Stop 行为改为 thread-aware
+- 已完成：MessagesView 线程可见性，支持 thread 切换与新开 thread
+- 已完成：`RuntimeState.activeWorkbenchRuns` 持久化与恢复链路
+- 已完成：线程运行状态在 UI 中的基础可视化
+
+当前剩余工作：
+
+- 补齐 P0 文档收尾
+- 补齐回归测试与测试环境验证
+- 处理测试阶段的资源复制 sandbox 阻塞
+
+当前验证结论：
+
+- `xcodebuild ... build` 已通过
+- `xcodebuild ... test` 目前仍被构建阶段资源复制阻塞，不是新增 Swift 编译错误
+- 当前测试阻塞点已从先前的 `rm/unlink` 变为 `ditto` 复制 `managed-runtime/openclaw`
+
 ## 1. P0 目标
 
 P0 不解决“聊天模式自治化”全部问题，只做止血，目标是 4 件事：

@@ -51,7 +51,7 @@ Execution Plane
 - Swift 侧已新增 `OpenClawHost.swift`，开始接管本地/容器命令规划、OpenClaw CLI 调用、ClawHub 调用与本地配置文件解析。
 - `OpenClawManager` 已不再承担全部路径解析和命令规划职责，而是通过 `OpenClawHost` 进入受控执行面。
 - UI 与 AppState 已从固定的 `Connect -> Attach -> Sync -> Run/Chat` 语义，升级为 `Probe / Bind / Publish / Execute` 控制面展示。
-- 项目快照 `ProjectOpenClawSnapshot` 已新增控制面快照投影，后续可作为聊天态与执行态共存时的统一恢复锚点。
+- 项目快照 `ProjectOpenClawSnapshot` 已新增控制面快照投影，并开始持久化 `summary / secondarySummary` 诊断，可作为聊天态与执行态共存时的统一恢复锚点。
 - `OpenClawService` 已新增显式 `OpenClawRuntimeExecutionIntent`，当前至少区分：
   - `conversationAutonomous`
   - `workflowControlled`

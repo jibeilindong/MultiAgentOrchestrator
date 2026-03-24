@@ -183,6 +183,86 @@ final class OpenClawRuntimeControlPlaneDisplayTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testWarningOnlySuccessfulPublishDoesNotKeepRunControlledBlocked() {
+        let appState = sharedOpenClawRuntimeControlPlaneTestAppState
+        let manager = appState.openClawManager
+
+        let originalConfig = manager.config
+        let originalConnectionState = manager.connectionState
+        let originalProjectAttachment = manager.projectAttachment
+        let originalSessionLifecycle = manager.sessionLifecycle
+        let originalProject = appState.currentProject
+
+        defer {
+            manager.config = originalConfig
+            manager.connectionState = originalConnectionState
+            manager.projectAttachment = originalProjectAttachment
+            manager.sessionLifecycle = originalSessionLifecycle
+            appState.currentProject = originalProject
+        }
+
+        manager.config = .default
+        manager.connectionState = OpenClawConnectionStateSnapshot(
+            phase: .ready,
+            deploymentKind: .local,
+            capabilities: OpenClawConnectionCapabilitiesSnapshot(
+                gatewayReachable: true,
+                gatewayAuthenticated: true,
+                gatewayChatAvailable: true,
+                projectAttachmentSupported: true
+            )
+        )
+
+        var project = MAProject(name: "Control Plane Warning Only")
+        project.runtimeState.workflowConfigurationRevision = 8
+        project.runtimeState.appliedToMirrorConfigurationRevision = 8
+        project.runtimeState.syncedToRuntimeConfigurationRevision = 8
+        project.runtimeState.latestRuntimeSyncReceipt = OpenClawRuntimeSyncReceipt(
+            projectID: project.id,
+            requestedMirrorRevision: 8,
+            appliedRuntimeRevision: 8,
+            status: .partial,
+            steps: [
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .stageProjectMirror,
+                    status: .succeeded,
+                    message: "已更新 2 个 agent 的项目镜像。"
+                ),
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .writeRuntimeSession,
+                    status: .succeeded,
+                    message: "已成功写回当前运行时会话。"
+                ),
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .syncCommunicationAllowList,
+                    status: .succeeded,
+                    message: "allow list 已同步。"
+                )
+            ],
+            warnings: [
+                "以下 agent 未绑定到当前 workflow 节点，已跳过自动注册：Coordinator-任务领域-1"
+            ]
+        )
+        appState.currentProject = project
+
+        manager.projectAttachment = OpenClawProjectAttachmentSnapshot(
+            state: .attached,
+            projectID: project.id,
+            attachedAt: Date()
+        )
+        manager.sessionLifecycle = OpenClawSessionLifecycleSnapshot(
+            stage: .pendingSync,
+            hasPendingMirrorChanges: false
+        )
+
+        XCTAssertNil(appState.openClawRunControlledBlockingMessage)
+        XCTAssertEqual(
+            appState.openClawRuntimeControlPlane.first(where: { $0.gate == .publish })?.status,
+            .ready
+        )
+    }
+
     private func makeBlockedSyncReceipt() -> OpenClawRuntimeSyncReceipt {
         OpenClawRuntimeSyncReceipt(
             projectID: UUID(),

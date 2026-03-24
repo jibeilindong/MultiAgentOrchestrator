@@ -819,6 +819,7 @@ class AppState: ObservableObject {
     @Published private(set) var canRedoWorkflowChange: Bool = false
     @Published private(set) var isApplyingWorkflowConfiguration: Bool = false
     @Published private(set) var isSyncingOpenClawSession: Bool = false
+    private var managedRuntimePublishRecoveryAttemptedReceiptIDs = Set<UUID>()
     
     // 自动保存定时器
     private var autoSaveTimer: Timer?
@@ -1085,8 +1086,11 @@ class AppState: ObservableObject {
         let runtimePublished =
             project.runtimeState.appliedToMirrorConfigurationRevision > 0
             && project.runtimeState.syncedToRuntimeConfigurationRevision >= project.runtimeState.appliedToMirrorConfigurationRevision
-            && openClawManager.sessionLifecycle.stage == .synced
-            && !openClawManager.sessionLifecycle.hasPendingMirrorChanges
+            && (
+                (openClawManager.sessionLifecycle.stage == .synced
+                    && !openClawManager.sessionLifecycle.hasPendingMirrorChanges)
+                    || project.runtimeState.latestRuntimeSyncReceipt?.isWarningOnlySuccessfulPublish == true
+            )
 
         guard !runtimePublished else {
             return nil
@@ -1095,6 +1099,77 @@ class AppState: ObservableObject {
         return OpenClawService.persistentPublishBlockingMessage(
             latestSyncReceipt: project.runtimeState.latestRuntimeSyncReceipt
         )
+    }
+
+    private func shouldAutoRepairManagedRuntimePublish(for project: MAProject) -> Bool {
+        guard openClawManager.config.usesManagedLocalRuntime else { return false }
+        guard openClawManager.connectionState.canAttachProject else { return false }
+        guard !isApplyingWorkflowConfiguration, !isSyncingOpenClawSession else { return false }
+        guard project.runtimeState.appliedToMirrorConfigurationRevision > project.runtimeState.syncedToRuntimeConfigurationRevision else {
+            return false
+        }
+        guard let latestReceipt = project.runtimeState.latestRuntimeSyncReceipt,
+              latestReceipt.indicatesReadOnlyDeploymentFailure else {
+            return false
+        }
+        return !managedRuntimePublishRecoveryAttemptedReceiptIDs.contains(latestReceipt.id)
+    }
+
+    private func resolvedManagedRuntimePublishRecoveryMessage(_ message: String?) -> String {
+        if let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmed.isEmpty {
+            return trimmed
+        }
+
+        if let trimmed = openClawManager.connectionState.health.lastMessage?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmed.isEmpty {
+            return trimmed
+        }
+
+        return "OpenClaw 已连接。"
+    }
+
+    private func autoRepairManagedRuntimePublishIfNeeded(
+        afterConnectionMessage message: String? = nil,
+        completion: ((Bool, String) -> Void)? = nil
+    ) -> Bool {
+        guard let project = snapshotCurrentProject(),
+              let latestReceipt = project.runtimeState.latestRuntimeSyncReceipt,
+              shouldAutoRepairManagedRuntimePublish(for: project) else {
+            return false
+        }
+
+        managedRuntimePublishRecoveryAttemptedReceiptIDs.insert(latestReceipt.id)
+        openClawService.addLog(
+            .info,
+            "[publish_recovery] 检测到旧运行时只读路径导致的 Publish 失败，正在自动重试“同步当前会话”。"
+        )
+
+        let recoveryMessage = resolvedManagedRuntimePublishRecoveryMessage(message)
+        syncOpenClawActiveSession { [weak self] success, syncMessage in
+            guard let self else { return }
+
+            let decoratedMessage = self.decorateOpenClawConnectionMessage(recoveryMessage)
+            let combinedMessage: String
+            if success {
+                self.openClawService.addLog(
+                    .info,
+                    "[publish_recovery] 已自动重新完成“同步当前会话”，旧运行时路径遗留的 Publish 阻塞已清除。"
+                )
+                combinedMessage = "\(decoratedMessage) 已自动修复旧运行时路径遗留的 Publish 失败，并重新完成“同步当前会话”。"
+            } else {
+                self.openClawService.addLog(
+                    .warning,
+                    "[publish_recovery] 已自动尝试“同步当前会话”，但本次同步未完成：\(syncMessage)"
+                )
+                combinedMessage = "\(decoratedMessage) 检测到旧运行时路径遗留的 Publish 失败，已自动尝试修复，但本次同步未完成：\(syncMessage)"
+            }
+
+            completion?(true, combinedMessage)
+        }
+
+        return true
     }
 
     var isCurrentProjectAttachedToOpenClaw: Bool {
@@ -1619,6 +1694,10 @@ class AppState: ObservableObject {
             confirmedProject.updatedAt = project.updatedAt
             appliedProjectSnapshot = confirmedProject
         }
+
+        if openClawManager.isConnected {
+            _ = autoRepairManagedRuntimePublishIfNeeded()
+        }
     }
 
     private func refreshOpsAnalytics() {
@@ -1634,6 +1713,7 @@ class AppState: ObservableObject {
 
     private func handleOpenClawConnectionChange(_ isConnected: Bool) {
         if !isConnected {
+            managedRuntimePublishRecoveryAttemptedReceiptIDs.removeAll()
             clearTransientRuntimeState()
         }
         syncCurrentProjectFromManagers()

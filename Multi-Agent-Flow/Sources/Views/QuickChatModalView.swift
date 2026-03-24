@@ -6,27 +6,84 @@ struct QuickChatModalView: View {
     @EnvironmentObject private var appState: AppState
     @ObservedObject var store: QuickChatStore
 
-    @State private var draft: String = ""
     @State private var composerHeight: CGFloat = 92
     @State private var isDropTargeted = false
     @State private var lightboxItem: QuickChatImageLightboxItem?
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        HStack(spacing: 0) {
+            sessionSidebar
             Divider()
-            messagePane
-            Divider()
-            composer
+            VStack(spacing: 0) {
+                header
+                Divider()
+                messagePane
+                Divider()
+                composer
+            }
         }
-        .frame(minWidth: 860, idealWidth: 960, minHeight: 620, idealHeight: 760)
+        .frame(minWidth: 980, idealWidth: 1160, minHeight: 680, idealHeight: 820)
         .background(Color(.windowBackgroundColor))
+        .padding(.top, 14)
         .sheet(item: $lightboxItem) { item in
             QuickChatImageLightboxView(item: item)
         }
         .onAppear {
             store.refreshContext(using: appState)
         }
+        .onChange(of: store.selectedSessionID) { _, _ in
+            composerHeight = 92
+        }
+    }
+
+    private var sessionSidebar: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("会话")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+
+                Text(sidebarSubtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            Button {
+                composerHeight = 92
+                store.startNewSession()
+            } label: {
+                Label("新建会话", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isSending || store.context == nil)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if store.availableSessions.isEmpty {
+                        QuickChatSessionEmptyCard()
+                    } else {
+                        ForEach(store.availableSessions) { session in
+                            QuickChatSessionRow(
+                                session: session,
+                                isSelected: session.id == store.selectedSessionID,
+                                action: {
+                                    store.selectSession(session.id)
+                                }
+                            )
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .frame(width: 280, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
     private var header: some View {
@@ -50,7 +107,6 @@ struct QuickChatModalView: View {
 
                 HStack(spacing: 8) {
                     Button("新会话") {
-                        draft = ""
                         composerHeight = 92
                         store.startNewSession()
                     }
@@ -95,7 +151,8 @@ struct QuickChatModalView: View {
                 }
             }
         }
-        .padding(20)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
     }
 
     private var gatewayStatusPill: some View {
@@ -150,6 +207,7 @@ struct QuickChatModalView: View {
                 )
         }
         .menuStyle(.borderlessButton)
+        .disabled(store.isSending)
     }
 
     private var messagePane: some View {
@@ -170,7 +228,7 @@ struct QuickChatModalView: View {
                         }
                     }
                 }
-                .padding(20)
+                .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .background(Color(nsColor: .textBackgroundColor).opacity(0.55))
@@ -247,49 +305,48 @@ struct QuickChatModalView: View {
                     .foregroundColor(store.hasPendingAttachments ? .orange : .secondary)
             }
 
-            HStack(alignment: .bottom, spacing: 12) {
-                ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
 
-                    if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.readyAttachmentCount == 0 {
-                        Text("输入想快速聊的问题，或直接上传文件后发送。")
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                    }
-
-                    QuickChatGrowingTextEditor(
-                        text: $draft,
-                        dynamicHeight: $composerHeight,
-                        onSubmit: sendCurrentDraft
-                    )
-                    .frame(height: composerHeight)
-                    .padding(.horizontal, 14)
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(isDropTargeted ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDropTargeted ? 1.5 : 1)
-                )
-                .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleDrop(providers:))
-
-                VStack(spacing: 10) {
-                    Button {
-                        sendCurrentDraft()
-                    } label: {
-                        Label(store.isSending ? "发送中" : "发送", systemImage: "paperplane.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canSubmit)
-
-                    Text(sendStatusText)
-                        .font(.caption)
+                if store.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.readyAttachmentCount == 0 {
+                    Text("输入想快速聊的问题，或直接上传文件后发送。")
                         .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
                 }
-                .frame(width: 136)
+
+                QuickChatGrowingTextEditor(
+                    text: draftBinding,
+                    dynamicHeight: $composerHeight,
+                    onSubmit: sendCurrentDraft
+                )
+                .frame(height: composerHeight)
+                .padding(.horizontal, 14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isDropTargeted ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDropTargeted ? 1.5 : 1)
+            )
+            .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleDrop(providers:))
+
+            HStack {
+                Text(sendStatusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Spacer(minLength: 12)
+
+                Button {
+                    sendCurrentDraft()
+                } label: {
+                    Image(systemName: store.isSending ? "hourglass" : "paperplane.fill")
+                        .font(.headline)
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.borderedProminent)
+                .clipShape(Circle())
+                .disabled(!canSubmit)
             }
 
             HStack {
@@ -304,7 +361,7 @@ struct QuickChatModalView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .padding(20)
+        .padding(24)
         .onPasteCommand(of: [.fileURL, .png, .tiff]) { _ in
             store.importFromPasteboard()
         }
@@ -316,8 +373,25 @@ struct QuickChatModalView: View {
             ?? "选择 Agent"
     }
 
+    private var sidebarSubtitle: String {
+        if let currentSessionTitle = store.availableSessions.first(where: { $0.id == store.selectedSessionID })?.title {
+            return "当前：\(currentSessionTitle)"
+        }
+        if let agentName = store.context?.entryAgentName {
+            return "为 \(agentName) 保留独立会话历史"
+        }
+        return "当前没有可恢复的快聊上下文"
+    }
+
+    private var draftBinding: Binding<String> {
+        Binding(
+            get: { store.draftText },
+            set: { store.updateDraft($0) }
+        )
+    }
+
     private var canSubmit: Bool {
-        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !store.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return store.canSend && !store.hasFailedAttachments && (hasText || store.readyAttachmentCount > 0)
     }
 
@@ -359,8 +433,8 @@ struct QuickChatModalView: View {
 
     private func sendCurrentDraft() {
         guard canSubmit else { return }
-        let text = draft
-        draft = ""
+        let text = store.draftText
+        store.updateDraft("")
         composerHeight = 92
         store.send(text, using: appState)
     }
@@ -454,6 +528,70 @@ private struct QuickChatImageLightboxView: View {
         .padding(20)
         .frame(minWidth: 720, minHeight: 520)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct QuickChatSessionRow: View {
+    let session: QuickChatStore.SessionSummary
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(session.title)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text("\(session.messageCount)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                Text(session.preview)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color(nsColor: .windowBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct QuickChatSessionEmptyCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("还没有历史会话")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Text("发送第一条消息后，这里会为当前 Agent 保留会话历史。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 }
 

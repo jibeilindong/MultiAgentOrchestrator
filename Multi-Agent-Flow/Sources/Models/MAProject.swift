@@ -432,6 +432,46 @@ struct OpenClawRuntimeSyncReceipt: Codable, Identifiable, Hashable {
             return trimmed.isEmpty ? nil : trimmed
         }
     }
+
+    var trimmedErrorMessage: String? {
+        guard let errorMessage else { return nil }
+        let trimmed = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var hasSucceededRuntimeWrite: Bool {
+        guard let runtimeWriteStep = steps.first(where: { $0.step == .writeRuntimeSession }) else {
+            return false
+        }
+        return runtimeWriteStep.status == .succeeded
+    }
+
+    var completesRequestedRuntimeRevision: Bool {
+        appliedRuntimeRevision >= requestedMirrorRevision && hasSucceededRuntimeWrite
+    }
+
+    var isWarningOnlySuccessfulPublish: Bool {
+        completesRequestedRuntimeRevision
+            && steps.allSatisfy { $0.status == .succeeded }
+            && trimmedErrorMessage == nil
+            && !normalizedWarnings.isEmpty
+    }
+
+    var indicatesReadOnlyDeploymentFailure: Bool {
+        let diagnosticTexts = [
+            trimmedErrorMessage,
+            blockedReasonMessage,
+            primaryIssueMessage
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        + normalizedWarnings
+
+        return diagnosticTexts.contains { diagnostic in
+            let normalized = diagnostic.lowercased()
+            return normalized.contains("read only")
+                || normalized.contains("volume is read only")
+        }
+    }
 }
 
 struct ProjectWorkspaceRecord: Codable, Identifiable, Hashable {

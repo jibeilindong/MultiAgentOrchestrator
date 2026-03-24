@@ -4,18 +4,34 @@
     "Localizable": [
       {
         "comment": "",
+        "key": "导入设计包",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 179
+        }
+      },
+      {
+        "comment": "",
+        "key": "导出当前设计包",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 180
+        }
+      },
+      {
+        "comment": "",
         "key": "导入工作流设计包",
         "location": {
-          "startingColumn": 31,
-          "startingLine": 95
+          "startingColumn": 23,
+          "startingLine": 235
         }
       },
       {
         "comment": "",
         "key": "导出当前工作流设计包",
         "location": {
-          "startingColumn": 31,
-          "startingLine": 100
+          "startingColumn": 23,
+          "startingLine": 240
         }
       }
     ]

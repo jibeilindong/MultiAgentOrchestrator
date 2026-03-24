@@ -67,4 +67,54 @@ final class OpenClawServiceAdmissionTests: XCTestCase {
             "当前 run.controlled 需要先完成 persistent publish：请先执行“同步当前会话”，把最新项目镜像写入运行时会话。"
         )
     }
+
+    func testRuntimeSyncReceiptDetectsReadOnlyDeploymentFailures() {
+        let receipt = OpenClawRuntimeSyncReceipt(
+            projectID: UUID(),
+            requestedMirrorRevision: 5,
+            appliedRuntimeRevision: 0,
+            status: .failed,
+            steps: [
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .writeRuntimeSession,
+                    status: .failed,
+                    message: "同步项目镜像到 OpenClaw 会话失败: You can’t save the file “dist” because the volume is read only."
+                )
+            ],
+            errorMessage: "同步项目镜像到 OpenClaw 会话失败: You can’t save the file “dist” because the volume is read only."
+        )
+
+        XCTAssertTrue(receipt.indicatesReadOnlyDeploymentFailure)
+    }
+
+    func testRuntimeSyncReceiptTreatsWarningOnlySuccessfulPublishAsNonBlocking() {
+        let receipt = OpenClawRuntimeSyncReceipt(
+            projectID: UUID(),
+            requestedMirrorRevision: 8,
+            appliedRuntimeRevision: 8,
+            status: .partial,
+            steps: [
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .stageProjectMirror,
+                    status: .succeeded,
+                    message: "已更新 2 个 agent 的项目镜像。"
+                ),
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .writeRuntimeSession,
+                    status: .succeeded,
+                    message: "已成功写回当前运行时会话。"
+                ),
+                OpenClawRuntimeSyncStepReceipt(
+                    step: .syncCommunicationAllowList,
+                    status: .succeeded,
+                    message: "allow list 已同步。"
+                )
+            ],
+            warnings: [
+                "以下 agent 未绑定到当前 workflow 节点，已跳过自动注册：Coordinator-任务领域-1"
+            ]
+        )
+
+        XCTAssertTrue(receipt.isWarningOnlySuccessfulPublish)
+    }
 }

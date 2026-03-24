@@ -46,6 +46,16 @@
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AgentTemplates.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AgentTemplates~partial.swiftmodule"
   },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/AssistModels.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistModels~partial.swiftmodule"
+  },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Models/MAProject.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/MAProject.swiftconstvalues",
     "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/MAProject.d",
@@ -236,6 +246,26 @@
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppLaunchBenchmarkRunner.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppLaunchBenchmarkRunner~partial.swiftmodule"
   },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AppState+Assist.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+Assist~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AppState+QuickChat.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState+QuickChat~partial.swiftmodule"
+  },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AppState.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState.swiftconstvalues",
     "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState.d",
@@ -245,6 +275,66 @@
     "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState.o",
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AppState~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AssistContextResolver.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistContextResolver~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AssistFileSystem.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistFileSystem~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AssistMutationGateway.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistMutationGateway~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AssistOrchestrator.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistOrchestrator~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AssistProposalBuilder.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistProposalBuilder~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/AssistStore.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/AssistStore~partial.swiftmodule"
   },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/BuiltInTemplateAssetCatalog.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/BuiltInTemplateAssetCatalog.swiftconstvalues",
@@ -316,6 +406,16 @@
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeInstaller.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeInstaller~partial.swiftmodule"
   },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/OpenClawManagedRuntimeSupervisor.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManagedRuntimeSupervisor~partial.swiftmodule"
+  },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/OpenClawManager.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManager.swiftconstvalues",
     "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/OpenClawManager.d",
@@ -376,6 +476,16 @@
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/ProjectFileSystem.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/ProjectFileSystem~partial.swiftmodule"
   },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/QuickChatStore.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatStore~partial.swiftmodule"
+  },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/SettingsManager.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/SettingsManager.swiftconstvalues",
     "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/SettingsManager.d",
@@ -405,6 +515,36 @@
     "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileSystem.o",
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileSystem.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateFileSystem~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/WorkbenchFlowLifecycleCoordinator.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchFlowLifecycleCoordinator~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/WorkbenchRuntimeMutationCoordinator.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchRuntimeMutationCoordinator~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/WorkbenchThreadStateCoordinator.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchThreadStateCoordinator~partial.swiftmodule"
   },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Services/WorkflowPackageService.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowPackageService.swiftconstvalues",
@@ -656,6 +796,36 @@
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/PropertiesPanelView.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/PropertiesPanelView~partial.swiftmodule"
   },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/QuickChatComponents.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatComponents~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/QuickChatModalView.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatModalView~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/QuickChatWindowBridge.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/QuickChatWindowBridge~partial.swiftmodule"
+  },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/SectionView.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/SectionView.swiftconstvalues",
     "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/SectionView.d",
@@ -755,6 +925,16 @@
     "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateWorkspaceView.o",
     "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateWorkspaceView.swiftdeps",
     "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/TemplateWorkspaceView~partial.swiftmodule"
+  },
+  "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/WorkbenchAssistPreviewView.swift" : {
+    "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.swiftconstvalues",
+    "dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.d",
+    "diagnostics" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.dia",
+    "index-unit-output-path" : "/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.o",
+    "llvm-bc" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.bc",
+    "object" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.o",
+    "swift-dependencies" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView.swiftdeps",
+    "swiftmodule" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkbenchAssistPreviewView~partial.swiftmodule"
   },
   "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/Multi-Agent-Flow/Sources/Views/WorkflowCanvasEdgeLayout.swift" : {
     "const-values" : "/Users/chenrongze/Desktop/MultiAgentOrchestrator/MultiAgentOrchestrator/DerivedData-codex/Build/Intermediates.noindex/Multi-Agent-Flow.build/Debug/Multi-Agent-Flow.build/Objects-normal/arm64/WorkflowCanvasEdgeLayout.swiftconstvalues",

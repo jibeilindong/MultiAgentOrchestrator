@@ -106,6 +106,8 @@ struct WorkbenchConversationView: View {
     @State private var manualAccountDrafts: [UUID: String] = [:]
     @State private var activeRuntimePreparationAction: WorkbenchRuntimePreparationAction?
     @State private var submitMode: WorkbenchInteractionMode = .chat
+    @State private var assistPreviewState: AssistProposalPreviewState?
+    @State private var isGeneratingAssistProposal = false
 
     private let compactRuntimeConfigBodyHeight: CGFloat = 146
     private let minimumExpandedRuntimeConfigHeight: CGFloat = 240
@@ -275,6 +277,23 @@ struct WorkbenchConversationView: View {
         case .run:
             return appState.openClawManager.canRunWorkflow
         }
+    }
+
+    private var canGenerateAssistProposal: Bool {
+        project != nil
+            && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isGeneratingAssistProposal
+    }
+
+    private var assistScopeDescriptor: AppState.AssistScopeDescriptor {
+        appState.resolveWorkbenchAssistScope(workflowID: selectedWorkflowID)
+    }
+
+    private var inferredAssistIntent: AssistIntent {
+        appState.inferredAssistIntent(
+            for: prompt,
+            scopeType: assistScopeDescriptor.scopeType
+        )
     }
 
     private var hasActiveWorkflowExecution: Bool {
@@ -580,6 +599,9 @@ struct WorkbenchConversationView: View {
             if newValue != .dashboardOnly {
                 lastCombinedLayout = newValue
             }
+        }
+        .sheet(item: $assistPreviewState) { state in
+            AssistProposalPreviewSheet(result: state.result)
         }
     }
 
@@ -1440,6 +1462,23 @@ struct WorkbenchConversationView: View {
                         }
                     }
 
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            statusBadge(
+                                title: "Assist Scope: \(assistScopeDescriptor.title)",
+                                color: .teal
+                            )
+                            statusBadge(
+                                title: "Intent: \(assistIntentTitle(inferredAssistIntent))",
+                                color: .orange
+                            )
+                        }
+
+                        Text(assistScopeDescriptor.detail)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+
                     TextField(
                         LocalizedString.text("workbench_prompt_placeholder"),
                         text: $prompt,
@@ -1484,6 +1523,20 @@ struct WorkbenchConversationView: View {
                     .buttonStyle(.bordered)
                     .disabled(!canStopActiveRemoteConversation || isStoppingActiveRemoteConversation)
                 }
+
+                Button {
+                    publishAssistProposal()
+                } label: {
+                    if isGeneratingAssistProposal {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(minWidth: 18)
+                    } else {
+                        Label("Assist", systemImage: "sparkles")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canGenerateAssistProposal)
 
                 Button(submitMode.submitButtonTitle) {
                     publishPrompt()
@@ -1669,6 +1722,33 @@ struct WorkbenchConversationView: View {
         prompt = ""
     }
 
+    private func publishAssistProposal() {
+        errorText = nil
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !text.isEmpty else {
+            errorText = "Assist needs a prompt before it can prepare a proposal."
+            return
+        }
+
+        isGeneratingAssistProposal = true
+        defer { isGeneratingAssistProposal = false }
+
+        do {
+            let draft = appState.makeWorkbenchAssistDraft(
+                prompt: text,
+                workflowID: selectedWorkflowID,
+                preferredThreadID: effectiveSelectedThreadID,
+                isPreparingFreshThread: isPreparingFreshThread,
+                submitMode: submitMode
+            )
+            let result = try appState.createAssistProposal(draft)
+            assistPreviewState = AssistProposalPreviewState(result: result)
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
     private func stopActiveRemoteConversation() {
         errorText = nil
         appState.requestStopWorkbenchConversation(activeThreadSummary)
@@ -1724,6 +1804,27 @@ struct WorkbenchConversationView: View {
             .background(color.opacity(0.12))
             .foregroundColor(color)
             .clipShape(Capsule())
+    }
+
+    private func assistIntentTitle(_ intent: AssistIntent) -> String {
+        switch intent {
+        case .rewriteSelection:
+            return "Rewrite"
+        case .completeTemplate:
+            return "Complete Template"
+        case .modifyManagedContent:
+            return "Modify Content"
+        case .reorganizeWorkflow:
+            return "Reorganize Workflow"
+        case .inspectConfiguration:
+            return "Inspect Config"
+        case .inspectPerformance:
+            return "Inspect Performance"
+        case .explainIssue:
+            return "Explain Issue"
+        case .custom:
+            return "Custom"
+        }
     }
 
     private func expandDashboard() {

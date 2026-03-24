@@ -5079,14 +5079,28 @@ class OpenClawManager: ObservableObject {
         host.fallbackLocalOpenClawRootURL()
     }
 
-    private func managedLocalOpenClawRootURL() -> URL? {
-        if let runtimeRootPath = managedRuntimeStatus.runtimeRootPath?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !runtimeRootPath.isEmpty {
-            return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
+    nonisolated static func resolvedManagedRuntimeRootURL(
+        reportedRuntimeRootPath: String?,
+        canonicalRuntimeRootURL: URL?
+    ) -> URL? {
+        if let canonicalRuntimeRootURL {
+            return canonicalRuntimeRootURL
         }
 
-        return OpenClawManagedRuntimeInstaller.shared.managedRuntimeRootURL()
+        guard let runtimeRootPath = reportedRuntimeRootPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !runtimeRootPath.isEmpty else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: runtimeRootPath, isDirectory: true)
+    }
+
+    private func managedLocalOpenClawRootURL() -> URL? {
+        Self.resolvedManagedRuntimeRootURL(
+            reportedRuntimeRootPath: managedRuntimeStatus.runtimeRootPath,
+            canonicalRuntimeRootURL: OpenClawManagedRuntimeInstaller.shared.managedRuntimeRootURL()
+        )
     }
 
     func resolveLocalOpenClawConfigURL(

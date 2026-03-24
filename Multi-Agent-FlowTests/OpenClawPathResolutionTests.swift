@@ -41,6 +41,20 @@ final class OpenClawPathResolutionTests: XCTestCase {
         XCTAssertEqual(candidates, ["/custom/openclaw/bin/openclaw"])
     }
 
+    func testResolvedManagedRuntimeRootURLPrefersCanonicalInstallerRootOverReportedRuntimePath() {
+        let canonicalRootURL = URL(
+            fileURLWithPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime",
+            isDirectory: true
+        )
+
+        let resolved = OpenClawManager.resolvedManagedRuntimeRootURL(
+            reportedRuntimeRootPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw",
+            canonicalRuntimeRootURL: canonicalRootURL
+        )
+
+        XCTAssertEqual(resolved, canonicalRootURL)
+    }
+
     func testResolvedWorkspacePathPrefersProjectManagedWorkspaceAdjacentToPrivateRoot() throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("OpenClawPathResolutionTests-\(UUID().uuidString)", isDirectory: true)

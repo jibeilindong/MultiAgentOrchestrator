@@ -4,18 +4,26 @@
     "Localizable": [
       {
         "comment": "",
-        "key": "",
-        "location": {
-          "startingColumn": 40,
-          "startingLine": 124
-        }
-      },
-      {
-        "comment": "",
         "key": "%lld%%",
         "location": {
           "startingColumn": 26,
-          "startingLine": 255
+          "startingLine": 287
+        }
+      },
+      {
+        "comment": "",
+        "key": "打开独立弹窗快聊，不进入 Workbench 主控制台",
+        "location": {
+          "startingColumn": 15,
+          "startingLine": 550
+        }
+      },
+      {
+        "comment": "",
+        "key": "Quick Chat",
+        "location": {
+          "startingColumn": 19,
+          "startingLine": 539
         }
       },
       {
@@ -23,7 +31,23 @@
         "key": "%lld",
         "location": {
           "startingColumn": 18,
-          "startingLine": 658
+          "startingLine": 814
+        }
+      },
+      {
+        "comment": "",
+        "key": "权限、审批和执行日志",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 1087
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 1127
         }
       },
       {
@@ -31,7 +55,7 @@
         "key": "%lld",
         "location": {
           "startingColumn": 18,
-          "startingLine": 936
+          "startingLine": 1165
         }
       },
       {
@@ -39,7 +63,7 @@
         "key": "%@ → %@",
         "location": {
           "startingColumn": 30,
-          "startingLine": 961
+          "startingLine": 1190
         }
       },
       {
@@ -47,7 +71,7 @@
         "key": "%@ → %@",
         "location": {
           "startingColumn": 34,
-          "startingLine": 994
+          "startingLine": 1220
         }
       },
       {
@@ -55,7 +79,7 @@
         "key": "%@: %lld",
         "location": {
           "startingColumn": 18,
-          "startingLine": 1068
+          "startingLine": 1288
         }
       }
     ]

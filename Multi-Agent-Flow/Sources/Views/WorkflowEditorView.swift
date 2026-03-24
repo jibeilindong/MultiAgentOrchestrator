@@ -105,9 +105,6 @@ struct WorkflowEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             EditorToolbar(
-                currentWorkflowName: appState.currentWorkflowName,
-                workflows: appState.currentProject?.workflows ?? [],
-                activeWorkflowID: appState.activeWorkflowID,
                 viewMode: $sessionState.viewMode,
                 selectedNodeID: $selectedNodeID,
                 selectedNodeIDs: $selectedNodeIDs,
@@ -141,9 +138,6 @@ struct WorkflowEditorView: View {
                 onPreviewBatchConnections: previewBatchConnections,
                 onCommitBatchConnections: commitBatchConnections,
                 onCancelBatchConnections: cancelBatchConnectionMode,
-                onSelectWorkflow: { workflowID in appState.setActiveWorkflow(workflowID) },
-                onImportWorkflowPackage: { appState.importWorkflowPackage() },
-                onExportWorkflowPackage: { appState.exportCurrentWorkflowPackage() },
                 onApplyWorkflow: { appState.applyPendingWorkflowConfiguration() },
                 onSyncWorkflowSession: { appState.syncOpenClawActiveSession(workflowID: currentWorkflow()?.id) }
             )
@@ -1039,9 +1033,6 @@ private struct BackgroundRetainedPane: ViewModifier {
 // MARK: - 工具栏
 struct EditorToolbar: View {
     @EnvironmentObject var appState: AppState
-    let currentWorkflowName: String
-    let workflows: [Workflow]
-    let activeWorkflowID: UUID?
     @Binding var viewMode: WorkflowEditorView.EditorViewMode
     @Binding var selectedNodeID: UUID?
     @Binding var selectedNodeIDs: Set<UUID>
@@ -1075,13 +1066,13 @@ struct EditorToolbar: View {
     var onPreviewBatchConnections: () -> Void
     var onCommitBatchConnections: () -> Void
     var onCancelBatchConnections: () -> Void
-    var onSelectWorkflow: (UUID) -> Void
-    var onImportWorkflowPackage: () -> Void
-    var onExportWorkflowPackage: () -> Void
     var onApplyWorkflow: () -> Void
     var onSyncWorkflowSession: () -> Void
 
     @State private var quickAddTemplateID: String = AgentTemplateCatalog.defaultTemplateID
+    @State private var isPresentingRuntimeStatusDetails = false
+    @State private var isPresentingAssistComposer = false
+    @State private var assistPreviewState: AssistProposalPreviewState?
 
     private var hasNodeSelection: Bool {
         selectedNodeID != nil || !selectedNodeIDs.isEmpty
@@ -1116,6 +1107,14 @@ struct EditorToolbar: View {
 
     private var hasDeleteTarget: Bool {
         hasDeletableNodeSelection || hasBoundarySelection || selectedEdgeID != nil
+    }
+
+    private var workflowAssistScopeDescriptor: AppState.AssistScopeDescriptor {
+        appState.resolveWorkbenchAssistScope(workflowID: appState.activeWorkflowID)
+    }
+
+    private var workflowAssistTooltip: String {
+        "Assist 只会基于\(workflowAssistScopeDescriptor.detail)生成建议与预览，不会直接改 live runtime。"
     }
 
     private var applyWorkflowButtonTitle: String {
@@ -1156,41 +1155,42 @@ struct EditorToolbar: View {
         return LocalizedString.text("sync_current_session_tooltip_idle")
     }
 
-    private var shouldShowWorkflowSyncStatus: Bool {
-        appState.isSyncingOpenClawSession || appState.hasPendingOpenClawSessionSync
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbarContent(compactToolbar: false, ultraCompactToolbar: false)
+                .fixedSize(horizontal: true, vertical: false)
+            toolbarContent(compactToolbar: true, ultraCompactToolbar: false)
+                .fixedSize(horizontal: true, vertical: false)
+            ScrollView(.horizontal, showsIndicators: false) {
+                toolbarContent(compactToolbar: true, ultraCompactToolbar: true)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(
+            LinearGradient(
+                colors: [Color.white.opacity(0.98), Color(red: 0.968, green: 0.972, blue: 0.985)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .sheet(isPresented: $isPresentingAssistComposer) {
+            WorkflowEditorAssistComposerSheet(workflowID: appState.activeWorkflowID) { result in
+                assistPreviewState = AssistProposalPreviewState(result: result)
+            }
+            .environmentObject(appState)
+        }
+        .sheet(item: $assistPreviewState) { state in
+            AssistProposalPreviewSheet(result: state.result)
+        }
     }
 
-    var body: some View {
+    private func toolbarContent(compactToolbar: Bool, ultraCompactToolbar: Bool) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            WorkflowToolbarGroup(title: "Workflow") {
-                HStack(spacing: 8) {
-                    Menu {
-                        ForEach(workflows) { workflow in
-                            Button {
-                                onSelectWorkflow(workflow.id)
-                            } label: {
-                                Label(
-                                    workflow.name,
-                                    systemImage: workflow.id == activeWorkflowID ? "checkmark.circle.fill" : "circle"
-                                )
-                            }
-                        }
-                    } label: {
-                        toolbarMenuLabel(title: currentWorkflowName, systemName: "point.3.connected.trianglepath.dotted")
-                    }
-                    .menuStyle(.borderlessButton)
-
-                    Menu {
-                        Button("导入设计包", action: onImportWorkflowPackage)
-                        Button("导出当前设计包", action: onExportWorkflowPackage)
-                            .disabled(workflows.isEmpty)
-                    } label: {
-                        toolbarMenuLabel(title: "设计包", systemName: "shippingbox")
-                    }
-                    .menuStyle(.borderlessButton)
-                }
-            }
-
             WorkflowToolbarGroup(title: LocalizedString.text("workflow_toolbar_view")) {
                 HStack(spacing: 8) {
                     ForEach(WorkflowEditorView.EditorViewMode.allCases, id: \.self) { mode in
@@ -1219,68 +1219,22 @@ struct EditorToolbar: View {
                             },
                             variant: .toolbar
                         )
+                        layoutToolsMenu(compactToolbar: compactToolbar, ultraCompactToolbar: ultraCompactToolbar)
                         toolbarIconButton(
-                            systemName: "align.horizontal.left",
-                            action: { onAlignSelected(.left) },
-                            tooltip: LocalizedString.text("align_left")
+                            systemName: "sparkles",
+                            title: compactToolbar ? nil : "Assist",
+                            action: { isPresentingAssistComposer = true },
+                            tooltip: workflowAssistTooltip,
+                            prominent: workflowAssistScopeDescriptor.scopeType == .node
                         )
-                        .disabled(!hasNodeSelection)
-
-                        toolbarIconButton(
-                            systemName: "align.horizontal.center",
-                            action: { onAlignSelected(.center) },
-                            tooltip: LocalizedString.text("align_center")
-                        )
-                        .disabled(!hasNodeSelection)
-
-                        toolbarIconButton(
-                            systemName: "align.horizontal.right",
-                            action: { onAlignSelected(.right) },
-                            tooltip: LocalizedString.text("align_right")
-                        )
-                        .disabled(!hasNodeSelection)
-
-                        toolbarIconButton(
-                            systemName: "align.vertical.top",
-                            action: { onAlignSelected(.top) },
-                            tooltip: LocalizedString.text("align_top")
-                        )
-                        .disabled(!hasNodeSelection)
-
-                        toolbarIconButton(
-                            systemName: "align.vertical.center",
-                            action: { onAlignSelected(.middle) },
-                            tooltip: LocalizedString.text("align_middle")
-                        )
-                        .disabled(!hasNodeSelection)
-
-                        toolbarIconButton(
-                            systemName: "align.vertical.bottom",
-                            action: { onAlignSelected(.bottom) },
-                            tooltip: LocalizedString.text("align_bottom")
-                        )
-                        .disabled(!hasNodeSelection)
-
-                        toolbarIconButton(
-                            systemName: "arrow.left.and.right",
-                            action: { onDistributeSelected(.horizontal) },
-                            tooltip: LocalizedString.text("distribute_horizontally")
-                        )
-                        .disabled(activeNodeCount < 3)
-
-                        toolbarIconButton(
-                            systemName: "arrow.up.and.down",
-                            action: { onDistributeSelected(.vertical) },
-                            tooltip: LocalizedString.text("distribute_vertically")
-                        )
-                        .disabled(activeNodeCount < 3)
+                        .disabled(appState.currentProject == nil)
                     }
 
                     toolbarSectionDivider()
 
                     toolbarIconToggleButton(
                         systemName: isConnectMode ? "link.circle.fill" : "link.circle",
-                        title: LocalizedString.text("connect_toolbar"),
+                        title: ultraCompactToolbar ? nil : LocalizedString.text("connect_toolbar"),
                         action: toggleConnectMode,
                         isActive: isConnectMode,
                         tooltip: isConnectMode ? LocalizedString.text("connect_cancel_tooltip") : LocalizedString.text("connect_prepare_tooltip"),
@@ -1288,25 +1242,25 @@ struct EditorToolbar: View {
                     )
 
                     if isConnectMode {
-                        connectionTypeButton(type: .unidirectional)
-                        connectionTypeButton(type: .bidirectional)
+                        connectionTypeButton(type: .unidirectional, compact: ultraCompactToolbar)
+                        connectionTypeButton(type: .bidirectional, compact: ultraCompactToolbar)
                     }
 
                     toolbarIconToggleButton(
                         systemName: isBatchConnectMode ? "square.stack.3d.up.fill" : "square.stack.3d.up",
-                        title: batchLocalizedString("batch_connect"),
+                        title: compactToolbar ? nil : batchLocalizedString("batch_connect"),
                         action: onToggleBatchConnectMode,
                         isActive: isBatchConnectMode,
                         tooltip: batchLocalizedString("batch_connect_help")
                     )
 
                     if isBatchConnectMode {
-                        connectionTypeButton(type: .unidirectional)
-                        connectionTypeButton(type: .bidirectional)
+                        connectionTypeButton(type: .unidirectional, compact: ultraCompactToolbar)
+                        connectionTypeButton(type: .bidirectional, compact: ultraCompactToolbar)
 
                         toolbarIconButton(
                             systemName: "arrow.up.circle",
-                            title: batchSourceCount > 0 ? batchLocalizedFormat("batch_sources_short", batchSourceCount) : batchLocalizedString("set_sources"),
+                            title: compactToolbar ? nil : (batchSourceCount > 0 ? batchLocalizedFormat("batch_sources_short", batchSourceCount) : batchLocalizedString("set_sources")),
                             action: onAssignBatchSources,
                             tooltip: batchLocalizedString("set_sources_help"),
                             prominent: batchSourceCount > 0
@@ -1314,7 +1268,7 @@ struct EditorToolbar: View {
 
                         toolbarIconButton(
                             systemName: "arrow.down.circle",
-                            title: batchTargetCount > 0 ? batchLocalizedFormat("batch_targets_short", batchTargetCount) : batchLocalizedString("set_targets"),
+                            title: compactToolbar ? nil : (batchTargetCount > 0 ? batchLocalizedFormat("batch_targets_short", batchTargetCount) : batchLocalizedString("set_targets")),
                             action: onAssignBatchTargets,
                             tooltip: batchLocalizedString("set_targets_help"),
                             prominent: batchTargetCount > 0
@@ -1322,7 +1276,7 @@ struct EditorToolbar: View {
 
                         toolbarIconButton(
                             systemName: "sparkles.rectangle.stack",
-                            title: batchPreviewCount > 0 ? batchLocalizedFormat("preview_count_short", batchPreviewCount) : batchLocalizedString("preview"),
+                            title: compactToolbar ? nil : (batchPreviewCount > 0 ? batchLocalizedFormat("preview_count_short", batchPreviewCount) : batchLocalizedString("preview")),
                             action: onPreviewBatchConnections,
                             tooltip: batchLocalizedString("preview_help"),
                             prominent: batchSourceCount > 0 && batchTargetCount > 0
@@ -1330,7 +1284,7 @@ struct EditorToolbar: View {
 
                         toolbarIconButton(
                             systemName: "checkmark.circle",
-                            title: batchPanelActionText("create_now"),
+                            title: compactToolbar ? nil : batchPanelActionText("create_now"),
                             action: onCommitBatchConnections,
                             tooltip: batchLocalizedString("create_now_help"),
                             prominent: batchCanCommit
@@ -1339,18 +1293,11 @@ struct EditorToolbar: View {
 
                         toolbarIconButton(
                             systemName: "xmark.circle",
-                            title: batchLocalizedString("cancel"),
+                            title: compactToolbar ? nil : batchLocalizedString("cancel"),
                             action: onCancelBatchConnections,
                             tooltip: batchLocalizedString("cancel_help")
                         )
                     }
-
-                    toolbarIconButton(
-                        systemName: "arrow.triangle.branch",
-                        title: LocalizedString.text("organize_connections"),
-                        action: onOrganizeConnections,
-                        tooltip: LocalizedString.text("organize_connections")
-                    )
 
                     toolbarSectionDivider()
 
@@ -1360,7 +1307,11 @@ struct EditorToolbar: View {
                         Button(LocalizedString.text("remove_boundary")) { onDeleteBoundary() }
                             .disabled(selectedBoundaryIDs.isEmpty && !hasNodeSelection)
                     } label: {
-                        toolbarMenuLabel(title: LocalizedString.text("boundary"), systemName: "square.dashed")
+                        toolbarMenuLabel(
+                            title: ultraCompactToolbar ? nil : LocalizedString.text("boundary"),
+                            systemName: "square.dashed",
+                            compact: ultraCompactToolbar
+                        )
                     }
                     .menuStyle(.borderlessButton)
 
@@ -1368,7 +1319,7 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: "arrow.uturn.backward",
-                        title: LocalizedString.undo,
+                        title: compactToolbar ? nil : LocalizedString.undo,
                         action: { appState.undoWorkflowChange() },
                         tooltip: LocalizedString.undo
                     )
@@ -1376,7 +1327,7 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: "arrow.uturn.forward",
-                        title: LocalizedString.redo,
+                        title: compactToolbar ? nil : LocalizedString.redo,
                         action: { appState.redoWorkflowChange() },
                         tooltip: LocalizedString.redo
                     )
@@ -1384,7 +1335,7 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: "trash",
-                        title: LocalizedString.delete,
+                        title: compactToolbar ? nil : LocalizedString.delete,
                         action: handleDeleteAction,
                         tooltip: LocalizedString.delete
                     )
@@ -1392,14 +1343,14 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: "list.bullet.clipboard",
-                        title: LocalizedString.text("tasks_toolbar"),
+                        title: compactToolbar ? nil : LocalizedString.text("tasks_toolbar"),
                         action: onGenerateTasks,
                         tooltip: LocalizedString.text("generate_tasks_tooltip")
                     )
 
                     toolbarIconButton(
                         systemName: appState.hasPendingWorkflowConfiguration ? "checkmark.seal.fill" : "checkmark.seal",
-                        title: applyWorkflowButtonTitle,
+                        title: compactToolbar ? nil : applyWorkflowButtonTitle,
                         action: onApplyWorkflow,
                         tooltip: applyWorkflowButtonTooltip,
                         prominent: appState.hasPendingWorkflowConfiguration && !appState.isApplyingWorkflowConfiguration
@@ -1408,7 +1359,7 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: appState.hasPendingOpenClawSessionSync ? "arrow.clockwise.circle.fill" : "arrow.clockwise.circle",
-                        title: syncWorkflowButtonTitle,
+                        title: compactToolbar ? nil : syncWorkflowButtonTitle,
                         action: onSyncWorkflowSession,
                         tooltip: syncWorkflowButtonTooltip,
                         prominent: appState.hasPendingOpenClawSessionSync && !appState.isSyncingOpenClawSession
@@ -1417,7 +1368,7 @@ struct EditorToolbar: View {
 
                     toolbarIconButton(
                         systemName: "square.and.arrow.down.on.square",
-                        title: LocalizedString.text("save_draft"),
+                        title: compactToolbar ? nil : LocalizedString.text("save_draft"),
                         action: { appState.saveDraft() },
                         tooltip: LocalizedString.text("save_draft_tooltip")
                     )
@@ -1444,7 +1395,11 @@ struct EditorToolbar: View {
                                     styleMenuResetLabel(title: LocalizedString.text("reset_node_color"))
                                 }
                             } label: {
-                                toolbarMenuLabel(title: LocalizedString.text("node_color"), systemName: "paintpalette")
+                                toolbarMenuLabel(
+                                    title: ultraCompactToolbar ? nil : LocalizedString.text("node_color"),
+                                    systemName: "paintpalette",
+                                    compact: ultraCompactToolbar
+                                )
                             }
                             .menuStyle(.borderlessButton)
                         }
@@ -1465,7 +1420,11 @@ struct EditorToolbar: View {
                                     styleMenuResetLabel(title: LocalizedString.text("reset_edge_color"))
                                 }
                             } label: {
-                                toolbarMenuLabel(title: LocalizedString.text("edge_color"), systemName: "scribble.variable")
+                                toolbarMenuLabel(
+                                    title: ultraCompactToolbar ? nil : LocalizedString.text("edge_color"),
+                                    systemName: "scribble.variable",
+                                    compact: ultraCompactToolbar
+                                )
                             }
                             .menuStyle(.borderlessButton)
                         }
@@ -1480,25 +1439,13 @@ struct EditorToolbar: View {
                 || showsWorkflowRuntimeStatus {
                 VStack(alignment: .trailing, spacing: 8) {
                     if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
-                        HStack(spacing: 8) {
-                            toolbarSaveStatusView
-                        }
+                        toolbarSaveStatusView
                     }
 
-                    workflowRuntimeStatusStack
+                    workflowRuntimeStatusSummaryRow
                 }
-                .padding(.top, 8)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(
-            LinearGradient(
-                colors: [Color.white.opacity(0.98), Color(red: 0.968, green: 0.972, blue: 0.985)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
     }
 
     private func toolbarModeButton(_ mode: WorkflowEditorView.EditorViewMode) -> some View {
@@ -1509,12 +1456,11 @@ struct EditorToolbar: View {
                 Text(mode.displayTitle)
                     .font(.system(size: 12.5, weight: .semibold))
                     .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .truncationMode(.tail)
             }
             .padding(.horizontal, 12)
             .frame(height: 38)
-            .frame(minWidth: 82)
-            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 74)
         }
         .buttonStyle(.plain)
         .foregroundColor(viewMode == mode ? .white : Color.primary.opacity(0.76))
@@ -1529,21 +1475,30 @@ struct EditorToolbar: View {
         .help(mode.displayTitle)
     }
 
-    private func toolbarMenuLabel(title: String, systemName: String) -> some View {
+    private func toolbarMenuLabel(title: String?, systemName: String, compact: Bool = false) -> some View {
         HStack(spacing: 8) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
-            Text(title)
-                .font(.system(size: 12.5, weight: .semibold))
-                .lineLimit(1)
+            if let title, !compact {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Image(systemName: "chevron.down")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.secondary)
         }
         .foregroundColor(Color.primary.opacity(0.82))
         .padding(.horizontal, 12)
-        .frame(height: 38)
-        .fixedSize(horizontal: true, vertical: false)
+        .frame(
+            minWidth: compact ? 40 : 68,
+            idealWidth: nil,
+            maxWidth: nil,
+            minHeight: 38,
+            idealHeight: 38,
+            maxHeight: 38
+        )
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.black.opacity(0.045))
@@ -1552,6 +1507,38 @@ struct EditorToolbar: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    private func layoutToolsMenu(compactToolbar: Bool, ultraCompactToolbar: Bool) -> some View {
+        Menu {
+            Button(LocalizedString.text("align_left")) { onAlignSelected(.left) }
+                .disabled(!hasNodeSelection)
+            Button(LocalizedString.text("align_center")) { onAlignSelected(.center) }
+                .disabled(!hasNodeSelection)
+            Button(LocalizedString.text("align_right")) { onAlignSelected(.right) }
+                .disabled(!hasNodeSelection)
+            Divider()
+            Button(LocalizedString.text("align_top")) { onAlignSelected(.top) }
+                .disabled(!hasNodeSelection)
+            Button(LocalizedString.text("align_middle")) { onAlignSelected(.middle) }
+                .disabled(!hasNodeSelection)
+            Button(LocalizedString.text("align_bottom")) { onAlignSelected(.bottom) }
+                .disabled(!hasNodeSelection)
+            Divider()
+            Button(LocalizedString.text("distribute_horizontally")) { onDistributeSelected(.horizontal) }
+                .disabled(activeNodeCount < 3)
+            Button(LocalizedString.text("distribute_vertically")) { onDistributeSelected(.vertical) }
+                .disabled(activeNodeCount < 3)
+            Divider()
+            Button(LocalizedString.text("organize_connections")) { onOrganizeConnections() }
+        } label: {
+            toolbarMenuLabel(
+                title: ultraCompactToolbar ? nil : LocalizedString.text("layout_menu"),
+                systemName: "slider.horizontal.3",
+                compact: ultraCompactToolbar
+            )
+        }
+        .menuStyle(.borderlessButton)
     }
 
     private func toolbarSectionDivider() -> some View {
@@ -1694,7 +1681,7 @@ struct EditorToolbar: View {
         .help(tooltip)
     }
 
-    private func connectionTypeButton(type: WorkflowEditorView.ConnectionType) -> some View {
+    private func connectionTypeButton(type: WorkflowEditorView.ConnectionType, compact: Bool = false) -> some View {
         let icon = type == .unidirectional ? "arrow.right" : "arrow.left.arrow.right"
         let isActive = connectionType == type
         return Button(action: {
@@ -1708,8 +1695,12 @@ struct EditorToolbar: View {
             HStack(spacing: 8) {
                 Image(systemName: icon)
                     .font(.system(size: 13.5, weight: .semibold))
-                Text(type == .unidirectional ? LocalizedString.text("connection_one_way") : LocalizedString.text("connection_two_way"))
-                    .font(.system(size: 12, weight: .semibold))
+                if !compact {
+                    Text(type == .unidirectional ? LocalizedString.text("connection_one_way") : LocalizedString.text("connection_two_way"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             .foregroundColor(isActive ? .white : Color.primary.opacity(0.76))
             .padding(.horizontal, 12)
@@ -1749,12 +1740,19 @@ struct EditorToolbar: View {
                 Text(title)
                     .font(.system(size: 12.5, weight: .semibold))
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
         }
         .foregroundColor(useAccent ? .white : Color.primary.opacity(0.82))
         .padding(.horizontal, title == nil ? 0 : 14)
-        .frame(width: title == nil ? 40 : nil, height: 38)
-        .fixedSize(horizontal: true, vertical: false)
+        .frame(
+            minWidth: title == nil ? 40 : 56,
+            idealWidth: nil,
+            maxWidth: nil,
+            minHeight: 38,
+            idealHeight: 38,
+            maxHeight: 38
+        )
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(useAccent ? Color.accentColor : Color.black.opacity(0.045))
@@ -1829,30 +1827,138 @@ struct EditorToolbar: View {
     }
 
     @ViewBuilder
-    private var workflowRuntimeStatusStack: some View {
+    private var workflowRuntimeStatusSummaryRow: some View {
         if showsWorkflowRuntimeStatus {
             VStack(alignment: .trailing, spacing: 8) {
-                HStack(spacing: 8) {
-                    if let revisionSummary = appState.openClawRevisionSummary {
-                        workflowRevisionStatusView(revisionSummary)
-                    }
+                if let revisionSummary = appState.openClawRevisionSummary {
+                    workflowRevisionStatusView(revisionSummary)
+                        .frame(maxWidth: 240, alignment: .trailing)
+                }
 
-                    if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
-                        workflowRuntimeSyncReceiptStatusView(runtimeSyncSummary)
-                    }
+                if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
+                    workflowRuntimeSyncReceiptStatusView(runtimeSyncSummary)
+                        .frame(maxWidth: 260, alignment: .trailing)
+                }
+
+                workflowRuntimeStatusDetailsButton
+            }
+        }
+    }
+
+    private var workflowRuntimeStatusDetailsButton: some View {
+        let hasWarnings = appState.currentOpenClawRuntimeControlPlaneEntry.status != .ready
+            || appState.openClawRuntimeControlPlaneSecondarySummary != nil
+            || appState.hasOpenClawLatestRuntimeSyncDiagnostics
+
+        let iconName = hasWarnings ? "exclamationmark.triangle.fill" : "info.circle"
+        let iconColor: Color = hasWarnings ? .orange : .blue
+        let helpText = appState.openClawRuntimeControlPlaneSecondarySummary
+            ?? appState.openClawLatestRuntimeSyncSummary
+            ?? appState.openClawRevisionSummary
+            ?? appState.openClawRuntimeControlPlaneSummary
+
+        return Button(action: {
+            isPresentingRuntimeStatusDetails = true
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: iconName)
+                    .foregroundColor(iconColor)
+                Text(LocalizedString.text("show_details"))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.82))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.black.opacity(0.06), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .popover(isPresented: $isPresentingRuntimeStatusDetails, arrowEdge: .bottom) {
+            workflowRuntimeStatusDetailsPopover
+        }
+    }
+
+    private var workflowRuntimeStatusDetailsPopover: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(LocalizedString.text("openclaw_runtime_sync_status_label"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+
+                if appState.pendingWorkflowConfigurationRevisionDelta > 0 {
+                    workflowApplyStatusView
+                }
+
+                if appState.isSyncingOpenClawSession || appState.hasPendingOpenClawSessionSync {
+                    workflowSessionSyncStatusView
+                }
+
+                if let lastApplied = appState.lastAppliedWorkflowConfigurationAt {
+                    workflowAppliedStatusView(lastApplied)
+                }
+
+                if let revisionSummary = appState.openClawRevisionSummary {
+                    workflowRuntimeSummaryCard(
+                        iconName: "point.3.connected.trianglepath.dotted",
+                        iconColor: .blue,
+                        text: revisionSummary
+                    )
+                }
+
+                if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
+                    workflowRuntimeSummaryCard(
+                        iconName: runtimeSyncStatusIconName,
+                        iconColor: runtimeSyncStatusColor,
+                        text: runtimeSyncSummary
+                    )
+                }
+
+                if let detail = appState.openClawLatestRuntimeSyncDetail,
+                   !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    workflowRuntimeSyncDiagnosticView(detail)
+                }
+
+                if let blockedReason = appState.openClawLatestRuntimeSyncBlockedReason,
+                   !blockedReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    workflowRuntimeSectionCard(
+                        title: LocalizedString.text("openclaw_runtime_sync_blocked_reason_label"),
+                        lines: [blockedReason]
+                    )
+                }
+
+                if !appState.openClawLatestRuntimeSyncIssueLines.isEmpty {
+                    workflowRuntimeSectionCard(
+                        title: LocalizedString.text("openclaw_runtime_sync_step_issues_label"),
+                        lines: appState.openClawLatestRuntimeSyncIssueLines
+                    )
+                }
+
+                if !appState.openClawLatestRuntimeSyncWarnings.isEmpty {
+                    workflowRuntimeSectionCard(
+                        title: LocalizedString.text("warnings_label"),
+                        lines: appState.openClawLatestRuntimeSyncWarnings
+                    )
                 }
 
                 if appState.currentOpenClawRuntimeControlPlaneEntry.status != .ready {
                     workflowRuntimeSyncDiagnosticView(appState.openClawRuntimeControlPlaneSummary)
-                        .frame(maxWidth: 420, alignment: .trailing)
                 }
 
                 if let secondarySummary = appState.openClawRuntimeControlPlaneSecondarySummary {
                     workflowRuntimeSyncDiagnosticView(secondarySummary)
-                        .frame(maxWidth: 420, alignment: .trailing)
                 }
             }
+            .padding(14)
         }
+        .frame(width: 420, height: 360)
     }
 
     private var workflowApplyStatusView: some View {
@@ -1967,20 +2073,7 @@ struct EditorToolbar: View {
         let iconColor: Color
         let iconName: String
 
-        switch appState.latestOpenClawRuntimeSyncReceipt?.status {
-        case .succeeded:
-            iconColor = .green
-            iconName = "checkmark.circle.fill"
-        case .partial:
-            iconColor = .orange
-            iconName = "exclamationmark.triangle.fill"
-        case .failed:
-            iconColor = .red
-            iconName = "xmark.circle.fill"
-        case .none:
-            iconColor = .secondary
-            iconName = "clock.badge.questionmark"
-        }
+        (iconColor, iconName) = runtimeSyncStatusAppearance
 
         return HStack(spacing: 6) {
             Image(systemName: iconName)
@@ -1989,6 +2082,7 @@ struct EditorToolbar: View {
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 10)
         .frame(height: 30)
@@ -1998,6 +2092,89 @@ struct EditorToolbar: View {
         )
         .overlay(
             Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private var runtimeSyncStatusAppearance: (Color, String) {
+        switch appState.latestOpenClawRuntimeSyncReceipt?.status {
+        case .succeeded:
+            return (.green, "checkmark.circle.fill")
+        case .partial:
+            return (.orange, "exclamationmark.triangle.fill")
+        case .failed:
+            return (.red, "xmark.circle.fill")
+        case .none:
+            return (.secondary, "clock.badge.questionmark")
+        }
+    }
+
+    private var runtimeSyncStatusColor: Color {
+        runtimeSyncStatusAppearance.0
+    }
+
+    private var runtimeSyncStatusIconName: String {
+        runtimeSyncStatusAppearance.1
+    }
+
+    private func workflowRuntimeSummaryCard(
+        iconName: String,
+        iconColor: Color,
+        text: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: iconName)
+                .foregroundColor(iconColor)
+                .padding(.top, 1)
+            Text(text)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.black.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func workflowRuntimeSectionCard(
+        title: String,
+        lines: [String]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundColor(.primary)
+
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle()
+                        .fill(Color.secondary.opacity(0.45))
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 5)
+                    Text(line)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.black.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
     }
@@ -2247,7 +2424,6 @@ private struct WorkflowToolbarGroup<Content: View>: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(minHeight: 96, alignment: .topLeading)
-        .fixedSize(horizontal: true, vertical: false)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.white.opacity(0.86))

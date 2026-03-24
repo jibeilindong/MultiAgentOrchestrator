@@ -4,10 +4,34 @@
     "Localizable": [
       {
         "comment": "",
+        "key": "应用退出时停止托管 Runtime",
+        "location": {
+          "startingColumn": 37,
+          "startingLine": 67
+        }
+      },
+      {
+        "comment": "",
+        "key": "Runtime 崩溃后自动拉起",
+        "location": {
+          "startingColumn": 37,
+          "startingLine": 73
+        }
+      },
+      {
+        "comment": "",
         "key": "Local runtime ownership",
         "location": {
           "startingColumn": 40,
-          "startingLine": 47
+          "startingLine": 57
+        }
+      },
+      {
+        "comment": "",
+        "key": "Managed Runtime",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 560
         }
       },
       {
@@ -15,7 +39,7 @@
         "key": "正在同步会话...",
         "location": {
           "startingColumn": 53,
-          "startingLine": 179
+          "startingLine": 207
         }
       },
       {
@@ -23,7 +47,135 @@
         "key": "同步当前会话",
         "location": {
           "startingColumn": 79,
-          "startingLine": 179
+          "startingLine": 207
+        }
+      },
+      {
+        "comment": "",
+        "key": "最近心跳：%@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 701
+        }
+      },
+      {
+        "comment": "",
+        "key": "最近启动：%@",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 705
+        }
+      },
+      {
+        "comment": "",
+        "key": "快速操作",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 650
+        }
+      },
+      {
+        "comment": "",
+        "key": "打开日志",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 655
+        }
+      },
+      {
+        "comment": "",
+        "key": "在 Finder 显示日志",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 658
+        }
+      },
+      {
+        "comment": "",
+        "key": "打开 Runtime Root",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 661
+        }
+      },
+      {
+        "comment": "",
+        "key": "打开 Supervisor Root",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 666
+        }
+      },
+      {
+        "comment": "",
+        "key": "复制诊断",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 673
+        }
+      },
+      {
+        "comment": "",
+        "key": "导出诊断",
+        "location": {
+          "startingColumn": 32,
+          "startingLine": 674
+        }
+      },
+      {
+        "comment": "",
+        "key": "启动 Runtime",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 690
+        }
+      },
+      {
+        "comment": "",
+        "key": "停止 Runtime",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 693
+        }
+      },
+      {
+        "comment": "",
+        "key": "重启 Runtime",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 696
+        }
+      },
+      {
+        "comment": "",
+        "key": "处理中...",
+        "location": {
+          "startingColumn": 61,
+          "startingLine": 685
+        }
+      },
+      {
+        "comment": "",
+        "key": "刷新状态",
+        "location": {
+          "startingColumn": 78,
+          "startingLine": 685
+        }
+      },
+      {
+        "comment": "",
+        "key": "当前 Endpoint: %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 755
+        }
+      },
+      {
+        "comment": "",
+        "key": "当前 Binary: %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 762
         }
       },
       {
@@ -31,7 +183,7 @@
         "key": "%@: %@",
         "location": {
           "startingColumn": 22,
-          "startingLine": 348
+          "startingLine": 783
         }
       },
       {
@@ -39,7 +191,7 @@
         "key": "clawhub skill slug",
         "location": {
           "startingColumn": 55,
-          "startingLine": 731
+          "startingLine": 1348
         }
       }
     ]

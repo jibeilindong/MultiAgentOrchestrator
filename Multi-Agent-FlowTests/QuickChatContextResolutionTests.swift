@@ -2,8 +2,6 @@ import XCTest
 @testable import Multi_Agent_Flow
 
 final class QuickChatContextResolutionTests: XCTestCase {
-    private static let sharedStore = QuickChatStore()
-
     @MainActor
     func testResolveQuickChatContextPrefersEntryConnectedAgent() {
         let appState = makeAppState()
@@ -89,10 +87,11 @@ final class QuickChatContextResolutionTests: XCTestCase {
         appState.currentProject = project
         appState.activeWorkflowID = workflow.id
 
-        let store = Self.sharedStore
+        let store = QuickChatStore()
         store.present(using: appState)
-        store.startNewSession()
+        store.updateDraft("第一条草稿")
         let firstSessionKey = store.sessionKey
+        let firstSessionID = try? XCTUnwrap(store.selectedSessionID)
 
         store.startNewSession()
         let secondSessionKey = store.sessionKey
@@ -101,6 +100,13 @@ final class QuickChatContextResolutionTests: XCTestCase {
         XCTAssertFalse(secondSessionKey.isEmpty)
         XCTAssertNotEqual(firstSessionKey, secondSessionKey)
         XCTAssertTrue(store.messages.isEmpty)
+        XCTAssertEqual(store.availableSessions.count, 2)
+
+        if let firstSessionID {
+            store.selectSession(firstSessionID)
+            XCTAssertEqual(store.sessionKey, firstSessionKey)
+            XCTAssertEqual(store.draftText, "第一条草稿")
+        }
     }
 
     @MainActor
@@ -163,16 +169,24 @@ final class QuickChatContextResolutionTests: XCTestCase {
         appState.currentProject = project
         appState.activeWorkflowID = workflow.id
 
-        let store = Self.sharedStore
+        let store = QuickChatStore()
         store.present(using: appState)
-        store.startNewSession()
+        store.updateDraft("planner draft")
         let initialSessionKey = store.sessionKey
+        let initialSessionID = store.selectedSessionID
 
         store.selectAgent(reviewer.id, using: appState)
 
         XCTAssertEqual(store.context?.entryAgentID, reviewer.id)
         XCTAssertEqual(store.context?.agentIdentifier, "reviewer")
         XCTAssertNotEqual(store.sessionKey, initialSessionKey)
+
+        store.selectAgent(planner.id, using: appState)
+
+        XCTAssertEqual(store.context?.entryAgentID, planner.id)
+        XCTAssertEqual(store.sessionKey, initialSessionKey)
+        XCTAssertEqual(store.selectedSessionID, initialSessionID)
+        XCTAssertEqual(store.draftText, "planner draft")
     }
 
     @MainActor

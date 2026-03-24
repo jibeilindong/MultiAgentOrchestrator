@@ -7,7 +7,7 @@
         "key": "Protocol governance metrics will appear after runtime traces are ingested.",
         "location": {
           "startingColumn": 22,
-          "startingLine": 2028
+          "startingLine": 2093
         }
       },
       {
@@ -15,7 +15,7 @@
         "key": "Trace drill-down: %@",
         "location": {
           "startingColumn": 26,
-          "startingLine": 2021
+          "startingLine": 2086
         }
       },
       {
@@ -23,7 +23,7 @@
         "key": "Protocol Governance",
         "location": {
           "startingColumn": 26,
-          "startingLine": 2011
+          "startingLine": 2076
         }
       },
       {
@@ -31,7 +31,7 @@
         "key": "Track conformance, repair quality, and interruption pressure across recent agent runs.",
         "location": {
           "startingColumn": 26,
-          "startingLine": 2013
+          "startingLine": 2078
         }
       },
       {
@@ -39,7 +39,7 @@
         "key": "Protocol Trends",
         "location": {
           "startingColumn": 34,
-          "startingLine": 2057
+          "startingLine": 2122
         }
       },
       {
@@ -47,7 +47,7 @@
         "key": "Click to open historical view",
         "location": {
           "startingColumn": 34,
-          "startingLine": 2060
+          "startingLine": 2125
         }
       },
       {
@@ -55,7 +55,7 @@
         "key": "Repair Distribution",
         "location": {
           "startingColumn": 34,
-          "startingLine": 2090
+          "startingLine": 2155
         }
       },
       {
@@ -63,7 +63,7 @@
         "key": "Recent traces",
         "location": {
           "startingColumn": 34,
-          "startingLine": 2093
+          "startingLine": 2158
         }
       },
       {
@@ -71,7 +71,7 @@
         "key": "Agent Profiles",
         "location": {
           "startingColumn": 34,
-          "startingLine": 2122
+          "startingLine": 2187
         }
       },
       {
@@ -79,7 +79,7 @@
         "key": "Highest protocol pressure first",
         "location": {
           "startingColumn": 34,
-          "startingLine": 2125
+          "startingLine": 2190
         }
       },
       {
@@ -87,7 +87,7 @@
         "key": "Source",
         "location": {
           "startingColumn": 24,
-          "startingLine": 2399
+          "startingLine": 2464
         }
       },
       {
@@ -95,7 +95,7 @@
         "key": "Severity",
         "location": {
           "startingColumn": 24,
-          "startingLine": 2406
+          "startingLine": 2471
         }
       },
       {
@@ -103,7 +103,7 @@
         "key": "Window",
         "location": {
           "startingColumn": 24,
-          "startingLine": 2413
+          "startingLine": 2478
         }
       },
       {
@@ -111,7 +111,7 @@
         "key": "Protocol",
         "location": {
           "startingColumn": 24,
-          "startingLine": 2719
+          "startingLine": 2784
         }
       },
       {
@@ -119,7 +119,7 @@
         "key": "Protocol filter: %@",
         "location": {
           "startingColumn": 26,
-          "startingLine": 2732
+          "startingLine": 2797
         }
       },
       {
@@ -127,7 +127,15 @@
         "key": "Clear",
         "location": {
           "startingColumn": 28,
-          "startingLine": 2736
+          "startingLine": 2801
+        }
+      },
+      {
+        "comment": "",
+        "key": "当前 Endpoint: %@",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 3100
         }
       },
       {
@@ -135,7 +143,7 @@
         "key": "%@: %@",
         "location": {
           "startingColumn": 22,
-          "startingLine": 3001
+          "startingLine": 3107
         }
       },
       {
@@ -143,7 +151,7 @@
         "key": "同步当前会话",
         "location": {
           "startingColumn": 28,
-          "startingLine": 3042
+          "startingLine": 3148
         }
       },
       {
@@ -151,7 +159,7 @@
         "key": "%lldx",
         "location": {
           "startingColumn": 30,
-          "startingLine": 3918
+          "startingLine": 4024
         }
       },
       {
@@ -159,7 +167,7 @@
         "key": "%@ • %@",
         "location": {
           "startingColumn": 42,
-          "startingLine": 5875
+          "startingLine": 5990
         }
       },
       {
@@ -167,7 +175,7 @@
         "key": "%lld",
         "location": {
           "startingColumn": 30,
-          "startingLine": 6576
+          "startingLine": 6691
         }
       },
       {
@@ -175,7 +183,7 @@
         "key": "—",
         "location": {
           "startingColumn": 22,
-          "startingLine": 6726
+          "startingLine": 6841
         }
       },
       {
@@ -183,7 +191,7 @@
         "key": "%lld%%",
         "location": {
           "startingColumn": 26,
-          "startingLine": 6714
+          "startingLine": 6829
         }
       },
       {
@@ -191,7 +199,7 @@
         "key": "%lld%%",
         "location": {
           "startingColumn": 26,
-          "startingLine": 6721
+          "startingLine": 6836
         }
       },
       {
@@ -199,7 +207,7 @@
         "key": "%lld%%",
         "location": {
           "startingColumn": 18,
-          "startingLine": 6768
+          "startingLine": 6883
         }
       },
       {
@@ -207,7 +215,7 @@
         "key": "%@ • %@",
         "location": {
           "startingColumn": 22,
-          "startingLine": 6792
+          "startingLine": 6907
         }
       },
       {
@@ -215,7 +223,7 @@
         "key": "%lld",
         "location": {
           "startingColumn": 18,
-          "startingLine": 6894
+          "startingLine": 7009
         }
       }
     ]

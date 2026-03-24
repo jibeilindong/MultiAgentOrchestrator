@@ -210,6 +210,31 @@ final class QuickChatStore: ObservableObject {
         }
     }
 
+    struct SessionSummary: Identifiable, Equatable {
+        let id: UUID
+        let title: String
+        let preview: String
+        let updatedAt: Date
+        let messageCount: Int
+    }
+
+    private struct ContextKey: Hashable {
+        let projectID: UUID
+        let workflowID: UUID
+        let agentID: UUID
+    }
+
+    private struct SessionRecord {
+        let id: UUID
+        let context: AppState.QuickChatContext
+        let createdAt: Date
+        var updatedAt: Date
+        var sessionKey: String
+        var messages: [Message]
+        var attachments: [Attachment]
+        var draftText: String
+    }
+
     private struct PreparedAttachment {
         let stagedURL: URL
         let fileName: String
@@ -225,8 +250,11 @@ final class QuickChatStore: ObservableObject {
     @Published private(set) var context: AppState.QuickChatContext?
     @Published private(set) var agentOptions: [AppState.QuickChatAgentOption] = []
     @Published private(set) var selectedAgentID: UUID?
+    @Published private(set) var selectedSessionID: UUID?
+    @Published private(set) var availableSessions: [SessionSummary] = []
     @Published private(set) var messages: [Message] = []
     @Published private(set) var attachments: [Attachment] = []
+    @Published private(set) var draftText: String = ""
     @Published private(set) var sessionKey: String = ""
     @Published private(set) var activeRunID: String?
     @Published private(set) var isSending = false
@@ -236,7 +264,10 @@ final class QuickChatStore: ObservableObject {
 
     private var sendTask: _Concurrency.Task<Void, Never>?
     private var pendingAbortAfterRunStart = false
-    private var attachmentTasks: [UUID: _Concurrency.Task<Void, Never>] = [:]
+    private var attachmentTasks: [UUID: (sessionID: UUID, task: _Concurrency.Task<Void, Never>)] = [:]
+    private var sessionsByContext: [ContextKey: [SessionRecord]] = [:]
+    private var sessionContextByID: [UUID: ContextKey] = [:]
+    private var activeSessionIDByContext: [ContextKey: UUID] = [:]
 
     var canSend: Bool {
         context != nil && !isSending && !hasPendingAttachments
@@ -277,19 +308,19 @@ final class QuickChatStore: ObservableObject {
     }
 
     func refreshContext(using appState: AppState) {
+        saveCurrentSessionSnapshot()
+
         let previousContext = context
-        let previousSelectedAgentID = selectedAgentID
+        let previousContextKey = previousContext.map(Self.contextKey(for:))
 
         agentOptions = appState.resolveQuickChatAgentOptions()
 
         guard !agentOptions.isEmpty else {
+            clearPresentedSessionState()
             context = nil
             selectedAgentID = nil
-            if messages.isEmpty {
-                statusMessage = nil
-                sessionKey = ""
-                lastError = "当前工作流没有可用于 Quick Chat 的 Agent。请先在工作流中连接一个入口 Agent。"
-            }
+            statusMessage = nil
+            lastError = "当前工作流没有可用于 Quick Chat 的 Agent。请先在工作流中连接一个入口 Agent。"
             return
         }
 
@@ -303,25 +334,39 @@ final class QuickChatStore: ObservableObject {
         context = agentOptions.first(where: { $0.agentID == selectedAgentID })?.context
             ?? agentOptions.first?.context
 
+        selectedSessionID = nil
         lastError = nil
 
         guard let context else { return }
-        if sessionKey.isEmpty
-            || previousContext?.workflowID != context.workflowID
-            || previousContext?.entryAgentID != context.entryAgentID
-            || previousSelectedAgentID != selectedAgentID
-        {
-            resetConversation(
-                clearDraftAttachments: true,
-                statusMessage: "已切换到 \(context.workflowName) / \(context.entryAgentName) 的独立快聊会话。"
-            )
-        }
+        let currentContextKey = Self.contextKey(for: context)
+        let sessionID = activeSessionIDByContext[currentContextKey]
+            ?? sessionsByContext[currentContextKey]?.last?.id
+            ?? createSession(for: context)
+        bindSession(
+            withID: sessionID,
+            statusMessage: previousContextKey == currentContextKey
+                ? nil
+                : "已切换到 \(context.workflowName) / \(context.entryAgentName) 的独立快聊会话。"
+        )
     }
 
     func selectAgent(_ agentID: UUID, using appState: AppState) {
+        guard !isSending else { return }
         guard selectedAgentID != agentID else { return }
         selectedAgentID = agentID
         refreshContext(using: appState)
+    }
+
+    func selectSession(_ sessionID: UUID) {
+        guard !isSending else { return }
+        guard selectedSessionID != sessionID else { return }
+        saveCurrentSessionSnapshot()
+        bindSession(withID: sessionID, statusMessage: "已恢复该 Agent 的历史会话。")
+    }
+
+    func updateDraft(_ text: String) {
+        draftText = text
+        saveCurrentSessionSnapshot(touch: false)
     }
 
     func clearError() {
@@ -330,24 +375,36 @@ final class QuickChatStore: ObservableObject {
 
     func startNewSession() {
         guard !isSending else { return }
-        resetConversation(
-            clearDraftAttachments: true,
+        guard let context else { return }
+        saveCurrentSessionSnapshot()
+        let sessionID = createSession(for: context)
+        bindSession(
+            withID: sessionID,
             statusMessage: "已创建新的 Quick Chat 会话。"
         )
     }
 
     func removeAttachment(_ attachmentID: UUID) {
-        attachmentTasks[attachmentID]?.cancel()
+        attachmentTasks[attachmentID]?.task.cancel()
         attachmentTasks.removeValue(forKey: attachmentID)
         attachments.removeAll { $0.id == attachmentID }
+        saveCurrentSessionSnapshot()
     }
 
     func clearAttachments() {
-        for attachmentID in attachmentTasks.keys {
-            attachmentTasks[attachmentID]?.cancel()
+        guard let sessionID = selectedSessionID else {
+            attachments.removeAll()
+            return
         }
-        attachmentTasks.removeAll()
+        let attachmentIDs = attachments.map(\.id)
+        for attachmentID in attachmentIDs {
+            guard let taskRecord = attachmentTasks[attachmentID] else { continue }
+            guard taskRecord.sessionID == sessionID else { continue }
+            taskRecord.task.cancel()
+            attachmentTasks.removeValue(forKey: attachmentID)
+        }
         attachments.removeAll()
+        saveCurrentSessionSnapshot()
     }
 
     func importFiles(_ urls: [URL]) {
@@ -435,6 +492,7 @@ final class QuickChatStore: ObservableObject {
     func send(_ text: String, using appState: AppState) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let readyAttachments = attachments.filter(\.isReady)
+        guard let activeSessionID = selectedSessionID else { return }
 
         guard !trimmedText.isEmpty || !readyAttachments.isEmpty else { return }
 
@@ -476,9 +534,11 @@ final class QuickChatStore: ObservableObject {
                 isStreaming: true
             )
         )
+        saveCurrentSessionSnapshot()
 
         let gatewayAttachments = readyAttachments.compactMap(\.gatewayAttachment)
         attachments = []
+        draftText = ""
 
         let resolvedSessionKey = sessionKey.isEmpty ? Self.makeSessionKey(for: context) : sessionKey
         sessionKey = resolvedSessionKey
@@ -490,6 +550,7 @@ final class QuickChatStore: ObservableObject {
             : "附件已完成 stage，准备经 Gateway 发送。"
         isSending = true
         isStopping = false
+        saveCurrentSessionSnapshot()
 
         sendTask?.cancel()
         sendTask = _Concurrency.Task { [weak self] in
@@ -505,8 +566,10 @@ final class QuickChatStore: ObservableObject {
                     using: gatewayConfig,
                     onRunStarted: { runID, acceptedSessionKey in
                         _Concurrency.Task { @MainActor in
+                            guard self.selectedSessionID == activeSessionID else { return }
                             self.activeRunID = runID
                             self.sessionKey = acceptedSessionKey
+                            self.saveCurrentSessionSnapshot()
                             if self.pendingAbortAfterRunStart {
                                 self.requestAbort(using: appState)
                             }
@@ -515,6 +578,7 @@ final class QuickChatStore: ObservableObject {
                     onAssistantTextUpdated: { text in
                         _Concurrency.Task { @MainActor in
                             self.updateAssistantMessage(
+                                in: activeSessionID,
                                 withID: assistantMessageID,
                                 text: text,
                                 isStreaming: true
@@ -525,6 +589,7 @@ final class QuickChatStore: ObservableObject {
 
                 await MainActor.run {
                     self.finishSend(
+                        in: activeSessionID,
                         result: result,
                         assistantMessageID: assistantMessageID
                     )
@@ -540,6 +605,7 @@ final class QuickChatStore: ObservableObject {
                         )
                         await MainActor.run {
                             self.replaceLatestResponseCluster(
+                                in: activeSessionID,
                                 from: transcript,
                                 placeholderID: assistantMessageID
                             )
@@ -559,7 +625,10 @@ final class QuickChatStore: ObservableObject {
                     self.pendingAbortAfterRunStart = false
                     self.activeRunID = nil
                     self.sendTask = nil
-                    self.finalizeAssistantMessage(withID: assistantMessageID)
+                    self.finalizeAssistantMessage(
+                        in: activeSessionID,
+                        withID: assistantMessageID
+                    )
                 }
             } catch {
                 await MainActor.run {
@@ -569,9 +638,16 @@ final class QuickChatStore: ObservableObject {
                     self.pendingAbortAfterRunStart = false
                     self.activeRunID = nil
                     self.sendTask = nil
-                    self.finalizeAssistantMessage(withID: assistantMessageID)
-                    if self.plainText(for: assistantMessageID).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.finalizeAssistantMessage(
+                        in: activeSessionID,
+                        withID: assistantMessageID
+                    )
+                    if self.plainText(
+                        in: activeSessionID,
+                        for: assistantMessageID
+                    ).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         self.updateAssistantMessage(
+                            in: activeSessionID,
                             withID: assistantMessageID,
                             text: "请求失败：\(error.localizedDescription)",
                             isStreaming: false
@@ -625,6 +701,7 @@ final class QuickChatStore: ObservableObject {
     }
 
     private func finishSend(
+        in sessionID: UUID,
         result: OpenClawGatewayClient.AgentExecutionResult,
         assistantMessageID: UUID
     ) {
@@ -638,23 +715,32 @@ final class QuickChatStore: ObservableObject {
            !resolvedSessionKey.isEmpty {
             sessionKey = resolvedSessionKey
         }
+        saveCurrentSessionSnapshot()
 
         let finalText = result.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !finalText.isEmpty {
             updateAssistantMessage(
+                in: sessionID,
                 withID: assistantMessageID,
                 text: finalText,
                 isStreaming: false
             )
         } else {
-            finalizeAssistantMessage(withID: assistantMessageID)
+            finalizeAssistantMessage(
+                in: sessionID,
+                withID: assistantMessageID
+            )
         }
 
         switch result.status {
         case "ok":
             statusMessage = nil
-            if plainText(for: assistantMessageID).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if plainText(
+                in: sessionID,
+                for: assistantMessageID
+            ).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updateAssistantMessage(
+                    in: sessionID,
                     withID: assistantMessageID,
                     text: "本次对话已完成，但没有返回可显示内容。",
                     isStreaming: false
@@ -662,8 +748,12 @@ final class QuickChatStore: ObservableObject {
             }
         case "aborted":
             statusMessage = "当前输出已停止。"
-            if plainText(for: assistantMessageID).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if plainText(
+                in: sessionID,
+                for: assistantMessageID
+            ).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updateAssistantMessage(
+                    in: sessionID,
                     withID: assistantMessageID,
                     text: "已停止当前输出。",
                     isStreaming: false
@@ -679,45 +769,59 @@ final class QuickChatStore: ObservableObject {
         }
     }
 
-    private func resetConversation(
-        clearDraftAttachments: Bool,
-        statusMessage: String?
-    ) {
-        sendTask?.cancel()
-        messages = []
-        sessionKey = context.map(Self.makeSessionKey(for:)) ?? ""
-        activeRunID = nil
-        isSending = false
-        isStopping = false
-        pendingAbortAfterRunStart = false
-        lastError = nil
-        self.statusMessage = statusMessage
-
-        if clearDraftAttachments {
-            clearAttachments()
-        }
-    }
-
     private func updateAssistantMessage(
+        in sessionID: UUID,
         withID messageID: UUID,
         text: String,
         isStreaming: Bool
     ) {
-        guard let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
-        messages[index].blocks = messageBlocks(fromText: text)
-        messages[index].isStreaming = isStreaming
+        if sessionID == selectedSessionID,
+           let index = messages.firstIndex(where: { $0.id == messageID }) {
+            messages[index].blocks = messageBlocks(fromText: text)
+            messages[index].isStreaming = isStreaming
+            saveCurrentSessionSnapshot()
+            return
+        }
+
+        mutateSession(withID: sessionID, touch: true) { record in
+            guard let index = record.messages.firstIndex(where: { $0.id == messageID }) else { return }
+            record.messages[index].blocks = messageBlocks(fromText: text)
+            record.messages[index].isStreaming = isStreaming
+        }
     }
 
-    private func finalizeAssistantMessage(withID messageID: UUID) {
-        guard let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
-        messages[index].isStreaming = false
+    private func finalizeAssistantMessage(
+        in sessionID: UUID,
+        withID messageID: UUID
+    ) {
+        if sessionID == selectedSessionID,
+           let index = messages.firstIndex(where: { $0.id == messageID }) {
+            messages[index].isStreaming = false
+            saveCurrentSessionSnapshot()
+            return
+        }
+
+        mutateSession(withID: sessionID, touch: true) { record in
+            guard let index = record.messages.firstIndex(where: { $0.id == messageID }) else { return }
+            record.messages[index].isStreaming = false
+        }
     }
 
-    private func plainText(for messageID: UUID) -> String {
-        messages.first(where: { $0.id == messageID })?.plainText ?? ""
+    private func plainText(
+        in sessionID: UUID,
+        for messageID: UUID
+    ) -> String {
+        if sessionID == selectedSessionID {
+            return messages.first(where: { $0.id == messageID })?.plainText ?? ""
+        }
+        return sessionRecord(withID: sessionID)?
+            .messages
+            .first(where: { $0.id == messageID })?
+            .plainText ?? ""
     }
 
     private func replaceLatestResponseCluster(
+        in sessionID: UUID,
         from transcript: [OpenClawGatewayClient.ChatTranscriptMessage],
         placeholderID: UUID
     ) {
@@ -725,11 +829,24 @@ final class QuickChatStore: ObservableObject {
         let mappedMessages = cluster.compactMap(message(from:))
         guard !mappedMessages.isEmpty else { return }
 
-        if let placeholderIndex = messages.firstIndex(where: { $0.id == placeholderID }) {
-            messages.removeSubrange(placeholderIndex..<messages.count)
-            messages.append(contentsOf: mappedMessages)
-        } else {
-            messages.append(contentsOf: mappedMessages)
+        if sessionID == selectedSessionID {
+            if let placeholderIndex = messages.firstIndex(where: { $0.id == placeholderID }) {
+                messages.removeSubrange(placeholderIndex..<messages.count)
+                messages.append(contentsOf: mappedMessages)
+            } else {
+                messages.append(contentsOf: mappedMessages)
+            }
+            saveCurrentSessionSnapshot()
+            return
+        }
+
+        mutateSession(withID: sessionID, touch: true) { record in
+            if let placeholderIndex = record.messages.firstIndex(where: { $0.id == placeholderID }) {
+                record.messages.removeSubrange(placeholderIndex..<record.messages.count)
+                record.messages.append(contentsOf: mappedMessages)
+            } else {
+                record.messages.append(contentsOf: mappedMessages)
+            }
         }
     }
 
@@ -846,7 +963,151 @@ final class QuickChatStore: ObservableObject {
         ]
     }
 
+    private func clearPresentedSessionState() {
+        selectedSessionID = nil
+        availableSessions = []
+        messages = []
+        attachments = []
+        draftText = ""
+        sessionKey = ""
+        activeRunID = nil
+        isSending = false
+        isStopping = false
+        pendingAbortAfterRunStart = false
+    }
+
+    private func saveCurrentSessionSnapshot(touch: Bool = true) {
+        guard let sessionID = selectedSessionID else { return }
+        mutateSession(withID: sessionID, touch: touch) { record in
+            record.messages = messages
+            record.attachments = attachments
+            record.draftText = draftText
+            record.sessionKey = sessionKey
+        }
+    }
+
+    private func sessionRecord(withID sessionID: UUID) -> SessionRecord? {
+        guard let contextKey = sessionContextByID[sessionID],
+              let record = sessionsByContext[contextKey]?.first(where: { $0.id == sessionID }) else {
+            return nil
+        }
+        return record
+    }
+
+    private func bindSession(
+        withID sessionID: UUID,
+        statusMessage: String?
+    ) {
+        guard let record = sessionRecord(withID: sessionID) else { return }
+        selectedSessionID = sessionID
+        activeSessionIDByContext[Self.contextKey(for: record.context)] = sessionID
+        messages = record.messages
+        attachments = record.attachments
+        draftText = record.draftText
+        sessionKey = record.sessionKey
+        refreshAvailableSessions()
+        activeRunID = nil
+        isSending = false
+        isStopping = false
+        pendingAbortAfterRunStart = false
+        self.statusMessage = statusMessage
+    }
+
+    @discardableResult
+    private func createSession(for context: AppState.QuickChatContext) -> UUID {
+        let sessionID = UUID()
+        let contextKey = Self.contextKey(for: context)
+        let record = SessionRecord(
+            id: sessionID,
+            context: context,
+            createdAt: Date(),
+            updatedAt: Date(),
+            sessionKey: Self.makeSessionKey(for: context),
+            messages: [],
+            attachments: [],
+            draftText: ""
+        )
+        sessionsByContext[contextKey, default: []].append(record)
+        sessionContextByID[sessionID] = contextKey
+        activeSessionIDByContext[contextKey] = sessionID
+        refreshAvailableSessions()
+        return sessionID
+    }
+
+    private func mutateSession(
+        withID sessionID: UUID,
+        touch: Bool,
+        _ mutate: (inout SessionRecord) -> Void
+    ) {
+        guard let contextKey = sessionContextByID[sessionID],
+              var records = sessionsByContext[contextKey],
+              let index = records.firstIndex(where: { $0.id == sessionID }) else {
+            return
+        }
+
+        mutate(&records[index])
+        if touch {
+            records[index].updatedAt = Date()
+        }
+        sessionsByContext[contextKey] = records
+        refreshAvailableSessions()
+    }
+
+    private func refreshAvailableSessions() {
+        guard let context else {
+            availableSessions = []
+            return
+        }
+
+        let contextKey = Self.contextKey(for: context)
+        let records = sessionsByContext[contextKey] ?? []
+        availableSessions = records
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
+            .map { record in
+                SessionSummary(
+                    id: record.id,
+                    title: sessionTitle(for: record, within: records),
+                    preview: sessionPreview(for: record),
+                    updatedAt: record.updatedAt,
+                    messageCount: record.messages.count
+                )
+            }
+    }
+
+    private func sessionTitle(
+        for record: SessionRecord,
+        within records: [SessionRecord]
+    ) -> String {
+        let ordinal = (records.firstIndex(where: { $0.id == record.id }) ?? 0) + 1
+        return "会话 \(ordinal)"
+    }
+
+    private func sessionPreview(for record: SessionRecord) -> String {
+        if let lastMessage = record.messages.last?.plainText,
+           let preview = Self.normalizedNonEmptyText(lastMessage) {
+            return preview
+        }
+        if let draftPreview = Self.normalizedNonEmptyText(record.draftText) {
+            return "草稿：\(draftPreview)"
+        }
+        return "新会话"
+    }
+
+    private static func contextKey(for context: AppState.QuickChatContext) -> ContextKey {
+        ContextKey(
+            projectID: context.projectID,
+            workflowID: context.workflowID,
+            agentID: context.entryAgentID
+        )
+    }
+
     private func stageAttachment(from url: URL) {
+        guard let sessionID = selectedSessionID else { return }
         let attachmentID = UUID()
         let placeholder = Attachment(
             id: attachmentID,
@@ -860,24 +1121,27 @@ final class QuickChatStore: ObservableObject {
             stageState: .staging
         )
         attachments.append(placeholder)
+        saveCurrentSessionSnapshot()
 
         let task = _Concurrency.Task { [weak self] in
             guard let self else { return }
             do {
                 let prepared = try await Self.prepareAttachmentAsync(from: url)
                 self.finishStagingAttachment(
+                    sessionID: sessionID,
                     attachmentID: attachmentID,
                     prepared: prepared
                 )
             } catch {
                 self.failStagingAttachment(
+                    sessionID: sessionID,
                     attachmentID: attachmentID,
                     message: error.localizedDescription
                 )
             }
         }
 
-        attachmentTasks[attachmentID] = task
+        attachmentTasks[attachmentID] = (sessionID, task)
     }
 
     private func stageBufferedAttachment(
@@ -885,6 +1149,7 @@ final class QuickChatStore: ObservableObject {
         fileName: String,
         mimeType: String
     ) {
+        guard let sessionID = selectedSessionID else { return }
         let attachmentID = UUID()
         let placeholder = Attachment(
             id: attachmentID,
@@ -898,6 +1163,7 @@ final class QuickChatStore: ObservableObject {
             stageState: .staging
         )
         attachments.append(placeholder)
+        saveCurrentSessionSnapshot()
 
         let task = _Concurrency.Task { [weak self] in
             guard let self else { return }
@@ -908,42 +1174,70 @@ final class QuickChatStore: ObservableObject {
                     mimeType: mimeType
                 )
                 self.finishStagingAttachment(
+                    sessionID: sessionID,
                     attachmentID: attachmentID,
                     prepared: prepared
                 )
             } catch {
                 self.failStagingAttachment(
+                    sessionID: sessionID,
                     attachmentID: attachmentID,
                     message: error.localizedDescription
                 )
             }
         }
 
-        attachmentTasks[attachmentID] = task
+        attachmentTasks[attachmentID] = (sessionID, task)
     }
 
     private func finishStagingAttachment(
+        sessionID: UUID,
         attachmentID: UUID,
         prepared: PreparedAttachment
     ) {
         attachmentTasks.removeValue(forKey: attachmentID)
-        guard let index = attachments.firstIndex(where: { $0.id == attachmentID }) else { return }
-        attachments[index].fileName = prepared.fileName
-        attachments[index].mimeType = prepared.mimeType
-        attachments[index].fileSize = prepared.fileSize
-        attachments[index].stagedURL = prepared.stagedURL
-        attachments[index].previewData = prepared.previewData
-        attachments[index].base64Content = prepared.base64Content
-        attachments[index].stageState = .ready
+        if sessionID == selectedSessionID,
+           let index = attachments.firstIndex(where: { $0.id == attachmentID }) {
+            attachments[index].fileName = prepared.fileName
+            attachments[index].mimeType = prepared.mimeType
+            attachments[index].fileSize = prepared.fileSize
+            attachments[index].stagedURL = prepared.stagedURL
+            attachments[index].previewData = prepared.previewData
+            attachments[index].base64Content = prepared.base64Content
+            attachments[index].stageState = .ready
+            saveCurrentSessionSnapshot()
+            return
+        }
+
+        mutateSession(withID: sessionID, touch: true) { record in
+            guard let index = record.attachments.firstIndex(where: { $0.id == attachmentID }) else { return }
+            record.attachments[index].fileName = prepared.fileName
+            record.attachments[index].mimeType = prepared.mimeType
+            record.attachments[index].fileSize = prepared.fileSize
+            record.attachments[index].stagedURL = prepared.stagedURL
+            record.attachments[index].previewData = prepared.previewData
+            record.attachments[index].base64Content = prepared.base64Content
+            record.attachments[index].stageState = .ready
+        }
     }
 
     private func failStagingAttachment(
+        sessionID: UUID,
         attachmentID: UUID,
         message: String
     ) {
         attachmentTasks.removeValue(forKey: attachmentID)
-        guard let index = attachments.firstIndex(where: { $0.id == attachmentID }) else { return }
-        attachments[index].stageState = .failed(message)
+        if sessionID == selectedSessionID,
+           let index = attachments.firstIndex(where: { $0.id == attachmentID }) {
+            attachments[index].stageState = .failed(message)
+            saveCurrentSessionSnapshot()
+            return
+        }
+
+        mutateSession(withID: sessionID, touch: true) { record in
+            guard let index = record.attachments.firstIndex(where: { $0.id == attachmentID }) else { return }
+            record.attachments[index].stageState = .failed(message)
+        }
     }
 
     private nonisolated static func prepareAttachment(from url: URL) throws -> PreparedAttachment {

@@ -206,19 +206,9 @@ struct ContentView: View {
                 }
             )
         }
-        .sheet(isPresented: Binding(
-            get: { quickChatStore.isPresented },
-            set: { newValue in
-                if newValue {
-                    quickChatStore.present(using: appState)
-                } else {
-                    quickChatStore.handleDismiss(using: appState)
-                }
-            }
-        )) {
-            QuickChatModalView(store: quickChatStore)
-                .environmentObject(appState)
-        }
+        .background(
+            QuickChatWindowBridge(store: quickChatStore, appState: appState)
+        )
         .sheet(item: $appState.workflowPackageImportPreview, onDismiss: {
             appState.cleanupWorkflowPackageImportPreview()
         }) { preview in

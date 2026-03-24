@@ -331,6 +331,15 @@ final class AssistStore {
         }
     }
 
+    func contextPack(withID contextPackID: String) -> AssistContextPack? {
+        queue.sync {
+            fileSystem.load(
+                AssistContextPack.self,
+                from: fileSystem.contextDocumentURL(for: contextPackID, under: appSupportRootDirectory)
+            )
+        }
+    }
+
     func proposal(withID proposalID: String) -> AssistProposal? {
         queue.sync {
             fileSystem.load(
@@ -345,6 +354,15 @@ final class AssistStore {
             fileSystem.load(
                 AssistExecutionReceipt.self,
                 from: fileSystem.receiptDocumentURL(for: receiptID, under: appSupportRootDirectory)
+            )
+        }
+    }
+
+    func thread(withID threadID: String) -> AssistThreadRecord? {
+        queue.sync {
+            fileSystem.load(
+                AssistThreadRecord.self,
+                from: fileSystem.threadDocumentURL(for: threadID, under: appSupportRootDirectory)
             )
         }
     }

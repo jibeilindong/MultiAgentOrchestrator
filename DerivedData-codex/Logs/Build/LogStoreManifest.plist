@@ -6,7 +6,7 @@
 	<integer>12</integer>
 	<key>logs</key>
 	<dict>
-		<key>81367A6B-686A-4E2C-A7D2-9A2438B2769A</key>
+		<key>696BBA87-E83E-4194-ABF3-C4AB695EEF6A</key>
 		<dict>
 			<key>className</key>
 			<string>IDECommandLineBuildLog</string>
@@ -15,7 +15,7 @@
 			<key>domainType</key>
 			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
 			<key>fileName</key>
-			<string>81367A6B-686A-4E2C-A7D2-9A2438B2769A.xcactivitylog</string>
+			<string>696BBA87-E83E-4194-ABF3-C4AB695EEF6A.xcactivitylog</string>
 			<key>hasPrimaryLog</key>
 			<true/>
 			<key>primaryObservable</key>
@@ -25,11 +25,11 @@
 				<key>totalNumberOfAnalyzerIssues</key>
 				<integer>0</integer>
 				<key>totalNumberOfErrors</key>
-				<integer>2</integer>
+				<integer>3</integer>
 				<key>totalNumberOfTestFailures</key>
 				<integer>0</integer>
 				<key>totalNumberOfWarnings</key>
-				<integer>2</integer>
+				<integer>0</integer>
 			</dict>
 			<key>schemeIdentifier-containerName</key>
 			<string>Multi-Agent-Flow project</string>
@@ -38,15 +38,99 @@
 			<key>schemeIdentifier-sharedScheme</key>
 			<integer>1</integer>
 			<key>signature</key>
-			<string>Building project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
+			<string>Testing project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
 			<key>timeStartedRecording</key>
-			<real>795923816.58407605</real>
+			<real>796011258.72218597</real>
 			<key>timeStoppedRecording</key>
-			<real>795923870.67483902</real>
+			<real>796011268.63951194</real>
 			<key>title</key>
-			<string>Building project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
+			<string>Testing project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
 			<key>uniqueIdentifier</key>
-			<string>81367A6B-686A-4E2C-A7D2-9A2438B2769A</string>
+			<string>696BBA87-E83E-4194-ABF3-C4AB695EEF6A</string>
+		</dict>
+		<key>940E293C-08ED-4F39-AFD8-A3BB92F2A92A</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>940E293C-08ED-4F39-AFD8-A3BB92F2A92A.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>W</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>0</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>9</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Multi-Agent-Flow project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Multi-Agent-Flow</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Testing project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
+			<key>timeStartedRecording</key>
+			<real>796011194.51225901</real>
+			<key>timeStoppedRecording</key>
+			<real>796011217.99005604</real>
+			<key>title</key>
+			<string>Testing project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
+			<key>uniqueIdentifier</key>
+			<string>940E293C-08ED-4F39-AFD8-A3BB92F2A92A</string>
+		</dict>
+		<key>F4C2BB6B-D448-4B0A-B417-FD814B561F4A</key>
+		<dict>
+			<key>className</key>
+			<string>IDECommandLineBuildLog</string>
+			<key>documentTypeString</key>
+			<string>&lt;nil&gt;</string>
+			<key>domainType</key>
+			<string>Xcode.IDEActivityLogDomainType.BuildLog</string>
+			<key>fileName</key>
+			<string>F4C2BB6B-D448-4B0A-B417-FD814B561F4A.xcactivitylog</string>
+			<key>hasPrimaryLog</key>
+			<true/>
+			<key>primaryObservable</key>
+			<dict>
+				<key>highLevelStatus</key>
+				<string>E</string>
+				<key>totalNumberOfAnalyzerIssues</key>
+				<integer>0</integer>
+				<key>totalNumberOfErrors</key>
+				<integer>1</integer>
+				<key>totalNumberOfTestFailures</key>
+				<integer>0</integer>
+				<key>totalNumberOfWarnings</key>
+				<integer>6</integer>
+			</dict>
+			<key>schemeIdentifier-containerName</key>
+			<string>Multi-Agent-Flow project</string>
+			<key>schemeIdentifier-schemeName</key>
+			<string>Multi-Agent-Flow</string>
+			<key>schemeIdentifier-sharedScheme</key>
+			<integer>1</integer>
+			<key>signature</key>
+			<string>Testing project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
+			<key>timeStartedRecording</key>
+			<real>796011092.90905404</real>
+			<key>timeStoppedRecording</key>
+			<real>796011161.99773204</real>
+			<key>title</key>
+			<string>Testing project Multi-Agent-Flow with scheme Multi-Agent-Flow</string>
+			<key>uniqueIdentifier</key>
+			<string>F4C2BB6B-D448-4B0A-B417-FD814B561F4A</string>
 		</dict>
 	</dict>
 </dict>
