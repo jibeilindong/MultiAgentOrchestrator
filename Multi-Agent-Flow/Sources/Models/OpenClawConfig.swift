@@ -43,17 +43,11 @@ enum OpenClawDeploymentKind: String, Codable, CaseIterable, Identifiable {
 
 enum OpenClawRuntimeOwnership: String, Codable, CaseIterable, Identifiable {
     case appManaged
-    case externalLocal
 
     var id: String { rawValue }
 
     var title: String {
-        switch self {
-        case .appManaged:
-            return "App Managed"
-        case .externalLocal:
-            return "External Binary"
-        }
+        "App Managed"
     }
 }
 
@@ -152,13 +146,7 @@ struct OpenClawConfig: Codable {
     var deploymentSummary: String {
         switch deploymentKind {
         case .local:
-            switch runtimeOwnership {
-            case .appManaged:
-                return "App Managed Local Runtime"
-            case .externalLocal:
-                let resolvedPath = localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                return "External Local CLI: \(resolvedPath.isEmpty ? "(auto-detect)" : resolvedPath)"
-            }
+            return "App Managed Local Runtime"
         case .remoteServer:
             return baseURL
         case .container:
@@ -185,7 +173,7 @@ struct OpenClawConfig: Codable {
         cliLogLevel: OpenClawCLILogLevel
     ) {
         self.deploymentKind = deploymentKind
-        self.runtimeOwnership = runtimeOwnership
+        self.runtimeOwnership = deploymentKind == .local ? .appManaged : runtimeOwnership
         self.managedRuntimeTerminationBehavior = managedRuntimeTerminationBehavior
         self.managedRuntimeAutoRestartOnCrash = managedRuntimeAutoRestartOnCrash
         self.host = host
@@ -195,7 +183,9 @@ struct OpenClawConfig: Codable {
         self.defaultAgent = defaultAgent
         self.timeout = timeout
         self.autoConnect = autoConnect
-        self.localBinaryPath = localBinaryPath
+        self.localBinaryPath = deploymentKind == .local
+            ? ""
+            : localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
         self.container = container
         self.cliQuietMode = cliQuietMode
         self.cliLogLevel = cliLogLevel
@@ -205,15 +195,10 @@ struct OpenClawConfig: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         deploymentKind = try container.decodeIfPresent(OpenClawDeploymentKind.self, forKey: .deploymentKind) ?? .local
         let decodedLocalBinaryPath = try container.decodeIfPresent(String.self, forKey: .localBinaryPath) ?? ""
-        if let decodedRuntimeOwnership = try container.decodeIfPresent(OpenClawRuntimeOwnership.self, forKey: .runtimeOwnership) {
-            runtimeOwnership = decodedRuntimeOwnership
-        } else if deploymentKind == .local {
-            runtimeOwnership = decodedLocalBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? .appManaged
-                : .externalLocal
-        } else {
-            runtimeOwnership = .appManaged
-        }
+        let decodedRuntimeOwnership = OpenClawRuntimeOwnership(
+            rawValue: try container.decodeIfPresent(String.self, forKey: .runtimeOwnership) ?? ""
+        )
+        runtimeOwnership = deploymentKind == .local ? .appManaged : (decodedRuntimeOwnership ?? .appManaged)
         managedRuntimeTerminationBehavior = try container.decodeIfPresent(
             OpenClawManagedRuntimeTerminationBehavior.self,
             forKey: .managedRuntimeTerminationBehavior
@@ -229,7 +214,9 @@ struct OpenClawConfig: Codable {
         defaultAgent = try container.decodeIfPresent(String.self, forKey: .defaultAgent) ?? "default"
         timeout = try container.decodeIfPresent(Int.self, forKey: .timeout) ?? 30
         autoConnect = try container.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
-        localBinaryPath = decodedLocalBinaryPath
+        localBinaryPath = deploymentKind == .local
+            ? ""
+            : decodedLocalBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
         self.container = try container.decodeIfPresent(OpenClawContainerConfig.self, forKey: .container) ?? OpenClawContainerConfig()
         cliQuietMode = try container.decodeIfPresent(Bool.self, forKey: .cliQuietMode) ?? true
         cliLogLevel = try container.decodeIfPresent(OpenClawCLILogLevel.self, forKey: .cliLogLevel) ?? .warning
@@ -238,11 +225,11 @@ struct OpenClawConfig: Codable {
 
 extension OpenClawConfig {
     nonisolated var requiresExplicitLocalBinaryPath: Bool {
-        deploymentKind == .local && runtimeOwnership == .externalLocal
+        false
     }
 
     nonisolated var usesManagedLocalRuntime: Bool {
-        deploymentKind == .local && runtimeOwnership == .appManaged
+        deploymentKind == .local
     }
 
     nonisolated var shouldStopManagedRuntimeOnApplicationTermination: Bool {
@@ -256,17 +243,37 @@ extension OpenClawConfig {
 
 extension OpenClawConfig {
     static let storageKey = "openclaw_config"
+
+    nonisolated var normalizedForPersistence: OpenClawConfig {
+        OpenClawConfig(
+            deploymentKind: deploymentKind,
+            runtimeOwnership: deploymentKind == .local ? .appManaged : runtimeOwnership,
+            managedRuntimeTerminationBehavior: managedRuntimeTerminationBehavior,
+            managedRuntimeAutoRestartOnCrash: managedRuntimeAutoRestartOnCrash,
+            host: host,
+            port: port,
+            useSSL: useSSL,
+            apiKey: apiKey,
+            defaultAgent: defaultAgent,
+            timeout: timeout,
+            autoConnect: autoConnect,
+            localBinaryPath: deploymentKind == .local ? "" : localBinaryPath,
+            container: container,
+            cliQuietMode: cliQuietMode,
+            cliLogLevel: cliLogLevel
+        )
+    }
     
     static func load() -> OpenClawConfig {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
               let config = try? JSONDecoder().decode(OpenClawConfig.self, from: data) else {
             return .default
         }
-        return config
+        return config.normalizedForPersistence
     }
     
     func save() {
-        if let data = try? JSONEncoder().encode(self) {
+        if let data = try? JSONEncoder().encode(normalizedForPersistence) {
             UserDefaults.standard.set(data, forKey: OpenClawConfig.storageKey)
         }
     }

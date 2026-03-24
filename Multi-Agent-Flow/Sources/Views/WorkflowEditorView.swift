@@ -1186,6 +1186,7 @@ struct EditorToolbar: View {
         }
         .sheet(item: $assistPreviewState) { state in
             AssistProposalPreviewSheet(result: state.result)
+                .environmentObject(appState)
         }
     }
 
@@ -1434,14 +1435,8 @@ struct EditorToolbar: View {
 
             Spacer(minLength: 0)
 
-            if appState.isSavingDraft
-                || appState.lastDraftSaveTime != nil
-                || showsWorkflowRuntimeStatus {
+            if showsWorkflowRuntimeStatus {
                 VStack(alignment: .trailing, spacing: 8) {
-                    if appState.isSavingDraft || appState.lastDraftSaveTime != nil {
-                        toolbarSaveStatusView
-                    }
-
                     workflowRuntimeStatusSummaryRow
                 }
             }
@@ -1829,19 +1824,7 @@ struct EditorToolbar: View {
     @ViewBuilder
     private var workflowRuntimeStatusSummaryRow: some View {
         if showsWorkflowRuntimeStatus {
-            VStack(alignment: .trailing, spacing: 8) {
-                if let revisionSummary = appState.openClawRevisionSummary {
-                    workflowRevisionStatusView(revisionSummary)
-                        .frame(maxWidth: 240, alignment: .trailing)
-                }
-
-                if let runtimeSyncSummary = appState.openClawLatestRuntimeSyncSummary {
-                    workflowRuntimeSyncReceiptStatusView(runtimeSyncSummary)
-                        .frame(maxWidth: 260, alignment: .trailing)
-                }
-
-                workflowRuntimeStatusDetailsButton
-            }
+            workflowRuntimeStatusDetailsButton
         }
     }
 

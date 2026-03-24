@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { OpenClawConfig } from "@multi-agent-flow/domain";
-import { OpenClawHost, shellSingleQuote } from "../electron/openclaw-host";
+import { buildOpenClawProcessEnvironment, OpenClawHost, shellSingleQuote } from "../electron/openclaw-host";
 
 const baseConfig: OpenClawConfig = {
   deploymentKind: "local",
@@ -46,28 +46,32 @@ test("openclaw host resolves app-managed local command plans through bundled run
   });
 });
 
-test("openclaw host keeps external local command plans pinned to configured binary path", () => {
+test("openclaw host ignores legacy local binary hints for local command plans", () => {
   const host = new OpenClawHost(() => ({
     platform: "darwin",
     homeDirectory: "/Users/tester",
     resourcesPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources",
     appPath: "/Users/tester/dev/MultiAgentOrchestrator/apps/desktop",
-    userDataPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow"
+    userDataPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow",
+    pathExists: (candidate) => candidate === "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw"
   }));
 
   const plan = host.buildDeploymentCommandPlan(
     {
       ...baseConfig,
-      runtimeOwnership: "externalLocal",
       localBinaryPath: "/custom/openclaw/bin/openclaw"
     },
     ["agents", "list"]
   );
 
   assert.deepEqual(plan, {
-    command: "/custom/openclaw/bin/openclaw",
+    command: "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
     args: ["agents", "list"],
-    env: {}
+    env: {
+      OPENCLAW_CONFIG_PATH:
+        "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/openclaw.json",
+      OPENCLAW_STATE_DIR: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/state"
+    }
   });
 });
 
@@ -102,4 +106,29 @@ test("openclaw host builds container shell plans through the container engine", 
 
 test("shell quoting keeps single-quoted shell scripts safe", () => {
   assert.equal(shellSingleQuote("/srv/app'space"), "'/srv/app'\"'\"'space'");
+});
+
+test("openclaw host process environment keeps only whitelisted keys and injected managed overrides", () => {
+  const environment = buildOpenClawProcessEnvironment(
+    {
+      OPENCLAW_CONFIG_PATH: "/managed/runtime/openclaw.json",
+      OPENCLAW_STATE_DIR: "/managed/state"
+    },
+    {
+      PATH: "/usr/bin:/bin",
+      HOME: "/Users/tester",
+      LANG: "en_US.UTF-8",
+      OPENCLAW_CONFIG_PATH: "/tmp/external-openclaw.json",
+      OPENCLAW_STATE_DIR: "/tmp/external-state",
+      CUSTOM_SECRET: "ignore-me"
+    }
+  );
+
+  assert.deepEqual(environment, {
+    PATH: "/usr/bin:/bin",
+    HOME: "/Users/tester",
+    LANG: "en_US.UTF-8",
+    OPENCLAW_CONFIG_PATH: "/managed/runtime/openclaw.json",
+    OPENCLAW_STATE_DIR: "/managed/state"
+  });
 });

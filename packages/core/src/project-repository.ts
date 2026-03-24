@@ -145,6 +145,19 @@ export function normalizeProject(input: Partial<MAProject>): MAProject {
   const runtimeStateInput = isRecord(input.runtimeState) ? input.runtimeState : null;
   const agents = normalizeAgents(input, base);
   const workflows = normalizeWorkflows(input, base, agents);
+  const rawOpenClawConfig = {
+    ...base.openClaw.config,
+    ...(openClawConfigInput ?? {}),
+    container: {
+      ...base.openClaw.config.container,
+      ...(openClawContainerInput ?? {})
+    }
+  };
+  const normalizedOpenClawConfig = {
+    ...rawOpenClawConfig,
+    runtimeOwnership: rawOpenClawConfig.deploymentKind === "local" ? "appManaged" : rawOpenClawConfig.runtimeOwnership,
+    localBinaryPath: rawOpenClawConfig.deploymentKind === "local" ? "" : rawOpenClawConfig.localBinaryPath
+  };
 
   return {
     ...base,
@@ -155,14 +168,7 @@ export function normalizeProject(input: Partial<MAProject>): MAProject {
     openClaw: {
       ...base.openClaw,
       ...(openClawInput ?? {}),
-      config: {
-        ...base.openClaw.config,
-        ...(openClawConfigInput ?? {}),
-        container: {
-          ...base.openClaw.config.container,
-          ...(openClawContainerInput ?? {})
-        }
-      },
+      config: normalizedOpenClawConfig,
       availableAgents: Array.isArray(openClawInput?.availableAgents)
         ? openClawInput.availableAgents
         : base.openClaw.availableAgents,

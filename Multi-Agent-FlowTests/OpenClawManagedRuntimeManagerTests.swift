@@ -943,10 +943,11 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
         XCTAssertEqual(descriptor.endpoint, "ws://127.0.0.1:18792")
         XCTAssertEqual(descriptor.binaryPath, managedRuntimeRoot.appendingPathComponent("bin/openclaw", isDirectory: false).path)
         XCTAssertTrue(descriptor.detail.contains("不会复用 ~/.openclaw"))
-        XCTAssertTrue(descriptor.detail.contains("已从首选端口 18789 避让到 18792"))
+        XCTAssertTrue(descriptor.detail.contains("实际使用动态分配端口 18792"))
+        XCTAssertTrue(descriptor.detail.contains("配置端口 18789 仅作兼容保留"))
     }
 
-    func testRuntimeSourceDescriptorUsesExplicitBinarySummaryForExternalLocalRuntime() throws {
+    func testRuntimeSourceDescriptorIgnoresLegacyLocalBinaryHints() throws {
         let manager = OpenClawManager(
             notificationCenter: NotificationCenter(),
             fileManager: .default
@@ -954,7 +955,6 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
 
         var config = OpenClawConfig.default
         config.deploymentKind = .local
-        config.runtimeOwnership = .externalLocal
         config.host = "127.0.0.1"
         config.port = 28888
         config.localBinaryPath = "/custom/openclaw/bin/openclaw"
@@ -962,11 +962,11 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
 
         let descriptor = manager.runtimeSourceDescriptor()
 
-        XCTAssertEqual(descriptor.badgeTitle, "External Local")
-        XCTAssertEqual(descriptor.summary, "用户本地 OpenClaw Binary")
+        XCTAssertEqual(descriptor.badgeTitle, "App Managed")
+        XCTAssertEqual(descriptor.summary, "应用私有 OpenClaw Sidecar")
         XCTAssertEqual(descriptor.endpoint, "ws://127.0.0.1:28888")
-        XCTAssertEqual(descriptor.binaryPath, "/custom/openclaw/bin/openclaw")
-        XCTAssertTrue(descriptor.detail.contains("固定使用用户提供的本地 openclaw binary"))
+        XCTAssertNil(descriptor.binaryPath)
+        XCTAssertTrue(descriptor.detail.contains("不会复用 ~/.openclaw"))
     }
 
     func testManagerStartManagedRuntimeReassignsPortAndSyncsEffectivePort() throws {
@@ -1022,9 +1022,9 @@ final class OpenClawManagedRuntimeManagerTests: XCTestCase {
         let actualPort = try XCTUnwrap(manager.managedRuntimeStatus.port)
         XCTAssertEqual(manager.managedRuntimeStatus.requestedPort, preferredPort)
         XCTAssertNotEqual(actualPort, preferredPort)
-        XCTAssertGreaterThan(actualPort, preferredPort)
-        XCTAssertEqual(manager.config.port, actualPort)
-        XCTAssertTrue(manager.managedRuntimeStatus.lastMessage?.contains("首选端口 \(preferredPort) 已被占用") == true)
+        XCTAssertEqual(manager.config.port, preferredPort)
+        XCTAssertTrue(manager.managedRuntimeStatus.lastMessage?.contains("已动态分配端口 \(actualPort)") == true)
+        XCTAssertTrue(manager.managedRuntimeStatus.lastMessage?.contains("配置端口 \(preferredPort) 仅作兼容保留") == true)
         XCTAssertTrue(manager.managedRuntimeStatus.lastMessage?.contains("\(actualPort)") == true)
 
         let stopExpectation = expectation(description: "managed runtime stopped after reassigned port test")

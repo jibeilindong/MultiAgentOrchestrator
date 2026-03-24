@@ -256,6 +256,110 @@ struct AssistMutationTargetRef: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+struct AssistWorkflowLayoutSnapshot: Codable, Hashable, Sendable {
+    var workflowID: UUID
+    var workflowName: String
+    var nodes: [AssistWorkflowLayoutSnapshotNode]
+    var edges: [AssistWorkflowLayoutSnapshotEdge]
+
+    init(
+        workflowID: UUID,
+        workflowName: String,
+        nodes: [AssistWorkflowLayoutSnapshotNode],
+        edges: [AssistWorkflowLayoutSnapshotEdge]
+    ) {
+        self.workflowID = workflowID
+        self.workflowName = workflowName
+        self.nodes = nodes
+        self.edges = edges
+    }
+}
+
+struct AssistWorkflowLayoutSnapshotNode: Codable, Hashable, Sendable {
+    var nodeID: UUID
+    var title: String
+    var nodeType: String
+    var x: Double
+    var y: Double
+
+    init(
+        nodeID: UUID,
+        title: String,
+        nodeType: String,
+        x: Double,
+        y: Double
+    ) {
+        self.nodeID = nodeID
+        self.title = title
+        self.nodeType = nodeType
+        self.x = x
+        self.y = y
+    }
+}
+
+struct AssistWorkflowLayoutSnapshotEdge: Codable, Hashable, Sendable {
+    var fromNodeID: UUID
+    var toNodeID: UUID
+
+    init(
+        fromNodeID: UUID,
+        toNodeID: UUID
+    ) {
+        self.fromNodeID = fromNodeID
+        self.toNodeID = toNodeID
+    }
+}
+
+struct AssistWorkflowLayoutPlan: Codable, Hashable, Sendable {
+    var workflowID: UUID
+    var workflowName: String
+    var scopeType: AssistScopeType
+    var scopedNodeID: UUID?
+    var placements: [AssistWorkflowNodePlacement]
+    var note: String?
+
+    init(
+        workflowID: UUID,
+        workflowName: String,
+        scopeType: AssistScopeType,
+        scopedNodeID: UUID? = nil,
+        placements: [AssistWorkflowNodePlacement],
+        note: String? = nil
+    ) {
+        self.workflowID = workflowID
+        self.workflowName = workflowName
+        self.scopeType = scopeType
+        self.scopedNodeID = scopedNodeID
+        self.placements = placements
+        self.note = note
+    }
+}
+
+struct AssistWorkflowNodePlacement: Codable, Hashable, Sendable {
+    var nodeID: UUID
+    var title: String
+    var beforeX: Double
+    var beforeY: Double
+    var afterX: Double
+    var afterY: Double
+
+    init(
+        nodeID: UUID,
+        title: String,
+        beforeX: Double,
+        beforeY: Double,
+        afterX: Double,
+        afterY: Double
+    ) {
+        self.nodeID = nodeID
+        self.title = title
+        self.beforeX = beforeX
+        self.beforeY = beforeY
+        self.afterX = afterX
+        self.afterY = afterY
+    }
+}
+
 struct AssistSnapshotRef: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var targetRef: AssistMutationTargetRef
@@ -370,6 +474,8 @@ struct AssistProposal: Identifiable, Codable, Hashable, Sendable {
     var warnings: [String]
     var changeItems: [AssistChangeItem]
     var artifactIDs: [String]
+    var latestReceiptID: String?
+    var latestUndoCheckpointID: String?
     var requiresConfirmation: Bool
 
     init(
@@ -384,6 +490,8 @@ struct AssistProposal: Identifiable, Codable, Hashable, Sendable {
         warnings: [String] = [],
         changeItems: [AssistChangeItem] = [],
         artifactIDs: [String] = [],
+        latestReceiptID: String? = nil,
+        latestUndoCheckpointID: String? = nil,
         requiresConfirmation: Bool = true
     ) {
         self.id = id
@@ -397,6 +505,8 @@ struct AssistProposal: Identifiable, Codable, Hashable, Sendable {
         self.warnings = warnings
         self.changeItems = changeItems
         self.artifactIDs = artifactIDs
+        self.latestReceiptID = latestReceiptID
+        self.latestUndoCheckpointID = latestUndoCheckpointID
         self.requiresConfirmation = requiresConfirmation
     }
 }

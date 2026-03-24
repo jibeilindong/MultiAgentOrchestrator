@@ -396,10 +396,21 @@ export function updateOpenClawConfig(
     }>;
   }
 ): MAProject {
+  const nextDeploymentKind = patch.deploymentKind ?? project.openClaw.config.deploymentKind;
+  const nextRuntimeOwnership = nextDeploymentKind === "local"
+    ? "appManaged"
+    : (patch.runtimeOwnership ?? project.openClaw.config.runtimeOwnership);
+  const nextLocalBinaryPath = nextDeploymentKind === "local"
+    ? ""
+    : (
+        patch.localBinaryPath === undefined
+          ? project.openClaw.config.localBinaryPath
+          : (patch.localBinaryPath ?? "").trim()
+      );
   const nextConfig = {
     ...project.openClaw.config,
-    deploymentKind: patch.deploymentKind ?? project.openClaw.config.deploymentKind,
-    runtimeOwnership: patch.runtimeOwnership ?? project.openClaw.config.runtimeOwnership,
+    deploymentKind: nextDeploymentKind,
+    runtimeOwnership: nextRuntimeOwnership,
     host: patch.host === undefined ? project.openClaw.config.host : patch.host.trim(),
     port:
       patch.port === undefined || Number.isNaN(patch.port)
@@ -414,10 +425,7 @@ export function updateOpenClawConfig(
         ? project.openClaw.config.timeout
         : Math.max(1, Math.round(patch.timeout)),
     autoConnect: patch.autoConnect ?? project.openClaw.config.autoConnect,
-    localBinaryPath:
-      patch.localBinaryPath === undefined
-        ? project.openClaw.config.localBinaryPath
-        : (patch.localBinaryPath ?? "").trim(),
+    localBinaryPath: nextLocalBinaryPath,
     cliQuietMode: patch.cliQuietMode ?? project.openClaw.config.cliQuietMode,
     cliLogLevel: patch.cliLogLevel ?? project.openClaw.config.cliLogLevel,
     container: {

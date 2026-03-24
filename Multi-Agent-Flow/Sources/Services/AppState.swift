@@ -1257,7 +1257,7 @@ class AppState: ObservableObject {
     var openClawRuntimeSourceColor: Color {
         switch openClawManager.config.deploymentKind {
         case .local:
-            return openClawManager.config.runtimeOwnership == .appManaged ? .green : .orange
+            return .green
         case .container:
             return .blue
         case .remoteServer:

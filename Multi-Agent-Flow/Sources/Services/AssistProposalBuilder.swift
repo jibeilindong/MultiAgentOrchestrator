@@ -1,20 +1,25 @@
 import Foundation
 
 struct AssistProposalBuilder {
+    private let horizontalSpacing: Double = 240
+    private let verticalSpacing: Double = 160
+    private let gridSize: Double = 40
+
     func build(
         request: AssistRequest,
         contextPack: AssistContextPack
     ) -> AssistProposal {
         let warnings = proposalWarnings(for: request)
+        let layoutPlan = workflowLayoutPlan(for: request, contextPack: contextPack)
         let changeItem = AssistChangeItem(
             target: mutationTarget(for: request),
             operation: changeOperation(for: request),
             title: changeTitle(for: request),
-            summary: changeSummary(for: request),
+            summary: changeSummary(for: request, layoutPlan: layoutPlan),
             relativeFilePath: request.scopeRef.relativeFilePath,
-            beforePreview: beforePreview(from: contextPack),
-            afterPreview: afterPreview(for: request),
-            patch: nil,
+            beforePreview: beforePreview(from: contextPack, request: request, layoutPlan: layoutPlan),
+            afterPreview: afterPreview(for: request, layoutPlan: layoutPlan),
+            patch: patchPayload(for: request, layoutPlan: layoutPlan),
             warnings: warnings,
             scopeRef: request.scopeRef
         )
@@ -23,8 +28,8 @@ struct AssistProposalBuilder {
             requestID: request.id,
             contextPackID: contextPack.id,
             status: .awaitingConfirmation,
-            summary: proposalSummary(for: request),
-            rationale: proposalRationale(for: request, contextPack: contextPack),
+            summary: proposalSummary(for: request, layoutPlan: layoutPlan),
+            rationale: proposalRationale(for: request, contextPack: contextPack, layoutPlan: layoutPlan),
             warnings: warnings,
             changeItems: [changeItem],
             artifactIDs: [],
@@ -33,7 +38,8 @@ struct AssistProposalBuilder {
     }
 
     private func proposalSummary(
-        for request: AssistRequest
+        for request: AssistRequest,
+        layoutPlan: AssistWorkflowLayoutPlan?
     ) -> String {
         let scopeLabel = scopeLabel(for: request.scopeRef, scopeType: request.scopeType)
 
@@ -45,6 +51,9 @@ struct AssistProposalBuilder {
         case .modifyManagedContent:
             return "Managed content suggestion prepared for \(scopeLabel)."
         case .reorganizeWorkflow:
+            if let layoutPlan {
+                return "Workflow layout proposal prepared for \(scopeLabel), covering \(layoutPlan.placements.count) node updates."
+            }
             return "Workflow reorganization suggestion prepared for \(scopeLabel)."
         case .inspectConfiguration:
             return "Configuration inspection report prepared for \(scopeLabel)."
@@ -59,17 +68,25 @@ struct AssistProposalBuilder {
 
     private func proposalRationale(
         for request: AssistRequest,
-        contextPack: AssistContextPack
+        contextPack: AssistContextPack,
+        layoutPlan: AssistWorkflowLayoutPlan?
     ) -> String {
         let contextTitles = contextPack.entries
             .map(\.title)
             .joined(separator: ", ")
-        return [
+
+        var lines = [
             "Prompt: \(truncated(request.prompt, limit: 240))",
             "Resolved scope: \(scopeLabel(for: request.scopeRef, scopeType: request.scopeType))",
             "Context used: \(contextTitles.isEmpty ? "none" : contextTitles)",
             "Execution remains suggestion-first until explicit confirmation."
-        ].joined(separator: "\n")
+        ]
+
+        if let note = layoutPlan?.note, !note.isEmpty {
+            lines.append("Layout rationale: \(note)")
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     private func proposalWarnings(
@@ -167,7 +184,8 @@ struct AssistProposalBuilder {
     }
 
     private func changeSummary(
-        for request: AssistRequest
+        for request: AssistRequest,
+        layoutPlan: AssistWorkflowLayoutPlan?
     ) -> String {
         let scopeLabel = scopeLabel(for: request.scopeRef, scopeType: request.scopeType)
         switch request.intent {
@@ -178,6 +196,9 @@ struct AssistProposalBuilder {
         case .modifyManagedContent:
             return "Prepare a managed-content update suggestion for \(scopeLabel) and hold it for confirmation."
         case .reorganizeWorkflow:
+            if let layoutPlan {
+                return "Prepare a workflow layout adjustment plan for \(scopeLabel), covering \(layoutPlan.placements.count) proposed node position changes."
+            }
             return "Prepare a workflow layout adjustment plan for \(scopeLabel) with preview-first semantics."
         case .inspectConfiguration:
             return "Prepare a read-only configuration analysis for \(scopeLabel)."
@@ -191,26 +212,253 @@ struct AssistProposalBuilder {
     }
 
     private func beforePreview(
-        from contextPack: AssistContextPack
+        from contextPack: AssistContextPack,
+        request: AssistRequest,
+        layoutPlan: AssistWorkflowLayoutPlan?
     ) -> String? {
+        if let layoutPlan {
+            return workflowLayoutBeforePreview(for: layoutPlan)
+        }
         if let selectedText = contextPack.entries.first(where: { $0.kind == .selectedText })?.value {
             return truncated(selectedText, limit: 280)
         }
         if let fileContent = contextPack.entries.first(where: { $0.kind == .fileContent })?.value {
             return truncated(fileContent, limit: 280)
         }
+        if request.intent == .reorganizeWorkflow {
+            return contextPack.entries.first(where: { $0.kind == .workflowLayout })?.value
+        }
         return nil
     }
 
     private func afterPreview(
-        for request: AssistRequest
+        for request: AssistRequest,
+        layoutPlan: AssistWorkflowLayoutPlan?
     ) -> String {
         switch request.intent {
         case .inspectConfiguration, .inspectPerformance, .explainIssue:
             return "Read-only structured report is pending user confirmation."
-        case .rewriteSelection, .completeTemplate, .modifyManagedContent, .reorganizeWorkflow, .custom:
+        case .reorganizeWorkflow:
+            if let layoutPlan {
+                return workflowLayoutAfterPreview(for: layoutPlan)
+            }
+            return "Workflow layout proposal is pending user confirmation."
+        case .rewriteSelection, .completeTemplate, .modifyManagedContent, .custom:
             return "Structured preview is pending user confirmation: \(truncated(request.prompt, limit: 220))"
         }
+    }
+
+    private func patchPayload(
+        for request: AssistRequest,
+        layoutPlan: AssistWorkflowLayoutPlan?
+    ) -> String? {
+        guard request.intent == .reorganizeWorkflow,
+              let layoutPlan else {
+            return nil
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(layoutPlan) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func workflowLayoutPlan(
+        for request: AssistRequest,
+        contextPack: AssistContextPack
+    ) -> AssistWorkflowLayoutPlan? {
+        guard request.intent == .reorganizeWorkflow,
+              let snapshot = workflowLayoutSnapshot(from: contextPack) else {
+            return nil
+        }
+
+        let targetNodeIDs = targetNodeIDs(in: snapshot, request: request)
+        let candidateNodes = snapshot.nodes.filter { targetNodeIDs.contains($0.nodeID) }
+        guard !candidateNodes.isEmpty else { return nil }
+
+        let depths = depthMap(in: snapshot, request: request)
+        let sortedDepths = Array(Set(candidateNodes.map { depths[$0.nodeID] ?? 0 })).sorted()
+        let depthToColumn = Dictionary(uniqueKeysWithValues: sortedDepths.enumerated().map { ($1, $0) })
+
+        let baseX = candidateNodes.map(\.x).min() ?? 0
+        let baseY = candidateNodes.map(\.y).min() ?? 0
+
+        var placements: [AssistWorkflowNodePlacement] = []
+        for depth in sortedDepths {
+            let group = candidateNodes
+                .filter { (depths[$0.nodeID] ?? 0) == depth }
+                .sorted(by: nodeSort)
+
+            for (index, node) in group.enumerated() {
+                let column = depthToColumn[depth] ?? 0
+                let targetX = snappedCoordinate(baseX + Double(column) * horizontalSpacing)
+                let targetY = snappedCoordinate(baseY + Double(index) * verticalSpacing)
+
+                guard abs(node.x - targetX) > 0.5 || abs(node.y - targetY) > 0.5 else {
+                    continue
+                }
+
+                placements.append(
+                    AssistWorkflowNodePlacement(
+                        nodeID: node.nodeID,
+                        title: node.title,
+                        beforeX: node.x,
+                        beforeY: node.y,
+                        afterX: targetX,
+                        afterY: targetY
+                    )
+                )
+            }
+        }
+
+        let note: String
+        if placements.isEmpty {
+            note = "The current workflow layout is already close to the proposed structured arrangement."
+        } else if request.scopeType == .node, let nodeTitle = request.scopeRef.additionalMetadata["nodeTitle"] {
+            note = "The proposal focuses on the selected node '\(nodeTitle)' and its directly connected neighborhood."
+        } else {
+            note = "The proposal reorganizes the current workflow by graph depth and vertical distribution to reduce overlap and improve readability."
+        }
+
+        return AssistWorkflowLayoutPlan(
+            workflowID: snapshot.workflowID,
+            workflowName: snapshot.workflowName,
+            scopeType: request.scopeType,
+            scopedNodeID: request.scopeRef.nodeID,
+            placements: placements,
+            note: note
+        )
+    }
+
+    private func workflowLayoutSnapshot(
+        from contextPack: AssistContextPack
+    ) -> AssistWorkflowLayoutSnapshot? {
+        guard let entry = contextPack.entries.first(where: { $0.kind == .workflowLayout }),
+              let rawValue = entry.metadata["layoutSnapshotJSON"],
+              let data = rawValue.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(AssistWorkflowLayoutSnapshot.self, from: data)
+    }
+
+    private func targetNodeIDs(
+        in snapshot: AssistWorkflowLayoutSnapshot,
+        request: AssistRequest
+    ) -> Set<UUID> {
+        if request.scopeType == .node,
+           let scopedNodeID = request.scopeRef.nodeID {
+            var scopedNodeIDs: Set<UUID> = [scopedNodeID]
+            for edge in snapshot.edges {
+                if edge.fromNodeID == scopedNodeID {
+                    scopedNodeIDs.insert(edge.toNodeID)
+                }
+                if edge.toNodeID == scopedNodeID {
+                    scopedNodeIDs.insert(edge.fromNodeID)
+                }
+            }
+            return scopedNodeIDs
+        }
+
+        return Set(snapshot.nodes.map(\.nodeID))
+    }
+
+    private func depthMap(
+        in snapshot: AssistWorkflowLayoutSnapshot,
+        request: AssistRequest
+    ) -> [UUID: Int] {
+        let adjacency = Dictionary(grouping: snapshot.edges, by: \.fromNodeID)
+        let startNodeIDs = preferredStartNodeIDs(in: snapshot, request: request)
+        var queue = Array(startNodeIDs)
+        var depths = Dictionary(uniqueKeysWithValues: startNodeIDs.map { ($0, 0) })
+        var cursor = 0
+
+        while cursor < queue.count {
+            let nodeID = queue[cursor]
+            cursor += 1
+
+            for edge in adjacency[nodeID] ?? [] {
+                let candidateDepth = (depths[nodeID] ?? 0) + 1
+                if let existingDepth = depths[edge.toNodeID], existingDepth <= candidateDepth {
+                    continue
+                }
+                depths[edge.toNodeID] = candidateDepth
+                queue.append(edge.toNodeID)
+            }
+        }
+
+        let fallbackDepthStart = (depths.values.max() ?? -1) + 1
+        let unresolvedNodes = snapshot.nodes
+            .filter { depths[$0.nodeID] == nil }
+            .sorted(by: nodeSort)
+
+        for (index, node) in unresolvedNodes.enumerated() {
+            depths[node.nodeID] = fallbackDepthStart + index
+        }
+
+        return depths
+    }
+
+    private func preferredStartNodeIDs(
+        in snapshot: AssistWorkflowLayoutSnapshot,
+        request: AssistRequest
+    ) -> [UUID] {
+        let startNodes = snapshot.nodes
+            .filter { $0.nodeType == "start" }
+            .sorted(by: nodeSort)
+            .map(\.nodeID)
+        if !startNodes.isEmpty {
+            return startNodes
+        }
+
+        if let scopedNodeID = request.scopeRef.nodeID {
+            return [scopedNodeID]
+        }
+
+        return snapshot.nodes
+            .sorted(by: nodeSort)
+            .prefix(1)
+            .map(\.nodeID)
+    }
+
+    private func workflowLayoutBeforePreview(
+        for plan: AssistWorkflowLayoutPlan
+    ) -> String {
+        if plan.placements.isEmpty {
+            return "No node positions need to change."
+        }
+
+        let lines = plan.placements.prefix(6).map { placement in
+            "\(placement.title): (\(Int(placement.beforeX)), \(Int(placement.beforeY)))"
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func workflowLayoutAfterPreview(
+        for plan: AssistWorkflowLayoutPlan
+    ) -> String {
+        if plan.placements.isEmpty {
+            return "Layout already appears organized. Confirming this proposal would result in no node movement."
+        }
+
+        var lines = [
+            "Workflow: \(plan.workflowName)",
+            "Moved Nodes: \(plan.placements.count)"
+        ]
+        lines.append(contentsOf: plan.placements.prefix(8).map { placement in
+            "\(placement.title): (\(Int(placement.beforeX)), \(Int(placement.beforeY))) -> (\(Int(placement.afterX)), \(Int(placement.afterY)))"
+        })
+
+        if plan.placements.count > 8 {
+            lines.append("+ \(plan.placements.count - 8) more nodes")
+        }
+
+        if let note = plan.note, !note.isEmpty {
+            lines.append(note)
+        }
+
+        return lines.joined(separator: "\n")
     }
 
     private func scopeLabel(
@@ -227,6 +475,25 @@ struct AssistProposalBuilder {
             return "file '\(relativeFilePath)'"
         }
         return scopeType.rawValue.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private func snappedCoordinate(
+        _ value: Double
+    ) -> Double {
+        (value / gridSize).rounded() * gridSize
+    }
+
+    private func nodeSort(
+        _ lhs: AssistWorkflowLayoutSnapshotNode,
+        _ rhs: AssistWorkflowLayoutSnapshotNode
+    ) -> Bool {
+        if lhs.y != rhs.y {
+            return lhs.y < rhs.y
+        }
+        if lhs.x != rhs.x {
+            return lhs.x < rhs.x
+        }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
     }
 
     private func truncated(

@@ -467,8 +467,7 @@ struct WorkbenchConversationView: View {
         let config = appState.openClawManager.config
         switch config.deploymentKind {
         case .local:
-            return !config.requiresExplicitLocalBinaryPath
-                || !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return true
         case .remoteServer:
             return !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .container:
@@ -602,6 +601,7 @@ struct WorkbenchConversationView: View {
         }
         .sheet(item: $assistPreviewState) { state in
             AssistProposalPreviewSheet(result: state.result)
+                .environmentObject(appState)
         }
     }
 

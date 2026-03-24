@@ -190,8 +190,81 @@ final class QuickChatContextResolutionTests: XCTestCase {
     }
 
     @MainActor
+    func testQuickChatStoreRenamesSession() {
+        let appState = makeSingleAgentAppState()
+        let store = QuickChatStore()
+        store.present(using: appState)
+
+        guard let sessionID = store.selectedSessionID else {
+            return XCTFail("Expected selected session")
+        }
+
+        store.renameSession(sessionID, title: "需求梳理")
+
+        XCTAssertEqual(
+            store.availableSessions.first(where: { $0.id == sessionID })?.title,
+            "需求梳理"
+        )
+
+        store.renameSession(sessionID, title: "")
+
+        XCTAssertEqual(
+            store.availableSessions.first(where: { $0.id == sessionID })?.title,
+            "会话 1"
+        )
+    }
+
+    @MainActor
+    func testQuickChatStoreDeletesCurrentSessionAndFallsBack() {
+        let appState = makeSingleAgentAppState()
+        let store = QuickChatStore()
+        store.present(using: appState)
+
+        guard let firstSessionID = store.selectedSessionID else {
+            return XCTFail("Expected selected session")
+        }
+
+        store.updateDraft("first")
+        store.startNewSession()
+        let secondSessionID = try? XCTUnwrap(store.selectedSessionID)
+
+        store.deleteSession(firstSessionID)
+
+        XCTAssertEqual(store.availableSessions.count, 1)
+        XCTAssertEqual(store.selectedSessionID, secondSessionID)
+
+        if let secondSessionID {
+            store.deleteSession(secondSessionID)
+            XCTAssertEqual(store.availableSessions.count, 1)
+            XCTAssertNotEqual(store.selectedSessionID, secondSessionID)
+        }
+    }
+
+    @MainActor
     private func makeAppState() -> AppState {
         AppState()
+    }
+
+    @MainActor
+    private func makeSingleAgentAppState() -> AppState {
+        let appState = makeAppState()
+        let planner = makeAgent(name: "Planner", identifier: "planner")
+
+        let startNode = WorkflowNode(type: .start)
+        var plannerNode = WorkflowNode(type: .agent)
+        plannerNode.agentID = planner.id
+
+        var workflow = Workflow(name: "Single Agent Workflow")
+        workflow.nodes = [startNode, plannerNode]
+        workflow.edges = [WorkflowEdge(from: startNode.id, to: plannerNode.id)]
+
+        var project = MAProject(name: "Single Agent Project")
+        project.agents = [planner]
+        project.workflows = [workflow]
+
+        appState.currentProject = project
+        appState.activeWorkflowID = workflow.id
+        return appState
     }
 
     private func makeAgent(name: String, identifier: String) -> Agent {

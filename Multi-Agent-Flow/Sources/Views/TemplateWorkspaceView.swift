@@ -26,6 +26,8 @@ private enum TemplateWorkspaceFileEditorMode: String, CaseIterable, Identifiable
 }
 
 struct TemplateWorkspaceView: View {
+    @EnvironmentObject private var appState: AppState
+
     let template: AgentTemplate
     var onFeedback: (String) -> Void = { _ in }
     var onPersisted: (AgentTemplate) -> Void = { _ in }
@@ -50,6 +52,8 @@ struct TemplateWorkspaceView: View {
     @State private var soulStructuredErrorMessage: String?
     @State private var documentStructuredErrorMessage: String?
     @State private var showingDeleteTemplateAlert = false
+    @State private var isPresentingAssistComposer = false
+    @State private var assistPreviewState: AssistProposalPreviewState?
 
     private var draftSession: TemplateDraftSession? {
         templateLibrary.draftSession(for: template.id)
@@ -207,6 +211,23 @@ struct TemplateWorkspaceView: View {
                     performTemplateAssetImport(report)
                 }
             )
+        }
+        .sheet(isPresented: $isPresentingAssistComposer) {
+            if let node = selectedNode {
+                TemplateWorkspaceAssistComposerSheet(
+                    template: template,
+                    relativeFilePath: node.relativePath,
+                    isFileMissing: node.isPresent == false,
+                    fileContent: node.isPresent ? editorText : nil
+                ) { result in
+                    assistPreviewState = AssistProposalPreviewState(result: result)
+                }
+                .environmentObject(appState)
+            }
+        }
+        .sheet(item: $assistPreviewState) { state in
+            AssistProposalPreviewSheet(result: state.result)
+                .environmentObject(appState)
         }
         .alert("删除模板资产", isPresented: $showingDeleteTemplateAlert) {
             Button("删除", role: .destructive) {
@@ -368,6 +389,15 @@ struct TemplateWorkspaceView: View {
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 150)
+                    }
+                    if node.isEditable {
+                        Button {
+                            isPresentingAssistComposer = true
+                        } label: {
+                            Label("Assist", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Assist 只围绕当前模板文件生成建议与预览，不会直接改正式模板资产。")
                     }
                     if node.isDirty {
                         statusBadge("草稿中", color: .orange)

@@ -13,6 +13,25 @@ struct OpenClawHostCommandPlan {
 }
 
 nonisolated final class OpenClawHost {
+    private nonisolated static let inheritedProcessEnvironmentKeys: Set<String> = [
+        "HOME",
+        "PATH",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TERM",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "__CF_USER_TEXT_ENCODING"
+    ]
+
     private final class ProcessOutputAccumulator {
         private let lock = NSLock()
         private var stdoutData = Data()
@@ -65,7 +84,7 @@ nonisolated final class OpenClawHost {
         )
         return candidates.first(where: { fileManager.fileExists(atPath: $0) })
             ?? candidates.first
-            ?? config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
     }
 
     func fallbackLocalOpenClawRootURL() -> URL {
@@ -85,8 +104,7 @@ nonisolated final class OpenClawHost {
         process.executableURL = executableURL
         process.arguments = arguments
         if !environment.isEmpty {
-            var mergedEnvironment = ProcessInfo.processInfo.environment
-            environment.forEach { mergedEnvironment[$0.key] = $0.value }
+            let mergedEnvironment = sanitizedProcessEnvironment(overrides: environment)
             if let stateDirectory = mergedEnvironment["OPENCLAW_STATE_DIR"],
                !stateDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try FileManager.default.createDirectory(
@@ -195,6 +213,23 @@ nonisolated final class OpenClawHost {
         ]
     }
 
+    nonisolated static func sanitizedProcessEnvironment(
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        overrides: [String: String] = [:]
+    ) -> [String: String] {
+        var sanitized: [String: String] = [:]
+        for (key, value) in baseEnvironment {
+            let normalizedKey = key.uppercased()
+            guard inheritedProcessEnvironmentKeys.contains(normalizedKey) else { continue }
+            sanitized[key] = value
+        }
+        for key in sanitized.keys where key.uppercased().hasPrefix("OPENCLAW_") {
+            sanitized.removeValue(forKey: key)
+        }
+        overrides.forEach { sanitized[$0.key] = $0.value }
+        return sanitized
+    }
+
     nonisolated private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
         var seen = Set<String>()
         return candidates.compactMap { candidate in
@@ -226,10 +261,6 @@ nonisolated final class OpenClawHost {
             return configured.isEmpty ? [] : [configured]
         }
 
-        if config.requiresExplicitLocalBinaryPath {
-            return configured.isEmpty ? [] : [configured]
-        }
-
         let managedRoot = managedRuntimeRootURL ?? defaultManagedLocalRuntimeRootURL()
         let bundleCandidates = [bundleResourceURL].compactMap { $0 }.flatMap { resourceURL in
             [
@@ -248,12 +279,7 @@ nonisolated final class OpenClawHost {
         if config.usesManagedLocalRuntime {
             return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates)
         }
-
-        if !configured.isEmpty {
-            return deduplicatedLocalBinaryPaths([configured])
-        }
-
-        return deduplicatedLocalBinaryPaths([configured] + bundleCandidates + managedCandidates)
+        return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates)
     }
 
     func buildOpenClawCommandPlan(

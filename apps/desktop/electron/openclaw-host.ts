@@ -34,6 +34,56 @@ type OpenClawHostExecutor = (
   options?: OpenClawHostCommandOptions
 ) => Promise<OpenClawHostExecResult>;
 
+const INHERITED_PROCESS_ENVIRONMENT_KEYS = new Set([
+  "HOME",
+  "PATH",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_MESSAGES",
+  "TERM",
+  "TERM_PROGRAM",
+  "TERM_PROGRAM_VERSION",
+  "__CF_USER_TEXT_ENCODING",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "WINDIR",
+  "APPDATA",
+  "LOCALAPPDATA"
+]);
+
+export function buildOpenClawProcessEnvironment(
+  planEnv: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    if (!INHERITED_PROCESS_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  for (const key of Object.keys(sanitized)) {
+    if (key.toUpperCase().startsWith("OPENCLAW_")) {
+      delete sanitized[key];
+    }
+  }
+  return {
+    ...sanitized,
+    ...planEnv
+  };
+}
+
 function defaultOpenClawHostExecutor(
   plan: OpenClawHostCommandPlan,
   options?: OpenClawHostCommandOptions
@@ -46,10 +96,7 @@ function defaultOpenClawHostExecutor(
     timeout: options?.timeoutMs ?? 15000,
     windowsHide: true,
     maxBuffer: 1024 * 1024,
-    env: {
-      ...process.env,
-      ...plan.env
-    }
+    env: buildOpenClawProcessEnvironment(plan.env)
   }) as Promise<OpenClawHostExecResult>;
 }
 
@@ -68,7 +115,7 @@ export class OpenClawHost {
   }
 
   private resolveManagedLocalRuntimeEnvironment(config: OpenClawConfig): Record<string, string> {
-    if (config.deploymentKind !== "local" || config.runtimeOwnership !== "appManaged") {
+    if (config.deploymentKind !== "local") {
       return {};
     }
 

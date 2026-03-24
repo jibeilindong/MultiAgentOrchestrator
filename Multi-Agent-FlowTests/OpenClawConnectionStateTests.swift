@@ -699,6 +699,60 @@ final class OpenClawConnectionStateTests: XCTestCase {
         )
     }
 
+    func testPreferredGatewayConfigRejectsManagedLocalFallbackWhenRuntimeIsNotRunning() throws {
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let managedRuntimeRoot = tempDirectory.appendingPathComponent("runtime", isDirectory: true)
+        let supervisorRoot = tempDirectory.appendingPathComponent("supervisor", isDirectory: true)
+        try FileManager.default.createDirectory(at: managedRuntimeRoot, withIntermediateDirectories: true)
+        try """
+        {
+          "gateway": {
+            "mode": "local",
+            "auth": {
+              "mode": "token",
+              "token": "managed-local-token"
+            }
+          }
+        }
+        """.write(
+            to: managedRuntimeRoot.appendingPathComponent("openclaw.json", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let host = OpenClawHost(
+            fileManager: .default,
+            bundleResourceURL: nil,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            homeDirectory: tempDirectory
+        )
+        let supervisor = OpenClawManagedRuntimeSupervisor(
+            fileManager: .default,
+            host: host,
+            managedRuntimeRootURL: managedRuntimeRoot,
+            supervisorRootURL: supervisorRoot
+        )
+        let manager = OpenClawManager(
+            notificationCenter: NotificationCenter(),
+            fileManager: .default,
+            host: host,
+            managedRuntimeSupervisor: supervisor
+        )
+
+        var config = OpenClawConfig.default
+        config.deploymentKind = .local
+        config.runtimeOwnership = .appManaged
+        config.host = "127.0.0.1"
+        config.port = 18789
+        config.apiKey = "fallback-token"
+        manager.config = config
+
+        XCTAssertEqual(manager.managedRuntimeStatus.state, .idle)
+        XCTAssertNil(manager.preferredGatewayConfig(using: config))
+    }
+
     func testPreferredGatewayConfigUsesCLIReportedLocalRoot() throws {
         let manager = OpenClawManager(notificationCenter: NotificationCenter())
         let tempDirectory = try makeTemporaryDirectory()

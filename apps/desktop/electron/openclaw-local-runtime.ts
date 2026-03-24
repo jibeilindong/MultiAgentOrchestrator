@@ -1,10 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import {
-  openClawRequiresExplicitLocalBinaryPath,
-  type OpenClawConfig
-} from "@multi-agent-flow/domain";
+import { type OpenClawConfig } from "@multi-agent-flow/domain";
 
 export interface OpenClawLocalRuntimeEnvironment {
   platform?: NodeJS.Platform;
@@ -84,16 +81,11 @@ export function resolveLocalOpenClawBinaryPath(
   config: OpenClawConfig,
   environment: OpenClawLocalRuntimeEnvironment = {}
 ): string {
-  const configured = config.localBinaryPath.trim();
   if (config.deploymentKind !== "local") {
-    return configured;
-  }
-
-  if (openClawRequiresExplicitLocalBinaryPath(config)) {
-    return configured;
+    return config.localBinaryPath.trim();
   }
 
   const candidates = buildManagedLocalOpenClawBinaryCandidates(environment);
   const pathExists = environment.pathExists ?? existsSync;
-  return candidates.find((candidate) => pathExists(candidate)) ?? candidates[0] ?? configured;
+  return candidates.find((candidate) => pathExists(candidate)) ?? candidates[0] ?? "";
 }

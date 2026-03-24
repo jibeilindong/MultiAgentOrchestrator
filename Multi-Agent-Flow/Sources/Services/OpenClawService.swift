@@ -3844,7 +3844,7 @@ class OpenClawService: ObservableObject {
     private func capabilityCacheKey(for config: OpenClawConfig) -> String {
         switch config.deploymentKind {
         case .local:
-            return "local|\(config.runtimeOwnership.rawValue)|\(config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines))"
+            return "local|appManaged"
         case .container:
             return "container|\(config.container.engine)|\(config.container.containerName)"
         case .remoteServer:

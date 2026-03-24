@@ -81,6 +81,37 @@ final class AssistOrchestratorTests: XCTestCase {
         XCTAssertEqual(draft.additionalMetadata["entrySurface"], "workflow_editor")
     }
 
+    @MainActor
+    func testWorkflowAssistProposalBuildsStructuredLayoutPatch() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let appState = AppState()
+        let project = makeProject()
+        let workflow = project.workflows[0]
+        let node = workflow.nodes[1]
+        let store = AssistStore(fileSystem: AssistFileSystem(), appSupportRootDirectory: rootURL)
+
+        appState.currentProject = project
+        appState.activeWorkflowID = workflow.id
+        appState.selectedNodeID = node.id
+
+        let result = try appState.createAssistProposal(
+            appState.makeWorkflowEditorAssistDraft(
+                prompt: "请整理当前节点附近的布局",
+                workflowID: workflow.id
+            ),
+            orchestrator: AssistOrchestrator(store: store)
+        )
+
+        let patch = try XCTUnwrap(result.proposal.changeItems.first?.patch)
+        let plan = try JSONDecoder().decode(AssistWorkflowLayoutPlan.self, from: Data(patch.utf8))
+        XCTAssertEqual(plan.workflowID, workflow.id)
+        XCTAssertEqual(plan.scopeType, .node)
+        XCTAssertEqual(plan.scopedNodeID, node.id)
+        XCTAssertFalse(plan.placements.isEmpty)
+    }
+
     func testContextResolverCapturesProjectWorkflowNodeAndWorkbenchThreadHistory() {
         let project = makeProject()
         let workflow = project.workflows[0]
@@ -189,6 +220,140 @@ final class AssistOrchestratorTests: XCTestCase {
         )
     }
 
+    func testApplyPersistsDecisionReceiptArtifactAndStatuses() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let project = makeProject()
+        let workflow = project.workflows[0]
+        let node = workflow.nodes[1]
+        let fileSystem = AssistFileSystem()
+        let store = AssistStore(fileSystem: fileSystem, appSupportRootDirectory: rootURL)
+        let submitOrchestrator = AssistOrchestrator(store: store)
+
+        let submission = try submitOrchestrator.submit(
+            AssistSubmissionInput(
+                source: .inlineEditor,
+                intent: .inspectPerformance,
+                scopeType: .workflow,
+                prompt: "分析当前 workflow 的性能瓶颈",
+                requestedAction: .proposalOnly,
+                workflowID: workflow.id,
+                nodeID: node.id,
+                workspaceSurface: .runtimeReadonly
+            ),
+            snapshot: AssistContextResolver.Snapshot(
+                project: project,
+                activeWorkflowID: workflow.id,
+                selectedNodeID: node.id
+            )
+        )
+
+        let gateway = StubAssistMutationGateway()
+        let executeOrchestrator = AssistOrchestrator(
+            store: store,
+            mutationGateway: gateway
+        )
+        let execution = try executeOrchestrator.apply(submission.proposal.id, actorID: "tester")
+
+        XCTAssertEqual(execution.decision.disposition, .accepted)
+        XCTAssertEqual(execution.receipt?.status, .applied)
+        XCTAssertEqual(execution.proposal.status, .applied)
+        XCTAssertEqual(execution.request.status, .completed)
+        XCTAssertEqual(execution.proposal.latestReceiptID, execution.receipt?.id)
+        XCTAssertEqual(execution.proposal.latestUndoCheckpointID, execution.undoCheckpoint?.id)
+        XCTAssertEqual(store.decision(withID: execution.decision.id)?.disposition, .accepted)
+        XCTAssertEqual(store.receipt(withID: execution.receipt?.id ?? "")?.status, .applied)
+        XCTAssertEqual(store.proposal(withID: submission.proposal.id)?.status, .applied)
+        XCTAssertEqual(store.request(withID: submission.request.id)?.status, .completed)
+        XCTAssertEqual(execution.artifacts.count, 1)
+        XCTAssertNotNil(store.artifact(withID: execution.artifacts[0].id))
+        XCTAssertNotNil(store.undoCheckpoint(withID: execution.undoCheckpoint?.id ?? ""))
+    }
+
+    func testRejectPersistsDecisionAndRejectedStatuses() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let project = makeProject()
+        let workflow = project.workflows[0]
+        let fileSystem = AssistFileSystem()
+        let store = AssistStore(fileSystem: fileSystem, appSupportRootDirectory: rootURL)
+        let orchestrator = AssistOrchestrator(store: store)
+
+        let submission = try orchestrator.submit(
+            AssistSubmissionInput(
+                source: .workflowNode,
+                invocationChannel: .workflow,
+                intent: .reorganizeWorkflow,
+                scopeType: .workflow,
+                prompt: "整理当前 workflow 的布局",
+                requestedAction: .proposalOnly,
+                workflowID: workflow.id,
+                workspaceSurface: .draft
+            ),
+            snapshot: AssistContextResolver.Snapshot(
+                project: project,
+                activeWorkflowID: workflow.id,
+                selectedNodeID: nil
+            )
+        )
+
+        let execution = try orchestrator.reject(submission.proposal.id, actorID: "tester")
+
+        XCTAssertEqual(execution.decision.disposition, .rejected)
+        XCTAssertEqual(execution.proposal.status, .rejected)
+        XCTAssertEqual(execution.request.status, .cancelled)
+        XCTAssertEqual(store.decision(withID: execution.decision.id)?.disposition, .rejected)
+        XCTAssertEqual(store.proposal(withID: submission.proposal.id)?.status, .rejected)
+        XCTAssertEqual(store.request(withID: submission.request.id)?.status, .cancelled)
+    }
+
+    func testRevertPersistsRevertedReceiptAndProposalStatus() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let project = makeProject()
+        let workflow = project.workflows[0]
+        let fileSystem = AssistFileSystem()
+        let store = AssistStore(fileSystem: fileSystem, appSupportRootDirectory: rootURL)
+
+        let submitOrchestrator = AssistOrchestrator(store: store)
+        let submission = try submitOrchestrator.submit(
+            AssistSubmissionInput(
+                source: .workflowNode,
+                invocationChannel: .workflow,
+                intent: .reorganizeWorkflow,
+                scopeType: .workflow,
+                prompt: "整理当前 workflow 的布局",
+                requestedAction: .proposalOnly,
+                workflowID: workflow.id,
+                workspaceSurface: .draft
+            ),
+            snapshot: AssistContextResolver.Snapshot(
+                project: project,
+                activeWorkflowID: workflow.id,
+                selectedNodeID: nil
+            )
+        )
+
+        let gateway = StubAssistMutationGateway()
+        let executeOrchestrator = AssistOrchestrator(
+            store: store,
+            mutationGateway: gateway
+        )
+
+        let applied = try executeOrchestrator.apply(submission.proposal.id, actorID: "tester")
+        let reverted = try executeOrchestrator.revert(submission.proposal.id)
+
+        XCTAssertEqual(applied.proposal.latestUndoCheckpointID, applied.undoCheckpoint?.id)
+        XCTAssertEqual(reverted.receipt.status, .reverted)
+        XCTAssertEqual(reverted.proposal.status, .reverted)
+        XCTAssertEqual(reverted.proposal.latestReceiptID, reverted.receipt.id)
+        XCTAssertEqual(store.receipt(withID: reverted.receipt.id)?.status, .reverted)
+        XCTAssertEqual(store.proposal(withID: submission.proposal.id)?.status, .reverted)
+    }
+
     private func makeProject() -> MAProject {
         let planner = makeAgent(name: "Planner", identifier: "planner")
 
@@ -219,5 +384,56 @@ final class AssistOrchestratorTests: XCTestCase {
             .appendingPathComponent("AssistOrchestratorTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+private struct StubAssistMutationGateway: AssistMutationGateway {
+    func apply(
+        proposal: AssistProposal,
+        request: AssistRequest,
+        contextPack: AssistContextPack
+    ) throws -> AssistMutationApplyResult {
+        let artifact = AssistArtifact(
+            requestID: request.id,
+            proposalID: proposal.id,
+            kind: .report,
+            title: "Stub Report",
+            relativePath: "diagnostics/stub-report.md"
+        )
+        let targetRef = AssistMutationTargetRef(
+            target: .diagnosticsReport,
+            projectID: request.scopeRef.projectID,
+            workflowID: request.scopeRef.workflowID,
+            nodeID: request.scopeRef.nodeID,
+            relativeFilePath: request.scopeRef.relativeFilePath
+        )
+        let receipt = AssistExecutionReceipt(
+            requestID: request.id,
+            proposalID: proposal.id,
+            status: .applied,
+            targetRefs: [targetRef],
+            appliedChangeItemIDs: proposal.changeItems.map(\.id)
+        )
+        let undoCheckpoint = AssistUndoCheckpoint(
+            requestID: request.id,
+            proposalID: proposal.id,
+            receiptID: receipt.id
+        )
+        return AssistMutationApplyResult(
+            receipt: receipt,
+            undoCheckpoint: undoCheckpoint,
+            artifacts: [artifact]
+        )
+    }
+
+    func revert(
+        undoCheckpoint: AssistUndoCheckpoint
+    ) throws -> AssistExecutionReceipt {
+        AssistExecutionReceipt(
+            requestID: undoCheckpoint.requestID,
+            proposalID: undoCheckpoint.proposalID,
+            status: .reverted,
+            undoCheckpointID: undoCheckpoint.id
+        )
     }
 }

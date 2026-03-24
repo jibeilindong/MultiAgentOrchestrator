@@ -104,6 +104,42 @@ extension AppState {
         try createAssistProposal(draft, orchestrator: orchestrator)
     }
 
+    func applyAssistProposal(
+        _ submission: AssistSubmissionResult,
+        actorID: String? = nil,
+        note: String? = nil
+    ) throws -> AssistExecutionResult {
+        try AssistOrchestrator(
+            mutationGateway: AppStateAssistMutationGateway(appState: self)
+        ).apply(
+            submission,
+            actorID: actorID,
+            note: note
+        )
+    }
+
+    func rejectAssistProposal(
+        _ submission: AssistSubmissionResult,
+        actorID: String? = nil,
+        note: String? = nil
+    ) throws -> AssistExecutionResult {
+        try AssistOrchestrator(
+            mutationGateway: AppStateAssistMutationGateway(appState: self)
+        ).reject(
+            submission,
+            actorID: actorID,
+            note: note
+        )
+    }
+
+    func revertAssistProposal(
+        _ submission: AssistSubmissionResult
+    ) throws -> AssistRevertResult {
+        try AssistOrchestrator(
+            mutationGateway: AppStateAssistMutationGateway(appState: self)
+        ).revert(submission)
+    }
+
     func resolveWorkbenchAssistScope(
         workflowID: UUID?
     ) -> AssistScopeDescriptor {
@@ -304,6 +340,49 @@ extension AppState {
             nodeID: scope.nodeID,
             threadID: nil,
             workspaceSurface: defaultWorkbenchAssistWorkspaceSurface(for: intent),
+            additionalMetadata: additionalMetadata
+        )
+    }
+
+    func makeTemplateWorkspaceAssistDraft(
+        prompt: String,
+        template: AgentTemplate,
+        relativeFilePath: String,
+        fileContent: String?,
+        isFileMissing: Bool
+    ) -> AssistDraft {
+        let normalizedRelativePath = relativeFilePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intent = inferredAssistIntent(for: prompt, scopeType: .file)
+
+        var additionalMetadata: [String: String] = [
+            "entrySurface": "template_workspace",
+            "templateID": template.id,
+            "templateName": template.name,
+            "scopeTitle": "Current Template File",
+            "scopeDetail": "\(template.name) / \(normalizedRelativePath)",
+            "proposalMode": "suggestion_only",
+            "filePresence": isFileMissing ? "missing" : "present"
+        ]
+
+        if !template.identity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            additionalMetadata["templateIdentity"] = template.identity
+        }
+
+        if !template.taxonomyPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            additionalMetadata["templateTaxonomy"] = template.taxonomyPath
+        }
+
+        return AssistDraft(
+            source: .inlineEditor,
+            invocationChannel: .system,
+            intent: intent,
+            scopeType: .file,
+            prompt: prompt,
+            constraints: defaultAssistConstraints(),
+            requestedAction: .proposalOnly,
+            relativeFilePath: normalizedRelativePath,
+            workspaceSurface: .draft,
+            fileContent: fileContent,
             additionalMetadata: additionalMetadata
         )
     }

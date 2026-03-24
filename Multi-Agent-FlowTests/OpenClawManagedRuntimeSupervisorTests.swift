@@ -493,9 +493,9 @@ final class OpenClawManagedRuntimeSupervisorTests: XCTestCase {
         let actualPort = try XCTUnwrap(snapshot.port)
         XCTAssertEqual(snapshot.requestedPort, preferredPort)
         XCTAssertNotEqual(actualPort, preferredPort)
-        XCTAssertGreaterThan(actualPort, preferredPort)
         XCTAssertTrue(snapshot.logPath?.contains("gateway-\(actualPort).log") == true)
-        XCTAssertTrue(snapshot.lastMessage?.contains("首选端口 \(preferredPort) 已被占用") == true)
+        XCTAssertTrue(snapshot.lastMessage?.contains("已动态分配端口 \(actualPort)") == true)
+        XCTAssertTrue(snapshot.lastMessage?.contains("配置端口 \(preferredPort) 仅作兼容保留") == true)
         XCTAssertTrue(snapshot.lastMessage?.contains("\(actualPort)") == true)
     }
 

@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "@multi-agent-flow/domain";
 
@@ -104,13 +103,10 @@ export function buildOpenClawRootFallbackCandidates(
 ): string[] {
   switch (config.deploymentKind) {
     case "local": {
-      if (config.runtimeOwnership === "appManaged") {
-        const managedRuntimeRootDirectory = trimmedNonEmpty(options.managedRuntimeRootDirectory);
-        return managedRuntimeRootDirectory ? [managedRuntimeRootDirectory] : [];
-      }
-
-      const homeDirectory = trimmedNonEmpty(options.localHomeDirectory) ?? os.homedir();
-      return [path.join(homeDirectory, ".openclaw")];
+      void config.runtimeOwnership;
+      void options.localHomeDirectory;
+      const managedRuntimeRootDirectory = trimmedNonEmpty(options.managedRuntimeRootDirectory);
+      return managedRuntimeRootDirectory ? [managedRuntimeRootDirectory] : [];
     }
     case "container": {
       const result: string[] = [];

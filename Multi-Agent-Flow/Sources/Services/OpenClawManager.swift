@@ -140,39 +140,24 @@ class OpenClawManager: ObservableObject {
 
         switch config.deploymentKind {
         case .local:
-            switch config.runtimeOwnership {
-            case .appManaged:
-                let actualPort = snapshot.port ?? config.port
-                let requestedPort = snapshot.requestedPort ?? config.port
-                let endpoint = "\(config.useSSL ? "wss" : "ws")://\(config.host):\(actualPort)"
-                let portSummary = requestedPort == actualPort
-                    ? "当前通过应用私有 sidecar 提供本地 Gateway。"
-                    : "当前通过应用私有 sidecar 提供本地 Gateway，已从首选端口 \(requestedPort) 避让到 \(actualPort)。"
-                let detail = [
-                    "应用只使用私有 runtime root 和 bundled/managed binary。",
-                    "不会复用 ~/.openclaw，也不会接管系统 PATH 中的 openclaw。",
-                    portSummary
-                ].joined(separator: " ")
-                return OpenClawRuntimeSourceDescriptor(
-                    badgeTitle: "App Managed",
-                    summary: "应用私有 OpenClaw Sidecar",
-                    detail: detail,
-                    endpoint: endpoint,
-                    binaryPath: snapshot.binaryPath
-                )
-            case .externalLocal:
-                let configuredBinaryPath = config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                let detail = configuredBinaryPath.isEmpty
-                    ? "当前配置为外部本地 binary 模式；需要显式指定用户本地 openclaw 路径，应用不会接管其进程或状态目录。"
-                    : "当前配置固定使用用户提供的本地 openclaw binary，应用不会切换到私有托管 runtime。"
-                return OpenClawRuntimeSourceDescriptor(
-                    badgeTitle: "External Local",
-                    summary: "用户本地 OpenClaw Binary",
-                    detail: detail,
-                    endpoint: "\(config.useSSL ? "wss" : "ws")://\(config.host):\(config.port)",
-                    binaryPath: configuredBinaryPath.isEmpty ? nil : configuredBinaryPath
-                )
-            }
+            let actualPort = snapshot.port ?? config.port
+            let requestedPort = snapshot.requestedPort ?? config.port
+            let endpoint = "\(config.useSSL ? "wss" : "ws")://\(config.host):\(actualPort)"
+            let portSummary = requestedPort == actualPort
+                ? "当前通过应用私有 sidecar 提供本地 Gateway。"
+                : "当前通过应用私有 sidecar 提供本地 Gateway，实际使用动态分配端口 \(actualPort)；配置端口 \(requestedPort) 仅作兼容保留。"
+            let detail = [
+                "应用只使用私有 runtime root 和 bundled/managed binary。",
+                "不会复用 ~/.openclaw，也不会接管系统 PATH 中的 openclaw。",
+                portSummary
+            ].joined(separator: " ")
+            return OpenClawRuntimeSourceDescriptor(
+                badgeTitle: "App Managed",
+                summary: "应用私有 OpenClaw Sidecar",
+                detail: detail,
+                endpoint: endpoint,
+                binaryPath: snapshot.binaryPath
+            )
         case .container:
             let containerName = config.container.containerName.trimmingCharacters(in: .whitespacesAndNewlines)
             let runtimeName = containerName.isEmpty ? "未指定容器" : containerName
@@ -204,7 +189,7 @@ class OpenClawManager: ObservableObject {
             "控制面状态: \(diagnosticStatusText())",
             "连接阶段: \(connectionState.phase.rawValue)",
             "部署模式: \(config.deploymentKind.rawValue)",
-            "Runtime 所有权: \(config.runtimeOwnership.rawValue)",
+            "Runtime 所有权: \(effectiveRuntimeOwnershipValue(for: config))",
             "运行来源: \(sourceDescriptor.summary)",
             "来源徽标: \(sourceDescriptor.badgeTitle)",
             "来源说明: \(sourceDescriptor.detail)",
@@ -260,10 +245,6 @@ class OpenClawManager: ObservableObject {
             return configured.isEmpty ? [] : [configured]
         }
 
-        if config.requiresExplicitLocalBinaryPath {
-            return configured.isEmpty ? [] : [configured]
-        }
-
         let managedRoot = managedRuntimeRootURL
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
                 .first?
@@ -289,11 +270,7 @@ class OpenClawManager: ObservableObject {
             return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates)
         }
 
-        if !configured.isEmpty {
-            return deduplicatedLocalBinaryPaths([configured])
-        }
-
-        return deduplicatedLocalBinaryPaths([configured] + bundleCandidates + managedCandidates)
+        return deduplicatedLocalBinaryPaths(bundleCandidates + managedCandidates)
     }
 
     private static func deduplicatedLocalBinaryPaths(_ candidates: [String]) -> [String] {
@@ -338,6 +315,10 @@ class OpenClawManager: ObservableObject {
     private func diagnosticText(_ value: String?) -> String {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? "未记录" : trimmed
+    }
+
+    private func effectiveRuntimeOwnershipValue(for config: OpenClawConfig) -> String {
+        config.deploymentKind == .local ? OpenClawRuntimeOwnership.appManaged.rawValue : config.runtimeOwnership.rawValue
     }
 
     private func diagnosticTimestamp(_ date: Date?) -> String {
@@ -1099,11 +1080,6 @@ class OpenClawManager: ObservableObject {
                 let runtimeStatus = try self.managedRuntimeSupervisor.ensureRunning(using: resolvedConfig)
                 DispatchQueue.main.async {
                     self.managedRuntimeStatus = runtimeStatus
-                    if resolvedConfig.usesManagedLocalRuntime,
-                       let resolvedPort = runtimeStatus.port,
-                       self.config.port != resolvedPort {
-                        self.config.port = resolvedPort
-                    }
                     proceedWithConnectionConfirmation()
                 }
             } catch {
@@ -1496,11 +1472,6 @@ class OpenClawManager: ObservableObject {
         let resolvedConfig = config ?? self.config
         let snapshot = managedRuntimeSupervisor.refreshStatus(using: resolvedConfig)
         managedRuntimeStatus = snapshot
-        if resolvedConfig.usesManagedLocalRuntime,
-           let resolvedPort = snapshot.port,
-           self.config.port != resolvedPort {
-            self.config.port = resolvedPort
-        }
         return snapshot
     }
 
@@ -1517,11 +1488,6 @@ class OpenClawManager: ObservableObject {
                 let snapshot = try self.managedRuntimeSupervisor.start(using: resolvedConfig)
                 DispatchQueue.main.async {
                     self.managedRuntimeStatus = snapshot
-                    if resolvedConfig.usesManagedLocalRuntime,
-                       let resolvedPort = snapshot.port,
-                       self.config.port != resolvedPort {
-                        self.config.port = resolvedPort
-                    }
                     completion?(true, snapshot.lastMessage ?? "托管 OpenClaw Runtime 已启动。")
                 }
             } catch {
@@ -1577,11 +1543,6 @@ class OpenClawManager: ObservableObject {
                 let snapshot = try self.managedRuntimeSupervisor.restart(using: resolvedConfig)
                 DispatchQueue.main.async {
                     self.managedRuntimeStatus = snapshot
-                    if resolvedConfig.usesManagedLocalRuntime,
-                       let resolvedPort = snapshot.port,
-                       self.config.port != resolvedPort {
-                        self.config.port = resolvedPort
-                    }
                     self.resetGatewayConnection()
                     self.isConnected = false
                     self.activeAgents.removeAll()
@@ -8201,12 +8162,17 @@ class OpenClawManager: ObservableObject {
             ?? localRootURL.appendingPathComponent("openclaw.json")
         let currentModificationDate = (try? fileManager.attributesOfItem(atPath: configURL.path)[.modificationDate] as? Date) ?? nil
         let fallbackToken = baseConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let managedRuntimePort = managedRuntimeStatus.port
+        let fallbackPort = baseConfig.usesManagedLocalRuntime
+            ? managedRuntimePort
+            : baseConfig.port
         let fallbackKey = [
-            String(baseConfig.port),
+            String(fallbackPort ?? 0),
             fallbackToken,
             String(baseConfig.timeout),
             baseConfig.defaultAgent,
-            baseConfig.autoConnect ? "auto" : "manual"
+            baseConfig.autoConnect ? "auto" : "manual",
+            baseConfig.usesManagedLocalRuntime ? managedRuntimeStatus.state.rawValue : "unmanaged"
         ].joined(separator: "|")
 
         if cachedLocalGatewayConfigModificationDate == currentModificationDate,
@@ -8221,13 +8187,21 @@ class OpenClawManager: ObservableObject {
             return gatewayConfig
         }
 
+        if baseConfig.usesManagedLocalRuntime {
+            guard managedRuntimeStatus.state == .running,
+                  let managedRuntimePort,
+                  managedRuntimePort > 0 else {
+                return cache(nil)
+            }
+        }
+
         return cache(
             gatewayConfig(
                 fromOpenClawRoot: localRootURL,
                 using: baseConfig,
                 hostFallback: "127.0.0.1",
                 useSSLFallback: false,
-                fallbackPort: baseConfig.port
+                fallbackPort: fallbackPort
             )
         )
     }
@@ -9811,7 +9785,11 @@ class OpenClawManager: ObservableObject {
                             }
                         }
                         self.agents = self.discoveryResults.map(\.name)
-                        completion(false, "OpenClaw CLI 可用，但本地 Gateway 配置不可用。", agentNames)
+                        completion(
+                            false,
+                            self.localGatewayUnavailableMessage(using: config),
+                            agentNames
+                        )
                     }
                     return
                 }
@@ -9854,6 +9832,21 @@ class OpenClawManager: ObservableObject {
                     completion(false, error.localizedDescription, [])
                 }
             }
+        }
+    }
+
+    private func localGatewayUnavailableMessage(using config: OpenClawConfig) -> String {
+        guard config.usesManagedLocalRuntime else {
+            return "OpenClaw CLI 可用，但本地 Gateway 配置不可用。"
+        }
+
+        switch managedRuntimeStatus.state {
+        case .running:
+            return "托管 OpenClaw Runtime 已运行，但未解析到可用的 Gateway 配置。为避免误连本机其他 openclaw，应用不会回退到配置端口。"
+        case .starting:
+            return "托管 OpenClaw Runtime 仍在启动中，暂未开放 Gateway 探测。为避免误连本机其他 openclaw，应用不会回退到配置端口。"
+        default:
+            return "托管 OpenClaw Runtime 未运行或未登记实际端口。为避免误连本机其他 openclaw，应用不会回退到配置端口。"
         }
     }
 

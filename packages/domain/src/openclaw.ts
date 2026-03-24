@@ -5,7 +5,7 @@ export type OpenClawCLILogLevel = (typeof OPENCLAW_CLI_LOG_LEVELS)[number];
 
 export const OPENCLAW_DEPLOYMENT_KINDS = ["local", "remoteServer", "container"] as const;
 export type OpenClawDeploymentKind = (typeof OPENCLAW_DEPLOYMENT_KINDS)[number];
-export const OPENCLAW_RUNTIME_OWNERSHIPS = ["appManaged", "externalLocal"] as const;
+export const OPENCLAW_RUNTIME_OWNERSHIPS = ["appManaged"] as const;
 export type OpenClawRuntimeOwnership = (typeof OPENCLAW_RUNTIME_OWNERSHIPS)[number];
 
 export interface OpenClawContainerConfig {
@@ -33,13 +33,15 @@ export interface OpenClawConfig {
 export function openClawRequiresExplicitLocalBinaryPath(
   config: Pick<OpenClawConfig, "deploymentKind" | "runtimeOwnership">
 ): boolean {
-  return config.deploymentKind === "local" && config.runtimeOwnership === "externalLocal";
+  void config;
+  return false;
 }
 
 export function openClawUsesManagedLocalRuntime(
   config: Pick<OpenClawConfig, "deploymentKind" | "runtimeOwnership">
 ): boolean {
-  return config.deploymentKind === "local" && config.runtimeOwnership === "appManaged";
+  void config.runtimeOwnership;
+  return config.deploymentKind === "local";
 }
 
 export interface ProjectOpenClawAgentRecord {

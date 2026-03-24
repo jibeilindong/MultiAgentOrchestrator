@@ -31,14 +31,32 @@ final class OpenClawPathResolutionTests: XCTestCase {
         ])
     }
 
-    func testLocalBinaryPathCandidatesStayExplicitWhenRuntimeIsExternallyManaged() {
+    func testLocalBinaryPathCandidatesIgnoreLegacyLocalBinaryHintsForLocalRuntime() {
         var config = OpenClawConfig.default
-        config.runtimeOwnership = OpenClawRuntimeOwnership.externalLocal
         config.localBinaryPath = "/custom/openclaw/bin/openclaw"
 
-        let candidates = OpenClawManager.localBinaryPathCandidates(for: config)
+        let bundleResourceURL = URL(fileURLWithPath: "/Applications/Multi-Agent-Flow.app/Contents/Resources", isDirectory: true)
+        let managedRuntimeRootURL = URL(
+            fileURLWithPath: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime",
+            isDirectory: true
+        )
+        let homeDirectory = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
 
-        XCTAssertEqual(candidates, ["/custom/openclaw/bin/openclaw"])
+        let candidates = OpenClawManager.localBinaryPathCandidates(
+            for: config,
+            bundleResourceURL: bundleResourceURL,
+            managedRuntimeRootURL: managedRuntimeRootURL,
+            homeDirectory: homeDirectory
+        )
+
+        XCTAssertEqual(candidates, [
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw/bin/openclaw",
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw",
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/OpenClaw/openclaw",
+            "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/openclaw",
+            "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/bin/openclaw",
+            "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime/openclaw"
+        ])
     }
 
     func testResolvedManagedRuntimeRootURLPrefersCanonicalInstallerRootOverReportedRuntimePath() {
@@ -53,6 +71,30 @@ final class OpenClawPathResolutionTests: XCTestCase {
         )
 
         XCTAssertEqual(resolved, canonicalRootURL)
+    }
+
+    func testSanitizedProcessEnvironmentKeepsWhitelistAndManagedOverrides() {
+        let sanitized = OpenClawHost.sanitizedProcessEnvironment(
+            baseEnvironment: [
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/Users/tester",
+                "LANG": "en_US.UTF-8",
+                "OPENCLAW_CONFIG_PATH": "/tmp/external-openclaw.json",
+                "OPENCLAW_STATE_DIR": "/tmp/external-state",
+                "CUSTOM_SECRET": "ignore-me"
+            ],
+            overrides: [
+                "OPENCLAW_CONFIG_PATH": "/managed/runtime/openclaw.json",
+                "OPENCLAW_STATE_DIR": "/managed/state"
+            ]
+        )
+
+        XCTAssertEqual(sanitized["PATH"], "/usr/bin:/bin")
+        XCTAssertEqual(sanitized["HOME"], "/Users/tester")
+        XCTAssertEqual(sanitized["LANG"], "en_US.UTF-8")
+        XCTAssertEqual(sanitized["OPENCLAW_CONFIG_PATH"], "/managed/runtime/openclaw.json")
+        XCTAssertEqual(sanitized["OPENCLAW_STATE_DIR"], "/managed/state")
+        XCTAssertNil(sanitized["CUSTOM_SECRET"])
     }
 
     func testResolvedWorkspacePathPrefersProjectManagedWorkspaceAdjacentToPrivateRoot() throws {

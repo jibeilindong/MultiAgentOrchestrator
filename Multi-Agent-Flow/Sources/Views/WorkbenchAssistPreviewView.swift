@@ -7,19 +7,78 @@ struct AssistProposalPreviewState: Identifiable {
 }
 
 struct AssistProposalPreviewSheet: View {
-    let result: AssistSubmissionResult
+    @EnvironmentObject var appState: AppState
 
     @Environment(\.dismiss) private var dismiss
+    @State private var result: AssistSubmissionResult
+    @State private var latestReceipt: AssistExecutionReceipt?
+    @State private var actionMessage: String?
+    @State private var actionError: String?
+    @State private var isApplying = false
+    @State private var isRejecting = false
+    @State private var isReverting = false
 
     private var request: AssistRequest { result.request }
     private var proposal: AssistProposal { result.proposal }
     private var contextPack: AssistContextPack { result.contextPack }
+
+    init(result: AssistSubmissionResult) {
+        _result = State(initialValue: result)
+    }
+
+    private var hasExecutableApplyPath: Bool {
+        !proposal.changeItems.isEmpty && proposal.changeItems.allSatisfy { item in
+            switch item.target {
+            case .workflowLayout, .diagnosticsReport, .configuration:
+                return true
+            case .draftText, .managedFile, .mirror:
+                return false
+            }
+        }
+    }
+
+    private var canApply: Bool {
+        proposal.status == .awaitingConfirmation
+            && hasExecutableApplyPath
+            && !isApplying
+            && !isRejecting
+            && !isReverting
+    }
+
+    private var canReject: Bool {
+        proposal.status == .awaitingConfirmation && !isApplying && !isRejecting && !isReverting
+    }
+
+    private var canRevert: Bool {
+        (proposal.status == .applied || proposal.status == .partiallyApplied)
+            && proposal.latestUndoCheckpointID != nil
+            && !isApplying
+            && !isRejecting
+            && !isReverting
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     topBanner
+
+                    if let actionMessage, !actionMessage.isEmpty {
+                        statusCard(
+                            title: "Execution Result",
+                            text: actionMessage,
+                            color: latestReceipt?.status == .failed ? .red : .green
+                        )
+                    }
+
+                    if let actionError, !actionError.isEmpty {
+                        statusCard(
+                            title: "Action Error",
+                            text: actionError,
+                            color: .orange
+                        )
+                    }
+
                     summarySection
 
                     if !proposal.warnings.isEmpty {
@@ -34,6 +93,47 @@ struct AssistProposalPreviewSheet: View {
             }
             .navigationTitle("Assist Proposal")
             .toolbar {
+                if canReject {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Reject") {
+                            rejectProposal()
+                        }
+                        .disabled(isApplying || isRejecting)
+                    }
+                }
+
+                if canApply {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            applyProposal()
+                        } label: {
+                            if isApplying {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text("Confirm")
+                            }
+                        }
+                        .disabled(isApplying || isRejecting)
+                    }
+                }
+
+                if canRevert {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            revertProposal()
+                        } label: {
+                            if isReverting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text("Revert")
+                            }
+                        }
+                        .disabled(isApplying || isRejecting || isReverting)
+                    }
+                }
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         dismiss()
@@ -51,16 +151,16 @@ struct AssistProposalPreviewSheet: View {
                 .foregroundColor(.teal)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Assist is wearing gloves. Nothing has been changed yet.")
+                Text(topBannerTitle)
                     .font(.headline)
-                Text("This is a proposal-only preview. Any future apply step must still be explicitly confirmed and remain outside the live runtime.")
+                Text(topBannerSubtitle)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
 
             Spacer()
 
-            badge(title: proposalStatusTitle, color: .orange)
+            badge(title: proposalStatusTitle, color: proposalStatusColor)
         }
         .padding(14)
         .background(Color.teal.opacity(0.08))
@@ -199,6 +299,13 @@ struct AssistProposalPreviewSheet: View {
                 auditRow(label: "Assist Thread", value: result.thread.id)
                 auditRow(label: "Source", value: request.source.rawValue)
                 auditRow(label: "Created At", value: request.createdAt.formatted(date: .abbreviated, time: .standard))
+                if let latestReceipt {
+                    auditRow(label: "Receipt ID", value: latestReceipt.id)
+                    auditRow(label: "Receipt Status", value: latestReceipt.status.rawValue)
+                }
+                if let latestUndoCheckpointID = proposal.latestUndoCheckpointID {
+                    auditRow(label: "Undo Checkpoint", value: latestUndoCheckpointID)
+                }
             }
         }
     }
@@ -231,6 +338,52 @@ struct AssistProposalPreviewSheet: View {
             return "Reverted"
         case .partiallyApplied:
             return "Partially Applied"
+        }
+    }
+
+    private var proposalStatusColor: Color {
+        switch proposal.status {
+        case .drafted, .awaitingConfirmation:
+            return .orange
+        case .applied, .partiallyApplied:
+            return .green
+        case .rejected, .reverted:
+            return .secondary
+        case .failed:
+            return .red
+        }
+    }
+
+    private var topBannerTitle: String {
+        switch proposal.status {
+        case .applied, .partiallyApplied:
+            return "Assist applied the confirmed proposal within the allowed draft-safe scope."
+        case .rejected:
+            return "This proposal was rejected. No change was applied."
+        case .failed:
+            return "Assist could not finish applying this proposal."
+        case .reverted:
+            return "This Assist proposal has been reverted."
+        case .drafted, .awaitingConfirmation:
+            return "Assist is wearing gloves. Nothing has been changed yet."
+        }
+    }
+
+    private var topBannerSubtitle: String {
+        switch proposal.status {
+        case .applied, .partiallyApplied:
+            return "The change stayed inside the allowed draft-safe boundary, and an execution receipt was recorded for audit and rollback."
+        case .rejected:
+            return "The proposal remains traceable in Assist history, but it did not modify draft or runtime state."
+        case .failed:
+            return "Assist kept the proposal trace, but the confirmed execution did not complete successfully."
+        case .reverted:
+            return "Rollback completed from an Assist checkpoint."
+        case .drafted, .awaitingConfirmation:
+            if hasExecutableApplyPath == false {
+                return "This proposal is currently preview-only. Its review trail is preserved, but this target does not yet expose a direct apply path."
+            }
+            return "This is a proposal-only preview. Any apply step must still be explicitly confirmed and remain outside the live runtime."
         }
     }
 
@@ -342,6 +495,113 @@ struct AssistProposalPreviewSheet: View {
             .background(color.opacity(0.12))
             .foregroundColor(color)
             .clipShape(Capsule())
+    }
+
+    private func statusCard(
+        title: String,
+        text: String,
+        color: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            Text(text)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func applyProposal() {
+        guard canApply else { return }
+
+        isApplying = true
+        actionError = nil
+        defer { isApplying = false }
+
+        do {
+            let execution = try appState.applyAssistProposal(result)
+            result = AssistSubmissionResult(
+                thread: execution.thread,
+                request: execution.request,
+                contextPack: execution.contextPack,
+                proposal: execution.proposal
+            )
+            latestReceipt = execution.receipt
+            actionMessage = applyMessage(for: execution)
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func rejectProposal() {
+        guard canReject else { return }
+
+        isRejecting = true
+        actionError = nil
+        defer { isRejecting = false }
+
+        do {
+            let execution = try appState.rejectAssistProposal(result)
+            result = AssistSubmissionResult(
+                thread: execution.thread,
+                request: execution.request,
+                contextPack: execution.contextPack,
+                proposal: execution.proposal
+            )
+            latestReceipt = nil
+            actionMessage = "Proposal rejected. No draft or runtime mutation was applied."
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func revertProposal() {
+        guard canRevert else { return }
+
+        isReverting = true
+        actionError = nil
+        defer { isReverting = false }
+
+        do {
+            let revertResult = try appState.revertAssistProposal(result)
+            result = AssistSubmissionResult(
+                thread: revertResult.thread,
+                request: revertResult.request,
+                contextPack: revertResult.contextPack,
+                proposal: revertResult.proposal
+            )
+            latestReceipt = revertResult.receipt
+            actionMessage = "Applied change reverted from Assist checkpoint \(revertResult.undoCheckpoint.id)."
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func applyMessage(
+        for execution: AssistExecutionResult
+    ) -> String {
+        guard let receipt = execution.receipt else {
+            return "Proposal processed without an execution receipt."
+        }
+
+        switch receipt.status {
+        case .applied:
+            return "Confirmed and applied. Recorded \(receipt.appliedChangeItemIDs.count) change item(s) within the approved scope."
+        case .partial:
+            let warningSummary = receipt.warningMessages.joined(separator: " ")
+            return warningSummary.isEmpty
+                ? "Confirmed with partial application."
+                : "Confirmed with partial application. \(warningSummary)"
+        case .failed:
+            return receipt.errorMessage ?? "Confirmed execution failed."
+        case .reverted:
+            return "Confirmed execution has been reverted."
+        }
     }
 
     private func intentTitle(

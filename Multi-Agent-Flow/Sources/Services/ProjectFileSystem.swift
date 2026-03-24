@@ -3041,7 +3041,9 @@ struct ProjectFileSystem {
         )
         var capabilitySnapshot: [String: String] = [
             "deploymentKind": project.openClaw.config.deploymentKind.rawValue,
-            "runtimeOwnership": project.openClaw.config.runtimeOwnership.rawValue,
+            "runtimeOwnership": project.openClaw.config.deploymentKind == .local
+                ? OpenClawRuntimeOwnership.appManaged.rawValue
+                : project.openClaw.config.runtimeOwnership.rawValue,
             "probeGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.probe.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
             "bindGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.bind.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,
             "publishGate": controlPlaneSnapshot[ProjectOpenClawControlPlaneGate.publish.rawValue] ?? ProjectOpenClawControlPlaneStatus.pending.rawValue,

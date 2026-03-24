@@ -172,14 +172,18 @@ struct AssistContextResolver {
         }
 
         if let workflow {
+            var workflowMetadata: [String: String] = [
+                "workflowID": workflow.id.uuidString
+            ]
+            if let layoutSnapshotJSON = encodedWorkflowLayoutSnapshot(workflow) {
+                workflowMetadata["layoutSnapshotJSON"] = layoutSnapshotJSON
+            }
             entries.append(
                 AssistContextEntry(
                     kind: .workflowLayout,
                     title: "Workflow Layout",
                     value: workflowSummary(workflow, in: project),
-                    metadata: [
-                        "workflowID": workflow.id.uuidString
-                    ]
+                    metadata: workflowMetadata
                 )
             )
         }
@@ -372,6 +376,37 @@ struct AssistContextResolver {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    private func encodedWorkflowLayoutSnapshot(
+        _ workflow: Workflow
+    ) -> String? {
+        let snapshot = AssistWorkflowLayoutSnapshot(
+            workflowID: workflow.id,
+            workflowName: workflow.name,
+            nodes: workflow.nodes.map { node in
+                AssistWorkflowLayoutSnapshotNode(
+                    nodeID: node.id,
+                    title: node.title,
+                    nodeType: node.type.rawValue,
+                    x: Double(node.position.x),
+                    y: Double(node.position.y)
+                )
+            },
+            edges: workflow.edges.map { edge in
+                AssistWorkflowLayoutSnapshotEdge(
+                    fromNodeID: edge.fromNodeID,
+                    toNodeID: edge.toNodeID
+                )
+            }
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(snapshot) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     private func nodeSummary(

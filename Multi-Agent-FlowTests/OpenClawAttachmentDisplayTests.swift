@@ -129,7 +129,7 @@ final class OpenClawAttachmentDisplayTests: XCTestCase {
     }
 
     @MainActor
-    func testAppStateReportsExternalLocalRuntimeSourceForExplicitBinaryMode() {
+    func testAppStateIgnoresLegacyLocalBinaryHintsForRuntimeSource() {
         let appState = sharedOpenClawAttachmentDisplayTestAppState
         let originalProject = appState.currentProject
         let originalConfig = appState.openClawManager.config
@@ -145,16 +145,16 @@ final class OpenClawAttachmentDisplayTests: XCTestCase {
 
         var config = OpenClawConfig.default
         config.deploymentKind = .local
-        config.runtimeOwnership = .externalLocal
         config.host = "127.0.0.1"
         config.port = 28888
         config.localBinaryPath = "/custom/openclaw/bin/openclaw"
         appState.openClawManager.config = config
 
-        XCTAssertEqual(appState.openClawRuntimeSourceBadgeTitle, "External Local")
-        XCTAssertEqual(appState.openClawRuntimeSourceSummary, "用户本地 OpenClaw Binary")
-        XCTAssertEqual(appState.openClawRuntimeSourceEndpoint, "ws://127.0.0.1:28888")
-        XCTAssertEqual(appState.openClawRuntimeSourceBinaryPath, "/custom/openclaw/bin/openclaw")
-        XCTAssertTrue(appState.openClawRuntimeSourceDetail.contains("固定使用用户提供的本地 openclaw binary"))
+        XCTAssertEqual(appState.openClawRuntimeSourceBadgeTitle, "App Managed")
+        XCTAssertEqual(appState.openClawRuntimeSourceSummary, "应用私有 OpenClaw Sidecar")
+        let expectedPort = originalManagedRuntimeStatus.port ?? config.port
+        XCTAssertEqual(appState.openClawRuntimeSourceEndpoint, "ws://127.0.0.1:\(expectedPort)")
+        XCTAssertEqual(appState.openClawRuntimeSourceBinaryPath, originalManagedRuntimeStatus.binaryPath)
+        XCTAssertTrue(appState.openClawRuntimeSourceDetail.contains("不会复用 ~/.openclaw"))
     }
 }

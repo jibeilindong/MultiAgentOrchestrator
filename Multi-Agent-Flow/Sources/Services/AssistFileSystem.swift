@@ -229,6 +229,11 @@ struct AssistFileSystem {
             .appendingPathComponent("\(undoID).json", isDirectory: false)
     }
 
+    func undoSnapshotURL(relativePath: String, under appSupportRootDirectory: URL) -> URL {
+        assistUndoSnapshotsRootDirectory(under: appSupportRootDirectory)
+            .appendingPathComponent(relativePath, isDirectory: false)
+    }
+
     func grantDocumentURL(for grantID: String, under appSupportRootDirectory: URL) -> URL {
         assistGrantByIDRootDirectory(under: appSupportRootDirectory)
             .appendingPathComponent("\(grantID).json", isDirectory: false)
@@ -237,6 +242,11 @@ struct AssistFileSystem {
     func artifactDocumentURL(for artifactID: String, under appSupportRootDirectory: URL) -> URL {
         assistArtifactsByIDRootDirectory(under: appSupportRootDirectory)
             .appendingPathComponent("\(artifactID).json", isDirectory: false)
+    }
+
+    func artifactExportURL(relativePath: String, under appSupportRootDirectory: URL) -> URL {
+        assistArtifactsExportsRootDirectory(under: appSupportRootDirectory)
+            .appendingPathComponent(relativePath, isDirectory: false)
     }
 
     func threadDocumentURL(for threadID: String, under appSupportRootDirectory: URL) -> URL {
@@ -341,9 +351,30 @@ struct AssistFileSystem {
         try encoder.encode(value).write(to: url, options: .atomic)
     }
 
+    func saveData(_ data: Data, to url: URL) throws {
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func saveText(_ text: String, to url: URL) throws {
+        guard let data = text.data(using: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        try saveData(data, to: url)
+    }
+
     func load<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? decoder.decode(type, from: data)
+    }
+
+    func loadData(from url: URL) -> Data? {
+        try? Data(contentsOf: url)
+    }
+
+    func loadText(from url: URL) -> String? {
+        guard let data = loadData(from: url) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     func receiptTargetDescriptor(for targetRef: AssistMutationTargetRef) -> String {

@@ -216,6 +216,7 @@ final class QuickChatStore: ObservableObject {
         let preview: String
         let updatedAt: Date
         let messageCount: Int
+        let isCustomTitle: Bool
     }
 
     private struct ContextKey: Hashable {
@@ -229,6 +230,7 @@ final class QuickChatStore: ObservableObject {
         let context: AppState.QuickChatContext
         let createdAt: Date
         var updatedAt: Date
+        var customTitle: String?
         var sessionKey: String
         var messages: [Message]
         var attachments: [Attachment]
@@ -382,6 +384,70 @@ final class QuickChatStore: ObservableObject {
             withID: sessionID,
             statusMessage: "已创建新的 Quick Chat 会话。"
         )
+    }
+
+    func renameSession(_ sessionID: UUID, title: String) {
+        guard !isSending else { return }
+        let normalizedTitle = Self.normalizedNonEmptyText(title)
+        mutateSession(withID: sessionID, touch: true) { record in
+            record.customTitle = normalizedTitle
+        }
+        if selectedSessionID == sessionID {
+            statusMessage = normalizedTitle == nil ? "已恢复默认会话名称。" : "已更新会话名称。"
+        }
+    }
+
+    func deleteSession(_ sessionID: UUID) {
+        guard !isSending else { return }
+        guard let contextKey = sessionContextByID[sessionID],
+              var records = sessionsByContext[contextKey],
+              let recordIndex = records.firstIndex(where: { $0.id == sessionID }) else {
+            return
+        }
+
+        let removedRecord = records.remove(at: recordIndex)
+        sessionContextByID.removeValue(forKey: sessionID)
+
+        for attachmentID in attachmentTasks.compactMap({ key, value in
+            value.sessionID == sessionID ? key : nil
+        }) {
+            attachmentTasks[attachmentID]?.task.cancel()
+            attachmentTasks.removeValue(forKey: attachmentID)
+        }
+
+        if records.isEmpty {
+            sessionsByContext[contextKey] = []
+            activeSessionIDByContext.removeValue(forKey: contextKey)
+
+            let replacementID = createSession(for: removedRecord.context)
+            if context.map(Self.contextKey(for:)) == Self.contextKey(for: removedRecord.context) {
+                bindSession(withID: replacementID, statusMessage: "已删除会话，并创建新的空白会话。")
+            } else {
+                refreshAvailableSessions()
+            }
+            return
+        }
+
+        sessionsByContext[contextKey] = records
+        let fallbackSessionID = records
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
+            .first?
+            .id
+
+        if activeSessionIDByContext[contextKey] == sessionID {
+            activeSessionIDByContext[contextKey] = fallbackSessionID
+        }
+
+        if selectedSessionID == sessionID, let fallbackSessionID {
+            bindSession(withID: fallbackSessionID, statusMessage: "已删除当前会话。")
+        } else {
+            refreshAvailableSessions()
+        }
     }
 
     func removeAttachment(_ attachmentID: UUID) {
@@ -1022,6 +1088,7 @@ final class QuickChatStore: ObservableObject {
             context: context,
             createdAt: Date(),
             updatedAt: Date(),
+            customTitle: nil,
             sessionKey: Self.makeSessionKey(for: context),
             messages: [],
             attachments: [],
@@ -1074,7 +1141,8 @@ final class QuickChatStore: ObservableObject {
                     title: sessionTitle(for: record, within: records),
                     preview: sessionPreview(for: record),
                     updatedAt: record.updatedAt,
-                    messageCount: record.messages.count
+                    messageCount: record.messages.count,
+                    isCustomTitle: record.customTitle != nil
                 )
             }
     }
@@ -1083,6 +1151,9 @@ final class QuickChatStore: ObservableObject {
         for record: SessionRecord,
         within records: [SessionRecord]
     ) -> String {
+        if let customTitle = Self.normalizedNonEmptyText(record.customTitle) {
+            return customTitle
+        }
         let ordinal = (records.firstIndex(where: { $0.id == record.id }) ?? 0) + 1
         return "会话 \(ordinal)"
     }

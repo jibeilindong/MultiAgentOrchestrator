@@ -34,11 +34,11 @@ test("local app-managed fallback candidates resolve to the app-managed runtime r
   assert.deepEqual(candidates, ["/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime"]);
 });
 
-test("local app-managed fallback candidates stay inside the app-managed runtime root", () => {
+test("legacy local binary hints still stay inside the app-managed runtime root", () => {
   const candidates = buildOpenClawRootFallbackCandidates(
     {
       ...baseConfig,
-      runtimeOwnership: "appManaged"
+      localBinaryPath: "/custom/openclaw/bin/openclaw"
     },
     {
       managedRuntimeRootDirectory: "/Users/tester/Library/Application Support/Multi-Agent-Flow/openclaw/runtime"

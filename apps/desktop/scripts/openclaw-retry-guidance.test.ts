@@ -29,7 +29,7 @@ function createOpenClawSnapshot(overrides: Partial<ProjectOpenClawSnapshot> = {}
   return {
     config: {
       deploymentKind: "local",
-      runtimeOwnership: "externalLocal",
+      runtimeOwnership: "appManaged",
       host: "127.0.0.1",
       port: 18789,
       useSSL: false,
@@ -37,7 +37,7 @@ function createOpenClawSnapshot(overrides: Partial<ProjectOpenClawSnapshot> = {}
       defaultAgent: "default",
       timeout: 30,
       autoConnect: true,
-      localBinaryPath: "/usr/local/bin/openclaw",
+      localBinaryPath: "",
       container: {
         engine: "docker",
         containerName: "openclaw-dev",

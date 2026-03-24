@@ -65,11 +65,10 @@ test("managed local runtime resolution ignores legacy explicit paths and stays i
   assert.equal(resolved, "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw");
 });
 
-test("externally managed local runtime stays pinned to the user-provided binary path", () => {
+test("legacy local binary hints no longer escape app-managed candidate resolution", () => {
   const resolved = resolveLocalOpenClawBinaryPath(
     {
       ...baseConfig,
-      runtimeOwnership: "externalLocal",
       localBinaryPath: "/custom/openclaw/bin/openclaw"
     },
     {
@@ -82,5 +81,5 @@ test("externally managed local runtime stays pinned to the user-provided binary 
     }
   );
 
-  assert.equal(resolved, "/custom/openclaw/bin/openclaw");
+  assert.equal(resolved, "/Applications/Multi-Agent-Flow.app/Contents/Resources/openclaw/bin/openclaw");
 });

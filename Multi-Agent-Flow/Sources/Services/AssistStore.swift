@@ -349,11 +349,38 @@ final class AssistStore {
         }
     }
 
+    func decision(withID decisionID: String) -> AssistDecision? {
+        queue.sync {
+            fileSystem.load(
+                AssistDecision.self,
+                from: fileSystem.decisionDocumentURL(for: decisionID, under: appSupportRootDirectory)
+            )
+        }
+    }
+
     func receipt(withID receiptID: String) -> AssistExecutionReceipt? {
         queue.sync {
             fileSystem.load(
                 AssistExecutionReceipt.self,
                 from: fileSystem.receiptDocumentURL(for: receiptID, under: appSupportRootDirectory)
+            )
+        }
+    }
+
+    func undoCheckpoint(withID undoID: String) -> AssistUndoCheckpoint? {
+        queue.sync {
+            fileSystem.load(
+                AssistUndoCheckpoint.self,
+                from: fileSystem.undoDocumentURL(for: undoID, under: appSupportRootDirectory)
+            )
+        }
+    }
+
+    func artifact(withID artifactID: String) -> AssistArtifact? {
+        queue.sync {
+            fileSystem.load(
+                AssistArtifact.self,
+                from: fileSystem.artifactDocumentURL(for: artifactID, under: appSupportRootDirectory)
             )
         }
     }

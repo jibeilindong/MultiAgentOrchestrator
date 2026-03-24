@@ -305,10 +305,10 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
 
         var launchConfig = config
         if config.usesManagedLocalRuntime {
-            launchConfig.port = resolveManagedRuntimePort(preferredPort: config.port, host: config.host)
+            launchConfig.port = resolveManagedRuntimePort(host: config.host, fallbackPort: config.port)
         }
         let requestedPort = config.port
-        let didReassignPort = launchConfig.port != requestedPort
+        let didAssignDynamicPort = launchConfig.port != requestedPort
 
         let commandPlan = try buildLaunchCommandPlan(using: launchConfig)
         let executablePath = commandPlan.executableURL.path
@@ -342,8 +342,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         process.executableURL = commandPlan.executableURL
         process.arguments = commandPlan.arguments
         if !commandPlan.environment.isEmpty {
-            var mergedEnvironment = ProcessInfo.processInfo.environment
-            commandPlan.environment.forEach { mergedEnvironment[$0.key] = $0.value }
+            let mergedEnvironment = OpenClawHost.sanitizedProcessEnvironment(overrides: commandPlan.environment)
             if let stateDirectory = mergedEnvironment["OPENCLAW_STATE_DIR"],
                !stateDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try fileManager.createDirectory(
@@ -366,8 +365,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             $0.requestedPort = requestedPort
             $0.port = launchConfig.port
             $0.lastStatusCheckAt = dateProvider()
-            $0.lastMessage = didReassignPort
-                ? "首选端口 \(requestedPort) 已被占用，正在改用 \(launchConfig.port) 启动托管 OpenClaw Gateway Sidecar..."
+            $0.lastMessage = didAssignDynamicPort
+                ? "正在启动托管 OpenClaw Gateway Sidecar，已动态分配端口 \(launchConfig.port)（配置端口 \(requestedPort) 仅作兼容保留）。"
                 : "正在启动托管 OpenClaw Gateway Sidecar..."
             $0.lastError = nil
         }
@@ -443,8 +442,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             $0.port = launchConfig.port
             $0.lastStartedAt = startedAt
             $0.lastStatusCheckAt = dateProvider()
-            $0.lastMessage = didReassignPort
-                ? "首选端口 \(requestedPort) 已被占用，托管 OpenClaw Gateway Sidecar 已改用 \(launchConfig.port) 启动。"
+            $0.lastMessage = didAssignDynamicPort
+                ? "托管 OpenClaw Gateway Sidecar 已启动，当前使用动态分配端口 \(launchConfig.port)（配置端口 \(requestedPort) 仅作兼容保留）。"
                 : "托管 OpenClaw Gateway Sidecar 已启动。"
             $0.lastError = nil
         }
@@ -657,16 +656,78 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
         return false
     }
 
-    private func resolveManagedRuntimePort(preferredPort: Int, host: String) -> Int {
-        let normalizedPreferredPort = max(preferredPort, 1)
-        for offset in 0...64 {
-            let candidatePort = normalizedPreferredPort + offset
-            if !canConnect(host: host, port: candidatePort) {
-                return candidatePort
+    private func resolveManagedRuntimePort(host: String, fallbackPort: Int) -> Int {
+        allocateEphemeralPort(host: host) ?? max(fallbackPort, 1)
+    }
+
+    private func allocateEphemeralPort(host: String) -> Int? {
+        var hints = addrinfo(
+            ai_flags: AI_PASSIVE,
+            ai_family: AF_UNSPEC,
+            ai_socktype: Int32(SOCK_STREAM),
+            ai_protocol: IPPROTO_TCP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var infoPointer: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, "0", &hints, &infoPointer) == 0,
+              let firstInfo = infoPointer else {
+            return nil
+        }
+        defer { freeaddrinfo(firstInfo) }
+
+        var currentInfo: UnsafeMutablePointer<addrinfo>? = firstInfo
+        while let info = currentInfo {
+            let socketDescriptor = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
+            if socketDescriptor >= 0 {
+                defer { close(socketDescriptor) }
+                var reuseAddress: Int32 = 1
+                withUnsafePointer(to: &reuseAddress) { pointer in
+                    pointer.withMemoryRebound(to: UInt8.self, capacity: MemoryLayout<Int32>.size) { reboundPointer in
+                        _ = setsockopt(
+                            socketDescriptor,
+                            SOL_SOCKET,
+                            SO_REUSEADDR,
+                            reboundPointer,
+                            socklen_t(MemoryLayout<Int32>.size)
+                        )
+                    }
+                }
+
+                if bind(socketDescriptor, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0 {
+                    var storage = sockaddr_storage()
+                    var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+                    let resolvedPort: Int? = withUnsafeMutablePointer(to: &storage) { storagePointer in
+                        storagePointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                            guard getsockname(socketDescriptor, sockaddrPointer, &length) == 0 else { return nil }
+                            let addressFamily = Int32(storagePointer.pointee.ss_family)
+
+                            switch addressFamily {
+                            case AF_INET:
+                                return Int(UInt16(bigEndian: storagePointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                                    $0.pointee.sin_port
+                                }))
+                            case AF_INET6:
+                                return Int(UInt16(bigEndian: storagePointer.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) {
+                                    $0.pointee.sin6_port
+                                }))
+                            default:
+                                return nil
+                            }
+                        }
+                    }
+                    if let resolvedPort, resolvedPort > 0 {
+                        return resolvedPort
+                    }
+                }
             }
+
+            currentInfo = info.pointee.ai_next
         }
 
-        return normalizedPreferredPort
+        return nil
     }
 
     private func canConnect(host: String, port: Int) -> Bool {

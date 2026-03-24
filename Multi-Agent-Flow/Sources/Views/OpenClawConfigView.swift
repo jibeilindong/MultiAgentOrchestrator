@@ -54,12 +54,11 @@ struct OpenClawConfigView: View {
 
                         if config.deploymentKind == .local {
                             labeledField("Local runtime ownership") {
-                                Picker("Local runtime ownership", selection: $config.runtimeOwnership) {
-                                    ForEach(OpenClawRuntimeOwnership.allCases) { ownership in
-                                        Text(ownership.title).tag(ownership)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
+                                Text("App Managed")
+                                    .font(.body.weight(.medium))
+                                Text("本地连接固定使用应用私有 OpenClaw Runtime，不再允许切换到外部 binary。")
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
                             }
 
                             if config.usesManagedLocalRuntime {
@@ -74,13 +73,6 @@ struct OpenClawConfigView: View {
                                     isOn: $config.managedRuntimeAutoRestartOnCrash
                                 )
                                 .toggleStyle(.switch)
-                            }
-                        }
-
-                        if config.requiresExplicitLocalBinaryPath {
-                            labeledField(LocalizedString.text("openclaw_binary")) {
-                                TextField(LocalizedString.text("openclaw_binary"), text: $config.localBinaryPath)
-                                    .textFieldStyle(.roundedBorder)
                             }
                         }
 
@@ -256,10 +248,6 @@ struct OpenClawConfigView: View {
             refreshManagedRuntimeStatus()
             refreshStatusFromManager()
         }
-        .onChange(of: config.runtimeOwnership) { _, _ in
-            refreshManagedRuntimeStatus()
-            refreshStatusFromManager()
-        }
         .onReceive(openClawManager.$managedRuntimeStatus) { _ in
             refreshStatusFromManager()
         }
@@ -271,8 +259,7 @@ struct OpenClawConfigView: View {
     private var canTestConnection: Bool {
         switch config.deploymentKind {
         case .local:
-            return !config.requiresExplicitLocalBinaryPath
-                || !config.localBinaryPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return true
         case .remoteServer:
             return !config.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .container:
@@ -374,12 +361,7 @@ struct OpenClawConfigView: View {
     }
 
     private var managedRuntimeOwnershipSummaryText: String {
-        switch config.runtimeOwnership {
-        case .appManaged:
-            return "应用私有 Runtime，不复用 ~/.openclaw 或系统 PATH 中的 openclaw。"
-        case .externalLocal:
-            return "显式使用用户指定的本地 openclaw 二进制。"
-        }
+        "应用私有 Runtime，不复用 ~/.openclaw 或系统 PATH 中的 openclaw。"
     }
 
     private var managedRuntimeRestartSummaryText: String {
@@ -488,7 +470,7 @@ struct OpenClawConfigView: View {
     private var runtimeSourceColor: Color {
         switch config.deploymentKind {
         case .local:
-            return config.runtimeOwnership == .appManaged ? .green : .orange
+            return .green
         case .container:
             return .blue
         case .remoteServer:
@@ -1181,7 +1163,6 @@ struct OpenClawConfigView: View {
             config.useSSL ? "ssl" : "plain",
             config.apiKey,
             "\(config.timeout)",
-            config.localBinaryPath,
             config.container.engine,
             config.container.containerName,
             config.container.workspaceMountPath,

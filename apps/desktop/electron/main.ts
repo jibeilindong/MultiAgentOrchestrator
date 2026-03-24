@@ -108,6 +108,16 @@ interface OpenClawDiscoveryPaths {
   configPath: string | null;
 }
 
+interface OpenClawManagedRuntimeProcessState {
+  pid: number;
+  requestedPort?: number;
+  port: number;
+  executablePath: string;
+  logPath: string;
+  launchStrategy: string;
+  startedAt: string;
+}
+
 interface DesktopGatewayDeviceIdentity {
   version: number;
   deviceID: string;
@@ -770,18 +780,80 @@ function normalizedPositiveInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.round(value)) : fallback;
 }
 
+function managedRuntimeRootPath(): string {
+  return path.join(app.getPath("userData"), "openclaw", "runtime");
+}
+
+function managedRuntimeSupervisorStatePath(): string {
+  return path.join(app.getPath("userData"), "openclaw", "supervisor", "process-state.json");
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseManagedRuntimeProcessState(value: unknown): OpenClawManagedRuntimeProcessState | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const pid = normalizedPositiveInteger(record.pid, 0);
+  const port = normalizedPositiveInteger(record.port, 0);
+  const executablePath = trimmedString(record.executablePath);
+  const logPath = trimmedString(record.logPath);
+  const launchStrategy = trimmedString(record.launchStrategy);
+  const startedAt = trimmedString(record.startedAt);
+  const requestedPort =
+    typeof record.requestedPort === "number" && Number.isFinite(record.requestedPort)
+      ? Math.max(1, Math.round(record.requestedPort))
+      : undefined;
+
+  if (!pid || !port || !executablePath || !logPath || !launchStrategy || !startedAt) {
+    return null;
+  }
+
+  return {
+    pid,
+    requestedPort,
+    port,
+    executablePath,
+    logPath,
+    launchStrategy,
+    startedAt
+  };
+}
+
+async function readManagedRuntimeProcessState(): Promise<OpenClawManagedRuntimeProcessState | null> {
+  try {
+    const raw = await fs.readFile(managedRuntimeSupervisorStatePath(), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    const state = parseManagedRuntimeProcessState(parsed);
+    if (!state || !isProcessAlive(state.pid)) {
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeOpenClawConfig(config: OpenClawConfig): OpenClawConfig {
   const container = config && typeof config.container === "object" && config.container !== null ? config.container : null;
   const deploymentKind =
     config.deploymentKind === "container" || config.deploymentKind === "remoteServer" || config.deploymentKind === "local"
       ? config.deploymentKind
       : "local";
-  const runtimeOwnership =
-    config.runtimeOwnership === "appManaged" || config.runtimeOwnership === "externalLocal"
-      ? config.runtimeOwnership
-      : deploymentKind === "local" && trimmedString(config.localBinaryPath)
-        ? "externalLocal"
-        : "appManaged";
+  const runtimeOwnership = "appManaged";
   const cliLogLevel =
     config.cliLogLevel === "error" ||
     config.cliLogLevel === "warning" ||
@@ -800,7 +872,7 @@ function normalizeOpenClawConfig(config: OpenClawConfig): OpenClawConfig {
     defaultAgent: trimmedString(config.defaultAgent) || "default",
     timeout: normalizedPositiveInteger(config.timeout, 30),
     autoConnect: config.autoConnect !== false,
-    localBinaryPath: trimmedString(config.localBinaryPath),
+    localBinaryPath: deploymentKind === "local" ? "" : trimmedString(config.localBinaryPath),
     container: {
       engine: trimmedString(container?.engine) || "docker",
       containerName: trimmedString(container?.containerName),
@@ -842,22 +914,20 @@ async function discoverContainerOpenClawRootPath(config: OpenClawConfig): Promis
 }
 
 async function openClawRootCandidatesForConfig(config: OpenClawConfig): Promise<string[]> {
-  if (config.deploymentKind === "container") {
-    const deploymentHomeDirectory = await resolveDeploymentHomeDirectory(config);
-    return buildOpenClawRootFallbackCandidates(config, {
-      deploymentHomeDirectory
-    });
+  switch (config.deploymentKind) {
+    case "container": {
+      const deploymentHomeDirectory = await resolveDeploymentHomeDirectory(config);
+      return buildOpenClawRootFallbackCandidates(config, {
+        deploymentHomeDirectory
+      });
+    }
+    case "local":
+      return buildOpenClawRootFallbackCandidates(config, {
+        managedRuntimeRootDirectory: path.join(app.getPath("userData"), "openclaw", "runtime")
+      });
+    case "remoteServer":
+      return [];
   }
-
-  if (config.runtimeOwnership === "appManaged") {
-    return buildOpenClawRootFallbackCandidates(config, {
-      managedRuntimeRootDirectory: path.join(app.getPath("userData"), "openclaw", "runtime")
-    });
-  }
-
-  return buildOpenClawRootFallbackCandidates(config, {
-    localHomeDirectory: os.homedir()
-  });
 }
 
 async function inspectAgentDirectories(agentsDirectory: string): Promise<DirectoryInspection[]> {
@@ -1450,15 +1520,18 @@ async function resolveGatewayProbeConfigFromRoot(
     hostFallback: string;
     useSSLFallback: boolean;
     fallbackPort?: number;
+    allowConfigFallback?: boolean;
   }
 ): Promise<OpenClawConfig | null> {
   const configRecord = await readJSONRecordForConfig(baseConfig, path.join(rootPath, "openclaw.json"));
-  const fallback = createFallbackGatewayProbeConfig(
-    baseConfig,
-    options.hostFallback,
-    options.useSSLFallback,
-    options.fallbackPort ?? baseConfig.port
-  );
+  const fallback = options.allowConfigFallback === false
+    ? null
+    : createFallbackGatewayProbeConfig(
+        baseConfig,
+        options.hostFallback,
+        options.useSSLFallback,
+        options.fallbackPort ?? baseConfig.port
+      );
 
   if (!configRecord) {
     return fallback;
@@ -1513,15 +1586,16 @@ async function resolveGatewayProbeConfig(config: OpenClawConfig): Promise<OpenCl
     case "remoteServer":
       return trimmedString(normalizedConfig.host) ? normalizedConfig : null;
     case "local": {
-      const discoveryPaths = await resolveOpenClawDiscoveryPaths(normalizedConfig);
-      const rootPath = discoveryPaths.rootPath;
-      if (!rootPath) {
-        return createFallbackGatewayProbeConfig(normalizedConfig, "127.0.0.1", false, normalizedConfig.port);
+      const processState = await readManagedRuntimeProcessState();
+      const rootPath = managedRuntimeRootPath();
+      if (!processState || !existsSync(rootPath)) {
+        return null;
       }
       return resolveGatewayProbeConfigFromRoot(normalizedConfig, rootPath, {
         hostFallback: "127.0.0.1",
         useSSLFallback: false,
-        fallbackPort: normalizedConfig.port
+        fallbackPort: processState.port,
+        allowConfigFallback: false
       });
     }
     case "container": {
@@ -2763,7 +2837,7 @@ async function probeOpenClaw(config: OpenClawConfig): Promise<OpenClawProbeRepor
         message:
           normalizedConfig.deploymentKind === "container"
             ? "OpenClaw CLI 可用，但容器 Gateway 配置不可用。"
-            : "OpenClaw CLI 可用，但本地 Gateway 配置不可用。",
+            : "App-managed OpenClaw runtime 未运行或未登记实际端口；为避免误连本机其他 openclaw，已拒绝回退到默认端口。",
         warnings: []
       };
   const probeContract = buildOpenClawProbeContract({
