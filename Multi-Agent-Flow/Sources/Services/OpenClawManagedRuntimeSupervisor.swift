@@ -301,6 +301,8 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             return currentSnapshot
         }
 
+        try OpenClawManagedRuntimeInstaller.shared.ensureManagedRuntimeBootstrapIfNeeded()
+
         var launchConfig = config
         if config.usesManagedLocalRuntime {
             launchConfig.port = resolveManagedRuntimePort(preferredPort: config.port, host: config.host)
@@ -333,6 +335,7 @@ nonisolated final class OpenClawManagedRuntimeSupervisor {
             fileManager.createFile(atPath: logURL.path, contents: nil)
         }
         let logHandle = try FileHandle(forWritingTo: logURL)
+        try logHandle.truncate(atOffset: 0)
         try logHandle.seekToEnd()
 
         let process = Process()

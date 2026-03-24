@@ -155,6 +155,10 @@ class ProjectManager: ObservableObject {
         appSupportRootDirectory.appendingPathComponent("Drafts", isDirectory: true)
     }
 
+    var assistLibraryRootDirectory: URL {
+        AssistFileSystem.shared.assistLibraryRootDirectory(under: appSupportRootDirectory)
+    }
+
     var legacyAnalyticsRootDirectory: URL {
         appSupportRootDirectory.appendingPathComponent("Analytics", isDirectory: true)
     }
@@ -198,6 +202,7 @@ class ProjectManager: ObservableObject {
         try? fileManager.createDirectory(at: autoSaveDirectory, withIntermediateDirectories: true)
         try? fileManager.createDirectory(at: draftsDirectory, withIntermediateDirectories: true)
         try? projectFileSystem.ensureBaseDirectories(under: appSupportRootDirectory)
+        try? AssistFileSystem.shared.ensureBaseDirectories(under: appSupportRootDirectory)
     }
     
     func loadProjectList() {

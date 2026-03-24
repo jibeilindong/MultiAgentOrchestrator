@@ -80,7 +80,7 @@ private struct OpenClawManagedRuntimeBundledPayload {
     var payloadSHA256: String
 }
 
-final class OpenClawManagedRuntimeInstaller {
+nonisolated final class OpenClawManagedRuntimeInstaller {
     nonisolated static let shared = OpenClawManagedRuntimeInstaller()
 
     private let fileManager: FileManager
@@ -109,6 +109,14 @@ final class OpenClawManagedRuntimeInstaller {
         appSupportRootDirectory?
             .appendingPathComponent("openclaw", isDirectory: true)
             .appendingPathComponent("runtime", isDirectory: true)
+    }
+
+    func ensureManagedRuntimeBootstrapIfNeeded() throws {
+        guard let runtimeRootURL = managedRuntimeRootURL(),
+              fileManager.fileExists(atPath: runtimeRootURL.path) else {
+            return
+        }
+        try ensureManagedRuntimeBootstrap(at: runtimeRootURL)
     }
 
     func installBundledRuntimeIfNeeded() throws -> OpenClawManagedRuntimeInstallResult {
@@ -146,6 +154,7 @@ final class OpenClawManagedRuntimeInstaller {
                     .appendingPathComponent(receipt.binaryRelativePath, isDirectory: false)
                     .path
            ) {
+            try ensureManagedRuntimeBootstrap(at: managedRuntimeRootURL)
             return OpenClawManagedRuntimeInstallResult(
                 status: .alreadyCurrent,
                 message: "Managed runtime payload \(receipt.payloadVersion) is already installed.",
@@ -197,6 +206,7 @@ final class OpenClawManagedRuntimeInstaller {
             }
 
             try fileManager.moveItem(at: stagingURL, to: managedRuntimeRootURL)
+            try ensureManagedRuntimeBootstrap(at: managedRuntimeRootURL)
             try? fileManager.removeItem(at: backupURL)
 
             return OpenClawManagedRuntimeInstallResult(
@@ -267,6 +277,76 @@ final class OpenClawManagedRuntimeInstaller {
             [.posixPermissions: NSNumber(value: normalizedPermissions)],
             ofItemAtPath: binaryURL.path
         )
+    }
+
+    private func ensureManagedRuntimeBootstrap(at runtimeRootURL: URL) throws {
+        let configURL = runtimeRootURL.appendingPathComponent("openclaw.json", isDirectory: false)
+        var rootObject = try readJSONObject(at: configURL) ?? [:]
+        var didMutate = false
+
+        var gateway = rootObject["gateway"] as? [String: Any] ?? [:]
+        let existingMode = (gateway["mode"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if existingMode != "local" {
+            gateway["mode"] = "local"
+            didMutate = true
+        }
+
+        var controlUI = gateway["controlUi"] as? [String: Any] ?? [:]
+        var allowedOrigins = (controlUI["allowedOrigins"] as? [String]) ?? []
+        if !allowedOrigins.contains("file://") {
+            allowedOrigins.append("file://")
+            controlUI["allowedOrigins"] = allowedOrigins
+            gateway["controlUi"] = controlUI
+            didMutate = true
+        }
+
+        var auth = gateway["auth"] as? [String: Any] ?? [:]
+        let existingAuthMode = (auth["mode"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if existingAuthMode != "none" && existingAuthMode != "token" {
+            auth["mode"] = "token"
+            didMutate = true
+        }
+
+        let normalizedAuthMode = ((auth["mode"] as? String) ?? "token")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if normalizedAuthMode == "token" {
+            let existingToken = (auth["token"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if existingToken.isEmpty {
+                auth["token"] = generatedManagedGatewayToken()
+                didMutate = true
+            }
+        }
+
+        gateway["auth"] = auth
+        rootObject["gateway"] = gateway
+
+        if didMutate || !fileManager.fileExists(atPath: configURL.path) {
+            try writeJSONObject(rootObject, to: configURL)
+        }
+    }
+
+    private func generatedManagedGatewayToken() -> String {
+        "clawx-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())"
+    }
+
+    private func readJSONObject(at url: URL) throws -> [String: Any]? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty else { return nil }
+        let object = try JSONSerialization.jsonObject(with: data, options: [])
+        return object as? [String: Any]
+    }
+
+    private func writeJSONObject(_ object: [String: Any], to url: URL) throws {
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
     }
 
     private func encode<T: Encodable>(_ value: T, to url: URL) throws {

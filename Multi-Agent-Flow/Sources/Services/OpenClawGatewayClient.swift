@@ -538,6 +538,10 @@ actor OpenClawGatewayClient {
         limit: Int? = nil
     ) async throws -> [ChatTranscriptMessage] {
         let payload = try await requestChatHistoryPayload(using: config, sessionKey: sessionKey, limit: limit)
+        return parseChatHistoryPayload(payload)
+    }
+
+    func parseChatHistoryPayload(_ payload: [String: Any]) -> [ChatTranscriptMessage] {
         let messages = payload["messages"] as? [Any] ?? []
         return messages.compactMap { transcriptMessage(fromHistoryEntry: $0) }
     }
